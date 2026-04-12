@@ -1,0 +1,29 @@
+[package]
+name = "graphdblite"
+version = "0.1.0"
+edition = "2021"
+description = "Embedded graph database with Cypher support. SQLite-grade simplicity, graph-native performance."
+license = "MIT"
+
+[lib]
+crate-type = ["lib", "cdylib"]
+
+[dependencies]
+rusqlite = { version = "0.32", features = ["bundled"] }
+rmp-serde = "1"
+serde = { version = "1", features = ["derive"] }
+thiserror = "2"
+pest = "2"
+pest_derive = "2"
+pyo3 = { version = "0.22", features = ["extension-module"], optional = true }
+
+[dev-dependencies]
+tempfile = "3"
+
+[features]
+default = []
+python = ["pyo3"]
+
+[[bin]]
+name = "graphdblite"
+path = "src/bin/cli.rs"

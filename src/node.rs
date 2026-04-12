@@ -1,0 +1,137 @@
+use rusqlite::Connection;
+
+use crate::edge;
+use crate::id::next_node_id;
+use crate::storage::kv;
+use crate::types::{
+    Direction, GraphError, Node, NodeId, NodeRecord, Properties, Result, Value,
+};
+
+/// Create a new node with the given label and properties.
+pub fn create_node(
+    conn: &Connection,
+    label: &str,
+    properties: Properties,
+) -> Result<NodeId> {
+    let id = next_node_id(conn)?;
+    let record = NodeRecord {
+        label: label.to_string(),
+        properties,
+    };
+    let data = rmp_serde::to_vec(&record)
+        .map_err(|e| GraphError::Serialization(e.to_string()))?;
+    kv::put(conn, kv::TABLE_NODES, &id.to_be_bytes(), &data)?;
+    Ok(id)
+}
+
+/// Get a node by ID.
+pub fn get_node(conn: &Connection, id: NodeId) -> Result<Node> {
+    let data = kv::get(conn, kv::TABLE_NODES, &id.to_be_bytes())?
+        .ok_or(GraphError::NodeNotFound(id))?;
+    let record: NodeRecord = rmp_serde::from_slice(&data)
+        .map_err(|e| GraphError::Serialization(e.to_string()))?;
+    Ok(Node {
+        id,
+        label: record.label,
+        properties: record.properties,
+    })
+}
+
+/// Check if a node exists.
+pub fn node_exists(conn: &Connection, id: NodeId) -> Result<bool> {
+    Ok(kv::get(conn, kv::TABLE_NODES, &id.to_be_bytes())?.is_some())
+}
+
+/// Delete a node and all its edges (cascading).
+pub fn delete_node(conn: &Connection, id: NodeId) -> Result<()> {
+    // Verify node exists.
+    if !node_exists(conn, id)? {
+        return Err(GraphError::NodeNotFound(id));
+    }
+
+    // Delete all outgoing edges.
+    let out_edges = edge::get_all_edge_labels(conn, id, Direction::Outgoing)?;
+    for (label, neighbors) in &out_edges {
+        for &dst in neighbors {
+            edge::delete_edge(conn, id, NodeId(dst), label)?;
+        }
+    }
+
+    // Delete all incoming edges.
+    let in_edges = edge::get_all_edge_labels(conn, id, Direction::Incoming)?;
+    for (label, neighbors) in &in_edges {
+        for &src in neighbors {
+            edge::delete_edge(conn, NodeId(src), id, label)?;
+        }
+    }
+
+    // Delete the node record.
+    kv::delete(conn, kv::TABLE_NODES, &id.to_be_bytes())?;
+    Ok(())
+}
+
+/// Set a property on an existing node (read-modify-write).
+pub fn set_node_property(
+    conn: &Connection,
+    id: NodeId,
+    key: &str,
+    value: Value,
+) -> Result<()> {
+    let data = kv::get(conn, kv::TABLE_NODES, &id.to_be_bytes())?
+        .ok_or(GraphError::NodeNotFound(id))?;
+    let mut record: NodeRecord = rmp_serde::from_slice(&data)
+        .map_err(|e| GraphError::Serialization(e.to_string()))?;
+    record.properties.insert(key.to_string(), value);
+    let new_data = rmp_serde::to_vec(&record)
+        .map_err(|e| GraphError::Serialization(e.to_string()))?;
+    kv::put(conn, kv::TABLE_NODES, &id.to_be_bytes(), &new_data)?;
+    Ok(())
+}
+
+/// Remove a property from an existing node.
+pub fn remove_node_property(
+    conn: &Connection,
+    id: NodeId,
+    key: &str,
+) -> Result<()> {
+    let data = kv::get(conn, kv::TABLE_NODES, &id.to_be_bytes())?
+        .ok_or(GraphError::NodeNotFound(id))?;
+    let mut record: NodeRecord = rmp_serde::from_slice(&data)
+        .map_err(|e| GraphError::Serialization(e.to_string()))?;
+    record.properties.remove(key);
+    let new_data = rmp_serde::to_vec(&record)
+        .map_err(|e| GraphError::Serialization(e.to_string()))?;
+    kv::put(conn, kv::TABLE_NODES, &id.to_be_bytes(), &new_data)?;
+    Ok(())
+}
+
+/// Scan all nodes with a given label.
+pub fn find_nodes_by_label(
+    conn: &Connection,
+    label: &str,
+) -> Result<Vec<Node>> {
+    // Full scan of nodes table — filter by label after deserialization.
+    // For indexed lookups, use index::index_lookup instead.
+    let mut stmt = conn.prepare_cached(
+        "SELECT key, value FROM nodes ORDER BY key",
+    )?;
+    let rows = stmt.query_map([], |row| {
+        Ok((row.get::<_, Vec<u8>>(0)?, row.get::<_, Vec<u8>>(1)?))
+    })?;
+
+    let mut nodes = Vec::new();
+    for row in rows {
+        let (key, data) = row?;
+        let record: NodeRecord = rmp_serde::from_slice(&data)
+            .map_err(|e| GraphError::Serialization(e.to_string()))?;
+        if record.label == label {
+            let id = NodeId::from_be_bytes(key[..8].try_into().unwrap());
+            nodes.push(Node {
+                id,
+                label: record.label,
+                properties: record.properties,
+            });
+        }
+    }
+    Ok(nodes)
+}

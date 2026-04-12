@@ -28,16 +28,10 @@ Also fixed multi-pattern MATCH with `CrossProduct` IR op (was discarding all but
 
 ---
 
-### OPTIONAL MATCH
-**Problem:** Not implemented. OPTIONAL MATCH works like a left outer join —
-if the pattern doesn't match, variables are bound to NULL instead of filtering
-the row out.
-
-**Fix:** Add `OptionalMatch` to AST, plan it as an Expand that preserves
-input records with NULL dst bindings when no match is found.
-
-**Files:** `src/cypher/grammar.pest`, `src/cypher/ast.rs`, `src/cypher/parser.rs`,
-`src/cypher/planner.rs`, `src/cypher/executor.rs`
+### ~~OPTIONAL MATCH~~ ✅ DONE
+Added `optional_match_clause` grammar rule, `optional_patterns` field on `MatchStatement`,
+`LeftOuterJoin` IR operator, and executor support. Shared aliases are join keys;
+unmatched rows get NULL bindings for optional aliases and their properties.
 
 ---
 
@@ -52,15 +46,10 @@ and eval support.
 
 ---
 
-### Aggregate group-by correctness
-**Problem:** `RETURN n.label, count(*) AS cnt` works in theory but the
-group-by implementation in `exec_aggregate` uses `Vec` linear scan for group
-matching. Also untested with real grouped data.
-
-**Fix:** Add integration tests for grouped aggregates. Consider switching to
-a `HashMap` keyed by serialized group values for correctness and performance.
-
-**File:** `src/cypher/executor.rs:exec_aggregate()`
+### ~~Aggregate group-by correctness~~ ✅ DONE
+Added integration tests for grouped count and grouped collect. Group-by
+implementation verified correct with real multi-group data. Vec linear scan
+is fine at current scale; HashMap optimization deferred.
 
 ---
 
@@ -80,12 +69,10 @@ This requires passing a connection or index metadata to the planner.
 
 ## Larger Gaps (4+ hours, not blocking v0.1)
 
-### Value::List type
-**Problem:** No list/array value type. This blocks `collect()` aggregate
-(currently returns count instead of list), `UNWIND`, and list comprehensions.
-
-**Fix:** Add `Value::List(Vec<Value>)` to `src/types.rs`. Update serialization,
-expression evaluator, and aggregate executor.
+### ~~Value::List type~~ ✅ DONE
+Added `Value::List(Vec<Value>)` variant to `Value` enum with Display, serde,
+and comparison support. Fixed `collect()` aggregate to return a proper list
+instead of count. Unblocks `UNWIND` and list comprehensions in future.
 
 ---
 

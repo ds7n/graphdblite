@@ -18,6 +18,16 @@ fn plan_match(stmt: &MatchStatement) -> crate::types::Result<LogicalOp> {
     // Build scan + expand chain from patterns.
     let mut op = plan_patterns(&stmt.patterns)?;
 
+    // Apply OPTIONAL MATCH clauses as LeftOuterJoins.
+    for opt_patterns in &stmt.optional_patterns {
+        let (right, new_aliases) = plan_optional_patterns(opt_patterns)?;
+        op = LogicalOp::LeftOuterJoin {
+            input: Box::new(op),
+            right: Box::new(right),
+            optional_aliases: new_aliases,
+        };
+    }
+
     // Apply WHERE filter.
     if let Some(ref predicate) = stmt.where_clause {
         op = LogicalOp::Filter {
@@ -159,6 +169,41 @@ fn plan_patterns(patterns: &[Pattern]) -> crate::types::Result<LogicalOp> {
     }
 
     Ok(op)
+}
+
+/// Plan OPTIONAL MATCH patterns. Returns (plan, new_aliases) where the plan is
+/// an expansion chain and new_aliases lists variables introduced by the optional
+/// patterns (not shared with the required MATCH).
+///
+/// The plan expects to be executed per-input-record inside a LeftOuterJoin:
+/// - Shared aliases (already bound) become the starting point for expands
+/// - New aliases are the ones that get NULL-filled on no match
+fn plan_optional_patterns(
+    patterns: &[Pattern],
+) -> crate::types::Result<(LogicalOp, Vec<String>)> {
+    let mut new_aliases = Vec::new();
+    let op = plan_patterns(patterns)?;
+
+    // Walk the patterns to collect aliases.
+    // The first node in each pattern is assumed shared with the required MATCH.
+    // Subsequent nodes (destinations of relationships) are new.
+    for pattern in patterns {
+        let mut first = true;
+        for elem in &pattern.elements {
+            if let PatternElement::Node(n) = elem {
+                if let Some(ref var) = n.variable {
+                    if first {
+                        first = false;
+                        // First node is shared — skip.
+                    } else if !new_aliases.contains(var) {
+                        new_aliases.push(var.clone());
+                    }
+                }
+            }
+        }
+    }
+
+    Ok((op, new_aliases))
 }
 
 /// Plan a single pattern: (a:Label)-[:TYPE]->(b:Label)

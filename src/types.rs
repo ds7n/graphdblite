@@ -34,6 +34,7 @@ pub enum Value {
     I64(i64),
     F64(f64),
     String(String),
+    List(Vec<Value>),
 }
 
 impl fmt::Display for Value {
@@ -44,6 +45,16 @@ impl fmt::Display for Value {
             Value::I64(n) => write!(f, "{n}"),
             Value::F64(n) => write!(f, "{n}"),
             Value::String(s) => write!(f, "\"{s}\""),
+            Value::List(items) => {
+                write!(f, "[")?;
+                for (i, v) in items.iter().enumerate() {
+                    if i > 0 {
+                        write!(f, ", ")?;
+                    }
+                    write!(f, "{v}")?;
+                }
+                write!(f, "]")
+            }
         }
     }
 }

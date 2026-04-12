@@ -15,6 +15,7 @@ pub enum Statement {
 #[derive(Debug, Clone, PartialEq)]
 pub struct MatchStatement {
     pub patterns: Vec<Pattern>,
+    pub optional_patterns: Vec<Vec<Pattern>>,
     pub where_clause: Option<Expr>,
     pub return_clause: ReturnClause,
     pub order_by: Vec<SortItem>,

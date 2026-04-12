@@ -15,6 +15,11 @@ pub fn eval_expr(expr: &Expr, record: &Record) -> crate::types::Result<Value> {
             let key = format!("{var}.{prop}");
             Ok(record.get(&key).cloned().unwrap_or(Value::Null))
         }
+        Expr::List(items) => {
+            let values: crate::types::Result<Vec<Value>> =
+                items.iter().map(|e| eval_expr(e, record)).collect();
+            Ok(Value::List(values?))
+        }
         Expr::Star => Ok(Value::Null),
         Expr::BinaryOp { left, op, right } => {
             let lval = eval_expr(left, record)?;
@@ -88,6 +93,10 @@ fn eval_binop(left: &Value, op: BinOp, right: &Value) -> crate::types::Result<Va
             (Value::String(l), Value::String(r)) => Ok(Value::Bool(l.starts_with(r.as_str()))),
             _ => Ok(Value::Null),
         },
+        BinOp::EndsWith => match (left, right) {
+            (Value::String(l), Value::String(r)) => Ok(Value::Bool(l.ends_with(r.as_str()))),
+            _ => Ok(Value::Null),
+        },
         BinOp::Contains => match (left, right) {
             (Value::String(l), Value::String(r)) => Ok(Value::Bool(l.contains(r.as_str()))),
             _ => Ok(Value::Null),
@@ -145,6 +154,7 @@ pub fn expr_to_column_name(expr: &Expr) -> String {
         Expr::Star => "*".to_string(),
         Expr::Literal(lit) => format!("{lit:?}"),
         Expr::Case { .. } => "CASE".to_string(),
+        Expr::List(_) => "list".to_string(),
         _ => "_expr".to_string(),
     }
 }

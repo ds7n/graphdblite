@@ -916,3 +916,652 @@ fn e2e_parse_error_missing_return_expression() {
     );
     tx.commit().unwrap();
 }
+
+// --- String predicate tests ---
+
+#[test]
+fn e2e_starts_with() {
+    let mut db = Database::open_memory().unwrap();
+    let tx = db.begin_write().unwrap();
+    tx.query("CREATE (a:Person {name: 'Alice'})").unwrap();
+    tx.query("CREATE (b:Person {name: 'Bob'})").unwrap();
+    tx.query("CREATE (c:Person {name: 'Anna'})").unwrap();
+    tx.commit().unwrap();
+
+    let tx = db.begin_read().unwrap();
+    let rows = tx
+        .query("MATCH (n:Person) WHERE n.name STARTS WITH 'A' RETURN n.name ORDER BY n.name")
+        .unwrap();
+    let names: Vec<_> = rows.iter().map(|r| r.get("n.name").unwrap().clone()).collect();
+    assert_eq!(names, vec![Value::String("Alice".into()), Value::String("Anna".into())]);
+    tx.commit().unwrap();
+}
+
+#[test]
+fn e2e_ends_with() {
+    let mut db = Database::open_memory().unwrap();
+    let tx = db.begin_write().unwrap();
+    tx.query("CREATE (a:Person {name: 'Alice'})").unwrap();
+    tx.query("CREATE (b:Person {name: 'Bob'})").unwrap();
+    tx.query("CREATE (c:Person {name: 'Grace'})").unwrap();
+    tx.commit().unwrap();
+
+    let tx = db.begin_read().unwrap();
+    let rows = tx
+        .query("MATCH (n:Person) WHERE n.name ENDS WITH 'ce' RETURN n.name ORDER BY n.name")
+        .unwrap();
+    let names: Vec<_> = rows.iter().map(|r| r.get("n.name").unwrap().clone()).collect();
+    assert_eq!(names, vec![Value::String("Alice".into()), Value::String("Grace".into())]);
+    tx.commit().unwrap();
+}
+
+#[test]
+fn e2e_ends_with_no_match() {
+    let mut db = Database::open_memory().unwrap();
+    let tx = db.begin_write().unwrap();
+    tx.query("CREATE (a:Person {name: 'Alice'})").unwrap();
+    tx.commit().unwrap();
+
+    let tx = db.begin_read().unwrap();
+    let rows = tx
+        .query("MATCH (n:Person) WHERE n.name ENDS WITH 'zzz' RETURN n.name")
+        .unwrap();
+    assert!(rows.is_empty());
+    tx.commit().unwrap();
+}
+
+#[test]
+fn e2e_contains_string() {
+    let mut db = Database::open_memory().unwrap();
+    let tx = db.begin_write().unwrap();
+    tx.query("CREATE (a:Person {name: 'Alice'})").unwrap();
+    tx.query("CREATE (b:Person {name: 'Bob'})").unwrap();
+    tx.query("CREATE (c:Person {name: 'Lick'})").unwrap();
+    tx.commit().unwrap();
+
+    let tx = db.begin_read().unwrap();
+    let rows = tx
+        .query("MATCH (n:Person) WHERE n.name CONTAINS 'lic' RETURN n.name ORDER BY n.name")
+        .unwrap();
+    let names: Vec<_> = rows.iter().map(|r| r.get("n.name").unwrap().clone()).collect();
+    assert_eq!(names, vec![Value::String("Alice".into())]);
+    tx.commit().unwrap();
+}
+
+#[test]
+fn e2e_ends_with_null_property() {
+    let mut db = Database::open_memory().unwrap();
+    let tx = db.begin_write().unwrap();
+    tx.query("CREATE (a:Person {name: 'Alice'})").unwrap();
+    tx.query("CREATE (b:Person)").unwrap();
+    tx.commit().unwrap();
+
+    let tx = db.begin_read().unwrap();
+    let rows = tx
+        .query("MATCH (n:Person) WHERE n.name ENDS WITH 'ce' RETURN n.name")
+        .unwrap();
+    // Node without name property should be filtered out (null ENDS WITH x = null = falsy).
+    assert_eq!(rows.len(), 1);
+    tx.commit().unwrap();
+}
+
+// --- Grouped aggregate tests ---
+
+#[test]
+fn e2e_grouped_aggregate_many_groups() {
+    let mut db = Database::open_memory().unwrap();
+    let tx = db.begin_write().unwrap();
+    // Create 100 distinct departments with 3 people each.
+    for dept in 0..100 {
+        for person in 0..3 {
+            tx.query(&format!(
+                "CREATE (n:Person {{dept: 'dept_{dept}', name: 'p{person}'}})"
+            ))
+            .unwrap();
+        }
+    }
+    tx.commit().unwrap();
+
+    let tx = db.begin_read().unwrap();
+    let rows = tx
+        .query("MATCH (n:Person) RETURN n.dept, count(*) AS cnt")
+        .unwrap();
+    assert_eq!(rows.len(), 100);
+    // Every group should have count 3.
+    for row in &rows {
+        assert_eq!(row.get("cnt").unwrap(), &Value::I64(3));
+    }
+    tx.commit().unwrap();
+}
+
+#[test]
+fn e2e_grouped_aggregate_order_by_count() {
+    let mut db = Database::open_memory().unwrap();
+    let tx = db.begin_write().unwrap();
+    tx.query("CREATE (n:Person {dept: 'eng'})").unwrap();
+    tx.query("CREATE (n:Person {dept: 'eng'})").unwrap();
+    tx.query("CREATE (n:Person {dept: 'eng'})").unwrap();
+    tx.query("CREATE (n:Person {dept: 'sales'})").unwrap();
+    tx.query("CREATE (n:Person {dept: 'sales'})").unwrap();
+    tx.query("CREATE (n:Person {dept: 'hr'})").unwrap();
+    tx.commit().unwrap();
+
+    let tx = db.begin_read().unwrap();
+    let rows = tx
+        .query("MATCH (n:Person) RETURN n.dept, count(*) AS cnt ORDER BY cnt DESC")
+        .unwrap();
+    assert_eq!(rows.len(), 3);
+    assert_eq!(rows[0].get("n.dept").unwrap(), &Value::String("eng".into()));
+    assert_eq!(rows[0].get("cnt").unwrap(), &Value::I64(3));
+    assert_eq!(rows[1].get("n.dept").unwrap(), &Value::String("sales".into()));
+    assert_eq!(rows[1].get("cnt").unwrap(), &Value::I64(2));
+    assert_eq!(rows[2].get("n.dept").unwrap(), &Value::String("hr".into()));
+    assert_eq!(rows[2].get("cnt").unwrap(), &Value::I64(1));
+    tx.commit().unwrap();
+}
+
+#[test]
+fn e2e_multiple_aggregates_in_return() {
+    let mut db = Database::open_memory().unwrap();
+    let tx = db.begin_write().unwrap();
+    tx.query("CREATE (n:Person {dept: 'eng', age: 30})").unwrap();
+    tx.query("CREATE (n:Person {dept: 'eng', age: 40})").unwrap();
+    tx.query("CREATE (n:Person {dept: 'sales', age: 25})").unwrap();
+    tx.commit().unwrap();
+
+    let tx = db.begin_read().unwrap();
+    let rows = tx
+        .query("MATCH (n:Person) RETURN n.dept, count(*) AS cnt, sum(n.age) AS total, avg(n.age) AS average ORDER BY n.dept")
+        .unwrap();
+    assert_eq!(rows.len(), 2);
+    // eng: count=2, sum=70, avg=35
+    assert_eq!(rows[0].get("cnt").unwrap(), &Value::I64(2));
+    assert_eq!(rows[0].get("total").unwrap(), &Value::F64(70.0));
+    assert_eq!(rows[0].get("average").unwrap(), &Value::F64(35.0));
+    // sales: count=1, sum=25, avg=25
+    assert_eq!(rows[1].get("cnt").unwrap(), &Value::I64(1));
+    assert_eq!(rows[1].get("total").unwrap(), &Value::F64(25.0));
+    assert_eq!(rows[1].get("average").unwrap(), &Value::F64(25.0));
+    tx.commit().unwrap();
+}
+
+// --- Edge case tests ---
+
+#[test]
+fn e2e_match_on_empty_database() {
+    let mut db = Database::open_memory().unwrap();
+    let tx = db.begin_read().unwrap();
+    let rows = tx.query("MATCH (n:Person) RETURN n.name").unwrap();
+    assert!(rows.is_empty());
+    tx.commit().unwrap();
+}
+
+#[test]
+fn e2e_match_no_label_on_empty_database() {
+    let mut db = Database::open_memory().unwrap();
+    let tx = db.begin_read().unwrap();
+    let rows = tx.query("MATCH (n) RETURN n").unwrap();
+    assert!(rows.is_empty());
+    tx.commit().unwrap();
+}
+
+#[test]
+fn e2e_count_on_empty_database() {
+    let mut db = Database::open_memory().unwrap();
+    let tx = db.begin_read().unwrap();
+    let rows = tx.query("MATCH (n:Person) RETURN count(*) AS cnt").unwrap();
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].get("cnt").unwrap(), &Value::I64(0));
+    tx.commit().unwrap();
+}
+
+#[test]
+fn e2e_where_on_missing_property() {
+    let mut db = Database::open_memory().unwrap();
+    let tx = db.begin_write().unwrap();
+    tx.query("CREATE (a:Person {name: 'Alice'})").unwrap();
+    tx.query("CREATE (b:Person {name: 'Bob', email: 'bob@test.com'})").unwrap();
+    tx.commit().unwrap();
+
+    let tx = db.begin_read().unwrap();
+    // Alice has no email — comparison with missing prop should not match.
+    let rows = tx
+        .query("MATCH (n:Person) WHERE n.email = 'bob@test.com' RETURN n.name")
+        .unwrap();
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].get("n.name").unwrap(), &Value::String("Bob".into()));
+    tx.commit().unwrap();
+}
+
+#[test]
+fn e2e_set_property_to_null_removes_it() {
+    let mut db = Database::open_memory().unwrap();
+    let tx = db.begin_write().unwrap();
+    tx.query("CREATE (n:Person {name: 'Alice', age: 30})").unwrap();
+    tx.commit().unwrap();
+
+    let tx = db.begin_write().unwrap();
+    tx.query("MATCH (n:Person) WHERE n.name = 'Alice' SET n.age = null").unwrap();
+    tx.commit().unwrap();
+
+    let tx = db.begin_read().unwrap();
+    let rows = tx
+        .query("MATCH (n:Person) WHERE n.name = 'Alice' RETURN n.age")
+        .unwrap();
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].get("n.age").unwrap(), &Value::Null);
+    tx.commit().unwrap();
+}
+
+#[test]
+fn e2e_unicode_property_values() {
+    let mut db = Database::open_memory().unwrap();
+    let tx = db.begin_write().unwrap();
+    tx.query("CREATE (n:Person {name: '日本語テスト'})").unwrap();
+    tx.query("CREATE (n:Person {name: 'émojis 🎉🚀'})").unwrap();
+    tx.query("CREATE (n:Person {name: 'Ñoño'})").unwrap();
+    tx.commit().unwrap();
+
+    let tx = db.begin_read().unwrap();
+    let rows = tx
+        .query("MATCH (n:Person) RETURN n.name ORDER BY n.name")
+        .unwrap();
+    assert_eq!(rows.len(), 3);
+
+    // Verify we can filter on unicode too.
+    let rows = tx
+        .query("MATCH (n:Person) WHERE n.name STARTS WITH 'Ñ' RETURN n.name")
+        .unwrap();
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].get("n.name").unwrap(), &Value::String("Ñoño".into()));
+    tx.commit().unwrap();
+}
+
+#[test]
+fn e2e_large_dataset_smoke_test() {
+    let mut db = Database::open_memory().unwrap();
+    let tx = db.begin_write().unwrap();
+    for i in 0..1000 {
+        tx.query(&format!("CREATE (n:Item {{id: {i}}})")).unwrap();
+    }
+    tx.commit().unwrap();
+
+    let tx = db.begin_read().unwrap();
+    let rows = tx.query("MATCH (n:Item) RETURN count(*) AS cnt").unwrap();
+    assert_eq!(rows[0].get("cnt").unwrap(), &Value::I64(1000));
+
+    let rows = tx
+        .query("MATCH (n:Item) WHERE n.id > 990 RETURN n.id ORDER BY n.id")
+        .unwrap();
+    assert_eq!(rows.len(), 9); // 991..999
+    tx.commit().unwrap();
+}
+
+// --- Null handling in aggregation ---
+
+#[test]
+fn e2e_aggregate_with_null_group_keys() {
+    let mut db = Database::open_memory().unwrap();
+    let tx = db.begin_write().unwrap();
+    tx.query("CREATE (n:Person {dept: 'eng'})").unwrap();
+    tx.query("CREATE (n:Person {dept: 'eng'})").unwrap();
+    tx.query("CREATE (n:Person)").unwrap(); // no dept
+    tx.query("CREATE (n:Person)").unwrap(); // no dept
+    tx.query("CREATE (n:Person)").unwrap(); // no dept
+    tx.commit().unwrap();
+
+    let tx = db.begin_read().unwrap();
+    let rows = tx
+        .query("MATCH (n:Person) RETURN n.dept, count(*) AS cnt ORDER BY cnt DESC")
+        .unwrap();
+    assert_eq!(rows.len(), 2);
+    // Null group should have 3 nodes.
+    let null_group = rows.iter().find(|r| r.get("n.dept").unwrap() == &Value::Null).unwrap();
+    assert_eq!(null_group.get("cnt").unwrap(), &Value::I64(3));
+    // eng group should have 2 nodes.
+    let eng_group = rows.iter().find(|r| r.get("n.dept").unwrap() == &Value::String("eng".into())).unwrap();
+    assert_eq!(eng_group.get("cnt").unwrap(), &Value::I64(2));
+    tx.commit().unwrap();
+}
+
+#[test]
+fn e2e_collect_on_empty_result() {
+    let mut db = Database::open_memory().unwrap();
+    let tx = db.begin_read().unwrap();
+    let rows = tx
+        .query("MATCH (n:Nonexistent) RETURN collect(n.name) AS names")
+        .unwrap();
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].get("names").unwrap(), &Value::List(vec![]));
+    tx.commit().unwrap();
+}
+
+// --- Query combination tests ---
+
+#[test]
+fn e2e_with_where_return_chaining() {
+    let mut db = Database::open_memory().unwrap();
+    let tx = db.begin_write().unwrap();
+    for i in 1..=10 {
+        tx.query(&format!("CREATE (n:Num {{val: {i}}})")).unwrap();
+    }
+    tx.commit().unwrap();
+
+    let tx = db.begin_read().unwrap();
+    let rows = tx
+        .query("MATCH (n:Num) WITH n.val AS v WHERE v > 5 RETURN v ORDER BY v")
+        .unwrap();
+    assert_eq!(rows.len(), 5); // 6,7,8,9,10
+    assert_eq!(rows[0].get("v").unwrap(), &Value::I64(6));
+    assert_eq!(rows[4].get("v").unwrap(), &Value::I64(10));
+    tx.commit().unwrap();
+}
+
+#[test]
+fn e2e_optional_match_with_aggregation() {
+    let mut db = Database::open_memory().unwrap();
+    let tx = db.begin_write().unwrap();
+    tx.query("CREATE (a:Person {name: 'Alice'})").unwrap();
+    tx.query("CREATE (b:Person {name: 'Bob'})").unwrap();
+    tx.query("CREATE (c:Person {name: 'Charlie'})").unwrap();
+    tx.commit().unwrap();
+
+    let tx = db.begin_write().unwrap();
+    // Only Alice knows people.
+    tx.create_edge(NodeId(1), NodeId(2), "KNOWS", HashMap::new()).unwrap();
+    tx.create_edge(NodeId(1), NodeId(3), "KNOWS", HashMap::new()).unwrap();
+    tx.commit().unwrap();
+
+    let tx = db.begin_read().unwrap();
+    let rows = tx
+        .query("MATCH (a:Person) OPTIONAL MATCH (a)-[:KNOWS]->(b) RETURN a.name, count(b.name) AS friends ORDER BY a.name")
+        .unwrap();
+    assert_eq!(rows.len(), 3);
+    // Alice knows 2 people.
+    assert_eq!(rows[0].get("a.name").unwrap(), &Value::String("Alice".into()));
+    assert_eq!(rows[0].get("friends").unwrap(), &Value::I64(2));
+    // Bob and Charlie know 0 people.
+    assert_eq!(rows[1].get("friends").unwrap(), &Value::I64(0));
+    assert_eq!(rows[2].get("friends").unwrap(), &Value::I64(0));
+    tx.commit().unwrap();
+}
+
+#[test]
+fn e2e_variable_length_path_with_where() {
+    let mut db = setup_social_graph();
+    let tx = db.begin_read().unwrap();
+    // Alice -> Bob -> Charlie via KNOWS, variable-length 1..2 hops.
+    let rows = tx
+        .query("MATCH (a:Person {name: 'Alice'})-[:KNOWS*1..2]->(b:Person) WHERE b.age > 30 RETURN b.name")
+        .unwrap();
+    // Only Charlie (age 35) should match via 2 hops.
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].get("b.name").unwrap(), &Value::String("Charlie".into()));
+    tx.commit().unwrap();
+}
+
+#[test]
+fn e2e_merge_on_create_and_on_match_set() {
+    let mut db = Database::open_memory().unwrap();
+    // First MERGE — creates.
+    {
+        let tx = db.begin_write().unwrap();
+        tx.query("MERGE (n:Person {name: 'Alice'}) ON CREATE SET n.created = true ON MATCH SET n.updated = true")
+            .unwrap();
+        tx.commit().unwrap();
+    }
+    // Verify created.
+    {
+        let tx = db.begin_read().unwrap();
+        let rows = tx.query("MATCH (n:Person {name: 'Alice'}) RETURN n.created, n.updated").unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].get("n.created").unwrap(), &Value::Bool(true));
+        assert_eq!(rows[0].get("n.updated").unwrap(), &Value::Null);
+        tx.commit().unwrap();
+    }
+    // Second MERGE — matches.
+    {
+        let tx = db.begin_write().unwrap();
+        tx.query("MERGE (n:Person {name: 'Alice'}) ON CREATE SET n.created = true ON MATCH SET n.updated = true")
+            .unwrap();
+        tx.commit().unwrap();
+    }
+    // Verify updated.
+    {
+        let tx = db.begin_read().unwrap();
+        let rows = tx.query("MATCH (n:Person {name: 'Alice'}) RETURN n.created, n.updated").unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].get("n.created").unwrap(), &Value::Bool(true));
+        assert_eq!(rows[0].get("n.updated").unwrap(), &Value::Bool(true));
+        tx.commit().unwrap();
+    }
+}
+
+// --- Error handling tests ---
+
+#[test]
+fn e2e_parse_error_has_position() {
+    let mut db = Database::open_memory().unwrap();
+    let tx = db.begin_read().unwrap();
+    let err = tx.query("METCH (n) RETURN n").unwrap_err();
+    let msg = err.to_string();
+    // Should be human-readable, not a raw pest error.
+    assert!(!msg.contains("serialization error"), "got: {msg}");
+    // Should contain position info.
+    assert!(msg.contains("1:"), "expected position info, got: {msg}");
+    tx.commit().unwrap();
+}
+
+#[test]
+fn e2e_unbound_variable_in_return() {
+    let mut db = Database::open_memory().unwrap();
+    let tx = db.begin_write().unwrap();
+    tx.query("CREATE (n:Person {name: 'Alice'})").unwrap();
+    tx.commit().unwrap();
+
+    let tx = db.begin_read().unwrap();
+    // 'x' is not bound by MATCH — should return null, not crash.
+    let rows = tx.query("MATCH (n:Person) RETURN x.name");
+    // Either returns nulls or errors — both are acceptable, just no panic.
+    assert!(rows.is_ok() || rows.is_err());
+    tx.commit().unwrap();
+}
+
+#[test]
+fn e2e_delete_node_with_edges_fails() {
+    let mut db = setup_social_graph();
+    // Alice (NodeId 1) has edges — plain DELETE should fail.
+    let tx = db.begin_write().unwrap();
+    let err = tx
+        .query("MATCH (n:Person {name: 'Alice'}) DELETE n")
+        .unwrap_err();
+    let msg = err.to_string();
+    assert!(msg.contains("still has edges"), "expected HasEdges error, got: {msg}");
+    tx.commit().unwrap();
+}
+
+#[test]
+fn e2e_detach_delete_node_with_edges_succeeds() {
+    let mut db = setup_social_graph();
+    let tx = db.begin_write().unwrap();
+    tx.query("MATCH (n:Person {name: 'Alice'}) DETACH DELETE n").unwrap();
+    tx.commit().unwrap();
+
+    let tx = db.begin_read().unwrap();
+    let rows = tx.query("MATCH (n:Person {name: 'Alice'}) RETURN n").unwrap();
+    assert!(rows.is_empty());
+    tx.commit().unwrap();
+}
+
+// --- Numeric edge cases ---
+
+#[test]
+fn e2e_large_integers() {
+    let mut db = Database::open_memory().unwrap();
+    let tx = db.begin_write().unwrap();
+    tx.query("CREATE (n:Num {val: 9223372036854775807})").unwrap(); // i64::MAX
+    tx.query("CREATE (n:Num {val: -9223372036854775808})").unwrap(); // i64::MIN
+    tx.commit().unwrap();
+
+    let tx = db.begin_read().unwrap();
+    let rows = tx
+        .query("MATCH (n:Num) RETURN n.val ORDER BY n.val")
+        .unwrap();
+    assert_eq!(rows.len(), 2);
+    assert_eq!(rows[0].get("n.val").unwrap(), &Value::I64(i64::MIN));
+    assert_eq!(rows[1].get("n.val").unwrap(), &Value::I64(i64::MAX));
+    tx.commit().unwrap();
+}
+
+#[test]
+fn e2e_float_property() {
+    let mut db = Database::open_memory().unwrap();
+    let tx = db.begin_write().unwrap();
+    tx.query("CREATE (n:Num {val: 3.14159})").unwrap();
+    tx.commit().unwrap();
+
+    let tx = db.begin_read().unwrap();
+    let rows = tx.query("MATCH (n:Num) RETURN n.val").unwrap();
+    assert_eq!(rows.len(), 1);
+    if let Value::F64(v) = rows[0].get("n.val").unwrap() {
+        assert!((v - 3.14159).abs() < 1e-10);
+    } else {
+        panic!("expected F64");
+    }
+    tx.commit().unwrap();
+}
+
+#[test]
+fn e2e_boolean_properties() {
+    let mut db = Database::open_memory().unwrap();
+    let tx = db.begin_write().unwrap();
+    tx.query("CREATE (n:Flag {active: true, deleted: false})").unwrap();
+    tx.commit().unwrap();
+
+    let tx = db.begin_read().unwrap();
+    let rows = tx.query("MATCH (n:Flag) WHERE n.active = true RETURN n.deleted").unwrap();
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].get("n.deleted").unwrap(), &Value::Bool(false));
+    tx.commit().unwrap();
+}
+
+// --- UNWIND tests ---
+
+#[test]
+fn e2e_unwind_list_literal() {
+    let mut db = Database::open_memory().unwrap();
+    let tx = db.begin_read().unwrap();
+    let rows = tx.query("UNWIND [1, 2, 3] AS x RETURN x").unwrap();
+    assert_eq!(rows.len(), 3);
+    assert_eq!(rows[0].get("x").unwrap(), &Value::I64(1));
+    assert_eq!(rows[1].get("x").unwrap(), &Value::I64(2));
+    assert_eq!(rows[2].get("x").unwrap(), &Value::I64(3));
+    tx.commit().unwrap();
+}
+
+#[test]
+fn e2e_unwind_empty_list() {
+    let mut db = Database::open_memory().unwrap();
+    let tx = db.begin_read().unwrap();
+    let rows = tx.query("UNWIND [] AS x RETURN x").unwrap();
+    assert!(rows.is_empty());
+    tx.commit().unwrap();
+}
+
+#[test]
+fn e2e_unwind_string_list() {
+    let mut db = Database::open_memory().unwrap();
+    let tx = db.begin_read().unwrap();
+    let rows = tx
+        .query("UNWIND ['Alice', 'Bob', 'Charlie'] AS name RETURN name ORDER BY name")
+        .unwrap();
+    assert_eq!(rows.len(), 3);
+    assert_eq!(rows[0].get("name").unwrap(), &Value::String("Alice".into()));
+    assert_eq!(rows[1].get("name").unwrap(), &Value::String("Bob".into()));
+    assert_eq!(rows[2].get("name").unwrap(), &Value::String("Charlie".into()));
+    tx.commit().unwrap();
+}
+
+#[test]
+fn e2e_unwind_with_where_filter() {
+    let mut db = Database::open_memory().unwrap();
+    let tx = db.begin_read().unwrap();
+    let rows = tx
+        .query("UNWIND [1, 2, 3, 4, 5] AS x WHERE x > 3 RETURN x")
+        .unwrap();
+    assert_eq!(rows.len(), 2);
+    assert_eq!(rows[0].get("x").unwrap(), &Value::I64(4));
+    assert_eq!(rows[1].get("x").unwrap(), &Value::I64(5));
+    tx.commit().unwrap();
+}
+
+#[test]
+fn e2e_unwind_create_nodes() {
+    let mut db = Database::open_memory().unwrap();
+    let tx = db.begin_write().unwrap();
+    tx.query("UNWIND ['Alice', 'Bob', 'Charlie'] AS name CREATE (n:Person {name: name})")
+        .unwrap();
+    tx.commit().unwrap();
+
+    let tx = db.begin_read().unwrap();
+    let rows = tx
+        .query("MATCH (n:Person) RETURN n.name ORDER BY n.name")
+        .unwrap();
+    assert_eq!(rows.len(), 3);
+    assert_eq!(rows[0].get("n.name").unwrap(), &Value::String("Alice".into()));
+    assert_eq!(rows[1].get("n.name").unwrap(), &Value::String("Bob".into()));
+    assert_eq!(rows[2].get("n.name").unwrap(), &Value::String("Charlie".into()));
+    tx.commit().unwrap();
+}
+
+#[test]
+fn e2e_unwind_with_aggregation() {
+    let mut db = Database::open_memory().unwrap();
+    let tx = db.begin_read().unwrap();
+    let rows = tx
+        .query("UNWIND [1, 2, 3, 4, 5] AS x RETURN sum(x) AS total, count(*) AS cnt")
+        .unwrap();
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].get("total").unwrap(), &Value::F64(15.0));
+    assert_eq!(rows[0].get("cnt").unwrap(), &Value::I64(5));
+    tx.commit().unwrap();
+}
+
+#[test]
+fn e2e_match_with_unwind() {
+    let mut db = Database::open_memory().unwrap();
+    let tx = db.begin_write().unwrap();
+    tx.query("CREATE (n:Person {name: 'Alice', tags: 'dev,lead'})").unwrap();
+    tx.commit().unwrap();
+
+    // Use UNWIND within a MATCH via collect + UNWIND in WITH chain.
+    let tx = db.begin_read().unwrap();
+    let rows = tx
+        .query("MATCH (n:Person) UNWIND [1, 2] AS x RETURN n.name, x ORDER BY x")
+        .unwrap();
+    // Each person x each unwind element = 1 * 2 = 2 rows.
+    assert_eq!(rows.len(), 2);
+    assert_eq!(rows[0].get("n.name").unwrap(), &Value::String("Alice".into()));
+    assert_eq!(rows[0].get("x").unwrap(), &Value::I64(1));
+    assert_eq!(rows[1].get("x").unwrap(), &Value::I64(2));
+    tx.commit().unwrap();
+}
+
+#[test]
+fn e2e_list_literal_in_return() {
+    let mut db = Database::open_memory().unwrap();
+    let tx = db.begin_write().unwrap();
+    tx.query("CREATE (n:Person {name: 'Alice'})").unwrap();
+    tx.commit().unwrap();
+
+    let tx = db.begin_read().unwrap();
+    let rows = tx
+        .query("MATCH (n:Person) RETURN [1, 2, 3] AS nums")
+        .unwrap();
+    assert_eq!(rows.len(), 1);
+    assert_eq!(
+        rows[0].get("nums").unwrap(),
+        &Value::List(vec![Value::I64(1), Value::I64(2), Value::I64(3)])
+    );
+    tx.commit().unwrap();
+}

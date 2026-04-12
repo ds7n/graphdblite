@@ -5,7 +5,7 @@ COMMENT = _{ "--" ~ (!"\n" ~ ANY)* }
 
 // === Top-level ===
 
-statement = { SOI ~ (match_create_stmt | match_stmt | create_stmt | delete_stmt | set_stmt | merge_stmt) ~ ";"? ~ EOI }
+statement = { SOI ~ (match_create_stmt | match_stmt | unwind_stmt | create_stmt | delete_stmt | set_stmt | merge_stmt) ~ ";"? ~ EOI }
 
 // === MATCH statement ===
 
@@ -13,7 +13,7 @@ match_stmt = {
     ^"MATCH" ~ pattern_list ~
     optional_match_clause* ~
     where_clause? ~
-    with_clause* ~
+    (with_clause | unwind_clause)* ~
     return_clause ~
     order_by_clause? ~
     limit_clause?
@@ -22,6 +22,26 @@ match_stmt = {
 with_clause = { ^"WITH" ~ return_items ~ where_clause? }
 
 optional_match_clause = { ^"OPTIONAL" ~ ^"MATCH" ~ pattern_list }
+
+// === UNWIND statement ===
+
+unwind_stmt = {
+    ^"UNWIND" ~ expr ~ ^"AS" ~ ident ~
+    (unwind_create | unwind_return)
+}
+
+unwind_create = { ^"CREATE" ~ create_pattern_list }
+
+unwind_return = {
+    where_clause? ~
+    return_clause ~
+    order_by_clause? ~
+    limit_clause?
+}
+
+// === UNWIND clause (within MATCH) ===
+
+unwind_clause = { ^"UNWIND" ~ expr ~ ^"AS" ~ ident }
 
 // === CREATE statement ===
 
@@ -132,11 +152,14 @@ or_op = { ^"OR" }
 and_op = { ^"AND" }
 not_op = { ^"NOT" }
 
-comp_op = { "<>" | "<=" | ">=" | "<" | ">" | "=" | starts_with_op | contains_op }
+comp_op = { "<>" | "<=" | ">=" | "<" | ">" | "=" | starts_with_op | ends_with_op | contains_op }
 starts_with_op = { ^"STARTS" ~ ^"WITH" }
+ends_with_op = { ^"ENDS" ~ ^"WITH" }
 contains_op = { ^"CONTAINS" }
 
-expr = { case_expr | function_call | property_access | literal | star | variable }
+expr = { case_expr | function_call | property_access | literal | list_literal | star | variable }
+
+list_literal = { "[" ~ (expr ~ ("," ~ expr)*)? ~ "]" }
 
 property_access = { ident ~ "." ~ ident }
 variable = { ident }
@@ -161,8 +184,8 @@ ident = @{ !keyword ~ (ASCII_ALPHA | "_") ~ (ASCII_ALPHANUMERIC | "_")* }
 keyword = {
     (^"MATCH" | ^"WHERE" | ^"RETURN" | ^"CREATE" | ^"DELETE" | ^"DETACH" | ^"SET" |
      ^"MERGE" | ^"ORDER" | ^"BY" | ^"LIMIT" | ^"AND" | ^"OR" | ^"NOT" |
-     ^"AS" | ^"IS" | ^"ON" | ^"ASC" | ^"DESC" | ^"STARTS" | ^"WITH" | ^"CONTAINS" |
-     ^"OPTIONAL" | ^"TRUE" | ^"FALSE" | ^"NULL" |
+     ^"AS" | ^"IS" | ^"ON" | ^"ASC" | ^"DESC" | ^"STARTS" | ^"ENDS" | ^"WITH" | ^"CONTAINS" |
+     ^"OPTIONAL" | ^"UNWIND" | ^"TRUE" | ^"FALSE" | ^"NULL" |
      ^"CASE" | ^"WHEN" | ^"THEN" | ^"ELSE" | ^"END" |
      ^"count" | ^"sum" | ^"avg" | ^"min" | ^"max" | ^"collect")
     ~ !(ASCII_ALPHANUMERIC | "_")

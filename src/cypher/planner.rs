@@ -14,6 +14,7 @@ pub fn plan(conn: &Connection, stmt: &Statement) -> crate::types::Result<Logical
         Statement::Delete(d) => plan_delete(conn, d),
         Statement::Set(s) => plan_set(conn, s),
         Statement::Merge(m) => plan_merge(m),
+        Statement::Unwind(u) => plan_unwind(conn, u),
     }
 }
 
@@ -39,9 +40,18 @@ fn plan_match(conn: &Connection, stmt: &MatchStatement) -> crate::types::Result<
         };
     }
 
-    // Apply WITH clauses (intermediate projection/aggregation/filtering).
-    for with in &stmt.with_clauses {
-        op = plan_with(op, with)?;
+    // Apply intermediate clauses (WITH/UNWIND).
+    for clause in &stmt.intermediate_clauses {
+        match clause {
+            IntermediateClause::With(with) => op = plan_with(op, with)?,
+            IntermediateClause::Unwind(unwind) => {
+                op = LogicalOp::Unwind {
+                    input: Box::new(op),
+                    expr: unwind.expr.clone(),
+                    alias: unwind.alias.clone(),
+                };
+            }
+        }
     }
 
     // Check if RETURN contains aggregates.
@@ -150,6 +160,74 @@ fn plan_set(conn: &Connection, stmt: &SetStatement) -> crate::types::Result<Logi
         input: Box::new(op),
         assignments: stmt.assignments.clone(),
     })
+}
+
+fn plan_unwind(_conn: &Connection, stmt: &UnwindStatement) -> crate::types::Result<LogicalOp> {
+    let mut op = LogicalOp::Unwind {
+        input: Box::new(LogicalOp::EmptyRow),
+        expr: stmt.expr.clone(),
+        alias: stmt.alias.clone(),
+    };
+
+    match &stmt.body {
+        UnwindBody::Return {
+            where_clause,
+            return_clause,
+            order_by,
+            limit,
+        } => {
+            if let Some(ref predicate) = where_clause {
+                op = LogicalOp::Filter {
+                    input: Box::new(op),
+                    predicate: predicate.clone(),
+                };
+            }
+
+            let has_aggregates = return_clause.items.iter().any(|item| {
+                matches!(item.expr, Expr::FunctionCall { .. })
+            });
+
+            if has_aggregates {
+                let (group_keys, aggregates) = split_aggregates(&return_clause.items)?;
+                op = LogicalOp::Aggregate {
+                    input: Box::new(op),
+                    group_keys,
+                    aggregates,
+                };
+            }
+
+            op = LogicalOp::Project {
+                input: Box::new(op),
+                items: return_clause.items.clone(),
+            };
+
+            if !order_by.is_empty() {
+                op = LogicalOp::Sort {
+                    input: Box::new(op),
+                    items: order_by.clone(),
+                };
+            }
+
+            if let Some(count) = limit {
+                op = LogicalOp::Limit {
+                    input: Box::new(op),
+                    count: *count,
+                };
+            }
+        }
+        UnwindBody::Create { patterns } => {
+            let mut create_ops = Vec::new();
+            for pattern in patterns {
+                create_ops.extend(plan_create_pattern(pattern)?);
+            }
+            op = LogicalOp::MatchCreate {
+                input: Box::new(op),
+                create_ops,
+            };
+        }
+    }
+
+    Ok(op)
 }
 
 fn plan_merge(stmt: &MergeStatement) -> crate::types::Result<LogicalOp> {

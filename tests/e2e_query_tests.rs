@@ -270,3 +270,88 @@ fn e2e_merge_idempotent() {
         tx.commit().unwrap();
     }
 }
+
+#[test]
+fn e2e_return_star() {
+    let mut db = setup_social_graph();
+    let tx = db.begin_read().unwrap();
+    let results = tx
+        .query("MATCH (n:Person) WHERE n.name = 'Alice' RETURN *")
+        .unwrap();
+    assert_eq!(results.len(), 1);
+    // Should include user properties via alias.prop keys.
+    assert_eq!(
+        results[0].get("n.name"),
+        Some(&Value::String("Alice".into()))
+    );
+    assert_eq!(results[0].get("n.age"), Some(&Value::I64(30)));
+    // Internal fields must NOT appear.
+    assert!(results[0].get("n.__id").is_none());
+    assert!(results[0].get("n.__label").is_none());
+    // Bare alias (raw node ID) must NOT appear.
+    assert!(results[0].get("n").is_none());
+    tx.commit().unwrap();
+}
+
+#[test]
+fn e2e_return_bare_variable() {
+    let mut db = setup_social_graph();
+    let tx = db.begin_read().unwrap();
+    let results = tx
+        .query("MATCH (n:Person) WHERE n.name = 'Bob' RETURN n")
+        .unwrap();
+    assert_eq!(results.len(), 1);
+    // Bare variable should expand to n.prop fields.
+    assert_eq!(
+        results[0].get("n.name"),
+        Some(&Value::String("Bob".into()))
+    );
+    assert_eq!(results[0].get("n.age"), Some(&Value::I64(25)));
+    // No internal fields.
+    assert!(results[0].get("n.__id").is_none());
+    assert!(results[0].get("n.__label").is_none());
+    tx.commit().unwrap();
+}
+
+#[test]
+fn e2e_no_internal_fields_in_property_return() {
+    let mut db = setup_social_graph();
+    let tx = db.begin_read().unwrap();
+    let results = tx
+        .query("MATCH (n:Person) WHERE n.name = 'Alice' RETURN n.name, n.age")
+        .unwrap();
+    assert_eq!(results.len(), 1);
+    // Only requested fields should be present.
+    assert_eq!(
+        results[0].get("n.name"),
+        Some(&Value::String("Alice".into()))
+    );
+    assert_eq!(results[0].get("n.age"), Some(&Value::I64(30)));
+    assert!(results[0].get("n.__id").is_none());
+    assert!(results[0].get("n.__label").is_none());
+    assert!(results[0].get("n").is_none());
+    tx.commit().unwrap();
+}
+
+#[test]
+fn e2e_return_star_with_relationship() {
+    let mut db = setup_social_graph();
+    let tx = db.begin_read().unwrap();
+    let results = tx
+        .query("MATCH (a:Person {name: 'Alice'})-[:KNOWS]->(b:Person) RETURN *")
+        .unwrap();
+    assert_eq!(results.len(), 1); // Alice->Bob
+    // Both aliases should have their properties expanded.
+    assert_eq!(
+        results[0].get("a.name"),
+        Some(&Value::String("Alice".into()))
+    );
+    assert_eq!(
+        results[0].get("b.name"),
+        Some(&Value::String("Bob".into()))
+    );
+    // No internal fields.
+    assert!(results[0].get("a.__id").is_none());
+    assert!(results[0].get("b.__label").is_none());
+    tx.commit().unwrap();
+}

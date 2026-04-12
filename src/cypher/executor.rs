@@ -179,22 +179,70 @@ fn exec_project(
     for rec in &records {
         let mut projected = Record::new();
         for item in items {
-            let col_name = item
-                .alias
-                .clone()
-                .unwrap_or_else(|| expr_to_column_name(&item.expr));
-            // Check if the aggregate result is already in the record (from Aggregate operator).
-            let val = if let Some(existing) = rec.get(&col_name) {
-                existing.clone()
-            } else {
-                eval_expr(&item.expr, rec)?
-            };
-            projected.set(col_name, val);
+            match &item.expr {
+                Expr::Star => {
+                    // RETURN * — copy all user-visible fields (skip internal __ and bare aliases).
+                    for (key, val) in &rec.fields {
+                        if is_user_visible_field(key) {
+                            projected.set(key.clone(), val.clone());
+                        }
+                    }
+                }
+                Expr::Variable(var) => {
+                    // RETURN n — expand to all n.prop fields (skip __ props).
+                    let prefix = format!("{var}.");
+                    let mut found_props = false;
+                    for (key, val) in &rec.fields {
+                        if let Some(prop) = key.strip_prefix(&prefix) {
+                            if !prop.starts_with("__") {
+                                if let Some(alias) = &item.alias {
+                                    projected.set(format!("{alias}.{prop}"), val.clone());
+                                } else {
+                                    projected.set(key.clone(), val.clone());
+                                }
+                                found_props = true;
+                            }
+                        }
+                    }
+                    if !found_props {
+                        // Fall back to raw value (e.g., aggregate result already in record).
+                        let col_name = item.alias.clone().unwrap_or_else(|| var.clone());
+                        let val = if let Some(existing) = rec.get(&col_name) {
+                            existing.clone()
+                        } else {
+                            eval_expr(&item.expr, rec)?
+                        };
+                        projected.set(col_name, val);
+                    }
+                }
+                _ => {
+                    let col_name = item
+                        .alias
+                        .clone()
+                        .unwrap_or_else(|| expr_to_column_name(&item.expr));
+                    // Check if the aggregate result is already in the record (from Aggregate operator).
+                    let val = if let Some(existing) = rec.get(&col_name) {
+                        existing.clone()
+                    } else {
+                        eval_expr(&item.expr, rec)?
+                    };
+                    projected.set(col_name, val);
+                }
+            }
         }
         results.push(projected);
     }
 
     Ok(results)
+}
+
+/// Returns true if a record field should be visible to the user.
+/// Filters out bare alias keys (no dot — raw node IDs) and internal `__` properties.
+fn is_user_visible_field(key: &str) -> bool {
+    match key.split_once('.') {
+        Some((_, prop)) => !prop.starts_with("__"),
+        None => false, // bare alias like "n" is the raw node ID — hide it
+    }
 }
 
 fn exec_aggregate(

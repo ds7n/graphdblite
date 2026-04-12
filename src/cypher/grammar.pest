@@ -1,0 +1,152 @@
+// graphdblite Cypher subset grammar (PEG)
+
+WHITESPACE = _{ " " | "\t" | "\r" | "\n" }
+COMMENT = _{ "--" ~ (!"\n" ~ ANY)* }
+
+// === Top-level ===
+
+statement = { SOI ~ (match_stmt | create_stmt | delete_stmt | set_stmt | merge_stmt) ~ ";"? ~ EOI }
+
+// === MATCH statement ===
+
+match_stmt = {
+    ^"MATCH" ~ pattern_list ~
+    where_clause? ~
+    return_clause ~
+    order_by_clause? ~
+    limit_clause?
+}
+
+// === CREATE statement ===
+
+create_stmt = {
+    ^"CREATE" ~ create_pattern_list
+}
+
+create_pattern_list = { create_pattern ~ ("," ~ create_pattern)* }
+
+create_pattern = { node_pattern ~ (rel_pattern ~ node_pattern)* }
+
+// === DELETE statement ===
+
+delete_stmt = {
+    ^"MATCH" ~ pattern_list ~
+    where_clause? ~
+    ^"DELETE" ~ ident_list
+}
+
+// === SET statement ===
+
+set_stmt = {
+    ^"MATCH" ~ pattern_list ~
+    where_clause? ~
+    ^"SET" ~ assignment_list
+}
+
+assignment_list = { assignment ~ ("," ~ assignment)* }
+assignment = { property_access ~ "=" ~ expr }
+
+// === MERGE statement ===
+
+merge_stmt = {
+    ^"MERGE" ~ pattern ~
+    on_create_clause? ~
+    on_match_clause?
+}
+
+on_create_clause = { ^"ON" ~ ^"CREATE" ~ ^"SET" ~ assignment_list }
+on_match_clause = { ^"ON" ~ ^"MATCH" ~ ^"SET" ~ assignment_list }
+
+// === Patterns ===
+
+pattern_list = { pattern ~ ("," ~ pattern)* }
+pattern = { node_pattern ~ (rel_pattern ~ node_pattern)* }
+
+node_pattern = { "(" ~ ident? ~ label_spec? ~ property_map? ~ ")" }
+label_spec = { ":" ~ ident }
+
+rel_pattern = { rel_right | rel_left | rel_undirected }
+rel_right = { "-[" ~ rel_detail ~ "]->" }
+rel_left = { "<-[" ~ rel_detail ~ "]-" }
+rel_undirected = { "-[" ~ rel_detail ~ "]-" }
+
+rel_detail = { ident? ~ rel_type_spec? ~ var_length? }
+rel_type_spec = { ":" ~ ident }
+
+var_length = { "*" ~ int_range? }
+int_range = { integer ~ ".." ~ integer }
+
+// === Clauses ===
+
+where_clause = { ^"WHERE" ~ bool_expr }
+
+return_clause = { ^"RETURN" ~ return_items }
+return_items = { return_item ~ ("," ~ return_item)* }
+return_item = { expr ~ alias? }
+alias = { ^"AS" ~ ident }
+
+order_by_clause = { ^"ORDER" ~ ^"BY" ~ sort_items }
+sort_items = { sort_item ~ ("," ~ sort_item)* }
+sort_item = { expr ~ sort_direction? }
+sort_direction = { ^"ASC" | ^"DESC" }
+
+limit_clause = { ^"LIMIT" ~ integer }
+
+// === Expressions ===
+
+bool_expr = { bool_term ~ (or_op ~ bool_term)* }
+bool_term = { bool_factor ~ (and_op ~ bool_factor)* }
+bool_factor = { not_op? ~ bool_primary }
+bool_primary = { comparison | "(" ~ bool_expr ~ ")" }
+
+comparison = { expr ~ comp_op ~ expr }
+
+or_op = { ^"OR" }
+and_op = { ^"AND" }
+not_op = { ^"NOT" }
+
+comp_op = { "<>" | "<=" | ">=" | "<" | ">" | "=" | starts_with_op | contains_op }
+starts_with_op = { ^"STARTS" ~ ^"WITH" }
+contains_op = { ^"CONTAINS" }
+
+expr = { function_call | property_access | literal | star | variable }
+
+property_access = { ident ~ "." ~ ident }
+variable = { ident }
+star = { "*" }
+
+function_call = { function_name ~ "(" ~ function_args ~ ")" }
+function_name = @{ ^"count" | ^"sum" | ^"avg" | ^"min" | ^"max" | ^"collect" }
+function_args = { star | expr_list | "" }
+expr_list = { expr ~ ("," ~ expr)* }
+
+// === Property maps ===
+
+property_map = { "{" ~ property_pair ~ ("," ~ property_pair)* ~ "}" }
+property_pair = { ident ~ ":" ~ expr }
+
+// === Identifiers and literals ===
+
+ident_list = { ident ~ ("," ~ ident)* }
+
+ident = @{ !keyword ~ (ASCII_ALPHA | "_") ~ (ASCII_ALPHANUMERIC | "_")* }
+
+keyword = {
+    (^"MATCH" | ^"WHERE" | ^"RETURN" | ^"CREATE" | ^"DELETE" | ^"SET" |
+     ^"MERGE" | ^"ORDER" | ^"BY" | ^"LIMIT" | ^"AND" | ^"OR" | ^"NOT" |
+     ^"AS" | ^"ON" | ^"ASC" | ^"DESC" | ^"STARTS" | ^"WITH" | ^"CONTAINS" |
+     ^"TRUE" | ^"FALSE" | ^"NULL" |
+     ^"count" | ^"sum" | ^"avg" | ^"min" | ^"max" | ^"collect")
+    ~ !(ASCII_ALPHANUMERIC | "_")
+}
+
+literal = { float_literal | integer_literal | string_literal | bool_literal | null_literal }
+
+integer_literal = @{ "-"? ~ ASCII_DIGIT+ }
+float_literal = @{ "-"? ~ ASCII_DIGIT+ ~ "." ~ ASCII_DIGIT+ }
+string_literal = ${ "'" ~ string_inner ~ "'" }
+string_inner = @{ (!"'" ~ ANY)* }
+bool_literal = { ^"TRUE" | ^"FALSE" }
+null_literal = { ^"NULL" }
+
+integer = @{ ASCII_DIGIT+ }

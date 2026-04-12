@@ -76,6 +76,12 @@ pub fn execute(conn: &Connection, plan: &LogicalOp) -> Result<Vec<Record>> {
             on_create,
             on_match,
         } => exec_merge(conn, pattern, on_create, on_match),
+
+        LogicalOp::LeftOuterJoin {
+            input,
+            right,
+            optional_aliases,
+        } => exec_left_outer_join(conn, input, right, optional_aliases),
     }
 }
 
@@ -415,9 +421,14 @@ fn compute_aggregate(agg: &AggregateExpr, records: &[Record]) -> Result<Value> {
             Ok(max.unwrap_or(Value::Null))
         }
         AggregateFunction::Collect => {
-            // Collect is not directly representable as a single Value.
-            // For now, return the count. Full list support needs a Value::List variant.
-            Ok(Value::I64(records.len() as i64))
+            let mut items = Vec::new();
+            for rec in records {
+                let val = eval_expr(&agg.input, rec)?;
+                if !matches!(val, Value::Null) {
+                    items.push(val);
+                }
+            }
+            Ok(Value::List(items))
         }
     }
 }
@@ -716,6 +727,68 @@ fn exec_merge(
     }
 }
 
+fn exec_left_outer_join(
+    conn: &Connection,
+    input: &LogicalOp,
+    right: &LogicalOp,
+    optional_aliases: &[String],
+) -> Result<Vec<Record>> {
+    let left_records = execute(conn, input)?;
+    let right_records = execute(conn, right)?;
+
+    // Find shared aliases: keys present in both left and right records (bare alias keys, no dots).
+    // These are the join keys.
+    let shared_aliases: Vec<String> = if let (Some(l), Some(r)) =
+        (left_records.first(), right_records.first())
+    {
+        l.fields
+            .keys()
+            .filter(|k| !k.contains('.') && r.fields.contains_key(*k))
+            .cloned()
+            .collect()
+    } else {
+        vec![]
+    };
+
+    let mut results = Vec::new();
+
+    for l_rec in &left_records {
+        // Find right records that match on all shared aliases.
+        let matching: Vec<&Record> = right_records
+            .iter()
+            .filter(|r| {
+                shared_aliases.iter().all(|alias| {
+                    l_rec.get(alias) == r.get(alias)
+                })
+            })
+            .collect();
+
+        if matching.is_empty() {
+            // No match — emit left record with NULLs for optional aliases and their properties.
+            let mut rec = l_rec.clone();
+            for alias in optional_aliases {
+                rec.set(alias.clone(), Value::Null);
+            }
+            results.push(rec);
+        } else {
+            // Matches found — merge each right record into the left record.
+            for r_rec in matching {
+                let mut combined = l_rec.clone();
+                for (key, val) in &r_rec.fields {
+                    // Only copy keys from the right that aren't already in the left
+                    // (avoid overwriting shared alias bindings).
+                    if !combined.fields.contains_key(key) || shared_aliases.iter().all(|a| a != key) {
+                        combined.set(key.clone(), val.clone());
+                    }
+                }
+                results.push(combined);
+            }
+        }
+    }
+
+    Ok(results)
+}
+
 fn literal_to_value(lit: &LiteralValue) -> Value {
     match lit {
         LiteralValue::Null => Value::Null,
@@ -733,6 +806,7 @@ fn value_less_than(a: &Value, b: &Value) -> bool {
         (Value::I64(a), Value::F64(b)) => (*a as f64) < *b,
         (Value::F64(a), Value::I64(b)) => *a < (*b as f64),
         (Value::String(a), Value::String(b)) => a < b,
+        (Value::List(_), Value::List(_)) => false, // lists are not orderable
         _ => false,
     }
 }

@@ -466,6 +466,83 @@ fn e2e_is_null() {
 }
 
 #[test]
+fn e2e_collect_aggregate() {
+    let mut db = setup_social_graph();
+    let tx = db.begin_read().unwrap();
+    let results = tx
+        .query("MATCH (n:Person) RETURN collect(n.name) AS names")
+        .unwrap();
+    assert_eq!(results.len(), 1);
+    match results[0].get("names") {
+        Some(Value::List(items)) => {
+            assert_eq!(items.len(), 3);
+            // All three names should be present (order not guaranteed).
+            let mut names: Vec<String> = items
+                .iter()
+                .map(|v| match v {
+                    Value::String(s) => s.clone(),
+                    _ => panic!("expected string"),
+                })
+                .collect();
+            names.sort();
+            assert_eq!(names, vec!["Alice", "Bob", "Charlie"]);
+        }
+        other => panic!("expected Value::List, got {other:?}"),
+    }
+    tx.commit().unwrap();
+}
+
+#[test]
+fn e2e_grouped_count_aggregate() {
+    let mut db = Database::open_memory().unwrap();
+    {
+        let tx = db.begin_write().unwrap();
+        tx.query("CREATE (a:Person {name: 'Alice', dept: 'eng'})").unwrap();
+        tx.query("CREATE (b:Person {name: 'Bob', dept: 'eng'})").unwrap();
+        tx.query("CREATE (c:Person {name: 'Charlie', dept: 'sales'})").unwrap();
+        tx.commit().unwrap();
+    }
+    let tx = db.begin_read().unwrap();
+    let results = tx
+        .query("MATCH (n:Person) RETURN n.dept, count(*) AS cnt ORDER BY n.dept")
+        .unwrap();
+    assert_eq!(results.len(), 2);
+    assert_eq!(results[0].get("n.dept"), Some(&Value::String("eng".into())));
+    assert_eq!(results[0].get("cnt"), Some(&Value::I64(2)));
+    assert_eq!(results[1].get("n.dept"), Some(&Value::String("sales".into())));
+    assert_eq!(results[1].get("cnt"), Some(&Value::I64(1)));
+    tx.commit().unwrap();
+}
+
+#[test]
+fn e2e_grouped_collect_aggregate() {
+    let mut db = setup_social_graph();
+    // Alice->Bob via KNOWS, Bob->Charlie via KNOWS
+    let tx = db.begin_read().unwrap();
+    let results = tx
+        .query("MATCH (a:Person)-[:KNOWS]->(b:Person) RETURN a.name, collect(b.name) AS friends ORDER BY a.name")
+        .unwrap();
+    assert_eq!(results.len(), 2);
+    // Alice knows Bob.
+    assert_eq!(results[0].get("a.name"), Some(&Value::String("Alice".into())));
+    match results[0].get("friends") {
+        Some(Value::List(items)) => {
+            assert_eq!(items, &vec![Value::String("Bob".into())]);
+        }
+        other => panic!("expected Value::List, got {other:?}"),
+    }
+    // Bob knows Charlie.
+    assert_eq!(results[1].get("a.name"), Some(&Value::String("Bob".into())));
+    match results[1].get("friends") {
+        Some(Value::List(items)) => {
+            assert_eq!(items, &vec![Value::String("Charlie".into())]);
+        }
+        other => panic!("expected Value::List, got {other:?}"),
+    }
+    tx.commit().unwrap();
+}
+
+#[test]
 fn e2e_is_not_null() {
     let mut db = setup_social_graph();
     let tx = db.begin_read().unwrap();
@@ -478,5 +555,53 @@ fn e2e_is_not_null() {
         results[0].get("n.name"),
         Some(&Value::String("Alice".into()))
     );
+    tx.commit().unwrap();
+}
+
+#[test]
+fn e2e_optional_match_with_results() {
+    let mut db = setup_social_graph();
+    // Alice WORKS_AT Acme. Query OPTIONAL MATCH for WORKS_AT.
+    let tx = db.begin_read().unwrap();
+    let results = tx
+        .query("MATCH (a:Person) OPTIONAL MATCH (a)-[:WORKS_AT]->(c:Company) RETURN a.name, c.name ORDER BY a.name")
+        .unwrap();
+    // Alice has WORKS_AT → Acme; Bob and Charlie don't → null.
+    assert_eq!(results.len(), 3);
+    assert_eq!(results[0].get("a.name"), Some(&Value::String("Alice".into())));
+    assert_eq!(results[0].get("c.name"), Some(&Value::String("Acme".into())));
+    assert_eq!(results[1].get("a.name"), Some(&Value::String("Bob".into())));
+    assert_eq!(results[1].get("c.name"), Some(&Value::Null));
+    assert_eq!(results[2].get("a.name"), Some(&Value::String("Charlie".into())));
+    assert_eq!(results[2].get("c.name"), Some(&Value::Null));
+    tx.commit().unwrap();
+}
+
+#[test]
+fn e2e_optional_match_all_matched() {
+    let mut db = setup_social_graph();
+    // Alice->Bob via KNOWS.
+    let tx = db.begin_read().unwrap();
+    let results = tx
+        .query("MATCH (a:Person {name: 'Alice'}) OPTIONAL MATCH (a)-[:KNOWS]->(b:Person) RETURN a.name, b.name")
+        .unwrap();
+    // Alice knows Bob, so should get 1 row with both filled.
+    assert_eq!(results.len(), 1);
+    assert_eq!(results[0].get("a.name"), Some(&Value::String("Alice".into())));
+    assert_eq!(results[0].get("b.name"), Some(&Value::String("Bob".into())));
+    tx.commit().unwrap();
+}
+
+#[test]
+fn e2e_optional_match_no_matches() {
+    let mut db = setup_social_graph();
+    // Charlie has no outgoing WORKS_AT edges.
+    let tx = db.begin_read().unwrap();
+    let results = tx
+        .query("MATCH (a:Person {name: 'Charlie'}) OPTIONAL MATCH (a)-[:WORKS_AT]->(c:Company) RETURN a.name, c.name")
+        .unwrap();
+    assert_eq!(results.len(), 1);
+    assert_eq!(results[0].get("a.name"), Some(&Value::String("Charlie".into())));
+    assert_eq!(results[0].get("c.name"), Some(&Value::Null));
     tx.commit().unwrap();
 }

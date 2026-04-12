@@ -93,6 +93,7 @@ fn values_equal(a: &Value, b: &Value) -> bool {
         (Value::I64(a), Value::F64(b)) => (*a as f64) == *b,
         (Value::F64(a), Value::I64(b)) => *a == (*b as f64),
         (Value::String(a), Value::String(b)) => a == b,
+        (Value::List(a), Value::List(b)) => a == b,
         _ => false,
     }
 }

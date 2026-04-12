@@ -105,6 +105,14 @@ pub enum LogicalOp {
         on_match: Vec<Assignment>,
     },
 
+    /// Left outer join: for each input record, attempt right side; emit NULLs if no match.
+    LeftOuterJoin {
+        input: Box<LogicalOp>,
+        right: Box<LogicalOp>,
+        /// Aliases from the optional pattern that should be NULL-filled on no match.
+        optional_aliases: Vec<String>,
+    },
+
     /// Produce a single empty record (used as starting input for scans).
     EmptyRow,
 }

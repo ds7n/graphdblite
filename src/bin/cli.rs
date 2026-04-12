@@ -248,5 +248,6 @@ fn format_value(val: Option<&Value>) -> String {
         Some(Value::I64(n)) => n.to_string(),
         Some(Value::F64(n)) => format!("{n:.6}"),
         Some(Value::String(s)) => s.clone(),
+        Some(Value::List(items)) => format!("{}", Value::List(items.clone())),
     }
 }

@@ -49,6 +49,7 @@ pub fn parse(input: &str) -> crate::types::Result<Statement> {
 
 fn parse_match(pair: pest::iterators::Pair<Rule>) -> crate::types::Result<MatchStatement> {
     let mut patterns = Vec::new();
+    let mut optional_patterns = Vec::new();
     let mut where_clause = None;
     let mut return_clause = None;
     let mut order_by = Vec::new();
@@ -57,6 +58,14 @@ fn parse_match(pair: pest::iterators::Pair<Rule>) -> crate::types::Result<MatchS
     for inner in pair.into_inner() {
         match inner.as_rule() {
             Rule::pattern_list => patterns = parse_pattern_list(inner)?,
+            Rule::optional_match_clause => {
+                // Each OPTIONAL MATCH clause has its own pattern_list.
+                for child in inner.into_inner() {
+                    if child.as_rule() == Rule::pattern_list {
+                        optional_patterns.push(parse_pattern_list(child)?);
+                    }
+                }
+            }
             Rule::where_clause => where_clause = Some(parse_where(inner)?),
             Rule::return_clause => return_clause = Some(parse_return(inner)?),
             Rule::order_by_clause => order_by = parse_order_by(inner)?,
@@ -67,6 +76,7 @@ fn parse_match(pair: pest::iterators::Pair<Rule>) -> crate::types::Result<MatchS
 
     Ok(MatchStatement {
         patterns,
+        optional_patterns,
         where_clause,
         return_clause: return_clause
             .ok_or_else(|| GraphError::Serialization("missing RETURN clause".to_string()))?,

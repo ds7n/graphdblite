@@ -11,11 +11,14 @@ statement = { SOI ~ (match_create_stmt | match_stmt | create_stmt | delete_stmt 
 
 match_stmt = {
     ^"MATCH" ~ pattern_list ~
+    optional_match_clause* ~
     where_clause? ~
     return_clause ~
     order_by_clause? ~
     limit_clause?
 }
+
+optional_match_clause = { ^"OPTIONAL" ~ ^"MATCH" ~ pattern_list }
 
 // === CREATE statement ===
 
@@ -145,7 +148,7 @@ keyword = {
     (^"MATCH" | ^"WHERE" | ^"RETURN" | ^"CREATE" | ^"DELETE" | ^"SET" |
      ^"MERGE" | ^"ORDER" | ^"BY" | ^"LIMIT" | ^"AND" | ^"OR" | ^"NOT" |
      ^"AS" | ^"IS" | ^"ON" | ^"ASC" | ^"DESC" | ^"STARTS" | ^"WITH" | ^"CONTAINS" |
-     ^"TRUE" | ^"FALSE" | ^"NULL" |
+     ^"OPTIONAL" | ^"TRUE" | ^"FALSE" | ^"NULL" |
      ^"count" | ^"sum" | ^"avg" | ^"min" | ^"max" | ^"collect")
     ~ !(ASCII_ALPHANUMERIC | "_")
 }

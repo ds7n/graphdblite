@@ -178,9 +178,13 @@ fn print_records(records: &[graphdblite::Record]) {
         return;
     }
 
-    // Collect column names from the first record.
+    // Collect column names from the first record, hiding internal fields.
     let columns: Vec<&String> = {
-        let mut cols: Vec<&String> = records[0].fields.keys().collect();
+        let mut cols: Vec<&String> = records[0]
+            .fields
+            .keys()
+            .filter(|k| !k.contains(".__"))
+            .collect();
         cols.sort();
         cols
     };

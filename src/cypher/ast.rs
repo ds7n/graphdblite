@@ -5,6 +5,7 @@ use std::collections::HashMap;
 pub enum Statement {
     Match(MatchStatement),
     Create(CreateStatement),
+    MatchCreate(MatchCreateStatement),
     Delete(DeleteStatement),
     Set(SetStatement),
     Merge(MergeStatement),
@@ -24,6 +25,14 @@ pub struct MatchStatement {
 #[derive(Debug, Clone, PartialEq)]
 pub struct CreateStatement {
     pub patterns: Vec<Pattern>,
+}
+
+/// MATCH ... CREATE (a)-[:TYPE]->(b)
+#[derive(Debug, Clone, PartialEq)]
+pub struct MatchCreateStatement {
+    pub patterns: Vec<Pattern>,
+    pub where_clause: Option<Expr>,
+    pub create_patterns: Vec<Pattern>,
 }
 
 /// MATCH ... DELETE n, m
@@ -127,6 +136,10 @@ pub enum Expr {
     },
     /// Unary NOT.
     Not(Box<Expr>),
+    /// IS NULL check.
+    IsNull(Box<Expr>),
+    /// IS NOT NULL check.
+    IsNotNull(Box<Expr>),
     /// Function call: name(args)
     FunctionCall {
         name: String,

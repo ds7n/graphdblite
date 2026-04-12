@@ -355,3 +355,128 @@ fn e2e_return_star_with_relationship() {
     assert!(results[0].get("b.__label").is_none());
     tx.commit().unwrap();
 }
+
+#[test]
+fn e2e_match_create_edge_between_existing_nodes() {
+    let mut db = Database::open_memory().unwrap();
+    {
+        let tx = db.begin_write().unwrap();
+        tx.query("CREATE (a:Person {name: 'Alice'})").unwrap();
+        tx.query("CREATE (b:Person {name: 'Bob'})").unwrap();
+        tx.commit().unwrap();
+    }
+    {
+        let tx = db.begin_write().unwrap();
+        tx.query(
+            "MATCH (a:Person {name: 'Alice'}), (b:Person {name: 'Bob'}) CREATE (a)-[:KNOWS]->(b)",
+        )
+        .unwrap();
+        tx.commit().unwrap();
+    }
+    {
+        let tx = db.begin_read().unwrap();
+        let results = tx
+            .query("MATCH (a:Person)-[:KNOWS]->(b:Person) RETURN a.name, b.name")
+            .unwrap();
+        assert_eq!(results.len(), 1);
+        assert_eq!(
+            results[0].get("a.name"),
+            Some(&Value::String("Alice".into()))
+        );
+        assert_eq!(
+            results[0].get("b.name"),
+            Some(&Value::String("Bob".into()))
+        );
+        tx.commit().unwrap();
+    }
+}
+
+#[test]
+fn e2e_match_create_bidirectional_edges() {
+    let mut db = setup_social_graph();
+    // setup_social_graph creates Alice->Bob and Bob->Charlie via KNOWS.
+    // Make the reverse edges too.
+    {
+        let tx = db.begin_write().unwrap();
+        tx.query(
+            "MATCH (a:Person)-[:KNOWS]->(b:Person) CREATE (b)-[:KNOWS]->(a)",
+        )
+        .unwrap();
+        tx.commit().unwrap();
+    }
+    {
+        let tx = db.begin_read().unwrap();
+        let results = tx
+            .query("MATCH (a:Person)-[:KNOWS]->(b:Person) RETURN a.name, b.name")
+            .unwrap();
+        // Original: Alice->Bob, Bob->Charlie. New: Bob->Alice, Charlie->Bob.
+        assert_eq!(results.len(), 4);
+        tx.commit().unwrap();
+    }
+}
+
+#[test]
+fn e2e_match_create_with_new_node() {
+    let mut db = Database::open_memory().unwrap();
+    {
+        let tx = db.begin_write().unwrap();
+        tx.query("CREATE (a:Person {name: 'Alice'})").unwrap();
+        tx.commit().unwrap();
+    }
+    {
+        let tx = db.begin_write().unwrap();
+        tx.query(
+            "MATCH (a:Person {name: 'Alice'}) CREATE (a)-[:WORKS_AT]->(c:Company {name: 'Acme'})",
+        )
+        .unwrap();
+        tx.commit().unwrap();
+    }
+    {
+        let tx = db.begin_read().unwrap();
+        let results = tx
+            .query("MATCH (p:Person)-[:WORKS_AT]->(c:Company) RETURN p.name, c.name")
+            .unwrap();
+        assert_eq!(results.len(), 1);
+        assert_eq!(
+            results[0].get("p.name"),
+            Some(&Value::String("Alice".into()))
+        );
+        assert_eq!(
+            results[0].get("c.name"),
+            Some(&Value::String("Acme".into()))
+        );
+        tx.commit().unwrap();
+    }
+}
+
+#[test]
+fn e2e_is_null() {
+    let mut db = setup_social_graph();
+    // Company node has no 'age' property → age IS NULL.
+    let tx = db.begin_read().unwrap();
+    let results = tx
+        .query("MATCH (n) WHERE n.age IS NULL RETURN n.name")
+        .unwrap();
+    assert_eq!(results.len(), 1);
+    assert_eq!(
+        results[0].get("n.name"),
+        Some(&Value::String("Acme".into()))
+    );
+    tx.commit().unwrap();
+}
+
+#[test]
+fn e2e_is_not_null() {
+    let mut db = setup_social_graph();
+    let tx = db.begin_read().unwrap();
+    let results = tx
+        .query("MATCH (n) WHERE n.age IS NOT NULL RETURN n.name ORDER BY n.name")
+        .unwrap();
+    // Alice, Bob, Charlie have age; Acme does not.
+    assert_eq!(results.len(), 3);
+    assert_eq!(
+        results[0].get("n.name"),
+        Some(&Value::String("Alice".into()))
+    );
+    tx.commit().unwrap();
+}

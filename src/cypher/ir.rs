@@ -23,6 +23,12 @@ pub enum LogicalOp {
         max_hops: u32,
     },
 
+    /// Cross-product of two pipelines (for multi-pattern MATCH).
+    CrossProduct {
+        left: Box<LogicalOp>,
+        right: Box<LogicalOp>,
+    },
+
     /// Filter records by a predicate.
     Filter {
         input: Box<LogicalOp>,
@@ -72,6 +78,12 @@ pub enum LogicalOp {
     /// Sequence of create operations (for multi-pattern CREATE).
     CreateSequence {
         ops: Vec<LogicalOp>,
+    },
+
+    /// MATCH ... CREATE: run input pipeline, then create edges/nodes using bound variables.
+    MatchCreate {
+        input: Box<LogicalOp>,
+        create_ops: Vec<LogicalOp>,
     },
 
     /// Delete nodes/edges bound to variables.

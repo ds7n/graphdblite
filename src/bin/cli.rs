@@ -169,7 +169,10 @@ fn run_repl(db: &mut Database) {
 
 fn is_read_query(cypher: &str) -> bool {
     let upper = cypher.trim().to_uppercase();
-    upper.starts_with("MATCH") && !upper.contains("DELETE") && !upper.contains("SET ")
+    upper.starts_with("MATCH")
+        && !upper.contains("DELETE")
+        && !upper.contains("SET ")
+        && !upper.contains("CREATE")
 }
 
 fn print_records(records: &[graphdblite::Record]) {

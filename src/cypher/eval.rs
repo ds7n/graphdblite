@@ -28,6 +28,14 @@ pub fn eval_expr(expr: &Expr, record: &Record) -> crate::types::Result<Value> {
                 _ => Ok(Value::Null),
             }
         }
+        Expr::IsNull(inner) => {
+            let val = eval_expr(inner, record)?;
+            Ok(Value::Bool(matches!(val, Value::Null)))
+        }
+        Expr::IsNotNull(inner) => {
+            let val = eval_expr(inner, record)?;
+            Ok(Value::Bool(!matches!(val, Value::Null)))
+        }
         Expr::FunctionCall { .. } => {
             // Aggregate functions are handled by the Aggregate operator, not here.
             Ok(Value::Null)

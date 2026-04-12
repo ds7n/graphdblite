@@ -30,6 +30,8 @@ pub fn execute(conn: &Connection, plan: &LogicalOp) -> Result<Vec<Record>> {
             *direction, *min_hops, *max_hops,
         ),
 
+        LogicalOp::CrossProduct { left, right } => exec_cross_product(conn, left, right),
+
         LogicalOp::Filter { input, predicate } => exec_filter(conn, input, predicate),
 
         LogicalOp::Project { input, items } => exec_project(conn, input, items),
@@ -58,6 +60,10 @@ pub fn execute(conn: &Connection, plan: &LogicalOp) -> Result<Vec<Record>> {
         } => exec_create_edge(conn, src_alias, dst_alias, edge_type, properties),
 
         LogicalOp::CreateSequence { ops } => exec_create_sequence(conn, ops),
+
+        LogicalOp::MatchCreate { input, create_ops } => {
+            exec_match_create(conn, input, create_ops)
+        }
 
         LogicalOp::Delete { input, variables } => exec_delete(conn, input, variables),
 
@@ -150,6 +156,26 @@ fn exec_expand(
         }
     }
 
+    Ok(results)
+}
+
+fn exec_cross_product(
+    conn: &Connection,
+    left: &LogicalOp,
+    right: &LogicalOp,
+) -> Result<Vec<Record>> {
+    let left_records = execute(conn, left)?;
+    let right_records = execute(conn, right)?;
+    let mut results = Vec::new();
+    for l in &left_records {
+        for r in &right_records {
+            let mut combined = l.clone();
+            for (key, val) in &r.fields {
+                combined.set(key.clone(), val.clone());
+            }
+            results.push(combined);
+        }
+    }
     Ok(results)
 }
 
@@ -509,6 +535,78 @@ fn exec_create_sequence(conn: &Connection, ops: &[LogicalOp]) -> Result<Vec<Reco
     }
 
     Ok(vec![last_record])
+}
+
+fn exec_match_create(
+    conn: &Connection,
+    input: &LogicalOp,
+    create_ops: &[LogicalOp],
+) -> Result<Vec<Record>> {
+    let records = execute(conn, input)?;
+
+    for rec in &records {
+        // Seed bindings from MATCH-bound variables (var → NodeId).
+        let mut bindings: HashMap<String, NodeId> = HashMap::new();
+        for (key, val) in &rec.fields {
+            if !key.contains('.') {
+                if let Value::I64(id) = val {
+                    bindings.insert(key.clone(), NodeId(*id as u64));
+                }
+            }
+        }
+
+        // Execute each CREATE op using the bindings.
+        for op in create_ops {
+            match op {
+                LogicalOp::CreateNode {
+                    label,
+                    alias,
+                    properties,
+                } => {
+                    // Skip if this alias is already bound from the MATCH pipeline.
+                    if let Some(a) = alias {
+                        if bindings.contains_key(a) {
+                            continue;
+                        }
+                    }
+                    let mut props = Properties::new();
+                    let dummy_rec = Record::new();
+                    for (key, expr) in properties {
+                        let val = eval_expr(expr, &dummy_rec)?;
+                        props.insert(key.clone(), val);
+                    }
+                    let id =
+                        node::create_node(conn, label.as_deref().unwrap_or(""), props)?;
+                    if let Some(alias) = alias {
+                        bindings.insert(alias.clone(), id);
+                    }
+                }
+                LogicalOp::CreateEdge {
+                    src_alias,
+                    dst_alias,
+                    edge_type,
+                    properties,
+                } => {
+                    let src = bindings.get(src_alias).ok_or_else(|| {
+                        GraphError::Transaction(format!("unbound variable: {src_alias}"))
+                    })?;
+                    let dst = bindings.get(dst_alias).ok_or_else(|| {
+                        GraphError::Transaction(format!("unbound variable: {dst_alias}"))
+                    })?;
+                    let mut props = Properties::new();
+                    let dummy_rec = Record::new();
+                    for (key, expr) in properties {
+                        let val = eval_expr(expr, &dummy_rec)?;
+                        props.insert(key.clone(), val);
+                    }
+                    edge::create_edge(conn, *src, *dst, edge_type, props)?;
+                }
+                _ => {}
+            }
+        }
+    }
+
+    Ok(vec![])
 }
 
 fn exec_delete(

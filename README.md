@@ -100,8 +100,6 @@ Cypher Parser (pest) ──► Logical IR ──► Executor (Volcano iterator m
 - **Encoding:** msgpack for node/edge properties, sorted varint arrays for adjacency lists
 - **Indexes:** secondary property indexes for O(log n) lookups, used automatically by the query planner
 
-See [DESIGN.md](DESIGN.md) for the full design document.
-
 ## Building
 
 ```bash

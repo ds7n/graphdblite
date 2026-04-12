@@ -13,10 +13,13 @@ match_stmt = {
     ^"MATCH" ~ pattern_list ~
     optional_match_clause* ~
     where_clause? ~
+    with_clause* ~
     return_clause ~
     order_by_clause? ~
     limit_clause?
 }
+
+with_clause = { ^"WITH" ~ return_items ~ where_clause? }
 
 optional_match_clause = { ^"OPTIONAL" ~ ^"MATCH" ~ pattern_list }
 

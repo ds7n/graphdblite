@@ -51,6 +51,7 @@ fn parse_match(pair: pest::iterators::Pair<Rule>) -> crate::types::Result<MatchS
     let mut patterns = Vec::new();
     let mut optional_patterns = Vec::new();
     let mut where_clause = None;
+    let mut with_clauses = Vec::new();
     let mut return_clause = None;
     let mut order_by = Vec::new();
     let mut limit = None;
@@ -67,6 +68,7 @@ fn parse_match(pair: pest::iterators::Pair<Rule>) -> crate::types::Result<MatchS
                 }
             }
             Rule::where_clause => where_clause = Some(parse_where(inner)?),
+            Rule::with_clause => with_clauses.push(parse_with(inner)?),
             Rule::return_clause => return_clause = Some(parse_return(inner)?),
             Rule::order_by_clause => order_by = parse_order_by(inner)?,
             Rule::limit_clause => limit = Some(parse_limit(inner)?),
@@ -78,6 +80,7 @@ fn parse_match(pair: pest::iterators::Pair<Rule>) -> crate::types::Result<MatchS
         patterns,
         optional_patterns,
         where_clause,
+        with_clauses,
         return_clause: return_clause
             .ok_or_else(|| GraphError::Serialization("missing RETURN clause".to_string()))?,
         order_by,
@@ -355,6 +358,50 @@ fn parse_where(pair: pest::iterators::Pair<Rule>) -> crate::types::Result<Expr> 
         .find(|p| p.as_rule() == Rule::bool_expr)
         .unwrap();
     parse_bool_expr(bool_expr)
+}
+
+fn parse_with(pair: pest::iterators::Pair<Rule>) -> crate::types::Result<WithClause> {
+    let mut items = Vec::new();
+    let mut where_clause = None;
+
+    for inner in pair.into_inner() {
+        match inner.as_rule() {
+            Rule::return_items => {
+                items = inner
+                    .into_inner()
+                    .filter(|p| p.as_rule() == Rule::return_item)
+                    .map(|p| {
+                        let mut expr = None;
+                        let mut alias = None;
+                        for child in p.into_inner() {
+                            match child.as_rule() {
+                                Rule::expr => expr = Some(parse_expr(child).unwrap()),
+                                Rule::alias => {
+                                    for a in child.into_inner() {
+                                        if a.as_rule() == Rule::ident {
+                                            alias = Some(a.as_str().to_string());
+                                        }
+                                    }
+                                }
+                                _ => {}
+                            }
+                        }
+                        ReturnItem {
+                            expr: expr.unwrap(),
+                            alias,
+                        }
+                    })
+                    .collect();
+            }
+            Rule::where_clause => where_clause = Some(parse_where(inner)?),
+            _ => {}
+        }
+    }
+
+    Ok(WithClause {
+        items,
+        where_clause,
+    })
 }
 
 fn parse_return(pair: pest::iterators::Pair<Rule>) -> crate::types::Result<ReturnClause> {

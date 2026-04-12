@@ -11,15 +11,23 @@ pub enum Statement {
     Merge(MergeStatement),
 }
 
-/// MATCH ... WHERE ... RETURN ... ORDER BY ... LIMIT
+/// MATCH ... WHERE ... WITH ... RETURN ... ORDER BY ... LIMIT
 #[derive(Debug, Clone, PartialEq)]
 pub struct MatchStatement {
     pub patterns: Vec<Pattern>,
     pub optional_patterns: Vec<Vec<Pattern>>,
     pub where_clause: Option<Expr>,
+    pub with_clauses: Vec<WithClause>,
     pub return_clause: ReturnClause,
     pub order_by: Vec<SortItem>,
     pub limit: Option<u64>,
+}
+
+/// WITH clause: intermediate projection/filter/aggregation.
+#[derive(Debug, Clone, PartialEq)]
+pub struct WithClause {
+    pub items: Vec<ReturnItem>,
+    pub where_clause: Option<Expr>,
 }
 
 /// CREATE (n:Label {props})-[:TYPE]->(m:Label)

@@ -132,6 +132,7 @@ fn plan_delete(conn: &Connection, stmt: &DeleteStatement) -> crate::types::Resul
     Ok(LogicalOp::Delete {
         input: Box::new(op),
         variables: stmt.variables.clone(),
+        detach: stmt.detach,
     })
 }
 

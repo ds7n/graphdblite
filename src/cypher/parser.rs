@@ -134,12 +134,14 @@ fn parse_match_create(
 fn parse_delete(pair: pest::iterators::Pair<Rule>) -> crate::types::Result<DeleteStatement> {
     let mut patterns = Vec::new();
     let mut where_clause = None;
+    let mut detach = false;
     let mut variables = Vec::new();
 
     for inner in pair.into_inner() {
         match inner.as_rule() {
             Rule::pattern_list => patterns = parse_pattern_list(inner)?,
             Rule::where_clause => where_clause = Some(parse_where(inner)?),
+            Rule::detach_keyword => detach = true,
             Rule::ident_list => {
                 for id in inner.into_inner() {
                     if id.as_rule() == Rule::ident {
@@ -154,6 +156,7 @@ fn parse_delete(pair: pest::iterators::Pair<Rule>) -> crate::types::Result<Delet
     Ok(DeleteStatement {
         patterns,
         where_clause,
+        detach,
         variables,
     })
 }
@@ -584,6 +587,7 @@ fn parse_bool_primary(pair: pest::iterators::Pair<Rule>) -> crate::types::Result
     // bool_primary = { is_null_check | comparison | "(" ~ bool_expr ~ ")" }
     let inner = pair.into_inner().next().unwrap();
     match inner.as_rule() {
+        Rule::case_expr => parse_case_expr(inner),
         Rule::is_null_check => parse_is_null_check(inner, false),
         Rule::is_not_null_check => parse_is_null_check(inner, true),
         Rule::comparison => parse_comparison(inner),
@@ -593,6 +597,32 @@ fn parse_bool_primary(pair: pest::iterators::Pair<Rule>) -> crate::types::Result
             inner.as_rule()
         ))),
     }
+}
+
+fn parse_case_expr(pair: pest::iterators::Pair<Rule>) -> crate::types::Result<Expr> {
+    let mut alternatives = Vec::new();
+    let mut default = None;
+
+    for inner in pair.into_inner() {
+        match inner.as_rule() {
+            Rule::case_when_clause => {
+                let mut children = inner.into_inner();
+                let condition = parse_bool_expr(children.next().unwrap())?;
+                let result = parse_expr(children.next().unwrap())?;
+                alternatives.push((Box::new(condition), Box::new(result)));
+            }
+            Rule::case_else_clause => {
+                let expr = parse_expr(inner.into_inner().next().unwrap())?;
+                default = Some(Box::new(expr));
+            }
+            _ => {}
+        }
+    }
+
+    Ok(Expr::Case {
+        alternatives,
+        default,
+    })
 }
 
 fn parse_is_null_check(pair: pest::iterators::Pair<Rule>, negated: bool) -> crate::types::Result<Expr> {
@@ -647,9 +677,10 @@ fn parse_comp_op(pair: pest::iterators::Pair<Rule>) -> crate::types::Result<BinO
 }
 
 fn parse_expr(pair: pest::iterators::Pair<Rule>) -> crate::types::Result<Expr> {
-    // expr = { function_call | property_access | literal | star | variable }
+    // expr = { case_expr | function_call | property_access | literal | star | variable }
     let inner = pair.into_inner().next().unwrap();
     match inner.as_rule() {
+        Rule::case_expr => parse_case_expr(inner),
         Rule::function_call => parse_function_call(inner),
         Rule::property_access => {
             let mut parts = inner.into_inner();

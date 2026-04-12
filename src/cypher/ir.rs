@@ -100,6 +100,7 @@ pub enum LogicalOp {
     Delete {
         input: Box<LogicalOp>,
         variables: Vec<String>,
+        detach: bool,
     },
 
     /// Set properties on nodes/edges.

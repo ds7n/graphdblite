@@ -3,7 +3,7 @@ name = "graphdblite"
 version = "0.1.0"
 edition = "2021"
 description = "Embedded graph database with Cypher support. SQLite-grade simplicity, graph-native performance."
-license = "MIT"
+license = "MPL-2.0"
 
 [lib]
 crate-type = ["lib", "cdylib"]

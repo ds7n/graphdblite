@@ -71,13 +71,11 @@ instead of count. Unblocks `UNWIND` and list comprehensions in future.
 
 ---
 
-### WITH clause (query chaining)
-**Problem:** `WITH` allows piping results between query parts:
-`MATCH (n) WITH n.name AS name WHERE name STARTS WITH 'A' RETURN name`.
-Not implemented.
-
-**Fix:** Add `WITH` as an intermediate projection/filter/aggregation step
-in the AST, planner, and executor.
+### ~~WITH clause (query chaining)~~ ✅ DONE
+Added `with_clause` grammar rule, `WithClause` AST struct, and `plan_with()`
+in the planner. WITH acts as intermediate Project (+Aggregate if items contain
+function calls) + optional Filter. Supports projection, aliases, WHERE, and
+aggregation (e.g., `WITH n.dept AS dept, count(*) AS cnt WHERE cnt > 1`).
 
 ---
 

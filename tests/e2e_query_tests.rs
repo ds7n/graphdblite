@@ -710,3 +710,68 @@ fn e2e_no_index_falls_back_to_scan() {
     assert_eq!(results[0].get("n.age"), Some(&Value::I64(30)));
     tx.commit().unwrap();
 }
+
+// --- WITH clause tests ---
+
+#[test]
+fn e2e_with_simple_projection() {
+    let mut db = setup_social_graph();
+    let tx = db.begin_read().unwrap();
+    let results = tx
+        .query("MATCH (n:Person) WITH n.name AS name RETURN name ORDER BY name")
+        .unwrap();
+    assert_eq!(results.len(), 3);
+    assert_eq!(results[0].get("name"), Some(&Value::String("Alice".into())));
+    assert_eq!(results[1].get("name"), Some(&Value::String("Bob".into())));
+    assert_eq!(results[2].get("name"), Some(&Value::String("Charlie".into())));
+    tx.commit().unwrap();
+}
+
+#[test]
+fn e2e_with_where_filter() {
+    let mut db = setup_social_graph();
+    let tx = db.begin_read().unwrap();
+    let results = tx
+        .query("MATCH (n:Person) WITH n.name AS name, n.age AS age WHERE age > 25 RETURN name ORDER BY name")
+        .unwrap();
+    assert_eq!(results.len(), 2);
+    assert_eq!(results[0].get("name"), Some(&Value::String("Alice".into())));
+    assert_eq!(results[1].get("name"), Some(&Value::String("Charlie".into())));
+    tx.commit().unwrap();
+}
+
+#[test]
+fn e2e_with_aggregation() {
+    let mut db = Database::open_memory().unwrap();
+    {
+        let tx = db.begin_write().unwrap();
+        tx.query("CREATE (a:Person {name: 'Alice', dept: 'eng'})").unwrap();
+        tx.query("CREATE (b:Person {name: 'Bob', dept: 'eng'})").unwrap();
+        tx.query("CREATE (c:Person {name: 'Charlie', dept: 'sales'})").unwrap();
+        tx.query("CREATE (d:Person {name: 'Diana', dept: 'eng'})").unwrap();
+        tx.commit().unwrap();
+    }
+    let tx = db.begin_read().unwrap();
+    // Aggregate in WITH, then filter on the aggregate result.
+    let results = tx
+        .query("MATCH (n:Person) WITH n.dept AS dept, count(*) AS cnt WHERE cnt > 1 RETURN dept, cnt ORDER BY dept")
+        .unwrap();
+    assert_eq!(results.len(), 1);
+    assert_eq!(results[0].get("dept"), Some(&Value::String("eng".into())));
+    assert_eq!(results[0].get("cnt"), Some(&Value::I64(3)));
+    tx.commit().unwrap();
+}
+
+#[test]
+fn e2e_with_passthrough_variable() {
+    let mut db = setup_social_graph();
+    let tx = db.begin_read().unwrap();
+    let results = tx
+        .query("MATCH (n:Person) WITH n RETURN n.name ORDER BY n.name")
+        .unwrap();
+    assert_eq!(results.len(), 3);
+    assert_eq!(results[0].get("n.name"), Some(&Value::String("Alice".into())));
+    assert_eq!(results[1].get("n.name"), Some(&Value::String("Bob".into())));
+    assert_eq!(results[2].get("n.name"), Some(&Value::String("Charlie".into())));
+    tx.commit().unwrap();
+}

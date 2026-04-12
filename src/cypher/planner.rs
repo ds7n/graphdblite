@@ -39,13 +39,18 @@ fn plan_match(conn: &Connection, stmt: &MatchStatement) -> crate::types::Result<
         };
     }
 
+    // Apply WITH clauses (intermediate projection/aggregation/filtering).
+    for with in &stmt.with_clauses {
+        op = plan_with(op, with)?;
+    }
+
     // Check if RETURN contains aggregates.
     let has_aggregates = stmt.return_clause.items.iter().any(|item| {
         matches!(item.expr, Expr::FunctionCall { .. })
     });
 
     if has_aggregates {
-        let (group_keys, aggregates) = split_aggregates(&stmt.return_clause)?;
+        let (group_keys, aggregates) = split_aggregates(&stmt.return_clause.items)?;
         op = LogicalOp::Aggregate {
             input: Box::new(op),
             group_keys,
@@ -152,6 +157,41 @@ fn plan_merge(stmt: &MergeStatement) -> crate::types::Result<LogicalOp> {
         on_create: stmt.on_create.clone(),
         on_match: stmt.on_match.clone(),
     })
+}
+
+/// Plan a WITH clause as an intermediate projection (+aggregation) and optional filter.
+fn plan_with(input: LogicalOp, with: &WithClause) -> crate::types::Result<LogicalOp> {
+    let mut op = input;
+
+    // Check if WITH items contain aggregates.
+    let has_aggregates = with.items.iter().any(|item| {
+        matches!(item.expr, Expr::FunctionCall { .. })
+    });
+
+    if has_aggregates {
+        let (group_keys, aggregates) = split_aggregates(&with.items)?;
+        op = LogicalOp::Aggregate {
+            input: Box::new(op),
+            group_keys,
+            aggregates,
+        };
+    }
+
+    // Project the WITH items.
+    op = LogicalOp::Project {
+        input: Box::new(op),
+        items: with.items.clone(),
+    };
+
+    // Apply WITH's WHERE filter.
+    if let Some(ref predicate) = with.where_clause {
+        op = LogicalOp::Filter {
+            input: Box::new(op),
+            predicate: predicate.clone(),
+        };
+    }
+
+    Ok(op)
 }
 
 /// Plan the scan/expand chain for a list of patterns.
@@ -442,14 +482,14 @@ fn get_last_alias(op: &Option<LogicalOp>) -> String {
     }
 }
 
-/// Split RETURN items into group keys (non-aggregate) and aggregate expressions.
+/// Split RETURN/WITH items into group keys (non-aggregate) and aggregate expressions.
 fn split_aggregates(
-    return_clause: &ReturnClause,
+    items: &[ReturnItem],
 ) -> crate::types::Result<(Vec<Expr>, Vec<AggregateExpr>)> {
     let mut group_keys = Vec::new();
     let mut aggregates = Vec::new();
 
-    for item in &return_clause.items {
+    for item in items {
         match &item.expr {
             Expr::FunctionCall { name, args } => {
                 let function = match name.as_str() {

@@ -1,0 +1,88 @@
+name: Dev Build
+
+on:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: write
+
+concurrency:
+  group: dev-build
+  cancel-in-progress: true
+
+jobs:
+  build:
+    strategy:
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            ext: tar.gz
+          - os: macos-latest
+            target: aarch64-apple-darwin
+            ext: tar.gz
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            ext: zip
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - run: cargo build --release --bin graphdblite
+
+      - name: Package (unix)
+        if: runner.os != 'Windows'
+        run: |
+          tar czf graphdblite-${{ matrix.target }}.${{ matrix.ext }} \
+            -C target/release graphdblite
+
+      - name: Package (windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          Compress-Archive -Path target\release\graphdblite.exe `
+            -DestinationPath graphdblite-${{ matrix.target }}.${{ matrix.ext }}
+
+      - name: Checksum
+        shell: bash
+        run: |
+          sha256sum graphdblite-${{ matrix.target }}.${{ matrix.ext }} \
+            > graphdblite-${{ matrix.target }}.${{ matrix.ext }}.sha256
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: binary-${{ matrix.target }}
+          path: |
+            graphdblite-${{ matrix.target }}.${{ matrix.ext }}
+            graphdblite-${{ matrix.target }}.${{ matrix.ext }}.sha256
+
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          merge-multiple: true
+
+      - name: Combine checksums
+        run: cat *.sha256 > sha256sums.txt
+
+      - name: Delete existing dev-latest release
+        run: gh release delete dev-latest --yes --cleanup-tag || true
+
+      - name: Create dev-latest release
+        run: |
+          gh release create dev-latest \
+            --title "Dev Build (latest main)" \
+            --notes "Rolling development build from main branch.
+          Commit: ${{ github.sha }}
+          Date: $(date -u +%Y-%m-%d)" \
+            --prerelease \
+            --target ${{ github.sha }} \
+            graphdblite-*.tar.gz graphdblite-*.zip sha256sums.txt

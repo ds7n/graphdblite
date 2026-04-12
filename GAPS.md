@@ -53,17 +53,12 @@ is fine at current scale; HashMap optimization deferred.
 
 ---
 
-### Index-aware query planning
-**Problem:** The planner always generates `Scan` + `Filter`. It never checks
-if a secondary index exists to use `IndexLookup` instead. For example,
-`MATCH (n:Person {name: 'Alice'})` does a full label scan even if an index
-on `Person.name` exists.
-
-**Fix:** In the planner, when a node pattern has inline property equality
-filters, check if indexes exist and emit `IndexLookup` instead of `Scan`.
-This requires passing a connection or index metadata to the planner.
-
-**Files:** `src/cypher/planner.rs`, possibly `src/cypher/executor.rs`
+### ~~Index-aware query planning~~ ✅ DONE
+Planner now accepts `&Connection` and checks `list_indexes_for_label()` when
+a node pattern has inline property equality filters. If an index exists for
+one of the properties, emits `IndexLookup` IR op instead of `Scan` + `Filter`.
+Remaining non-indexed properties become an inline filter on the lookup results.
+Executor handles `IndexLookup` via `index::index_lookup()` + `node::get_node()`.
 
 ---
 

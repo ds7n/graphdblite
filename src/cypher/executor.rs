@@ -7,6 +7,7 @@ use crate::cypher::eval::{eval_expr, eval_predicate, expr_to_column_name};
 use crate::cypher::ir::*;
 use crate::cypher::record::Record;
 use crate::edge;
+use crate::index;
 use crate::node;
 use crate::types::{Direction, GraphError, NodeId, Properties, Result, Value};
 
@@ -16,6 +17,14 @@ pub fn execute(conn: &Connection, plan: &LogicalOp) -> Result<Vec<Record>> {
         LogicalOp::EmptyRow => Ok(vec![Record::new()]),
 
         LogicalOp::Scan { label, alias } => exec_scan(conn, label, alias),
+
+        LogicalOp::IndexLookup {
+            label,
+            alias,
+            property,
+            value,
+            remaining_filters,
+        } => exec_index_lookup(conn, label, alias, property, value, remaining_filters.as_ref()),
 
         LogicalOp::Expand {
             input,
@@ -100,6 +109,40 @@ fn exec_scan(conn: &Connection, label: &str, alias: &str) -> Result<Vec<Record>>
         rec.set(format!("{alias}.__id"), Value::I64(n.id.0 as i64));
         records.push(rec);
     }
+    Ok(records)
+}
+
+fn exec_index_lookup(
+    conn: &Connection,
+    label: &str,
+    alias: &str,
+    property: &str,
+    value: &LiteralValue,
+    remaining_filters: Option<&Expr>,
+) -> Result<Vec<Record>> {
+    let lookup_value = literal_to_value(value);
+    let node_ids = index::index_lookup(conn, label, property, &lookup_value)?;
+    let mut records = Vec::new();
+
+    for id in node_ids {
+        let n = node::get_node(conn, id)?;
+        let mut rec = Record::new();
+        rec.set(alias.to_string(), Value::I64(n.id.0 as i64));
+        for (key, val) in &n.properties {
+            rec.set(format!("{alias}.{key}"), val.clone());
+        }
+        rec.set(format!("{alias}.__label"), Value::String(n.label.clone()));
+        rec.set(format!("{alias}.__id"), Value::I64(n.id.0 as i64));
+
+        if let Some(filter) = remaining_filters {
+            if !eval_predicate(filter, &rec)? {
+                continue;
+            }
+        }
+
+        records.push(rec);
+    }
+
     Ok(records)
 }
 

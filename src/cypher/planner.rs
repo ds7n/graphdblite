@@ -1,26 +1,29 @@
+use rusqlite::Connection;
+
 use crate::cypher::ast::*;
 use crate::cypher::ir::*;
+use crate::index;
 use crate::types::{Direction, GraphError};
 
 /// Compile a Cypher AST Statement into a LogicalOp plan.
-pub fn plan(stmt: &Statement) -> crate::types::Result<LogicalOp> {
+pub fn plan(conn: &Connection, stmt: &Statement) -> crate::types::Result<LogicalOp> {
     match stmt {
-        Statement::Match(m) => plan_match(m),
+        Statement::Match(m) => plan_match(conn, m),
         Statement::Create(c) => plan_create(c),
-        Statement::MatchCreate(mc) => plan_match_create(mc),
-        Statement::Delete(d) => plan_delete(d),
-        Statement::Set(s) => plan_set(s),
+        Statement::MatchCreate(mc) => plan_match_create(conn, mc),
+        Statement::Delete(d) => plan_delete(conn, d),
+        Statement::Set(s) => plan_set(conn, s),
         Statement::Merge(m) => plan_merge(m),
     }
 }
 
-fn plan_match(stmt: &MatchStatement) -> crate::types::Result<LogicalOp> {
+fn plan_match(conn: &Connection, stmt: &MatchStatement) -> crate::types::Result<LogicalOp> {
     // Build scan + expand chain from patterns.
-    let mut op = plan_patterns(&stmt.patterns)?;
+    let mut op = plan_patterns(conn, &stmt.patterns)?;
 
     // Apply OPTIONAL MATCH clauses as LeftOuterJoins.
     for opt_patterns in &stmt.optional_patterns {
-        let (right, new_aliases) = plan_optional_patterns(opt_patterns)?;
+        let (right, new_aliases) = plan_optional_patterns(conn, opt_patterns)?;
         op = LogicalOp::LeftOuterJoin {
             input: Box::new(op),
             right: Box::new(right),
@@ -90,8 +93,8 @@ fn plan_create(stmt: &CreateStatement) -> crate::types::Result<LogicalOp> {
     }
 }
 
-fn plan_match_create(stmt: &MatchCreateStatement) -> crate::types::Result<LogicalOp> {
-    let mut op = plan_patterns(&stmt.patterns)?;
+fn plan_match_create(conn: &Connection, stmt: &MatchCreateStatement) -> crate::types::Result<LogicalOp> {
+    let mut op = plan_patterns(conn, &stmt.patterns)?;
 
     if let Some(ref predicate) = stmt.where_clause {
         op = LogicalOp::Filter {
@@ -111,8 +114,8 @@ fn plan_match_create(stmt: &MatchCreateStatement) -> crate::types::Result<Logica
     })
 }
 
-fn plan_delete(stmt: &DeleteStatement) -> crate::types::Result<LogicalOp> {
-    let mut op = plan_patterns(&stmt.patterns)?;
+fn plan_delete(conn: &Connection, stmt: &DeleteStatement) -> crate::types::Result<LogicalOp> {
+    let mut op = plan_patterns(conn, &stmt.patterns)?;
 
     if let Some(ref predicate) = stmt.where_clause {
         op = LogicalOp::Filter {
@@ -127,8 +130,8 @@ fn plan_delete(stmt: &DeleteStatement) -> crate::types::Result<LogicalOp> {
     })
 }
 
-fn plan_set(stmt: &SetStatement) -> crate::types::Result<LogicalOp> {
-    let mut op = plan_patterns(&stmt.patterns)?;
+fn plan_set(conn: &Connection, stmt: &SetStatement) -> crate::types::Result<LogicalOp> {
+    let mut op = plan_patterns(conn, &stmt.patterns)?;
 
     if let Some(ref predicate) = stmt.where_clause {
         op = LogicalOp::Filter {
@@ -152,16 +155,16 @@ fn plan_merge(stmt: &MergeStatement) -> crate::types::Result<LogicalOp> {
 }
 
 /// Plan the scan/expand chain for a list of patterns.
-fn plan_patterns(patterns: &[Pattern]) -> crate::types::Result<LogicalOp> {
+fn plan_patterns(conn: &Connection, patterns: &[Pattern]) -> crate::types::Result<LogicalOp> {
     if patterns.is_empty() {
         return Ok(LogicalOp::EmptyRow);
     }
 
-    let mut op = plan_single_pattern(&patterns[0])?;
+    let mut op = plan_single_pattern(conn, &patterns[0])?;
 
     // Multiple patterns produce a cross-product (nested loop join).
     for pattern in &patterns[1..] {
-        let right = plan_single_pattern(pattern)?;
+        let right = plan_single_pattern(conn, pattern)?;
         op = LogicalOp::CrossProduct {
             left: Box::new(op),
             right: Box::new(right),
@@ -179,10 +182,11 @@ fn plan_patterns(patterns: &[Pattern]) -> crate::types::Result<LogicalOp> {
 /// - Shared aliases (already bound) become the starting point for expands
 /// - New aliases are the ones that get NULL-filled on no match
 fn plan_optional_patterns(
+    conn: &Connection,
     patterns: &[Pattern],
 ) -> crate::types::Result<(LogicalOp, Vec<String>)> {
     let mut new_aliases = Vec::new();
-    let op = plan_patterns(patterns)?;
+    let op = plan_patterns(conn, patterns)?;
 
     // Walk the patterns to collect aliases.
     // The first node in each pattern is assumed shared with the required MATCH.
@@ -207,7 +211,7 @@ fn plan_optional_patterns(
 }
 
 /// Plan a single pattern: (a:Label)-[:TYPE]->(b:Label)
-fn plan_single_pattern(pattern: &Pattern) -> crate::types::Result<LogicalOp> {
+fn plan_single_pattern(conn: &Connection, pattern: &Pattern) -> crate::types::Result<LogicalOp> {
     let mut op: Option<LogicalOp> = None;
 
     let mut i = 0;
@@ -220,23 +224,8 @@ fn plan_single_pattern(pattern: &Pattern) -> crate::types::Result<LogicalOp> {
                         .variable
                         .clone()
                         .unwrap_or_else(|| format!("_anon_{i}"));
-                    let mut scan = LogicalOp::Scan {
-                        label: node.label.clone().unwrap_or_default(),
-                        alias,
-                    };
 
-                    // If node has inline property filters, add a Filter.
-                    if !node.properties.is_empty() {
-                        let predicate = properties_to_filter(
-                            node.variable.as_deref().unwrap_or("_anon_0"),
-                            &node.properties,
-                        );
-                        scan = LogicalOp::Filter {
-                            input: Box::new(scan),
-                            predicate,
-                        };
-                    }
-
+                    let scan = plan_node_scan(conn, node, &alias)?;
                     op = Some(scan);
                 }
                 // Subsequent nodes after a relationship are handled in the rel branch.
@@ -283,6 +272,71 @@ fn plan_single_pattern(pattern: &Pattern) -> crate::types::Result<LogicalOp> {
     }
 
     op.ok_or_else(|| GraphError::Serialization("empty pattern".to_string()))
+}
+
+/// Plan the scan for a single node pattern, using an index lookup if available.
+fn plan_node_scan(
+    conn: &Connection,
+    node: &NodePattern,
+    alias: &str,
+) -> crate::types::Result<LogicalOp> {
+    let label = node.label.clone().unwrap_or_default();
+
+    // Try to find an indexed property for this label.
+    if !node.properties.is_empty() && !label.is_empty() {
+        let indexes = index::list_indexes_for_label(conn, &label).unwrap_or_default();
+        let indexed_props: Vec<&str> = indexes.iter().map(|(_, p)| p.as_str()).collect();
+
+        // Find the first inline property that has an index and a literal value.
+        let indexed_match = node.properties.iter().find(|(key, val)| {
+            indexed_props.contains(&key.as_str()) && matches!(val, Expr::Literal(_))
+        });
+
+        if let Some((prop, expr)) = indexed_match {
+            let lit = match expr {
+                Expr::Literal(l) => l.clone(),
+                _ => unreachable!(),
+            };
+
+            // Build remaining filters from non-indexed properties.
+            let remaining: std::collections::HashMap<String, Expr> = node
+                .properties
+                .iter()
+                .filter(|(k, _)| k != &prop)
+                .map(|(k, v)| (k.clone(), v.clone()))
+                .collect();
+
+            let remaining_filters = if remaining.is_empty() {
+                None
+            } else {
+                Some(properties_to_filter(alias, &remaining))
+            };
+
+            return Ok(LogicalOp::IndexLookup {
+                label,
+                alias: alias.to_string(),
+                property: prop.clone(),
+                value: lit,
+                remaining_filters,
+            });
+        }
+    }
+
+    // Fallback: full label scan + filter.
+    let mut scan = LogicalOp::Scan {
+        label,
+        alias: alias.to_string(),
+    };
+
+    if !node.properties.is_empty() {
+        let predicate = properties_to_filter(alias, &node.properties);
+        scan = LogicalOp::Filter {
+            input: Box::new(scan),
+            predicate,
+        };
+    }
+
+    Ok(scan)
 }
 
 /// Plan CREATE pattern into individual CreateNode/CreateEdge operations.
@@ -381,6 +435,7 @@ fn properties_to_filter(
 fn get_last_alias(op: &Option<LogicalOp>) -> String {
     match op {
         Some(LogicalOp::Scan { alias, .. }) => alias.clone(),
+        Some(LogicalOp::IndexLookup { alias, .. }) => alias.clone(),
         Some(LogicalOp::Expand { dst_alias, .. }) => dst_alias.clone(),
         Some(LogicalOp::Filter { input, .. }) => get_last_alias(&Some(*input.clone())),
         _ => "_unknown".to_string(),

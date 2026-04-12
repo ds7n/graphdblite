@@ -176,7 +176,7 @@ pub fn remove_indexes_for_node(
 
 /// List all indexes that exist for a given label.
 /// Returns Vec<(label, property)>.
-fn list_indexes_for_label(
+pub fn list_indexes_for_label(
     conn: &Connection,
     label: &str,
 ) -> Result<Vec<(String, String)>> {

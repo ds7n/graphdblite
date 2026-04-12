@@ -74,7 +74,7 @@ impl<'a> ReadTransaction<'a> {
     /// Execute a Cypher query string and return result records.
     pub fn query(&self, cypher: &str) -> Result<Vec<Record>> {
         let stmt = parser::parse(cypher)?;
-        let plan = planner::plan(&stmt)?;
+        let plan = planner::plan(&self.tx, &stmt)?;
         executor::execute(&self.tx, &plan)
     }
 
@@ -157,7 +157,7 @@ impl<'a> WriteTransaction<'a> {
     /// Execute a Cypher query string and return result records.
     pub fn query(&self, cypher: &str) -> Result<Vec<Record>> {
         let stmt = parser::parse(cypher)?;
-        let plan = planner::plan(&stmt)?;
+        let plan = planner::plan(&self.tx, &stmt)?;
         executor::execute(&self.tx, &plan)
     }
 

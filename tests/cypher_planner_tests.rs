@@ -4,8 +4,9 @@ use graphdblite::cypher::planner::plan;
 use graphdblite::types::Direction;
 
 fn plan_query(q: &str) -> LogicalOp {
+    let conn = rusqlite::Connection::open_in_memory().unwrap();
     let stmt = parse(q).unwrap();
-    plan(&stmt).unwrap()
+    plan(&conn, &stmt).unwrap()
 }
 
 #[test]

@@ -7,6 +7,7 @@ pub fn plan(stmt: &Statement) -> crate::types::Result<LogicalOp> {
     match stmt {
         Statement::Match(m) => plan_match(m),
         Statement::Create(c) => plan_create(c),
+        Statement::MatchCreate(mc) => plan_match_create(mc),
         Statement::Delete(d) => plan_delete(d),
         Statement::Set(s) => plan_set(s),
         Statement::Merge(m) => plan_merge(m),
@@ -79,6 +80,27 @@ fn plan_create(stmt: &CreateStatement) -> crate::types::Result<LogicalOp> {
     }
 }
 
+fn plan_match_create(stmt: &MatchCreateStatement) -> crate::types::Result<LogicalOp> {
+    let mut op = plan_patterns(&stmt.patterns)?;
+
+    if let Some(ref predicate) = stmt.where_clause {
+        op = LogicalOp::Filter {
+            input: Box::new(op),
+            predicate: predicate.clone(),
+        };
+    }
+
+    let mut create_ops = Vec::new();
+    for pattern in &stmt.create_patterns {
+        create_ops.extend(plan_create_pattern(pattern)?);
+    }
+
+    Ok(LogicalOp::MatchCreate {
+        input: Box::new(op),
+        create_ops,
+    })
+}
+
 fn plan_delete(stmt: &DeleteStatement) -> crate::types::Result<LogicalOp> {
     let mut op = plan_patterns(&stmt.patterns)?;
 
@@ -127,11 +149,13 @@ fn plan_patterns(patterns: &[Pattern]) -> crate::types::Result<LogicalOp> {
 
     let mut op = plan_single_pattern(&patterns[0])?;
 
-    // Multiple patterns are joined (simplified: sequential execution).
+    // Multiple patterns produce a cross-product (nested loop join).
     for pattern in &patterns[1..] {
         let right = plan_single_pattern(pattern)?;
-        // For now, treat multiple patterns as chained — proper hash join in future.
-        op = right;
+        op = LogicalOp::CrossProduct {
+            left: Box::new(op),
+            right: Box::new(right),
+        };
     }
 
     Ok(op)

@@ -124,7 +124,7 @@ pub fn find_nodes_by_label(
         let (key, data) = row?;
         let record: NodeRecord = rmp_serde::from_slice(&data)
             .map_err(|e| GraphError::Serialization(e.to_string()))?;
-        if record.label == label {
+        if label.is_empty() || record.label == label {
             let id = NodeId::from_be_bytes(key[..8].try_into().unwrap());
             nodes.push(Node {
                 id,

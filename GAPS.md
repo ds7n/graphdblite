@@ -5,56 +5,26 @@
 
 ## Quick Fixes (< 1 hour each)
 
-### CLI: suppress internal fields in output
-**Problem:** `RETURN n` shows `n.__id`, `n.__label` alongside real properties.
-These are internal executor bookkeeping fields leaked into output.
-
-**Fix:** In `src/cypher/executor.rs`, filter fields starting with `__` from
-projected records. Or in `src/bin/cli.rs`, strip them at display time.
-
-**File:** `src/bin/cli.rs:print_records()` or `src/cypher/executor.rs:exec_project()`
+### ~~CLI: suppress internal fields in output~~ ✅ DONE
+`exec_project()` filters `__` fields for all projection paths; CLI has safety net filter.
 
 ---
 
-### RETURN * support
-**Problem:** `MATCH (n:Person) RETURN *` fails to parse. The grammar accepts
-`*` as an expression but the executor doesn't know how to project all bound
-variables when it encounters `Expr::Star` in a RETURN item.
-
-**Fix:** In `exec_project`, when a ReturnItem is `Expr::Star`, copy all
-non-`__` fields from the input record to the output record.
-
-**File:** `src/cypher/executor.rs:exec_project()`
+### ~~RETURN * support~~ ✅ DONE
+`exec_project()` handles `Expr::Star` — expands all non-internal `alias.prop` fields.
 
 ---
 
-### Expression eval: allow identifiers as node references
-**Problem:** `RETURN n` evaluates to the raw node ID integer, not a useful
-representation. Users expect either the full node (label + properties) or
-at minimum a dict of properties.
-
-**Fix:** When projecting a bare variable, expand it to all `{var}.{prop}`
-fields as a nested structure, or at minimum include all flattened properties.
-
-**File:** `src/cypher/executor.rs:exec_project()`
+### ~~Expression eval: allow identifiers as node references~~ ✅ DONE
+`exec_project()` handles `Expr::Variable` — expands bare `n` to all `n.prop` fields.
 
 ---
 
 ## Medium Fixes (1-4 hours each)
 
-### Multi-clause queries: MATCH ... CREATE / MATCH ... MERGE with edges
-**Problem:** Cypher allows `MATCH (a:Person {name:'Alice'}), (b:Person {name:'Bob'}) CREATE (a)-[:KNOWS]->(b)`.
-Currently the parser only handles `MATCH ... RETURN`, `MATCH ... DELETE`,
-`MATCH ... SET`, standalone `CREATE`, and standalone `MERGE`. There's no
-combined MATCH+CREATE for wiring edges between existing nodes.
-
-**Fix:** Add a `MatchCreate` variant to the AST and planner that runs the
-MATCH pipeline, then uses the bound variables to execute CREATE operations.
-Grammar change: allow `create_pattern_list` after a `MATCH ... WHERE` block
-without requiring RETURN.
-
-**Files:** `src/cypher/grammar.pest`, `src/cypher/ast.rs`, `src/cypher/parser.rs`,
-`src/cypher/planner.rs`, `src/cypher/executor.rs`
+### ~~Multi-clause queries: MATCH ... CREATE / MATCH ... MERGE with edges~~ ✅ DONE
+New `match_create_stmt` grammar rule, `MatchCreate` AST/IR variants, and `exec_match_create()`.
+Also fixed multi-pattern MATCH with `CrossProduct` IR op (was discarding all but last pattern).
 
 ---
 
@@ -71,27 +41,14 @@ input records with NULL dst bindings when no match is found.
 
 ---
 
-### MATCH without RETURN (side-effect-only queries)
-**Problem:** `MATCH (n:Person) DELETE n` works, but the grammar requires
-RETURN for plain MATCH queries. Queries like `MATCH (a),(b) CREATE (a)-[:E]->(b)`
-need to work without a RETURN clause.
-
-**Fix:** Make `return_clause` optional in the grammar for match_stmt when
-followed by a mutation clause.
-
-**File:** `src/cypher/grammar.pest`, `src/cypher/parser.rs`
+### ~~MATCH without RETURN (side-effect-only queries)~~ ✅ DONE
+Covered by MATCH...CREATE implementation. DELETE and SET already worked without RETURN.
 
 ---
 
-### WHERE clause: property existence check and IS NULL
-**Problem:** No way to write `WHERE n.email IS NOT NULL` or `WHERE EXISTS(n.email)`.
-The expression evaluator treats missing properties as NULL but there's no
-`IS NULL` / `IS NOT NULL` syntax in the grammar.
-
-**Fix:** Add `is_null` and `is_not_null` as comparison operators in the grammar
-and expression evaluator.
-
-**Files:** `src/cypher/grammar.pest`, `src/cypher/ast.rs`, `src/cypher/eval.rs`
+### ~~WHERE clause: property existence check and IS NULL~~ ✅ DONE
+Added `is_null_check` and `is_not_null_check` grammar rules, `IsNull`/`IsNotNull` AST variants,
+and eval support.
 
 ---
 
@@ -147,15 +104,9 @@ in the AST, planner, and executor.
 
 ---
 
-### Multiple MATCH clauses (implicit join)
-**Problem:** `MATCH (a:Person), (b:Company) WHERE a.employer = b.name RETURN a, b`
-parses the pattern list but the planner naively discards all but the last pattern.
-Should produce a cross-product filtered by WHERE, or ideally a hash join.
-
-**Fix:** Implement proper cross-product or hash join in the planner/executor
-for multi-pattern MATCH.
-
-**File:** `src/cypher/planner.rs:plan_patterns()`, `src/cypher/executor.rs`
+### ~~Multiple MATCH clauses (implicit join)~~ ✅ DONE
+Added `CrossProduct` IR op — multi-pattern MATCH now produces a nested-loop cross-product
+filtered by WHERE. Hash join deferred as optimization.
 
 ---
 
@@ -184,6 +135,14 @@ Requires `maturin develop` in the repo.
 
 **Fix:** Set up CI to build wheels with `maturin build`, publish to PyPI.
 `pyproject.toml` and `python/graphdblite/__init__.py` are already in place.
+
+---
+
+## Also Fixed (not originally in this list)
+
+### Label-optional MATCH ✅
+`MATCH (n) RETURN *` scans all nodes regardless of label. One-line change in
+`node::find_nodes_by_label()` to skip label filter when empty.
 
 ---
 

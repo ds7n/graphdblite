@@ -25,6 +25,7 @@ pub fn parse(input: &str) -> crate::types::Result<Statement> {
                 p.as_rule(),
                 Rule::match_stmt
                     | Rule::create_stmt
+                    | Rule::match_create_stmt
                     | Rule::delete_stmt
                     | Rule::set_stmt
                     | Rule::merge_stmt
@@ -35,6 +36,7 @@ pub fn parse(input: &str) -> crate::types::Result<Statement> {
     match statement_pair.as_rule() {
         Rule::match_stmt => parse_match(statement_pair).map(Statement::Match),
         Rule::create_stmt => parse_create(statement_pair).map(Statement::Create),
+        Rule::match_create_stmt => parse_match_create(statement_pair).map(Statement::MatchCreate),
         Rule::delete_stmt => parse_delete(statement_pair).map(Statement::Delete),
         Rule::set_stmt => parse_set(statement_pair).map(Statement::Set),
         Rule::merge_stmt => parse_merge(statement_pair).map(Statement::Merge),
@@ -85,6 +87,35 @@ fn parse_create(pair: pest::iterators::Pair<Rule>) -> crate::types::Result<Creat
         }
     }
     Ok(CreateStatement { patterns })
+}
+
+fn parse_match_create(
+    pair: pest::iterators::Pair<Rule>,
+) -> crate::types::Result<MatchCreateStatement> {
+    let mut patterns = Vec::new();
+    let mut where_clause = None;
+    let mut create_patterns = Vec::new();
+
+    for inner in pair.into_inner() {
+        match inner.as_rule() {
+            Rule::pattern_list => patterns = parse_pattern_list(inner)?,
+            Rule::where_clause => where_clause = Some(parse_where(inner)?),
+            Rule::create_pattern_list => {
+                for pat in inner.into_inner() {
+                    if pat.as_rule() == Rule::create_pattern {
+                        create_patterns.push(parse_pattern_inner(pat)?);
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+
+    Ok(MatchCreateStatement {
+        patterns,
+        where_clause,
+        create_patterns,
+    })
 }
 
 fn parse_delete(pair: pest::iterators::Pair<Rule>) -> crate::types::Result<DeleteStatement> {
@@ -493,15 +524,26 @@ fn parse_bool_factor(pair: pest::iterators::Pair<Rule>) -> crate::types::Result<
 }
 
 fn parse_bool_primary(pair: pest::iterators::Pair<Rule>) -> crate::types::Result<Expr> {
-    // bool_primary = { comparison | "(" ~ bool_expr ~ ")" }
+    // bool_primary = { is_null_check | comparison | "(" ~ bool_expr ~ ")" }
     let inner = pair.into_inner().next().unwrap();
     match inner.as_rule() {
+        Rule::is_null_check => parse_is_null_check(inner, false),
+        Rule::is_not_null_check => parse_is_null_check(inner, true),
         Rule::comparison => parse_comparison(inner),
         Rule::bool_expr => parse_bool_expr(inner),
         _ => Err(GraphError::Serialization(format!(
             "unexpected bool primary: {:?}",
             inner.as_rule()
         ))),
+    }
+}
+
+fn parse_is_null_check(pair: pest::iterators::Pair<Rule>, negated: bool) -> crate::types::Result<Expr> {
+    let expr = parse_expr(pair.into_inner().next().unwrap())?;
+    if negated {
+        Ok(Expr::IsNotNull(Box::new(expr)))
+    } else {
+        Ok(Expr::IsNull(Box::new(expr)))
     }
 }
 

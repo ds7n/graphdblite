@@ -124,6 +124,13 @@ pub enum LogicalOp {
         optional_aliases: Vec<String>,
     },
 
+    /// Unwind a list expression into one record per element.
+    Unwind {
+        input: Box<LogicalOp>,
+        expr: Expr,
+        alias: String,
+    },
+
     /// Produce a single empty record (used as starting input for scans).
     EmptyRow,
 }

@@ -63,6 +63,9 @@ OPTIONAL MATCH (a)-[:KNOWS]->(b)
 
 -- Filtering and projection
 WHERE a.name = 'Alice' AND b.age > 25
+WHERE a.name STARTS WITH 'A'
+WHERE a.name ENDS WITH 'son'
+WHERE a.name CONTAINS 'li'
 WHERE a.name IS NULL
 RETURN a.name, count(*) AS cnt, collect(b.name) AS names
 ORDER BY cnt DESC
@@ -70,6 +73,10 @@ LIMIT 10
 
 -- Intermediate processing
 WITH a, count(*) AS cnt WHERE cnt > 1 RETURN a.name, cnt
+
+-- List expansion
+UNWIND [1, 2, 3] AS x RETURN x
+UNWIND ['Alice', 'Bob'] AS name CREATE (n:Person {name: name})
 
 -- Conditionals
 RETURN CASE WHEN a.age > 30 THEN 'senior' ELSE 'junior' END AS level

@@ -29,6 +29,7 @@ pub fn parse(input: &str) -> crate::types::Result<Statement> {
                     | Rule::delete_stmt
                     | Rule::set_stmt
                     | Rule::merge_stmt
+                    | Rule::unwind_stmt
             )
         })
         .ok_or_else(|| GraphError::Serialization("empty statement".to_string()))?;
@@ -40,6 +41,7 @@ pub fn parse(input: &str) -> crate::types::Result<Statement> {
         Rule::delete_stmt => parse_delete(statement_pair).map(Statement::Delete),
         Rule::set_stmt => parse_set(statement_pair).map(Statement::Set),
         Rule::merge_stmt => parse_merge(statement_pair).map(Statement::Merge),
+        Rule::unwind_stmt => parse_unwind(statement_pair).map(Statement::Unwind),
         _ => Err(GraphError::Serialization(format!(
             "unexpected rule: {:?}",
             statement_pair.as_rule()
@@ -51,7 +53,7 @@ fn parse_match(pair: pest::iterators::Pair<Rule>) -> crate::types::Result<MatchS
     let mut patterns = Vec::new();
     let mut optional_patterns = Vec::new();
     let mut where_clause = None;
-    let mut with_clauses = Vec::new();
+    let mut intermediate_clauses = Vec::new();
     let mut return_clause = None;
     let mut order_by = Vec::new();
     let mut limit = None;
@@ -68,7 +70,8 @@ fn parse_match(pair: pest::iterators::Pair<Rule>) -> crate::types::Result<MatchS
                 }
             }
             Rule::where_clause => where_clause = Some(parse_where(inner)?),
-            Rule::with_clause => with_clauses.push(parse_with(inner)?),
+            Rule::with_clause => intermediate_clauses.push(IntermediateClause::With(parse_with(inner)?)),
+            Rule::unwind_clause => intermediate_clauses.push(IntermediateClause::Unwind(parse_unwind_clause(inner)?)),
             Rule::return_clause => return_clause = Some(parse_return(inner)?),
             Rule::order_by_clause => order_by = parse_order_by(inner)?,
             Rule::limit_clause => limit = Some(parse_limit(inner)?),
@@ -80,7 +83,7 @@ fn parse_match(pair: pest::iterators::Pair<Rule>) -> crate::types::Result<MatchS
         patterns,
         optional_patterns,
         where_clause,
-        with_clauses,
+        intermediate_clauses,
         return_clause: return_clause
             .ok_or_else(|| GraphError::Serialization("missing RETURN clause".to_string()))?,
         order_by,
@@ -407,6 +410,80 @@ fn parse_with(pair: pest::iterators::Pair<Rule>) -> crate::types::Result<WithCla
     })
 }
 
+fn parse_unwind(pair: pest::iterators::Pair<Rule>) -> crate::types::Result<UnwindStatement> {
+    let mut expr = None;
+    let mut alias = None;
+    let mut body = None;
+
+    for inner in pair.into_inner() {
+        match inner.as_rule() {
+            Rule::expr => expr = Some(parse_expr(inner)?),
+            Rule::ident => alias = Some(inner.as_str().to_string()),
+            Rule::unwind_return => {
+                let mut where_clause = None;
+                let mut return_clause = None;
+                let mut order_by = Vec::new();
+                let mut limit = None;
+                for child in inner.into_inner() {
+                    match child.as_rule() {
+                        Rule::where_clause => where_clause = Some(parse_where(child)?),
+                        Rule::return_clause => return_clause = Some(parse_return(child)?),
+                        Rule::order_by_clause => order_by = parse_order_by(child)?,
+                        Rule::limit_clause => limit = Some(parse_limit(child)?),
+                        _ => {}
+                    }
+                }
+                body = Some(UnwindBody::Return {
+                    where_clause,
+                    return_clause: return_clause.ok_or_else(|| {
+                        GraphError::Serialization("missing RETURN clause in UNWIND".to_string())
+                    })?,
+                    order_by,
+                    limit,
+                });
+            }
+            Rule::unwind_create => {
+                let mut patterns = Vec::new();
+                for child in inner.into_inner() {
+                    if child.as_rule() == Rule::create_pattern_list {
+                        for pat in child.into_inner() {
+                            if pat.as_rule() == Rule::create_pattern {
+                                patterns.push(parse_pattern_inner(pat)?);
+                            }
+                        }
+                    }
+                }
+                body = Some(UnwindBody::Create { patterns });
+            }
+            _ => {}
+        }
+    }
+
+    Ok(UnwindStatement {
+        expr: expr.ok_or_else(|| GraphError::Serialization("missing UNWIND expression".to_string()))?,
+        alias: alias.ok_or_else(|| GraphError::Serialization("missing UNWIND alias".to_string()))?,
+        body: body.ok_or_else(|| GraphError::Serialization("missing UNWIND body".to_string()))?,
+    })
+}
+
+fn parse_unwind_clause(pair: pest::iterators::Pair<Rule>) -> crate::types::Result<UnwindClause> {
+    let mut expr = None;
+    let mut alias = None;
+
+    for inner in pair.into_inner() {
+        match inner.as_rule() {
+            Rule::expr => expr = Some(parse_expr(inner)?),
+            Rule::ident => alias = Some(inner.as_str().to_string()),
+            _ => {}
+        }
+    }
+
+    Ok(UnwindClause {
+        expr: expr.ok_or_else(|| GraphError::Serialization("missing UNWIND expression".to_string()))?,
+        alias: alias.ok_or_else(|| GraphError::Serialization("missing UNWIND alias".to_string()))?,
+    })
+}
+
 fn parse_return(pair: pest::iterators::Pair<Rule>) -> crate::types::Result<ReturnClause> {
     let items_pair = pair
         .into_inner()
@@ -655,6 +732,7 @@ fn parse_comp_op(pair: pest::iterators::Pair<Rule>) -> crate::types::Result<BinO
     if let Some(sub) = pair.into_inner().next() {
         return match sub.as_rule() {
             Rule::starts_with_op => Ok(BinOp::StartsWith),
+            Rule::ends_with_op => Ok(BinOp::EndsWith),
             Rule::contains_op => Ok(BinOp::Contains),
             _ => Err(GraphError::Serialization(format!(
                 "unexpected comp_op sub-rule: {:?}",
@@ -689,6 +767,14 @@ fn parse_expr(pair: pest::iterators::Pair<Rule>) -> crate::types::Result<Expr> {
             Ok(Expr::Property(var, prop))
         }
         Rule::literal => parse_literal(inner),
+        Rule::list_literal => {
+            let items: crate::types::Result<Vec<Expr>> = inner
+                .into_inner()
+                .filter(|p| p.as_rule() == Rule::expr)
+                .map(parse_expr)
+                .collect();
+            Ok(Expr::List(items?))
+        }
         Rule::star => Ok(Expr::Star),
         Rule::variable => Ok(Expr::Variable(
             inner.into_inner().next().unwrap().as_str().to_string(),

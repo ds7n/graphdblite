@@ -86,6 +86,12 @@ pub fn execute(conn: &Connection, plan: &LogicalOp) -> Result<Vec<Record>> {
             on_match,
         } => exec_merge(conn, pattern, on_create, on_match),
 
+        LogicalOp::Unwind {
+            input,
+            expr,
+            alias,
+        } => exec_unwind(conn, input, expr, alias),
+
         LogicalOp::LeftOuterJoin {
             input,
             right,
@@ -342,8 +348,11 @@ fn exec_aggregate(
         return Ok(vec![rec]);
     }
 
-    // Group by keys.
-    let mut groups: Vec<(Vec<Value>, Vec<Record>)> = Vec::new();
+    // Group by keys using a HashMap for O(1) group lookup.
+    // IndexMap would preserve insertion order, but we use a separate Vec
+    // to track key order so we don't need an extra dependency.
+    let mut group_map: HashMap<Vec<Value>, Vec<Record>> = HashMap::new();
+    let mut key_order: Vec<Vec<Value>> = Vec::new();
 
     for rec in &records {
         let key_vals: Vec<Value> = group_keys
@@ -351,15 +360,17 @@ fn exec_aggregate(
             .map(|k| eval_expr(k, rec).unwrap_or(Value::Null))
             .collect();
 
-        if let Some(group) = groups.iter_mut().find(|(k, _)| k == &key_vals) {
-            group.1.push(rec.clone());
+        if let Some(group) = group_map.get_mut(&key_vals) {
+            group.push(rec.clone());
         } else {
-            groups.push((key_vals, vec![rec.clone()]));
+            key_order.push(key_vals.clone());
+            group_map.insert(key_vals, vec![rec.clone()]);
         }
     }
 
     let mut results = Vec::new();
-    for (key_vals, group_records) in &groups {
+    for key_vals in &key_order {
+        let group_records = &group_map[key_vals];
         let mut rec = Record::new();
         for (i, key_expr) in group_keys.iter().enumerate() {
             let col_name = expr_to_column_name(key_expr);
@@ -624,9 +635,8 @@ fn exec_match_create(
                         }
                     }
                     let mut props = Properties::new();
-                    let dummy_rec = Record::new();
                     for (key, expr) in properties {
-                        let val = eval_expr(expr, &dummy_rec)?;
+                        let val = eval_expr(expr, rec)?;
                         props.insert(key.clone(), val);
                     }
                     let id =
@@ -648,9 +658,8 @@ fn exec_match_create(
                         GraphError::Transaction(format!("unbound variable: {dst_alias}"))
                     })?;
                     let mut props = Properties::new();
-                    let dummy_rec = Record::new();
                     for (key, expr) in properties {
-                        let val = eval_expr(expr, &dummy_rec)?;
+                        let val = eval_expr(expr, rec)?;
                         props.insert(key.clone(), val);
                     }
                     edge::create_edge(conn, *src, *dst, edge_type, props)?;
@@ -773,6 +782,39 @@ fn exec_merge(
             Ok(vec![rec])
         }
     }
+}
+
+fn exec_unwind(
+    conn: &Connection,
+    input: &LogicalOp,
+    expr: &Expr,
+    alias: &str,
+) -> Result<Vec<Record>> {
+    let records = execute(conn, input)?;
+    let mut results = Vec::new();
+
+    for rec in &records {
+        let val = eval_expr(expr, rec)?;
+        match val {
+            Value::List(items) => {
+                for item in items {
+                    let mut new_rec = rec.clone();
+                    new_rec.set(alias.to_string(), item);
+                    results.push(new_rec);
+                }
+            }
+            Value::Null => {
+                // UNWIND null produces no rows (like UNWIND []).
+            }
+            _ => {
+                return Err(GraphError::Serialization(format!(
+                    "UNWIND requires a list, got: {val}"
+                )));
+            }
+        }
+    }
+
+    Ok(results)
 }
 
 fn exec_left_outer_join(

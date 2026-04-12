@@ -9,6 +9,7 @@ pub enum Statement {
     Delete(DeleteStatement),
     Set(SetStatement),
     Merge(MergeStatement),
+    Unwind(UnwindStatement),
 }
 
 /// MATCH ... WHERE ... WITH ... RETURN ... ORDER BY ... LIMIT
@@ -17,7 +18,7 @@ pub struct MatchStatement {
     pub patterns: Vec<Pattern>,
     pub optional_patterns: Vec<Vec<Pattern>>,
     pub where_clause: Option<Expr>,
-    pub with_clauses: Vec<WithClause>,
+    pub intermediate_clauses: Vec<IntermediateClause>,
     pub return_clause: ReturnClause,
     pub order_by: Vec<SortItem>,
     pub limit: Option<u64>,
@@ -67,6 +68,42 @@ pub struct MergeStatement {
     pub pattern: Pattern,
     pub on_create: Vec<Assignment>,
     pub on_match: Vec<Assignment>,
+}
+
+/// UNWIND expr AS alias [WHERE ...] RETURN ... / CREATE ...
+#[derive(Debug, Clone, PartialEq)]
+pub struct UnwindStatement {
+    pub expr: Expr,
+    pub alias: String,
+    pub body: UnwindBody,
+}
+
+/// What follows the UNWIND clause.
+#[derive(Debug, Clone, PartialEq)]
+pub enum UnwindBody {
+    Return {
+        where_clause: Option<Expr>,
+        return_clause: ReturnClause,
+        order_by: Vec<SortItem>,
+        limit: Option<u64>,
+    },
+    Create {
+        patterns: Vec<Pattern>,
+    },
+}
+
+/// Intermediate clause (WITH or UNWIND) within a MATCH statement.
+#[derive(Debug, Clone, PartialEq)]
+pub enum IntermediateClause {
+    With(WithClause),
+    Unwind(UnwindClause),
+}
+
+/// UNWIND clause within a MATCH statement.
+#[derive(Debug, Clone, PartialEq)]
+pub struct UnwindClause {
+    pub expr: Expr,
+    pub alias: String,
 }
 
 /// A graph pattern: sequence of node and relationship elements.
@@ -160,6 +197,8 @@ pub enum Expr {
         alternatives: Vec<(Box<Expr>, Box<Expr>)>,
         default: Option<Box<Expr>>,
     },
+    /// List literal: [expr, expr, ...]
+    List(Vec<Expr>),
     /// Wildcard * (used in count(*) and RETURN *)
     Star,
 }
@@ -184,5 +223,6 @@ pub enum BinOp {
     And,
     Or,
     StartsWith,
+    EndsWith,
     Contains,
 }

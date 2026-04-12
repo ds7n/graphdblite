@@ -79,8 +79,10 @@ aggregation (e.g., `WITH n.dept AS dept, count(*) AS cnt WHERE cnt > 1`).
 
 ---
 
-### CASE expressions
-**Problem:** No conditional expressions: `CASE WHEN n.age > 30 THEN 'senior' ELSE 'junior' END`.
+### ~~CASE expressions~~ ✅ DONE
+Added `case_expr` grammar rule with `case_when_clause` and `case_else_clause`,
+`Expr::Case` AST variant, parser support, and eval support. Simple CASE form
+(`CASE WHEN cond THEN val ... ELSE default END`); switched form deferred.
 
 ---
 
@@ -90,13 +92,11 @@ filtered by WHERE. Hash join deferred as optimization.
 
 ---
 
-### DETACH DELETE
-**Problem:** `DELETE n` cascades (deletes edges), which is actually DETACH DELETE
-semantics. Standard Cypher `DELETE` should fail if the node has edges.
-`DETACH DELETE` explicitly cascades.
-
-**Fix:** Add `DETACH DELETE` to grammar, make plain `DELETE` fail on nodes
-with edges.
+### ~~DETACH DELETE~~ ✅ DONE
+Added `detach_keyword` grammar rule, `detach: bool` field on `DeleteStatement`
+and `Delete` IR op, `node_has_edges()` helper, and executor check. Plain
+`DELETE` now fails with `HasEdges` error if the node has edges; `DETACH DELETE`
+cascades as before.
 
 ---
 

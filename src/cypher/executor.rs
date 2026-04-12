@@ -74,7 +74,7 @@ pub fn execute(conn: &Connection, plan: &LogicalOp) -> Result<Vec<Record>> {
             exec_match_create(conn, input, create_ops)
         }
 
-        LogicalOp::Delete { input, variables } => exec_delete(conn, input, variables),
+        LogicalOp::Delete { input, variables, detach } => exec_delete(conn, input, variables, *detach),
 
         LogicalOp::SetProperty { input, assignments } => {
             exec_set_property(conn, input, assignments)
@@ -667,12 +667,17 @@ fn exec_delete(
     conn: &Connection,
     input: &LogicalOp,
     variables: &[String],
+    detach: bool,
 ) -> Result<Vec<Record>> {
     let records = execute(conn, input)?;
     for rec in &records {
         for var in variables {
             if let Some(Value::I64(id)) = rec.get(var) {
-                node::delete_node(conn, NodeId(*id as u64))?;
+                let node_id = NodeId(*id as u64);
+                if !detach && node::node_has_edges(conn, node_id)? {
+                    return Err(GraphError::HasEdges(node_id));
+                }
+                node::delete_node(conn, node_id)?;
             }
         }
     }

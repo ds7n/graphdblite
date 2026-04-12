@@ -44,11 +44,12 @@ pub struct MatchCreateStatement {
     pub create_patterns: Vec<Pattern>,
 }
 
-/// MATCH ... DELETE n, m
+/// MATCH ... [DETACH] DELETE n, m
 #[derive(Debug, Clone, PartialEq)]
 pub struct DeleteStatement {
     pub patterns: Vec<Pattern>,
     pub where_clause: Option<Expr>,
+    pub detach: bool,
     pub variables: Vec<String>,
 }
 
@@ -153,6 +154,11 @@ pub enum Expr {
     FunctionCall {
         name: String,
         args: Vec<Expr>,
+    },
+    /// CASE WHEN cond THEN result ... ELSE default END
+    Case {
+        alternatives: Vec<(Box<Expr>, Box<Expr>)>,
+        default: Option<Box<Expr>>,
     },
     /// Wildcard * (used in count(*) and RETURN *)
     Star,

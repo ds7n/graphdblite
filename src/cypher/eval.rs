@@ -36,6 +36,17 @@ pub fn eval_expr(expr: &Expr, record: &Record) -> crate::types::Result<Value> {
             let val = eval_expr(inner, record)?;
             Ok(Value::Bool(!matches!(val, Value::Null)))
         }
+        Expr::Case { alternatives, default } => {
+            for (cond, result) in alternatives {
+                if eval_predicate(cond, record)? {
+                    return eval_expr(result, record);
+                }
+            }
+            match default {
+                Some(expr) => eval_expr(expr, record),
+                None => Ok(Value::Null),
+            }
+        }
         Expr::FunctionCall { .. } => {
             // Aggregate functions are handled by the Aggregate operator, not here.
             Ok(Value::Null)
@@ -133,6 +144,7 @@ pub fn expr_to_column_name(expr: &Expr) -> String {
         }
         Expr::Star => "*".to_string(),
         Expr::Literal(lit) => format!("{lit:?}"),
+        Expr::Case { .. } => "CASE".to_string(),
         _ => "_expr".to_string(),
     }
 }

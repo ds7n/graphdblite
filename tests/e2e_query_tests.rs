@@ -178,7 +178,7 @@ fn e2e_delete_node() {
     let mut db = setup_social_graph();
     {
         let tx = db.begin_write().unwrap();
-        tx.query("MATCH (n:Person) WHERE n.name = 'Charlie' DELETE n").unwrap();
+        tx.query("MATCH (n:Person) WHERE n.name = 'Charlie' DETACH DELETE n").unwrap();
         tx.commit().unwrap();
     }
     {
@@ -774,4 +774,113 @@ fn e2e_with_passthrough_variable() {
     assert_eq!(results[1].get("n.name"), Some(&Value::String("Bob".into())));
     assert_eq!(results[2].get("n.name"), Some(&Value::String("Charlie".into())));
     tx.commit().unwrap();
+}
+
+// === CASE expression tests ===
+
+#[test]
+fn e2e_case_expression_with_else() {
+    let mut db = setup_social_graph();
+    let tx = db.begin_read().unwrap();
+    let results = tx
+        .query(
+            "MATCH (n:Person) RETURN n.name, CASE WHEN n.age > 30 THEN 'senior' ELSE 'junior' END AS category ORDER BY n.name",
+        )
+        .unwrap();
+    assert_eq!(results.len(), 3);
+    // Alice (30) → junior, Bob (25) → junior, Charlie (35) → senior
+    assert_eq!(results[0].get("category"), Some(&Value::String("junior".into())));
+    assert_eq!(results[1].get("category"), Some(&Value::String("junior".into())));
+    assert_eq!(results[2].get("category"), Some(&Value::String("senior".into())));
+    tx.commit().unwrap();
+}
+
+#[test]
+fn e2e_case_expression_multiple_when() {
+    let mut db = setup_social_graph();
+    let tx = db.begin_read().unwrap();
+    let results = tx
+        .query(
+            "MATCH (n:Person) RETURN n.name, CASE WHEN n.age < 26 THEN 'young' WHEN n.age < 31 THEN 'mid' ELSE 'senior' END AS tier ORDER BY n.name",
+        )
+        .unwrap();
+    assert_eq!(results.len(), 3);
+    // Alice (30) → mid, Bob (25) → young, Charlie (35) → senior
+    assert_eq!(results[0].get("tier"), Some(&Value::String("mid".into())));
+    assert_eq!(results[1].get("tier"), Some(&Value::String("young".into())));
+    assert_eq!(results[2].get("tier"), Some(&Value::String("senior".into())));
+    tx.commit().unwrap();
+}
+
+#[test]
+fn e2e_case_expression_no_else_returns_null() {
+    let mut db = setup_social_graph();
+    let tx = db.begin_read().unwrap();
+    let results = tx
+        .query(
+            "MATCH (n:Person) WHERE n.name = 'Bob' RETURN CASE WHEN n.age > 30 THEN 'senior' END AS category",
+        )
+        .unwrap();
+    assert_eq!(results.len(), 1);
+    // Bob (25) → no WHEN matches, no ELSE → Null
+    assert_eq!(results[0].get("category"), Some(&Value::Null));
+    tx.commit().unwrap();
+}
+
+// === DETACH DELETE tests ===
+
+#[test]
+fn e2e_plain_delete_fails_on_node_with_edges() {
+    let mut db = setup_social_graph();
+    let tx = db.begin_write().unwrap();
+    // Charlie has incoming KNOWS edge from Bob — plain DELETE should fail.
+    let result = tx.query("MATCH (n:Person) WHERE n.name = 'Charlie' DELETE n");
+    assert!(result.is_err());
+    let err = result.unwrap_err();
+    assert!(err.to_string().contains("still has edges"));
+    tx.commit().unwrap();
+}
+
+#[test]
+fn e2e_plain_delete_succeeds_on_isolated_node() {
+    let mut db = Database::open_memory().unwrap();
+    {
+        let tx = db.begin_write().unwrap();
+        tx.query("CREATE (a:Person {name: 'Alice'})").unwrap();
+        tx.commit().unwrap();
+    }
+    {
+        let tx = db.begin_write().unwrap();
+        // Alice has no edges — plain DELETE should work.
+        tx.query("MATCH (n:Person) WHERE n.name = 'Alice' DELETE n").unwrap();
+        tx.commit().unwrap();
+    }
+    {
+        let tx = db.begin_read().unwrap();
+        let results = tx.query("MATCH (n:Person) RETURN n.name").unwrap();
+        assert_eq!(results.len(), 0);
+        tx.commit().unwrap();
+    }
+}
+
+#[test]
+fn e2e_detach_delete_cascades_edges() {
+    let mut db = setup_social_graph();
+    {
+        let tx = db.begin_write().unwrap();
+        // Bob has edges (Alice->Bob KNOWS, Bob->Charlie KNOWS) — DETACH DELETE cascades.
+        tx.query("MATCH (n:Person) WHERE n.name = 'Bob' DETACH DELETE n").unwrap();
+        tx.commit().unwrap();
+    }
+    {
+        let tx = db.begin_read().unwrap();
+        let results = tx.query("MATCH (n:Person) RETURN n.name ORDER BY n.name").unwrap();
+        assert_eq!(results.len(), 2);
+        assert_eq!(results[0].get("n.name"), Some(&Value::String("Alice".into())));
+        assert_eq!(results[1].get("n.name"), Some(&Value::String("Charlie".into())));
+        // No KNOWS edges should remain.
+        let edges = tx.query("MATCH (a)-[:KNOWS]->(b) RETURN a.name").unwrap();
+        assert_eq!(edges.len(), 0);
+        tx.commit().unwrap();
+    }
 }

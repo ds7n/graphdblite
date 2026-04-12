@@ -46,8 +46,10 @@ match_create_stmt = {
 delete_stmt = {
     ^"MATCH" ~ pattern_list ~
     where_clause? ~
-    ^"DELETE" ~ ident_list
+    detach_keyword? ~ ^"DELETE" ~ ident_list
 }
+
+detach_keyword = { ^"DETACH" }
 
 // === SET statement ===
 
@@ -111,7 +113,16 @@ limit_clause = { ^"LIMIT" ~ integer }
 bool_expr = { bool_term ~ (or_op ~ bool_term)* }
 bool_term = { bool_factor ~ (and_op ~ bool_factor)* }
 bool_factor = { not_op? ~ bool_primary }
-bool_primary = { is_not_null_check | is_null_check | comparison | "(" ~ bool_expr ~ ")" }
+bool_primary = { case_expr | is_not_null_check | is_null_check | comparison | "(" ~ bool_expr ~ ")" }
+
+case_expr = {
+    ^"CASE"
+    ~ case_when_clause+
+    ~ case_else_clause?
+    ~ ^"END"
+}
+case_when_clause = { ^"WHEN" ~ bool_expr ~ ^"THEN" ~ expr }
+case_else_clause = { ^"ELSE" ~ expr }
 
 is_null_check = { expr ~ ^"IS" ~ ^"NULL" }
 is_not_null_check = { expr ~ ^"IS" ~ ^"NOT" ~ ^"NULL" }
@@ -125,7 +136,7 @@ comp_op = { "<>" | "<=" | ">=" | "<" | ">" | "=" | starts_with_op | contains_op 
 starts_with_op = { ^"STARTS" ~ ^"WITH" }
 contains_op = { ^"CONTAINS" }
 
-expr = { function_call | property_access | literal | star | variable }
+expr = { case_expr | function_call | property_access | literal | star | variable }
 
 property_access = { ident ~ "." ~ ident }
 variable = { ident }
@@ -148,10 +159,11 @@ ident_list = { ident ~ ("," ~ ident)* }
 ident = @{ !keyword ~ (ASCII_ALPHA | "_") ~ (ASCII_ALPHANUMERIC | "_")* }
 
 keyword = {
-    (^"MATCH" | ^"WHERE" | ^"RETURN" | ^"CREATE" | ^"DELETE" | ^"SET" |
+    (^"MATCH" | ^"WHERE" | ^"RETURN" | ^"CREATE" | ^"DELETE" | ^"DETACH" | ^"SET" |
      ^"MERGE" | ^"ORDER" | ^"BY" | ^"LIMIT" | ^"AND" | ^"OR" | ^"NOT" |
      ^"AS" | ^"IS" | ^"ON" | ^"ASC" | ^"DESC" | ^"STARTS" | ^"WITH" | ^"CONTAINS" |
      ^"OPTIONAL" | ^"TRUE" | ^"FALSE" | ^"NULL" |
+     ^"CASE" | ^"WHEN" | ^"THEN" | ^"ELSE" | ^"END" |
      ^"count" | ^"sum" | ^"avg" | ^"min" | ^"max" | ^"collect")
     ~ !(ASCII_ALPHANUMERIC | "_")
 }

@@ -42,6 +42,16 @@ pub fn node_exists(conn: &Connection, id: NodeId) -> Result<bool> {
     Ok(kv::get(conn, kv::TABLE_NODES, &id.to_be_bytes())?.is_some())
 }
 
+/// Check if a node has any edges (incoming or outgoing).
+pub fn node_has_edges(conn: &Connection, id: NodeId) -> Result<bool> {
+    let out = edge::get_all_edge_labels(conn, id, Direction::Outgoing)?;
+    if !out.is_empty() {
+        return Ok(true);
+    }
+    let inc = edge::get_all_edge_labels(conn, id, Direction::Incoming)?;
+    Ok(!inc.is_empty())
+}
+
 /// Delete a node and all its edges (cascading).
 pub fn delete_node(conn: &Connection, id: NodeId) -> Result<()> {
     // Verify node exists.

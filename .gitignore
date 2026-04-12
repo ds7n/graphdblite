@@ -3,3 +3,6 @@
 *.so
 .venv/
 uv.lock
+.claude/
+.symtext/
+.symtext.toml

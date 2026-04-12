@@ -884,3 +884,35 @@ fn e2e_detach_delete_cascades_edges() {
         tx.commit().unwrap();
     }
 }
+
+// === Parse error message tests ===
+
+#[test]
+fn e2e_parse_error_is_human_readable() {
+    let mut db = Database::open_memory().unwrap();
+    let tx = db.begin_read().unwrap();
+    let err = tx.query("GIBBERISH").unwrap_err();
+    let msg = err.to_string();
+    // Should not contain "serialization error" prefix.
+    assert!(!msg.contains("serialization error"), "got: {msg}");
+    // Should contain humanized rule name.
+    assert!(msg.contains("Cypher statement"), "got: {msg}");
+    // Should contain positional info.
+    assert!(msg.contains("1:1"), "got: {msg}");
+    tx.commit().unwrap();
+}
+
+#[test]
+fn e2e_parse_error_missing_return_expression() {
+    let mut db = Database::open_memory().unwrap();
+    let tx = db.begin_read().unwrap();
+    let err = tx.query("MATCH (n) RETURN").unwrap_err();
+    let msg = err.to_string();
+    assert!(!msg.contains("serialization error"), "got: {msg}");
+    // Should mention expression-related expectation.
+    assert!(
+        msg.contains("expression") || msg.contains("CASE") || msg.contains("function"),
+        "got: {msg}"
+    );
+    tx.commit().unwrap();
+}

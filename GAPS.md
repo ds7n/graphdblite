@@ -100,21 +100,20 @@ cascades as before.
 
 ---
 
-### Error messages
-**Problem:** Parse errors from pest are technical and reference grammar rules.
-Users need human-readable error messages pointing to the location in their query.
-
-**Fix:** Post-process pest errors into user-friendly messages with line/column
-and a pointer to the problematic token.
+### ~~Error messages~~ ✅ DONE
+Added `ParseError` variant to `GraphError` and `humanize_pest_error()` in the
+parser. Uses pest's `renamed_rules()` to replace grammar rule names with
+user-friendly descriptions (e.g., `expr` → "an expression"). Keeps pest's
+positional formatting (line/column pointer). No more "serialization error:
+parse error:" double prefix.
 
 ---
 
-### Python: maturin packaging
-**Problem:** Python bindings compile but aren't installable via `pip install graphdblite`.
-Requires `maturin develop` in the repo.
-
-**Fix:** Set up CI to build wheels with `maturin build`, publish to PyPI.
-`pyproject.toml` and `python/graphdblite/__init__.py` are already in place.
+### ~~Python: maturin packaging~~ ✅ DONE
+Fixed `pyproject.toml` with `python-source = "python"` so the wrapper package
+is included in wheels. Fixed `Value::List` handling in Python bindings. `maturin
+build --release` produces a working wheel; `maturin develop` installs editable.
+CI for PyPI publishing deferred (Forgejo Actions workflow TBD).
 
 ---
 

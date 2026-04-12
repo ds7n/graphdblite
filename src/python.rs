@@ -13,6 +13,10 @@ fn value_to_py(py: Python, val: &Value) -> PyObject {
         Value::I64(n) => n.to_object(py),
         Value::F64(n) => n.to_object(py),
         Value::String(s) => s.to_object(py),
+        Value::List(items) => {
+            let py_items: Vec<PyObject> = items.iter().map(|v| value_to_py(py, v)).collect();
+            py_items.to_object(py)
+        }
     }
 }
 

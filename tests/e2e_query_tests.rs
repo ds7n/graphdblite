@@ -605,3 +605,108 @@ fn e2e_optional_match_no_matches() {
     assert_eq!(results[0].get("c.name"), Some(&Value::Null));
     tx.commit().unwrap();
 }
+
+// --- Index-aware query planning tests ---
+
+#[test]
+fn e2e_index_lookup_single_property() {
+    let mut db = Database::open_memory().unwrap();
+    {
+        let tx = db.begin_write().unwrap();
+        tx.query("CREATE (a:Person {name: 'Alice', age: 30})").unwrap();
+        tx.query("CREATE (b:Person {name: 'Bob', age: 25})").unwrap();
+        tx.query("CREATE (c:Person {name: 'Charlie', age: 35})").unwrap();
+        tx.create_index("Person", "name").unwrap();
+        tx.commit().unwrap();
+    }
+    let tx = db.begin_read().unwrap();
+    // This should use IndexLookup instead of Scan+Filter.
+    let results = tx
+        .query("MATCH (n:Person {name: 'Alice'}) RETURN n.name, n.age")
+        .unwrap();
+    assert_eq!(results.len(), 1);
+    assert_eq!(results[0].get("n.name"), Some(&Value::String("Alice".into())));
+    assert_eq!(results[0].get("n.age"), Some(&Value::I64(30)));
+    tx.commit().unwrap();
+}
+
+#[test]
+fn e2e_index_lookup_no_match() {
+    let mut db = Database::open_memory().unwrap();
+    {
+        let tx = db.begin_write().unwrap();
+        tx.query("CREATE (a:Person {name: 'Alice'})").unwrap();
+        tx.create_index("Person", "name").unwrap();
+        tx.commit().unwrap();
+    }
+    let tx = db.begin_read().unwrap();
+    let results = tx
+        .query("MATCH (n:Person {name: 'Nobody'}) RETURN n.name")
+        .unwrap();
+    assert!(results.is_empty());
+    tx.commit().unwrap();
+}
+
+#[test]
+fn e2e_index_lookup_with_remaining_filter() {
+    let mut db = Database::open_memory().unwrap();
+    {
+        let tx = db.begin_write().unwrap();
+        tx.query("CREATE (a:Person {name: 'Alice', age: 30})").unwrap();
+        tx.query("CREATE (b:Person {name: 'Alice', age: 25})").unwrap();
+        tx.query("CREATE (c:Person {name: 'Bob', age: 30})").unwrap();
+        tx.create_index("Person", "name").unwrap();
+        tx.commit().unwrap();
+    }
+    let tx = db.begin_read().unwrap();
+    // Index narrows to the two Alices, remaining filter picks age=30.
+    let results = tx
+        .query("MATCH (n:Person {name: 'Alice', age: 30}) RETURN n.name, n.age")
+        .unwrap();
+    assert_eq!(results.len(), 1);
+    assert_eq!(results[0].get("n.name"), Some(&Value::String("Alice".into())));
+    assert_eq!(results[0].get("n.age"), Some(&Value::I64(30)));
+    tx.commit().unwrap();
+}
+
+#[test]
+fn e2e_index_lookup_in_relationship_pattern() {
+    let mut db = Database::open_memory().unwrap();
+    {
+        let tx = db.begin_write().unwrap();
+        tx.query("CREATE (a:Person {name: 'Alice'})").unwrap();
+        tx.query("CREATE (b:Person {name: 'Bob'})").unwrap();
+        tx.create_edge(NodeId(1), NodeId(2), "KNOWS", HashMap::new()).unwrap();
+        tx.create_index("Person", "name").unwrap();
+        tx.commit().unwrap();
+    }
+    let tx = db.begin_read().unwrap();
+    // Start node uses index lookup, then expand.
+    let results = tx
+        .query("MATCH (a:Person {name: 'Alice'})-[:KNOWS]->(b:Person) RETURN a.name, b.name")
+        .unwrap();
+    assert_eq!(results.len(), 1);
+    assert_eq!(results[0].get("a.name"), Some(&Value::String("Alice".into())));
+    assert_eq!(results[0].get("b.name"), Some(&Value::String("Bob".into())));
+    tx.commit().unwrap();
+}
+
+#[test]
+fn e2e_no_index_falls_back_to_scan() {
+    // Same query without an index — should still work via Scan+Filter.
+    let mut db = Database::open_memory().unwrap();
+    {
+        let tx = db.begin_write().unwrap();
+        tx.query("CREATE (a:Person {name: 'Alice', age: 30})").unwrap();
+        tx.query("CREATE (b:Person {name: 'Bob', age: 25})").unwrap();
+        tx.commit().unwrap();
+    }
+    let tx = db.begin_read().unwrap();
+    let results = tx
+        .query("MATCH (n:Person {name: 'Alice'}) RETURN n.name, n.age")
+        .unwrap();
+    assert_eq!(results.len(), 1);
+    assert_eq!(results[0].get("n.name"), Some(&Value::String("Alice".into())));
+    assert_eq!(results[0].get("n.age"), Some(&Value::I64(30)));
+    tx.commit().unwrap();
+}

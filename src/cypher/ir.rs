@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-use crate::cypher::ast::{Assignment, Expr, Pattern, ReturnItem, SortItem};
+use crate::cypher::ast::{Assignment, Expr, LiteralValue, Pattern, ReturnItem, SortItem};
 use crate::types::Direction;
 
 /// Logical query plan operator. Language-agnostic IR that the executor consumes.
@@ -10,6 +10,16 @@ pub enum LogicalOp {
     Scan {
         label: String,
         alias: String,
+    },
+
+    /// Index-based lookup: use a secondary index instead of a full label scan.
+    IndexLookup {
+        label: String,
+        alias: String,
+        property: String,
+        value: LiteralValue,
+        /// Remaining inline property filters not covered by the index.
+        remaining_filters: Option<Expr>,
     },
 
     /// Expand along edges from a source node.

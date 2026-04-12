@@ -13,7 +13,7 @@ struct CypherParser;
 /// Parse a Cypher query string into a Statement AST.
 pub fn parse(input: &str) -> crate::types::Result<Statement> {
     let pairs = CypherParser::parse(Rule::statement, input)
-        .map_err(|e| GraphError::Serialization(format!("parse error: {e}")))?;
+        .map_err(|e| GraphError::ParseError(humanize_pest_error(e)))?;
 
     let statement_pair = pairs
         .into_iter()
@@ -766,4 +766,53 @@ fn parse_literal(pair: pest::iterators::Pair<Rule>) -> crate::types::Result<Expr
             inner.as_rule()
         ))),
     }
+}
+
+// === Error humanization ===
+
+/// Map pest grammar rule names to user-friendly descriptions.
+fn humanize_rule_name(rule: &str) -> &str {
+    match rule {
+        "statement" => "a Cypher statement (MATCH, CREATE, DELETE, MERGE, ...)",
+        "expr" => "an expression (property, literal, or function call)",
+        "bool_expr" | "bool_primary" | "bool_factor" | "bool_term" => "a condition",
+        "comparison" => "a comparison (=, <>, <, >, <=, >=)",
+        "ident" => "an identifier",
+        "pattern" | "pattern_list" => "a graph pattern like (n:Label)",
+        "node_pattern" => "a node pattern like (n:Label {prop: value})",
+        "rel_pattern" | "rel_right" | "rel_left" | "rel_undirected" => {
+            "a relationship pattern like -[:TYPE]->"
+        }
+        "return_clause" => "a RETURN clause",
+        "return_items" | "return_item" => "a RETURN expression",
+        "where_clause" => "a WHERE clause",
+        "with_clause" => "a WITH clause",
+        "order_by_clause" => "an ORDER BY clause",
+        "limit_clause" => "a LIMIT clause",
+        "literal" => "a value (string, number, boolean, or null)",
+        "integer_literal" | "integer" => "an integer",
+        "float_literal" => "a number",
+        "string_literal" => "a string (e.g. 'hello')",
+        "property_access" => "a property access like n.name",
+        "property_map" => "a property map like {name: 'Alice'}",
+        "label_spec" => "a label like :Person",
+        "function_call" => "a function call like count(*)",
+        "case_when_clause" => "a WHEN condition",
+        "case_else_clause" => "an ELSE value",
+        "case_expr" => "a CASE expression",
+        "comp_op" => "a comparison operator (=, <>, <, >)",
+        "alias" => "an alias (AS name)",
+        "assignment" | "assignment_list" => "a property assignment like n.prop = value",
+        "detach_keyword" => "DETACH",
+        "EOI" => "end of query",
+        _ => rule,
+    }
+}
+
+/// Convert a pest parse error into a human-friendly error message.
+fn humanize_pest_error(err: pest::error::Error<Rule>) -> String {
+    let renamed = err.renamed_rules(|rule| {
+        humanize_rule_name(&format!("{rule:?}")).to_string()
+    });
+    format!("{renamed}")
 }

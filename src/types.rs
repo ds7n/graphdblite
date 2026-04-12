@@ -103,6 +103,9 @@ pub enum GraphError {
     #[error("serialization error: {0}")]
     Serialization(String),
 
+    #[error("{0}")]
+    ParseError(String),
+
     #[error("node not found: {0}")]
     NodeNotFound(NodeId),
 

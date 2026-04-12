@@ -11,3 +11,4 @@ requires-python = ">=3.9"
 [tool.maturin]
 features = ["python"]
 module-name = "graphdblite._graphdblite"
+python-source = "python"

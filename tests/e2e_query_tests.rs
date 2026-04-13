@@ -1565,3 +1565,114 @@ fn e2e_list_literal_in_return() {
     );
     tx.commit().unwrap();
 }
+
+// === EXISTS subquery tests ===
+
+#[test]
+fn e2e_exists_simple_pattern() {
+    // Alice KNOWS Bob, Bob KNOWS Charlie, Charlie knows nobody.
+    let mut db = setup_social_graph();
+    let tx = db.begin_read().unwrap();
+    let results = tx
+        .query("MATCH (n:Person) WHERE EXISTS { (n)-[:KNOWS]->(:Person) } RETURN n.name ORDER BY n.name")
+        .unwrap();
+    // Alice -> Bob, Bob -> Charlie. Charlie has no outgoing KNOWS.
+    let names: Vec<&str> = results
+        .iter()
+        .map(|r| match r.get("n.name").unwrap() { Value::String(s) => s.as_str(), _ => panic!() })
+        .collect();
+    assert_eq!(names, vec!["Alice", "Bob"]);
+    tx.commit().unwrap();
+}
+
+#[test]
+fn e2e_exists_with_where_filter() {
+    let mut db = setup_social_graph();
+    let tx = db.begin_read().unwrap();
+    // Find people who know someone older than 30.
+    let results = tx
+        .query(
+            "MATCH (n:Person) WHERE EXISTS { (n)-[:KNOWS]->(m:Person) WHERE m.age > 30 } RETURN n.name",
+        )
+        .unwrap();
+    // Bob knows Charlie (age 35). Alice knows Bob (age 25) — doesn't match.
+    assert_eq!(results.len(), 1);
+    assert_eq!(
+        results[0].get("n.name").unwrap(),
+        &Value::String("Bob".to_string())
+    );
+    tx.commit().unwrap();
+}
+
+#[test]
+fn e2e_not_exists() {
+    let mut db = setup_social_graph();
+    let tx = db.begin_read().unwrap();
+    // Find people who do NOT know anyone.
+    let results = tx
+        .query("MATCH (n:Person) WHERE NOT EXISTS { (n)-[:KNOWS]->(:Person) } RETURN n.name")
+        .unwrap();
+    // Only Charlie has no outgoing KNOWS edges.
+    assert_eq!(results.len(), 1);
+    assert_eq!(
+        results[0].get("n.name").unwrap(),
+        &Value::String("Charlie".to_string())
+    );
+    tx.commit().unwrap();
+}
+
+#[test]
+fn e2e_exists_correlated_variable() {
+    // Tests that the EXISTS subquery correctly correlates with the outer MATCH.
+    let mut db = setup_social_graph();
+    let tx = db.begin_read().unwrap();
+    // Find people who work at any company.
+    let results = tx
+        .query("MATCH (n:Person) WHERE EXISTS { (n)-[:WORKS_AT]->(:Company) } RETURN n.name")
+        .unwrap();
+    // Only Alice WORKS_AT Acme.
+    assert_eq!(results.len(), 1);
+    assert_eq!(
+        results[0].get("n.name").unwrap(),
+        &Value::String("Alice".to_string())
+    );
+    tx.commit().unwrap();
+}
+
+#[test]
+fn e2e_exists_with_property_match() {
+    let mut db = setup_social_graph();
+    let tx = db.begin_read().unwrap();
+    // Find people who know someone named 'Bob' (using WHERE in the subquery).
+    let results = tx
+        .query(
+            "MATCH (n:Person) WHERE EXISTS { (n)-[:KNOWS]->(m:Person) WHERE m.name = 'Bob' } RETURN n.name",
+        )
+        .unwrap();
+    // Only Alice knows Bob.
+    assert_eq!(results.len(), 1);
+    assert_eq!(
+        results[0].get("n.name").unwrap(),
+        &Value::String("Alice".to_string())
+    );
+    tx.commit().unwrap();
+}
+
+#[test]
+fn e2e_exists_combined_with_and() {
+    let mut db = setup_social_graph();
+    let tx = db.begin_read().unwrap();
+    // People older than 28 who also know someone.
+    let results = tx
+        .query(
+            "MATCH (n:Person) WHERE n.age > 28 AND EXISTS { (n)-[:KNOWS]->(:Person) } RETURN n.name",
+        )
+        .unwrap();
+    // Alice (30, knows Bob). Charlie (35, knows nobody) — fails EXISTS.
+    assert_eq!(results.len(), 1);
+    assert_eq!(
+        results[0].get("n.name").unwrap(),
+        &Value::String("Alice".to_string())
+    );
+    tx.commit().unwrap();
+}

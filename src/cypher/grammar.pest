@@ -133,7 +133,9 @@ limit_clause = { ^"LIMIT" ~ integer }
 bool_expr = { bool_term ~ (or_op ~ bool_term)* }
 bool_term = { bool_factor ~ (and_op ~ bool_factor)* }
 bool_factor = { not_op? ~ bool_primary }
-bool_primary = { case_expr | is_not_null_check | is_null_check | comparison | "(" ~ bool_expr ~ ")" }
+bool_primary = { case_expr | exists_subquery | is_not_null_check | is_null_check | comparison | "(" ~ bool_expr ~ ")" }
+
+exists_subquery = { ^"EXISTS" ~ "{" ~ pattern_list ~ where_clause? ~ "}" }
 
 case_expr = {
     ^"CASE"
@@ -186,7 +188,7 @@ keyword = {
      ^"MERGE" | ^"ORDER" | ^"BY" | ^"LIMIT" | ^"AND" | ^"OR" | ^"NOT" |
      ^"AS" | ^"IS" | ^"ON" | ^"ASC" | ^"DESC" | ^"STARTS" | ^"ENDS" | ^"WITH" | ^"CONTAINS" |
      ^"OPTIONAL" | ^"UNWIND" | ^"TRUE" | ^"FALSE" | ^"NULL" |
-     ^"CASE" | ^"WHEN" | ^"THEN" | ^"ELSE" | ^"END" |
+     ^"CASE" | ^"WHEN" | ^"THEN" | ^"ELSE" | ^"END" | ^"EXISTS" |
      ^"count" | ^"sum" | ^"avg" | ^"min" | ^"max" | ^"collect")
     ~ !(ASCII_ALPHANUMERIC | "_")
 }

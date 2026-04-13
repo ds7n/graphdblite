@@ -141,7 +141,7 @@ fn exec_index_lookup(
         rec.set(format!("{alias}.__id"), Value::I64(n.id.0 as i64));
 
         if let Some(filter) = remaining_filters {
-            if !eval_predicate(filter, &rec)? {
+            if !eval_predicate(filter, &rec, conn)? {
                 continue;
             }
         }
@@ -242,7 +242,7 @@ fn exec_filter(
     let records = execute(conn, input)?;
     let mut results = Vec::new();
     for rec in records {
-        if eval_predicate(predicate, &rec)? {
+        if eval_predicate(predicate, &rec, conn)? {
             results.push(rec);
         }
     }
@@ -291,7 +291,7 @@ fn exec_project(
                         let val = if let Some(existing) = rec.get(&col_name) {
                             existing.clone()
                         } else {
-                            eval_expr(&item.expr, rec)?
+                            eval_expr(&item.expr, rec, conn)?
                         };
                         projected.set(col_name, val);
                     }
@@ -305,7 +305,7 @@ fn exec_project(
                     let val = if let Some(existing) = rec.get(&col_name) {
                         existing.clone()
                     } else {
-                        eval_expr(&item.expr, rec)?
+                        eval_expr(&item.expr, rec, conn)?
                     };
                     projected.set(col_name, val);
                 }
@@ -342,7 +342,7 @@ fn exec_aggregate(
                 .alias
                 .clone()
                 .unwrap_or_else(|| format!("{}(*)", agg_fn_name(agg.function)));
-            let val = compute_aggregate(agg, &records)?;
+            let val = compute_aggregate(agg, &records, conn)?;
             rec.set(col_name, val);
         }
         return Ok(vec![rec]);
@@ -357,7 +357,7 @@ fn exec_aggregate(
     for rec in &records {
         let key_vals: Vec<Value> = group_keys
             .iter()
-            .map(|k| eval_expr(k, rec).unwrap_or(Value::Null))
+            .map(|k| eval_expr(k, rec, conn).unwrap_or(Value::Null))
             .collect();
 
         if let Some(group) = group_map.get_mut(&key_vals) {
@@ -381,7 +381,7 @@ fn exec_aggregate(
                 .alias
                 .clone()
                 .unwrap_or_else(|| format!("{}(*)", agg_fn_name(agg.function)));
-            let val = compute_aggregate(agg, group_records)?;
+            let val = compute_aggregate(agg, group_records, conn)?;
             rec.set(col_name, val);
         }
         results.push(rec);
@@ -390,7 +390,7 @@ fn exec_aggregate(
     Ok(results)
 }
 
-fn compute_aggregate(agg: &AggregateExpr, records: &[Record]) -> Result<Value> {
+fn compute_aggregate(agg: &AggregateExpr, records: &[Record], conn: &Connection) -> Result<Value> {
     match agg.function {
         AggregateFunction::Count => {
             if matches!(agg.input, Expr::Star) {
@@ -398,7 +398,7 @@ fn compute_aggregate(agg: &AggregateExpr, records: &[Record]) -> Result<Value> {
             } else {
                 let count = records
                     .iter()
-                    .filter(|r| !matches!(eval_expr(&agg.input, r), Ok(Value::Null)))
+                    .filter(|r| !matches!(eval_expr(&agg.input, r, conn), Ok(Value::Null)))
                     .count();
                 Ok(Value::I64(count as i64))
             }
@@ -406,7 +406,7 @@ fn compute_aggregate(agg: &AggregateExpr, records: &[Record]) -> Result<Value> {
         AggregateFunction::Sum => {
             let mut sum = 0.0f64;
             for rec in records {
-                match eval_expr(&agg.input, rec)? {
+                match eval_expr(&agg.input, rec, conn)? {
                     Value::I64(n) => sum += n as f64,
                     Value::F64(n) => sum += n,
                     _ => {}
@@ -418,7 +418,7 @@ fn compute_aggregate(agg: &AggregateExpr, records: &[Record]) -> Result<Value> {
             let mut sum = 0.0f64;
             let mut count = 0;
             for rec in records {
-                match eval_expr(&agg.input, rec)? {
+                match eval_expr(&agg.input, rec, conn)? {
                     Value::I64(n) => {
                         sum += n as f64;
                         count += 1;
@@ -439,7 +439,7 @@ fn compute_aggregate(agg: &AggregateExpr, records: &[Record]) -> Result<Value> {
         AggregateFunction::Min => {
             let mut min: Option<Value> = None;
             for rec in records {
-                let val = eval_expr(&agg.input, rec)?;
+                let val = eval_expr(&agg.input, rec, conn)?;
                 if !matches!(val, Value::Null) {
                     min = Some(match min {
                         None => val,
@@ -458,7 +458,7 @@ fn compute_aggregate(agg: &AggregateExpr, records: &[Record]) -> Result<Value> {
         AggregateFunction::Max => {
             let mut max: Option<Value> = None;
             for rec in records {
-                let val = eval_expr(&agg.input, rec)?;
+                let val = eval_expr(&agg.input, rec, conn)?;
                 if !matches!(val, Value::Null) {
                     max = Some(match max {
                         None => val,
@@ -477,7 +477,7 @@ fn compute_aggregate(agg: &AggregateExpr, records: &[Record]) -> Result<Value> {
         AggregateFunction::Collect => {
             let mut items = Vec::new();
             for rec in records {
-                let val = eval_expr(&agg.input, rec)?;
+                let val = eval_expr(&agg.input, rec, conn)?;
                 if !matches!(val, Value::Null) {
                     items.push(val);
                 }
@@ -495,8 +495,8 @@ fn exec_sort(
     let mut records = execute(conn, input)?;
     records.sort_by(|a, b| {
         for item in items {
-            let va = eval_expr(&item.expr, a).unwrap_or(Value::Null);
-            let vb = eval_expr(&item.expr, b).unwrap_or(Value::Null);
+            let va = eval_expr(&item.expr, a, conn).unwrap_or(Value::Null);
+            let vb = eval_expr(&item.expr, b, conn).unwrap_or(Value::Null);
             let ord = compare_values_for_sort(&va, &vb);
             let ord = if item.descending { ord.reverse() } else { ord };
             if ord != std::cmp::Ordering::Equal {
@@ -522,7 +522,7 @@ fn exec_create_node(
     let mut props = Properties::new();
     let dummy_rec = Record::new();
     for (key, expr) in properties {
-        let val = eval_expr(expr, &dummy_rec)?;
+        let val = eval_expr(expr, &dummy_rec, conn)?;
         props.insert(key.clone(), val);
     }
 
@@ -563,7 +563,7 @@ fn exec_create_sequence(conn: &Connection, ops: &[LogicalOp]) -> Result<Vec<Reco
                 let mut props = Properties::new();
                 let dummy_rec = Record::new();
                 for (key, expr) in properties {
-                    let val = eval_expr(expr, &dummy_rec)?;
+                    let val = eval_expr(expr, &dummy_rec, conn)?;
                     props.insert(key.clone(), val);
                 }
                 let id = node::create_node(conn, label.as_deref().unwrap_or(""), props)?;
@@ -588,7 +588,7 @@ fn exec_create_sequence(conn: &Connection, ops: &[LogicalOp]) -> Result<Vec<Reco
                 let mut props = Properties::new();
                 let dummy_rec = Record::new();
                 for (key, expr) in properties {
-                    let val = eval_expr(expr, &dummy_rec)?;
+                    let val = eval_expr(expr, &dummy_rec, conn)?;
                     props.insert(key.clone(), val);
                 }
                 edge::create_edge(conn, *src, *dst, edge_type, props)?;
@@ -636,7 +636,7 @@ fn exec_match_create(
                     }
                     let mut props = Properties::new();
                     for (key, expr) in properties {
-                        let val = eval_expr(expr, rec)?;
+                        let val = eval_expr(expr, rec, conn)?;
                         props.insert(key.clone(), val);
                     }
                     let id =
@@ -659,7 +659,7 @@ fn exec_match_create(
                     })?;
                     let mut props = Properties::new();
                     for (key, expr) in properties {
-                        let val = eval_expr(expr, rec)?;
+                        let val = eval_expr(expr, rec, conn)?;
                         props.insert(key.clone(), val);
                     }
                     edge::create_edge(conn, *src, *dst, edge_type, props)?;
@@ -702,7 +702,7 @@ fn exec_set_property(
     for rec in &records {
         for assignment in assignments {
             if let Some(Value::I64(id)) = rec.get(&assignment.variable) {
-                let val = eval_expr(&assignment.value, rec)?;
+                let val = eval_expr(&assignment.value, rec, conn)?;
                 node::set_node_property(
                     conn,
                     NodeId(*id as u64),
@@ -752,7 +752,7 @@ fn exec_merge(
             for assignment in on_match {
                 let mut rec = Record::new();
                 rec.set(assignment.variable.clone(), Value::I64(n.id.0 as i64));
-                let val = eval_expr(&assignment.value, &rec)?;
+                let val = eval_expr(&assignment.value, &rec, conn)?;
                 node::set_node_property(conn, n.id, &assignment.property, val)?;
             }
             let mut rec = Record::new();
@@ -764,7 +764,7 @@ fn exec_merge(
             let mut props = Properties::new();
             let dummy_rec = Record::new();
             for (key, expr) in &node_pat.properties {
-                let val = eval_expr(expr, &dummy_rec)?;
+                let val = eval_expr(expr, &dummy_rec, conn)?;
                 props.insert(key.clone(), val);
             }
             let id = node::create_node(conn, label, props)?;
@@ -773,7 +773,7 @@ fn exec_merge(
             for assignment in on_create {
                 let mut rec = Record::new();
                 rec.set(assignment.variable.clone(), Value::I64(id.0 as i64));
-                let val = eval_expr(&assignment.value, &rec)?;
+                let val = eval_expr(&assignment.value, &rec, conn)?;
                 node::set_node_property(conn, id, &assignment.property, val)?;
             }
 
@@ -794,7 +794,7 @@ fn exec_unwind(
     let mut results = Vec::new();
 
     for rec in &records {
-        let val = eval_expr(expr, rec)?;
+        let val = eval_expr(expr, rec, conn)?;
         match val {
             Value::List(items) => {
                 for item in items {

@@ -27,7 +27,8 @@ pub enum LogicalOp {
         input: Box<LogicalOp>,
         src_alias: String,
         dst_alias: String,
-        edge_type: Option<String>,
+        /// Edge type(s) to match. Empty = any type. Multiple = match any of them.
+        edge_types: Vec<String>,
         direction: Direction,
         min_hops: u32,
         max_hops: u32,
@@ -62,6 +63,17 @@ pub enum LogicalOp {
     Sort {
         input: Box<LogicalOp>,
         items: Vec<SortItem>,
+    },
+
+    /// Remove duplicate records.
+    Distinct {
+        input: Box<LogicalOp>,
+    },
+
+    /// Skip the first N records.
+    Skip {
+        input: Box<LogicalOp>,
+        count: u64,
     },
 
     /// Limit the number of output records.
@@ -141,6 +153,12 @@ pub enum LogicalOp {
         direction: Direction,
         max_hops: u32,
         all_paths: bool,
+    },
+
+    /// Union of multiple pipelines. `all` = keep duplicates.
+    Union {
+        inputs: Vec<LogicalOp>,
+        all: bool,
     },
 
     /// Produce a single empty record (used as starting input for scans).

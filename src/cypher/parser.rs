@@ -37,38 +37,58 @@ pub fn parse(input: &str) -> crate::types::Result<Statement> {
     let pairs = CypherParser::parse(Rule::statement, input)
         .map_err(|e| GraphError::ParseError(humanize_pest_error(e)))?;
 
-    let statement_pair = pairs
+    let union_pair = pairs
         .into_iter()
         .next()
         .unwrap()
         .into_inner()
-        .find(|p| {
-            matches!(
-                p.as_rule(),
-                Rule::explain_stmt
-                    | Rule::match_stmt
-                    | Rule::create_stmt
-                    | Rule::match_create_stmt
-                    | Rule::delete_stmt
-                    | Rule::set_stmt
-                    | Rule::merge_stmt
-                    | Rule::unwind_stmt
-            )
-        })
+        .find(|p| p.as_rule() == Rule::union_stmt)
         .ok_or_else(|| GraphError::Serialization("empty statement".to_string()))?;
 
-    match statement_pair.as_rule() {
-        Rule::explain_stmt => parse_explain(statement_pair),
-        Rule::match_stmt => parse_match(statement_pair).map(Statement::Match),
-        Rule::create_stmt => parse_create(statement_pair).map(Statement::Create),
-        Rule::match_create_stmt => parse_match_create(statement_pair).map(Statement::MatchCreate),
-        Rule::delete_stmt => parse_delete(statement_pair).map(Statement::Delete),
-        Rule::set_stmt => parse_set(statement_pair).map(Statement::Set),
-        Rule::merge_stmt => parse_merge(statement_pair).map(Statement::Merge),
-        Rule::unwind_stmt => parse_unwind(statement_pair).map(Statement::Unwind),
+    parse_union_stmt(union_pair)
+}
+
+fn parse_union_stmt(pair: pest::iterators::Pair<Rule>) -> crate::types::Result<Statement> {
+    let mut statements = Vec::new();
+    let mut all = true; // UNION ALL by default; plain UNION sets to false.
+
+    for child in pair.into_inner() {
+        match child.as_rule() {
+            Rule::single_stmt => {
+                let inner = child.into_inner().next().unwrap();
+                statements.push(parse_single_stmt(inner)?);
+            }
+            Rule::union_op => {
+                // Check if "ALL" is present in the union_op text.
+                let text = child.as_str().to_uppercase();
+                if !text.contains("ALL") {
+                    all = false;
+                }
+            }
+            _ => {}
+        }
+    }
+
+    if statements.len() == 1 {
+        Ok(statements.into_iter().next().unwrap())
+    } else {
+        Ok(Statement::Union { statements, all })
+    }
+}
+
+fn parse_single_stmt(pair: pest::iterators::Pair<Rule>) -> crate::types::Result<Statement> {
+    match pair.as_rule() {
+        Rule::explain_stmt => parse_explain(pair),
+        Rule::match_stmt => parse_match(pair).map(Statement::Match),
+        Rule::create_stmt => parse_create(pair).map(Statement::Create),
+        Rule::match_create_stmt => parse_match_create(pair).map(Statement::MatchCreate),
+        Rule::delete_stmt => parse_delete(pair).map(Statement::Delete),
+        Rule::set_stmt => parse_set(pair).map(Statement::Set),
+        Rule::merge_stmt => parse_merge(pair).map(Statement::Merge),
+        Rule::unwind_stmt => parse_unwind(pair).map(Statement::Unwind),
         _ => Err(GraphError::Serialization(format!(
             "unexpected rule: {:?}",
-            statement_pair.as_rule()
+            pair.as_rule()
         ))),
     }
 }
@@ -96,6 +116,7 @@ fn parse_match(pair: pest::iterators::Pair<Rule>) -> crate::types::Result<MatchS
     let mut intermediate_clauses = Vec::new();
     let mut return_clause = None;
     let mut order_by = Vec::new();
+    let mut skip = None;
     let mut limit = None;
 
     for inner in pair.into_inner() {
@@ -114,6 +135,7 @@ fn parse_match(pair: pest::iterators::Pair<Rule>) -> crate::types::Result<MatchS
             Rule::unwind_clause => intermediate_clauses.push(IntermediateClause::Unwind(parse_unwind_clause(inner)?)),
             Rule::return_clause => return_clause = Some(parse_return(inner)?),
             Rule::order_by_clause => order_by = parse_order_by(inner)?,
+            Rule::skip_clause => skip = Some(parse_skip(inner)?),
             Rule::limit_clause => limit = Some(parse_limit(inner)?),
             _ => {}
         }
@@ -127,6 +149,7 @@ fn parse_match(pair: pest::iterators::Pair<Rule>) -> crate::types::Result<MatchS
         return_clause: return_clause
             .ok_or_else(|| GraphError::Serialization("missing RETURN clause".to_string()))?,
         order_by,
+        skip,
         limit,
     })
 }
@@ -342,7 +365,7 @@ fn parse_node_pattern(
     pair: pest::iterators::Pair<Rule>,
 ) -> crate::types::Result<NodePattern> {
     let mut variable = None;
-    let mut label = None;
+    let mut labels = Vec::new();
     let mut properties = HashMap::new();
 
     for inner in pair.into_inner() {
@@ -351,7 +374,7 @@ fn parse_node_pattern(
             Rule::label_spec => {
                 for child in inner.into_inner() {
                     if child.as_rule() == Rule::ident {
-                        label = Some(child.as_str().to_string());
+                        labels.push(child.as_str().to_string());
                     }
                 }
             }
@@ -362,7 +385,7 @@ fn parse_node_pattern(
 
     Ok(NodePattern {
         variable,
-        label,
+        labels,
         properties,
     })
 }
@@ -379,7 +402,7 @@ fn parse_rel_pattern(
     };
 
     let mut variable = None;
-    let mut rel_type = None;
+    let mut rel_types = Vec::new();
     let mut var_length = None;
 
     for child in inner.into_inner() {
@@ -391,7 +414,7 @@ fn parse_rel_pattern(
                         Rule::rel_type_spec => {
                             for rt in detail.into_inner() {
                                 if rt.as_rule() == Rule::ident {
-                                    rel_type = Some(rt.as_str().to_string());
+                                    rel_types.push(rt.as_str().to_string());
                                 }
                             }
                         }
@@ -408,7 +431,7 @@ fn parse_rel_pattern(
 
     Ok(RelPattern {
         variable,
-        rel_type,
+        rel_types,
         direction,
         var_length,
     })
@@ -515,12 +538,14 @@ fn parse_unwind(pair: pest::iterators::Pair<Rule>) -> crate::types::Result<Unwin
                 let mut where_clause = None;
                 let mut return_clause = None;
                 let mut order_by = Vec::new();
+                let mut skip = None;
                 let mut limit = None;
                 for child in inner.into_inner() {
                     match child.as_rule() {
                         Rule::where_clause => where_clause = Some(parse_where(child)?),
                         Rule::return_clause => return_clause = Some(parse_return(child)?),
                         Rule::order_by_clause => order_by = parse_order_by(child)?,
+                        Rule::skip_clause => skip = Some(parse_skip(child)?),
                         Rule::limit_clause => limit = Some(parse_limit(child)?),
                         _ => {}
                     }
@@ -531,6 +556,7 @@ fn parse_unwind(pair: pest::iterators::Pair<Rule>) -> crate::types::Result<Unwin
                         GraphError::Serialization("missing RETURN clause in UNWIND".to_string())
                     })?,
                     order_by,
+                    skip,
                     limit,
                 });
             }
@@ -577,8 +603,10 @@ fn parse_unwind_clause(pair: pest::iterators::Pair<Rule>) -> crate::types::Resul
 }
 
 fn parse_return(pair: pest::iterators::Pair<Rule>) -> crate::types::Result<ReturnClause> {
-    let items_pair = pair
-        .into_inner()
+    let inner_pairs: Vec<_> = pair.into_inner().collect();
+    let distinct = inner_pairs.iter().any(|p| p.as_rule() == Rule::distinct_keyword);
+    let items_pair = inner_pairs
+        .into_iter()
         .find(|p| p.as_rule() == Rule::return_items)
         .unwrap();
 
@@ -608,7 +636,7 @@ fn parse_return(pair: pest::iterators::Pair<Rule>) -> crate::types::Result<Retur
         })
         .collect();
 
-    Ok(ReturnClause { items })
+    Ok(ReturnClause { items, distinct })
 }
 
 fn parse_order_by(pair: pest::iterators::Pair<Rule>) -> crate::types::Result<Vec<SortItem>> {
@@ -638,6 +666,17 @@ fn parse_order_by(pair: pest::iterators::Pair<Rule>) -> crate::types::Result<Vec
             })
         })
         .collect()
+}
+
+fn parse_skip(pair: pest::iterators::Pair<Rule>) -> crate::types::Result<u64> {
+    let int_str = pair
+        .into_inner()
+        .find(|p| p.as_rule() == Rule::integer)
+        .unwrap()
+        .as_str();
+    int_str
+        .parse()
+        .map_err(|e| GraphError::Serialization(format!("invalid skip: {e}")))
 }
 
 fn parse_limit(pair: pest::iterators::Pair<Rule>) -> crate::types::Result<u64> {
@@ -760,6 +799,7 @@ fn parse_bool_primary(pair: pest::iterators::Pair<Rule>) -> crate::types::Result
         Rule::exists_subquery => parse_exists_subquery(inner),
         Rule::is_null_check => parse_is_null_check(inner, false),
         Rule::is_not_null_check => parse_is_null_check(inner, true),
+        Rule::in_check => parse_in_check(inner),
         Rule::comparison => parse_comparison(inner),
         Rule::bool_expr => parse_bool_expr(inner),
         _ => Err(GraphError::Serialization(format!(
@@ -767,6 +807,17 @@ fn parse_bool_primary(pair: pest::iterators::Pair<Rule>) -> crate::types::Result
             inner.as_rule()
         ))),
     }
+}
+
+fn parse_in_check(pair: pest::iterators::Pair<Rule>) -> crate::types::Result<Expr> {
+    let mut children = pair.into_inner();
+    let left = parse_expr(children.next().unwrap())?;
+    let right = parse_expr(children.next().unwrap())?;
+    Ok(Expr::BinaryOp {
+        left: Box::new(left),
+        op: BinOp::In,
+        right: Box::new(right),
+    })
 }
 
 fn parse_case_expr(pair: pest::iterators::Pair<Rule>) -> crate::types::Result<Expr> {
@@ -872,21 +923,80 @@ fn parse_comp_op(pair: pest::iterators::Pair<Rule>) -> crate::types::Result<BinO
 }
 
 fn parse_expr(pair: pest::iterators::Pair<Rule>) -> crate::types::Result<Expr> {
-    // expr = { case_expr | function_call | property_access | literal | star | variable }
+    // expr = { add_expr }
     let inner = pair.into_inner().next().unwrap();
     match inner.as_rule() {
-        Rule::case_expr => parse_case_expr(inner),
-        Rule::function_call => parse_function_call(inner),
+        Rule::add_expr => parse_add_expr(inner),
+        // Fallback for cases where expr directly contains an atom.
+        _ => parse_atom_expr(inner),
+    }
+}
+
+fn parse_add_expr(pair: pest::iterators::Pair<Rule>) -> crate::types::Result<Expr> {
+    let mut children: Vec<_> = pair.into_inner().collect();
+    if children.len() == 1 {
+        return parse_mul_expr(children.remove(0));
+    }
+    // Build left-associative: mul_expr (add_op mul_expr)*
+    let mut iter = children.into_iter();
+    let mut left = parse_mul_expr(iter.next().unwrap())?;
+    while let Some(op_pair) = iter.next() {
+        let op = match op_pair.as_str() {
+            "+" => BinOp::Add,
+            "-" => BinOp::Sub,
+            _ => return Err(GraphError::Serialization(format!("unexpected add op: {}", op_pair.as_str()))),
+        };
+        let right = parse_mul_expr(iter.next().unwrap())?;
+        left = Expr::BinaryOp {
+            left: Box::new(left),
+            op,
+            right: Box::new(right),
+        };
+    }
+    Ok(left)
+}
+
+fn parse_mul_expr(pair: pest::iterators::Pair<Rule>) -> crate::types::Result<Expr> {
+    let mut children: Vec<_> = pair.into_inner().collect();
+    if children.len() == 1 {
+        return parse_atom_expr(children.remove(0));
+    }
+    let mut iter = children.into_iter();
+    let mut left = parse_atom_expr(iter.next().unwrap())?;
+    while let Some(op_pair) = iter.next() {
+        let op = match op_pair.as_str() {
+            "*" => BinOp::Mul,
+            "/" => BinOp::Div,
+            _ => return Err(GraphError::Serialization(format!("unexpected mul op: {}", op_pair.as_str()))),
+        };
+        let right = parse_atom_expr(iter.next().unwrap())?;
+        left = Expr::BinaryOp {
+            left: Box::new(left),
+            op,
+            right: Box::new(right),
+        };
+    }
+    Ok(left)
+}
+
+fn parse_atom_expr(pair: pest::iterators::Pair<Rule>) -> crate::types::Result<Expr> {
+    match pair.as_rule() {
+        Rule::atom_expr => {
+            let inner = pair.into_inner().next().unwrap();
+            parse_atom_expr(inner)
+        }
+        Rule::case_expr => parse_case_expr(pair),
+        Rule::function_call => parse_function_call(pair),
         Rule::property_access => {
-            let mut parts = inner.into_inner();
+            let mut parts = pair.into_inner();
             let var = parts.next().unwrap().as_str().to_string();
             let prop = parts.next().unwrap().as_str().to_string();
             Ok(Expr::Property(var, prop))
         }
-        Rule::literal => parse_literal(inner),
-        Rule::list_comprehension => parse_list_comprehension(inner),
+        Rule::literal => parse_literal(pair),
+        Rule::list_comprehension => parse_list_comprehension(pair),
         Rule::list_literal => {
-            let items: crate::types::Result<Vec<Expr>> = inner
+            let items: crate::types::Result<Vec<Expr>> = pair
                 .into_inner()
                 .filter(|p| p.as_rule() == Rule::expr)
                 .map(parse_expr)
@@ -895,11 +1005,13 @@ fn parse_expr(pair: pest::iterators::Pair<Rule>) -> crate::types::Result<Expr> {
         }
         Rule::star => Ok(Expr::Star),
         Rule::variable => Ok(Expr::Variable(
-            inner.into_inner().next().unwrap().as_str().to_string(),
+            pair.into_inner().next().unwrap().as_str().to_string(),
         )),
+        Rule::add_expr => parse_add_expr(pair),
+        Rule::mul_expr => parse_mul_expr(pair),
         _ => Err(GraphError::Serialization(format!(
             "unexpected expr: {:?}",
-            inner.as_rule()
+            pair.as_rule()
         ))),
     }
 }
@@ -1010,8 +1122,9 @@ fn parse_list_comprehension(pair: pest::iterators::Pair<Rule>) -> crate::types::
 /// Map pest grammar rule names to user-friendly descriptions.
 fn humanize_rule_name(rule: &str) -> &str {
     match rule {
-        "statement" | "explain_stmt" => "a Cypher statement (MATCH, CREATE, DELETE, MERGE, EXPLAIN ...)",
-        "expr" => "an expression (property, literal, or function call)",
+        "statement" | "union_stmt" | "single_stmt" | "explain_stmt" => "a Cypher statement (MATCH, CREATE, DELETE, MERGE, EXPLAIN ...)",
+        "union_op" => "UNION or UNION ALL",
+        "expr" | "add_expr" | "mul_expr" | "atom_expr" => "an expression (property, literal, or function call)",
         "bool_expr" | "bool_primary" | "bool_factor" | "bool_term" => "a condition",
         "comparison" => "a comparison (=, <>, <, >, <=, >=)",
         "ident" => "an identifier",
@@ -1023,11 +1136,13 @@ fn humanize_rule_name(rule: &str) -> &str {
         "rel_pattern" | "rel_right" | "rel_left" | "rel_undirected" => {
             "a relationship pattern like -[:TYPE]->"
         }
+        "distinct_keyword" => "DISTINCT",
         "return_clause" => "a RETURN clause",
         "return_items" | "return_item" => "a RETURN expression",
         "where_clause" => "a WHERE clause",
         "with_clause" => "a WITH clause",
         "order_by_clause" => "an ORDER BY clause",
+        "skip_clause" => "a SKIP clause",
         "limit_clause" => "a LIMIT clause",
         "literal" => "a value (string, number, boolean, or null)",
         "integer_literal" | "integer" => "an integer",

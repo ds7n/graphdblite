@@ -64,7 +64,16 @@ fn estimate_rows(conn: &Connection, plan: &LogicalOp) -> f64 {
             }
         }
 
+        LogicalOp::Distinct { input } => {
+            // Assume ~half the rows are unique.
+            estimate_rows(conn, input) * 0.5
+        }
+
         LogicalOp::Sort { input, .. } => estimate_rows(conn, input),
+
+        LogicalOp::Skip { input, count } => {
+            (estimate_rows(conn, input) - *count as f64).max(0.0)
+        }
 
         LogicalOp::Limit { input, count } => {
             estimate_rows(conn, input).min(*count as f64)
@@ -100,6 +109,10 @@ fn estimate_rows(conn: &Connection, plan: &LogicalOp) -> f64 {
         | LogicalOp::Delete { .. }
         | LogicalOp::SetProperty { .. }
         | LogicalOp::Merge { .. } => 1.0,
+
+        LogicalOp::Union { inputs, .. } => {
+            inputs.iter().map(|i| estimate_rows(conn, i)).sum()
+        }
     }
 }
 
@@ -125,8 +138,8 @@ fn format_plan_tree(conn: &Connection, plan: &LogicalOp, depth: usize, lines: &m
         LogicalOp::IndexLookup { label, alias, property, value, .. } => {
             format!("IndexLookup :{label}.{property} = {value:?} AS {alias}")
         }
-        LogicalOp::Expand { src_alias, dst_alias, edge_type, min_hops, max_hops, .. } => {
-            let et = edge_type.as_deref().unwrap_or("*");
+        LogicalOp::Expand { src_alias, dst_alias, edge_types, min_hops, max_hops, .. } => {
+            let et = if edge_types.is_empty() { "*".to_string() } else { edge_types.join("|") };
             format!("Expand ({src_alias})-[:{et}*{min_hops}..{max_hops}]->({dst_alias})")
         }
         LogicalOp::CrossProduct { .. } => "CrossProduct".to_string(),
@@ -136,6 +149,8 @@ fn format_plan_tree(conn: &Connection, plan: &LogicalOp, depth: usize, lines: &m
             format!("Aggregate (keys={}, aggs={})", group_keys.len(), aggregates.len())
         }
         LogicalOp::Sort { .. } => "Sort".to_string(),
+        LogicalOp::Distinct { .. } => "Distinct".to_string(),
+        LogicalOp::Skip { count, .. } => format!("Skip {count}"),
         LogicalOp::Limit { count, .. } => format!("Limit {count}"),
         LogicalOp::ShortestPath { src_alias, dst_alias, path_alias, all_paths, .. } => {
             let fn_name = if *all_paths { "allShortestPaths" } else { "shortestPath" };
@@ -158,6 +173,10 @@ fn format_plan_tree(conn: &Connection, plan: &LogicalOp, depth: usize, lines: &m
         }
         LogicalOp::SetProperty { .. } => "SetProperty".to_string(),
         LogicalOp::Merge { .. } => "Merge".to_string(),
+        LogicalOp::Union { inputs, all } => {
+            let kind = if *all { "UNION ALL" } else { "UNION" };
+            format!("{kind} ({} branches)", inputs.len())
+        }
     };
 
     lines.push(format!("{indent}{desc} (est. {rows:.0} rows)"));
@@ -168,7 +187,9 @@ fn format_plan_tree(conn: &Connection, plan: &LogicalOp, depth: usize, lines: &m
         | LogicalOp::Filter { input, .. }
         | LogicalOp::Project { input, .. }
         | LogicalOp::Aggregate { input, .. }
+        | LogicalOp::Distinct { input }
         | LogicalOp::Sort { input, .. }
+        | LogicalOp::Skip { input, .. }
         | LogicalOp::Limit { input, .. }
         | LogicalOp::ShortestPath { input, .. }
         | LogicalOp::MatchCreate { input, .. }
@@ -185,6 +206,11 @@ fn format_plan_tree(conn: &Connection, plan: &LogicalOp, depth: usize, lines: &m
         LogicalOp::CreateSequence { ops } => {
             for op in ops {
                 format_plan_tree(conn, op, depth + 1, lines);
+            }
+        }
+        LogicalOp::Union { inputs, .. } => {
+            for input in inputs {
+                format_plan_tree(conn, input, depth + 1, lines);
             }
         }
         _ => {} // Leaf nodes (Scan, IndexLookup, EmptyRow, CreateNode, etc.)

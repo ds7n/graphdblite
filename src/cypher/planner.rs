@@ -16,6 +16,13 @@ pub fn plan(conn: &Connection, stmt: &Statement) -> crate::types::Result<Logical
         Statement::Merge(m) => plan_merge(m),
         Statement::Unwind(u) => plan_unwind(conn, u),
         Statement::Explain(inner) => plan(conn, inner),
+        Statement::Union { statements, all } => {
+            let inputs: crate::types::Result<Vec<LogicalOp>> = statements
+                .iter()
+                .map(|s| plan(conn, s))
+                .collect();
+            Ok(LogicalOp::Union { inputs: inputs?, all: *all })
+        }
     }
 }
 
@@ -89,11 +96,26 @@ fn plan_match(conn: &Connection, stmt: &MatchStatement) -> crate::types::Result<
         items: stmt.return_clause.items.clone(),
     };
 
+    // DISTINCT.
+    if stmt.return_clause.distinct {
+        op = LogicalOp::Distinct {
+            input: Box::new(op),
+        };
+    }
+
     // ORDER BY.
     if !stmt.order_by.is_empty() {
         op = LogicalOp::Sort {
             input: Box::new(op),
             items: stmt.order_by.clone(),
+        };
+    }
+
+    // SKIP.
+    if let Some(count) = stmt.skip {
+        op = LogicalOp::Skip {
+            input: Box::new(op),
+            count,
         };
     }
 
@@ -189,6 +211,7 @@ fn plan_unwind(_conn: &Connection, stmt: &UnwindStatement) -> crate::types::Resu
             where_clause,
             return_clause,
             order_by,
+            skip,
             limit,
         } => {
             if let Some(ref predicate) = where_clause {
@@ -216,10 +239,23 @@ fn plan_unwind(_conn: &Connection, stmt: &UnwindStatement) -> crate::types::Resu
                 items: return_clause.items.clone(),
             };
 
+            if return_clause.distinct {
+                op = LogicalOp::Distinct {
+                    input: Box::new(op),
+                };
+            }
+
             if !order_by.is_empty() {
                 op = LogicalOp::Sort {
                     input: Box::new(op),
                     items: order_by.clone(),
+                };
+            }
+
+            if let Some(count) = skip {
+                op = LogicalOp::Skip {
+                    input: Box::new(op),
+                    count: *count,
                 };
             }
 
@@ -427,7 +463,7 @@ fn plan_shortest_path_pattern(
         src_alias,
         dst_alias,
         path_alias,
-        edge_type: rel.rel_type.clone(),
+        edge_type: rel.rel_types.first().cloned(),
         direction,
         max_hops,
         all_paths: pattern.shortest_path_mode == ShortestPathMode::All,
@@ -520,7 +556,7 @@ fn plan_single_pattern(conn: &Connection, pattern: &Pattern) -> crate::types::Re
                     input: Box::new(op.unwrap()),
                     src_alias,
                     dst_alias,
-                    edge_type: rel.rel_type.clone(),
+                    edge_types: rel.rel_types.clone(),
                     direction,
                     min_hops,
                     max_hops,
@@ -540,7 +576,8 @@ fn plan_node_scan(
     node: &NodePattern,
     alias: &str,
 ) -> crate::types::Result<LogicalOp> {
-    let label = node.label.clone().unwrap_or_default();
+    // Use the first label for scanning/indexing. Additional labels become filters.
+    let label = node.labels.first().cloned().unwrap_or_default();
 
     // Try to find an indexed property for this label.
     if !node.properties.is_empty() && !label.is_empty() {
@@ -636,7 +673,7 @@ fn plan_create_pattern(pattern: &Pattern) -> crate::types::Result<Vec<LogicalOp>
             PatternElement::Node(node) => {
                 let alias = node.variable.clone();
                 ops.push(LogicalOp::CreateNode {
-                    label: node.label.clone(),
+                    label: node.labels.first().cloned(),
                     alias: alias.clone(),
                     properties: node.properties.clone(),
                 });
@@ -655,7 +692,7 @@ fn plan_create_pattern(pattern: &Pattern) -> crate::types::Result<Vec<LogicalOp>
 
                 let dst_alias = dst_node.variable.clone();
                 ops.push(LogicalOp::CreateNode {
-                    label: dst_node.label.clone(),
+                    label: dst_node.labels.first().cloned(),
                     alias: dst_alias.clone(),
                     properties: dst_node.properties.clone(),
                 });
@@ -674,7 +711,7 @@ fn plan_create_pattern(pattern: &Pattern) -> crate::types::Result<Vec<LogicalOp>
                 ops.push(LogicalOp::CreateEdge {
                     src_alias: src,
                     dst_alias: dst,
-                    edge_type: rel.rel_type.clone().unwrap_or_default(),
+                    edge_type: rel.rel_types.first().cloned().unwrap_or_default(),
                     properties: std::collections::HashMap::new(),
                 });
 
@@ -870,14 +907,14 @@ fn try_replace_scan(
         }
 
         LogicalOp::Expand {
-            input, src_alias, dst_alias, edge_type, direction, min_hops, max_hops,
+            input, src_alias, dst_alias, edge_types, direction, min_hops, max_hops,
         } => {
             if let Some(new_input) = try_replace_scan(conn, input, alias, prop, lit) {
                 Some(LogicalOp::Expand {
                     input: Box::new(new_input),
                     src_alias: src_alias.clone(),
                     dst_alias: dst_alias.clone(),
-                    edge_type: edge_type.clone(),
+                    edge_types: edge_types.clone(),
                     direction: *direction,
                     min_hops: *min_hops,
                     max_hops: *max_hops,

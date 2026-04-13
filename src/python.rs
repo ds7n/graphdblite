@@ -64,6 +64,7 @@ fn records_to_py(
 pub struct PyDatabase {
     inner: Option<RustDatabase>,
     path: String,
+    in_transaction: bool,
 }
 
 #[pymethods]
@@ -94,17 +95,21 @@ impl PyDatabase {
         };
         let display_path = resolved.display().to_string();
         let db = RustDatabase::open_with_config(&resolved, config).map_err(to_py_err)?;
-        Ok(Self { inner: Some(db), path: display_path })
+        Ok(Self { inner: Some(db), path: display_path, in_transaction: false })
     }
 
     /// Open an in-memory database (for testing).
     #[staticmethod]
     fn open_memory() -> PyResult<Self> {
         let db = RustDatabase::open_memory().map_err(to_py_err)?;
-        Ok(Self { inner: Some(db), path: ":memory:".to_string() })
+        Ok(Self { inner: Some(db), path: ":memory:".to_string(), in_transaction: false })
     }
 
     /// Execute a read-only Cypher query. Returns a list of dicts.
+    ///
+    /// Note: holds an exclusive borrow (`&mut self`) — cannot be called
+    /// concurrently from multiple Python threads. PyO3 will raise
+    /// `RuntimeError` if a second thread attempts to call while one is active.
     fn query(&mut self, py: Python, cypher: &str) -> PyResult<Vec<PyObject>> {
         let db = self.inner.as_mut().ok_or_else(|| PyRuntimeError::new_err("database is closed"))?;
         let cypher = cypher.to_string();
@@ -120,6 +125,8 @@ impl PyDatabase {
     }
 
     /// Execute a write Cypher query (CREATE, DELETE, SET, MERGE). Returns a list of dicts.
+    ///
+    /// Note: holds an exclusive borrow (`&mut self`) — see `query()` docstring.
     fn execute(&mut self, py: Python, cypher: &str) -> PyResult<Vec<PyObject>> {
         let db = self.inner.as_mut().ok_or_else(|| PyRuntimeError::new_err("database is closed"))?;
         let cypher = cypher.to_string();
@@ -132,6 +139,36 @@ impl PyDatabase {
             })
             .map_err(to_py_err)?;
         records_to_py(py, &records)
+    }
+
+    /// Begin a read-write transaction. Use as a context manager:
+    ///
+    /// ```python
+    /// with db.begin_write() as tx:
+    ///     tx.execute("CREATE (n:Person {name: 'Alice'})")
+    ///     tx.execute("CREATE (n:Person {name: 'Bob'})")
+    /// # auto-commits on success, rolls back on exception
+    /// ```
+    fn begin_write(slf: &Bound<'_, Self>) -> PyResult<PyWriteTransaction> {
+        let mut this = slf.borrow_mut();
+        let db = this.inner.take().ok_or_else(|| {
+            PyRuntimeError::new_err("database is closed or already in a transaction")
+        })?;
+        PyWriteTransaction::start(db, slf.clone().unbind())
+    }
+
+    /// Begin a read-only transaction. Use as a context manager:
+    ///
+    /// ```python
+    /// with db.begin_read() as tx:
+    ///     results = tx.query("MATCH (n) RETURN n")
+    /// ```
+    fn begin_read(slf: &Bound<'_, Self>) -> PyResult<PyReadTransaction> {
+        let mut this = slf.borrow_mut();
+        let db = this.inner.take().ok_or_else(|| {
+            PyRuntimeError::new_err("database is closed or already in a transaction")
+        })?;
+        PyReadTransaction::start(db, slf.clone().unbind())
     }
 
     /// Close the database connection.
@@ -161,10 +198,192 @@ impl PyDatabase {
     }
 }
 
+/// Python wrapper for a read-write transaction.
+///
+/// Holds the `RustDatabase` for the duration of the transaction. The database
+/// is returned to `PyDatabase` on commit, rollback, or context manager exit.
+#[pyclass(name = "WriteTransaction")]
+pub struct PyWriteTransaction {
+    db: Option<RustDatabase>,
+    parent: Py<PyDatabase>,
+    finished: bool,
+}
+
+impl PyWriteTransaction {
+    fn start(db: RustDatabase, parent: Py<PyDatabase>) -> PyResult<Self> {
+        db.connection()
+            .execute_batch("BEGIN IMMEDIATE")
+            .map_err(|e| PyRuntimeError::new_err(format!("failed to begin transaction: {e}")))?;
+        Ok(Self { db: Some(db), parent, finished: false })
+    }
+
+    fn get_db(&self) -> PyResult<&RustDatabase> {
+        self.db.as_ref().ok_or_else(|| {
+            PyRuntimeError::new_err("transaction is already finished")
+        })
+    }
+
+    /// Return the database to the parent PyDatabase.
+    fn return_db(&mut self, py: Python) {
+        if let Some(db) = self.db.take() {
+            let mut parent = self.parent.borrow_mut(py);
+            parent.inner = Some(db);
+        }
+    }
+}
+
+#[pymethods]
+impl PyWriteTransaction {
+    /// Execute a Cypher query within this transaction.
+    fn execute(&self, py: Python, cypher: &str) -> PyResult<Vec<PyObject>> {
+        let db = self.get_db()?;
+        let conn = db.connection();
+        let cypher = cypher.to_string();
+        let records = py
+            .allow_threads(|| {
+                let stmt = crate::cypher::parser::parse(&cypher)?;
+                let plan = crate::cypher::planner::plan(conn, &stmt)?;
+                let ctx = crate::cypher::executor::ExecContext {
+                    max_result_rows: db.max_result_rows,
+                };
+                crate::cypher::executor::execute_with_ctx(conn, &plan, &ctx)
+            })
+            .map_err(to_py_err)?;
+        records_to_py(py, &records)
+    }
+
+    /// Execute a read-only Cypher query within this transaction.
+    fn query(&self, py: Python, cypher: &str) -> PyResult<Vec<PyObject>> {
+        self.execute(py, cypher)
+    }
+
+    /// Commit the transaction.
+    fn commit(&mut self, py: Python) -> PyResult<()> {
+        let db = self.get_db()?;
+        db.connection()
+            .execute_batch("COMMIT")
+            .map_err(|e| PyRuntimeError::new_err(format!("commit failed: {e}")))?;
+        self.finished = true;
+        self.return_db(py);
+        Ok(())
+    }
+
+    /// Rollback the transaction.
+    fn rollback(&mut self, py: Python) -> PyResult<()> {
+        let db = self.get_db()?;
+        let _ = db.connection().execute_batch("ROLLBACK");
+        self.finished = true;
+        self.return_db(py);
+        Ok(())
+    }
+
+    fn __enter__(slf: PyRef<Self>) -> PyRef<Self> {
+        slf
+    }
+
+    fn __exit__(
+        &mut self,
+        py: Python,
+        exc_type: Option<&Bound<'_, pyo3::types::PyAny>>,
+        _exc_val: Option<&Bound<'_, pyo3::types::PyAny>>,
+        _exc_tb: Option<&Bound<'_, pyo3::types::PyAny>>,
+    ) -> PyResult<bool> {
+        if !self.finished {
+            if exc_type.is_some() {
+                self.rollback(py)?;
+            } else {
+                self.commit(py)?;
+            }
+        }
+        Ok(false) // don't suppress exceptions
+    }
+}
+
+/// Python wrapper for a read-only transaction.
+#[pyclass(name = "ReadTransaction")]
+pub struct PyReadTransaction {
+    db: Option<RustDatabase>,
+    parent: Py<PyDatabase>,
+    finished: bool,
+}
+
+impl PyReadTransaction {
+    fn start(db: RustDatabase, parent: Py<PyDatabase>) -> PyResult<Self> {
+        db.connection()
+            .execute_batch("BEGIN DEFERRED")
+            .map_err(|e| PyRuntimeError::new_err(format!("failed to begin transaction: {e}")))?;
+        Ok(Self { db: Some(db), parent, finished: false })
+    }
+
+    fn get_db(&self) -> PyResult<&RustDatabase> {
+        self.db.as_ref().ok_or_else(|| {
+            PyRuntimeError::new_err("transaction is already finished")
+        })
+    }
+
+    fn return_db(&mut self, py: Python) {
+        if let Some(db) = self.db.take() {
+            let mut parent = self.parent.borrow_mut(py);
+            parent.inner = Some(db);
+        }
+    }
+}
+
+#[pymethods]
+impl PyReadTransaction {
+    /// Execute a read-only Cypher query within this transaction.
+    fn query(&self, py: Python, cypher: &str) -> PyResult<Vec<PyObject>> {
+        let db = self.get_db()?;
+        let conn = db.connection();
+        let cypher = cypher.to_string();
+        let records = py
+            .allow_threads(|| {
+                let stmt = crate::cypher::parser::parse(&cypher)?;
+                let plan = crate::cypher::planner::plan(conn, &stmt)?;
+                let ctx = crate::cypher::executor::ExecContext {
+                    max_result_rows: db.max_result_rows,
+                };
+                crate::cypher::executor::execute_with_ctx(conn, &plan, &ctx)
+            })
+            .map_err(to_py_err)?;
+        records_to_py(py, &records)
+    }
+
+    /// Commit (release) the read transaction.
+    fn commit(&mut self, py: Python) -> PyResult<()> {
+        let db = self.get_db()?;
+        db.connection()
+            .execute_batch("COMMIT")
+            .map_err(|e| PyRuntimeError::new_err(format!("commit failed: {e}")))?;
+        self.finished = true;
+        self.return_db(py);
+        Ok(())
+    }
+
+    fn __enter__(slf: PyRef<Self>) -> PyRef<Self> {
+        slf
+    }
+
+    fn __exit__(
+        &mut self,
+        py: Python,
+        _exc_type: Option<&Bound<'_, pyo3::types::PyAny>>,
+        _exc_val: Option<&Bound<'_, pyo3::types::PyAny>>,
+        _exc_tb: Option<&Bound<'_, pyo3::types::PyAny>>,
+    ) -> PyResult<bool> {
+        if !self.finished {
+            self.commit(py)?;
+        }
+        Ok(false)
+    }
+}
+
 /// Python module definition.
 #[pymodule]
 pub fn _graphdblite(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyDatabase>()?;
+    m.add_class::<PyWriteTransaction>()?;
+    m.add_class::<PyReadTransaction>()?;
     m.add("GraphDBError", m.py().get_type_bound::<GraphDBError>())?;
     m.add("ParseError", m.py().get_type_bound::<ParseError>())?;
     m.add("StorageError", m.py().get_type_bound::<StorageError>())?;

@@ -42,6 +42,12 @@ pub struct Config {
     /// Maximum number of result rows before the executor aborts. Default: 100,000.
     /// Set to 0 to disable the limit.
     pub max_result_rows: usize,
+    /// SQLite page cache size in KiB (negative = KiB, positive = pages).
+    /// Default: -32000 (32 MiB). Larger values improve graph traversal.
+    pub cache_size: i32,
+    /// SQLite mmap_size in bytes. Default: 268435456 (256 MiB).
+    /// Memory-mapped I/O improves read-heavy workloads. Set to 0 to disable.
+    pub mmap_size: i64,
 }
 
 impl Default for Config {
@@ -53,6 +59,8 @@ impl Default for Config {
             max_property_value_bytes: 1024 * 1024,
             max_name_bytes: 256,
             max_result_rows: 100_000,
+            cache_size: -32000,
+            mmap_size: 268_435_456,
         }
     }
 }
@@ -112,8 +120,9 @@ impl Database {
              PRAGMA busy_timeout={};
              PRAGMA synchronous={};
              PRAGMA foreign_keys=OFF;  -- intentional: graph edges are managed in application code, not via FK constraints
-             PRAGMA cache_size=-8000;",
-            config.busy_timeout_ms, config.synchronous,
+             PRAGMA cache_size={};
+             PRAGMA mmap_size={};",
+            config.busy_timeout_ms, config.synchronous, config.cache_size, config.mmap_size,
         ))?;
         schema::init_schema(&conn)?;
         Ok(Self {
@@ -122,6 +131,11 @@ impl Database {
             max_name_bytes: config.max_name_bytes,
             max_result_rows: config.max_result_rows,
         })
+    }
+
+    /// Access the underlying connection (for manual transaction management).
+    pub(crate) fn connection(&self) -> &Connection {
+        &self.conn
     }
 
     /// Begin a read-only transaction (snapshot isolation via WAL).

@@ -44,10 +44,7 @@ fn value_to_py(py: Python, val: &Value) -> PyObject {
     }
 }
 
-fn records_to_py(
-    py: Python,
-    records: &[crate::cypher::record::Record],
-) -> PyResult<Vec<PyObject>> {
+fn records_to_py(py: Python, records: &[crate::cypher::record::Record]) -> PyResult<Vec<PyObject>> {
     let mut result = Vec::new();
     for rec in records {
         let dict = PyDict::new_bound(py);
@@ -95,14 +92,22 @@ impl PyDatabase {
         };
         let display_path = resolved.display().to_string();
         let db = RustDatabase::open_with_config(&resolved, config).map_err(to_py_err)?;
-        Ok(Self { inner: Some(db), path: display_path, in_transaction: false })
+        Ok(Self {
+            inner: Some(db),
+            path: display_path,
+            in_transaction: false,
+        })
     }
 
     /// Open an in-memory database (for testing).
     #[staticmethod]
     fn open_memory() -> PyResult<Self> {
         let db = RustDatabase::open_memory().map_err(to_py_err)?;
-        Ok(Self { inner: Some(db), path: ":memory:".to_string(), in_transaction: false })
+        Ok(Self {
+            inner: Some(db),
+            path: ":memory:".to_string(),
+            in_transaction: false,
+        })
     }
 
     /// Execute a read-only Cypher query. Returns a list of dicts.
@@ -111,7 +116,10 @@ impl PyDatabase {
     /// concurrently from multiple Python threads. PyO3 will raise
     /// `RuntimeError` if a second thread attempts to call while one is active.
     fn query(&mut self, py: Python, cypher: &str) -> PyResult<Vec<PyObject>> {
-        let db = self.inner.as_mut().ok_or_else(|| PyRuntimeError::new_err("database is closed"))?;
+        let db = self
+            .inner
+            .as_mut()
+            .ok_or_else(|| PyRuntimeError::new_err("database is closed"))?;
         let cypher = cypher.to_string();
         let records = py
             .allow_threads(|| {
@@ -128,7 +136,10 @@ impl PyDatabase {
     ///
     /// Note: holds an exclusive borrow (`&mut self`) — see `query()` docstring.
     fn execute(&mut self, py: Python, cypher: &str) -> PyResult<Vec<PyObject>> {
-        let db = self.inner.as_mut().ok_or_else(|| PyRuntimeError::new_err("database is closed"))?;
+        let db = self
+            .inner
+            .as_mut()
+            .ok_or_else(|| PyRuntimeError::new_err("database is closed"))?;
         let cypher = cypher.to_string();
         let records = py
             .allow_threads(|| {
@@ -214,13 +225,17 @@ impl PyWriteTransaction {
         db.connection()
             .execute_batch("BEGIN IMMEDIATE")
             .map_err(|e| PyRuntimeError::new_err(format!("failed to begin transaction: {e}")))?;
-        Ok(Self { db: Some(db), parent, finished: false })
+        Ok(Self {
+            db: Some(db),
+            parent,
+            finished: false,
+        })
     }
 
     fn get_db(&self) -> PyResult<&RustDatabase> {
-        self.db.as_ref().ok_or_else(|| {
-            PyRuntimeError::new_err("transaction is already finished")
-        })
+        self.db
+            .as_ref()
+            .ok_or_else(|| PyRuntimeError::new_err("transaction is already finished"))
     }
 
     /// Return the database to the parent PyDatabase.
@@ -308,13 +323,17 @@ impl PyReadTransaction {
         db.connection()
             .execute_batch("BEGIN DEFERRED")
             .map_err(|e| PyRuntimeError::new_err(format!("failed to begin transaction: {e}")))?;
-        Ok(Self { db: Some(db), parent, finished: false })
+        Ok(Self {
+            db: Some(db),
+            parent,
+            finished: false,
+        })
     }
 
     fn get_db(&self) -> PyResult<&RustDatabase> {
-        self.db.as_ref().ok_or_else(|| {
-            PyRuntimeError::new_err("transaction is already finished")
-        })
+        self.db
+            .as_ref()
+            .ok_or_else(|| PyRuntimeError::new_err("transaction is already finished"))
     }
 
     fn return_db(&mut self, py: Python) {
@@ -379,6 +398,9 @@ pub fn _graphdblite(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add("GraphDBError", m.py().get_type_bound::<GraphDBError>())?;
     m.add("ParseError", m.py().get_type_bound::<ParseError>())?;
     m.add("StorageError", m.py().get_type_bound::<StorageError>())?;
-    m.add("NodeNotFoundError", m.py().get_type_bound::<NodeNotFoundError>())?;
+    m.add(
+        "NodeNotFoundError",
+        m.py().get_type_bound::<NodeNotFoundError>(),
+    )?;
     Ok(())
 }

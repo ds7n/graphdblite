@@ -11,19 +11,14 @@ fn index_table_name(label: &str, property: &str) -> String {
 
 /// Build the index key: [msgpack(value)][node_id: 8 bytes BE].
 fn index_key(value: &Value, node_id: NodeId) -> Result<Vec<u8>> {
-    let mut key = rmp_serde::to_vec(value)
-        .map_err(|e| GraphError::Serialization(e.to_string()))?;
+    let mut key = rmp_serde::to_vec(value).map_err(|e| GraphError::Serialization(e.to_string()))?;
     key.extend_from_slice(&node_id.to_be_bytes());
     Ok(key)
 }
 
 /// Create a secondary index on a (label, property) pair.
 /// Backfills the index with all existing matching nodes.
-pub fn create_index(
-    conn: &Connection,
-    label: &str,
-    property: &str,
-) -> Result<()> {
+pub fn create_index(conn: &Connection, label: &str, property: &str) -> Result<()> {
     validate_name(label)?;
     validate_name(property)?;
     let table = index_table_name(label, property);
@@ -62,11 +57,7 @@ pub fn create_index(
 }
 
 /// Drop a secondary index.
-pub fn drop_index(
-    conn: &Connection,
-    label: &str,
-    property: &str,
-) -> Result<()> {
+pub fn drop_index(conn: &Connection, label: &str, property: &str) -> Result<()> {
     let table = index_table_name(label, property);
     let exists: bool = conn.query_row(
         "SELECT COUNT(*) > 0 FROM sqlite_master WHERE type='table' AND name=?1",
@@ -93,12 +84,14 @@ pub fn index_lookup(
     let table = index_table_name(label, property);
 
     // Build prefix from the serialized value.
-    let prefix = rmp_serde::to_vec(value)
-        .map_err(|e| GraphError::Serialization(e.to_string()))?;
+    let prefix = rmp_serde::to_vec(value).map_err(|e| GraphError::Serialization(e.to_string()))?;
     let entries = match kv::scan_prefix(conn, &table, &prefix) {
         Ok(e) => e,
         Err(GraphError::Storage(ref e)) if e.to_string().contains("no such table") => {
-            return Err(GraphError::IndexNotFound(label.to_string(), property.to_string()));
+            return Err(GraphError::IndexNotFound(
+                label.to_string(),
+                property.to_string(),
+            ));
         }
         Err(e) => return Err(e),
     };
@@ -182,8 +175,7 @@ pub fn index_count_for_value(
     value: &Value,
 ) -> Result<usize> {
     let table = index_table_name(label, property);
-    let prefix = rmp_serde::to_vec(value)
-        .map_err(|e| GraphError::Serialization(e.to_string()))?;
+    let prefix = rmp_serde::to_vec(value).map_err(|e| GraphError::Serialization(e.to_string()))?;
     let entries = match kv::scan_prefix(conn, &table, &prefix) {
         Ok(e) => e,
         Err(GraphError::Storage(ref e)) if e.to_string().contains("no such table") => {
@@ -196,17 +188,11 @@ pub fn index_count_for_value(
 
 /// List all indexes that exist for a given label.
 /// Returns Vec<(label, property)>.
-pub fn list_indexes_for_label(
-    conn: &Connection,
-    label: &str,
-) -> Result<Vec<(String, String)>> {
+pub fn list_indexes_for_label(conn: &Connection, label: &str) -> Result<Vec<(String, String)>> {
     let prefix = format!("node_idx_{label}_");
-    let mut stmt = conn.prepare_cached(
-        "SELECT name FROM sqlite_master WHERE type='table' AND name LIKE ?1",
-    )?;
-    let rows = stmt.query_map([format!("{prefix}%")], |row| {
-        row.get::<_, String>(0)
-    })?;
+    let mut stmt =
+        conn.prepare_cached("SELECT name FROM sqlite_master WHERE type='table' AND name LIKE ?1")?;
+    let rows = stmt.query_map([format!("{prefix}%")], |row| row.get::<_, String>(0))?;
 
     let mut result = Vec::new();
     for name in rows {

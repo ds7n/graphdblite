@@ -56,8 +56,8 @@ pub fn create_edge(
     // Store edge properties if non-empty.
     if !properties.is_empty() {
         let props_key = edge_props_key(src, dst, label);
-        let data = rmp_serde::to_vec(&properties)
-            .map_err(|e| GraphError::Serialization(e.to_string()))?;
+        let data =
+            rmp_serde::to_vec(&properties).map_err(|e| GraphError::Serialization(e.to_string()))?;
         kv::put(conn, kv::TABLE_EDGE_PROPS, &props_key, &data)?;
     }
 
@@ -65,12 +65,7 @@ pub fn create_edge(
 }
 
 /// Delete an edge from src to dst with the given label.
-pub fn delete_edge(
-    conn: &Connection,
-    src: NodeId,
-    dst: NodeId,
-    label: &str,
-) -> Result<()> {
+pub fn delete_edge(conn: &Connection, src: NodeId, dst: NodeId, label: &str) -> Result<()> {
     // Update outgoing adjacency list.
     let out_key = adj_key(src, label);
     if let Some(data) = kv::get(conn, kv::TABLE_ADJ_OUT, &out_key)? {
@@ -79,12 +74,7 @@ pub fn delete_edge(
             if ids.is_empty() {
                 kv::delete(conn, kv::TABLE_ADJ_OUT, &out_key)?;
             } else {
-                kv::put(
-                    conn,
-                    kv::TABLE_ADJ_OUT,
-                    &out_key,
-                    &encode_id_list(&ids),
-                )?;
+                kv::put(conn, kv::TABLE_ADJ_OUT, &out_key, &encode_id_list(&ids))?;
             }
         }
     }
@@ -97,12 +87,7 @@ pub fn delete_edge(
             if ids.is_empty() {
                 kv::delete(conn, kv::TABLE_ADJ_IN, &in_key)?;
             } else {
-                kv::put(
-                    conn,
-                    kv::TABLE_ADJ_IN,
-                    &in_key,
-                    &encode_id_list(&ids),
-                )?;
+                kv::put(conn, kv::TABLE_ADJ_IN, &in_key, &encode_id_list(&ids))?;
             }
         }
     }
@@ -386,8 +371,9 @@ pub fn get_all_edge_labels(
     let mut result = Vec::new();
     for (key, data) in entries {
         if key.len() > 8 {
-            let label = String::from_utf8(key[8..].to_vec())
-                .map_err(|e| GraphError::Serialization(format!("invalid UTF-8 in edge label: {e}")))?;
+            let label = String::from_utf8(key[8..].to_vec()).map_err(|e| {
+                GraphError::Serialization(format!("invalid UTF-8 in edge label: {e}"))
+            })?;
             let ids = decode_id_list(&data);
             result.push((label, ids));
         }

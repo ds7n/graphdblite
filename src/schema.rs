@@ -58,9 +58,8 @@ pub fn init_schema(conn: &Connection) -> Result<()> {
     )?;
 
     // Read stored schema version.
-    let mut stmt = conn.prepare_cached(
-        "SELECT value FROM metadata WHERE key = 'schema_version'",
-    )?;
+    let mut stmt =
+        conn.prepare_cached("SELECT value FROM metadata WHERE key = 'schema_version'")?;
     let db_version = if let Ok(raw) = stmt.query_row([], |row| row.get::<_, Vec<u8>>(0)) {
         if raw.len() == 8 {
             if let Ok(bytes) = <[u8; 8]>::try_from(&raw[..8]) {
@@ -99,7 +98,7 @@ fn migrate_v1_to_v2(conn: &Connection) -> Result<()> {
             key BLOB PRIMARY KEY,
             label TEXT NOT NULL DEFAULT '',
             value BLOB NOT NULL
-        ) WITHOUT ROWID;"
+        ) WITHOUT ROWID;",
     )?;
 
     // Read all existing nodes and extract labels from msgpack.
@@ -111,9 +110,8 @@ fn migrate_v1_to_v2(conn: &Connection) -> Result<()> {
         .collect::<std::result::Result<Vec<_>, _>>()?;
     drop(read_stmt);
 
-    let mut insert_stmt = conn.prepare(
-        "INSERT INTO nodes_v2 (key, label, value) VALUES (?1, ?2, ?3)"
-    )?;
+    let mut insert_stmt =
+        conn.prepare("INSERT INTO nodes_v2 (key, label, value) VALUES (?1, ?2, ?3)")?;
     for (key, data) in &rows {
         let label = match rmp_serde::from_slice::<NodeRecord>(data) {
             Ok(record) => record.label,
@@ -126,7 +124,7 @@ fn migrate_v1_to_v2(conn: &Connection) -> Result<()> {
     conn.execute_batch(
         "DROP TABLE nodes;
          ALTER TABLE nodes_v2 RENAME TO nodes;
-         CREATE INDEX idx_nodes_label ON nodes(label);"
+         CREATE INDEX idx_nodes_label ON nodes(label);",
     )?;
 
     // Update schema version to 2.

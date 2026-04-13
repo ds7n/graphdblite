@@ -6,9 +6,7 @@ use crate::types::{GraphError, NodeId, Result};
 ///
 /// Uses compare-and-swap to detect concurrent-writer conflicts under WAL.
 pub fn next_node_id(conn: &Connection) -> Result<NodeId> {
-    let mut stmt = conn.prepare_cached(
-        "SELECT value FROM metadata WHERE key = 'next_node_id'",
-    )?;
+    let mut stmt = conn.prepare_cached("SELECT value FROM metadata WHERE key = 'next_node_id'")?;
     let raw: Vec<u8> = stmt.query_row([], |row| row.get(0))?;
     let current = u64::from_be_bytes(
         raw.get(..8)
@@ -26,7 +24,9 @@ pub fn next_node_id(conn: &Connection) -> Result<NodeId> {
         rusqlite::params![&next.to_be_bytes()[..], &raw],
     )?;
     if rows == 0 {
-        return Err(GraphError::Transaction("node ID conflict — concurrent writer".into()));
+        return Err(GraphError::Transaction(
+            "node ID conflict — concurrent writer".into(),
+        ));
     }
 
     Ok(NodeId(current))

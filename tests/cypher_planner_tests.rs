@@ -17,7 +17,10 @@ fn plan_simple_scan() {
         LogicalOp::Project { input, items } => {
             assert_eq!(items.len(), 1);
             match *input {
-                LogicalOp::Scan { ref label, ref alias } => {
+                LogicalOp::Scan {
+                    ref label,
+                    ref alias,
+                } => {
                     assert_eq!(label, "Person");
                     assert_eq!(alias, "n");
                 }
@@ -90,9 +93,7 @@ fn plan_with_aggregate() {
     // Project -> Aggregate -> Scan
     match op {
         LogicalOp::Project { input, .. } => match *input {
-            LogicalOp::Aggregate {
-                ref aggregates, ..
-            } => {
+            LogicalOp::Aggregate { ref aggregates, .. } => {
                 assert_eq!(aggregates.len(), 1);
                 assert_eq!(aggregates[0].function, AggregateFunction::Count);
             }
@@ -121,7 +122,11 @@ fn plan_with_order_by_and_limit() {
 fn plan_create_node() {
     let op = plan_query("CREATE (n:Person {name: 'Alice'})");
     match op {
-        LogicalOp::CreateNode { label, alias, properties } => {
+        LogicalOp::CreateNode {
+            label,
+            alias,
+            properties,
+        } => {
             assert_eq!(label.as_deref(), Some("Person"));
             assert_eq!(alias.as_deref(), Some("n"));
             assert_eq!(properties.len(), 1);

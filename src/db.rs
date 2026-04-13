@@ -83,10 +83,7 @@ impl Database {
     }
 
     /// Open a database with custom configuration.
-    pub fn open_with_config<P: AsRef<Path>>(
-        path: P,
-        config: Config,
-    ) -> Result<Self> {
+    pub fn open_with_config<P: AsRef<Path>>(path: P, config: Config) -> Result<Self> {
         let p = path.as_ref();
         let is_new = !p.exists();
         let conn = Connection::open_with_flags(

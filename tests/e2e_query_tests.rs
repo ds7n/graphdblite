@@ -7,18 +7,24 @@ fn setup_social_graph() -> Database {
     let mut db = Database::open_memory().unwrap();
     {
         let tx = db.begin_write().unwrap();
-        tx.query("CREATE (a:Person {name: 'Alice', age: 30})").unwrap();
-        tx.query("CREATE (b:Person {name: 'Bob', age: 25})").unwrap();
-        tx.query("CREATE (c:Person {name: 'Charlie', age: 35})").unwrap();
+        tx.query("CREATE (a:Person {name: 'Alice', age: 30})")
+            .unwrap();
+        tx.query("CREATE (b:Person {name: 'Bob', age: 25})")
+            .unwrap();
+        tx.query("CREATE (c:Person {name: 'Charlie', age: 35})")
+            .unwrap();
         tx.query("CREATE (d:Company {name: 'Acme'})").unwrap();
         tx.commit().unwrap();
     }
     {
         // Create edges via the typed API since CREATE with edges needs existing nodes.
         let tx = db.begin_write().unwrap();
-        tx.create_edge(NodeId(1), NodeId(2), "KNOWS", HashMap::new()).unwrap();
-        tx.create_edge(NodeId(2), NodeId(3), "KNOWS", HashMap::new()).unwrap();
-        tx.create_edge(NodeId(1), NodeId(4), "WORKS_AT", HashMap::new()).unwrap();
+        tx.create_edge(NodeId(1), NodeId(2), "KNOWS", HashMap::new())
+            .unwrap();
+        tx.create_edge(NodeId(2), NodeId(3), "KNOWS", HashMap::new())
+            .unwrap();
+        tx.create_edge(NodeId(1), NodeId(4), "WORKS_AT", HashMap::new())
+            .unwrap();
         tx.commit().unwrap();
     }
     db
@@ -53,10 +59,7 @@ fn e2e_match_with_string_filter() {
         .query("MATCH (n:Person) WHERE n.name = 'Bob' RETURN n.name")
         .unwrap();
     assert_eq!(results.len(), 1);
-    assert_eq!(
-        results[0].get("n.name"),
-        Some(&Value::String("Bob".into()))
-    );
+    assert_eq!(results[0].get("n.name"), Some(&Value::String("Bob".into())));
     tx.commit().unwrap();
 }
 
@@ -88,9 +91,7 @@ fn e2e_match_variable_length_path() {
 fn e2e_count_aggregate() {
     let mut db = setup_social_graph();
     let tx = db.begin_read().unwrap();
-    let results = tx
-        .query("MATCH (n:Person) RETURN count(*) AS cnt")
-        .unwrap();
+    let results = tx.query("MATCH (n:Person) RETURN count(*) AS cnt").unwrap();
     assert_eq!(results.len(), 1);
     assert_eq!(results[0].get("cnt"), Some(&Value::I64(3)));
     tx.commit().unwrap();
@@ -109,10 +110,7 @@ fn e2e_order_by_and_limit() {
         results[0].get("n.name"),
         Some(&Value::String("Alice".into()))
     );
-    assert_eq!(
-        results[1].get("n.name"),
-        Some(&Value::String("Bob".into()))
-    );
+    assert_eq!(results[1].get("n.name"), Some(&Value::String("Bob".into())));
     tx.commit().unwrap();
 }
 
@@ -133,7 +131,8 @@ fn e2e_create_node() {
     let mut db = Database::open_memory().unwrap();
     {
         let tx = db.begin_write().unwrap();
-        tx.query("CREATE (n:Person {name: 'Dave', age: 40})").unwrap();
+        tx.query("CREATE (n:Person {name: 'Dave', age: 40})")
+            .unwrap();
         tx.commit().unwrap();
     }
     {
@@ -152,7 +151,8 @@ fn e2e_create_edge() {
     let mut db = Database::open_memory().unwrap();
     {
         let tx = db.begin_write().unwrap();
-        tx.query("CREATE (a:Person {name: 'Alice'})-[:KNOWS]->(b:Person {name: 'Bob'})").unwrap();
+        tx.query("CREATE (a:Person {name: 'Alice'})-[:KNOWS]->(b:Person {name: 'Bob'})")
+            .unwrap();
         tx.commit().unwrap();
     }
     {
@@ -165,10 +165,7 @@ fn e2e_create_edge() {
             results[0].get("a.name"),
             Some(&Value::String("Alice".into()))
         );
-        assert_eq!(
-            results[0].get("b.name"),
-            Some(&Value::String("Bob".into()))
-        );
+        assert_eq!(results[0].get("b.name"), Some(&Value::String("Bob".into())));
         tx.commit().unwrap();
     }
 }
@@ -178,7 +175,8 @@ fn e2e_delete_node() {
     let mut db = setup_social_graph();
     {
         let tx = db.begin_write().unwrap();
-        tx.query("MATCH (n:Person) WHERE n.name = 'Charlie' DETACH DELETE n").unwrap();
+        tx.query("MATCH (n:Person) WHERE n.name = 'Charlie' DETACH DELETE n")
+            .unwrap();
         tx.commit().unwrap();
     }
     {
@@ -194,7 +192,8 @@ fn e2e_set_property() {
     let mut db = setup_social_graph();
     {
         let tx = db.begin_write().unwrap();
-        tx.query("MATCH (n:Person) WHERE n.name = 'Alice' SET n.age = 31").unwrap();
+        tx.query("MATCH (n:Person) WHERE n.name = 'Alice' SET n.age = 31")
+            .unwrap();
         tx.commit().unwrap();
     }
     {
@@ -212,7 +211,8 @@ fn e2e_merge_creates_when_not_found() {
     let mut db = Database::open_memory().unwrap();
     {
         let tx = db.begin_write().unwrap();
-        tx.query("MERGE (n:Person {name: 'Alice'}) ON CREATE SET n.source = 'created'").unwrap();
+        tx.query("MERGE (n:Person {name: 'Alice'}) ON CREATE SET n.source = 'created'")
+            .unwrap();
         tx.commit().unwrap();
     }
     {
@@ -239,7 +239,8 @@ fn e2e_merge_matches_when_found() {
     }
     {
         let tx = db.begin_write().unwrap();
-        tx.query("MERGE (n:Person {name: 'Alice'}) ON MATCH SET n.seen = true").unwrap();
+        tx.query("MERGE (n:Person {name: 'Alice'}) ON MATCH SET n.seen = true")
+            .unwrap();
         tx.commit().unwrap();
     }
     {
@@ -302,10 +303,7 @@ fn e2e_return_bare_variable() {
         .unwrap();
     assert_eq!(results.len(), 1);
     // Bare variable should expand to n.prop fields.
-    assert_eq!(
-        results[0].get("n.name"),
-        Some(&Value::String("Bob".into()))
-    );
+    assert_eq!(results[0].get("n.name"), Some(&Value::String("Bob".into())));
     assert_eq!(results[0].get("n.age"), Some(&Value::I64(25)));
     // No internal fields.
     assert!(results[0].get("n.__id").is_none());
@@ -341,15 +339,12 @@ fn e2e_return_star_with_relationship() {
         .query("MATCH (a:Person {name: 'Alice'})-[:KNOWS]->(b:Person) RETURN *")
         .unwrap();
     assert_eq!(results.len(), 1); // Alice->Bob
-    // Both aliases should have their properties expanded.
+                                  // Both aliases should have their properties expanded.
     assert_eq!(
         results[0].get("a.name"),
         Some(&Value::String("Alice".into()))
     );
-    assert_eq!(
-        results[0].get("b.name"),
-        Some(&Value::String("Bob".into()))
-    );
+    assert_eq!(results[0].get("b.name"), Some(&Value::String("Bob".into())));
     // No internal fields.
     assert!(results[0].get("a.__id").is_none());
     assert!(results[0].get("b.__label").is_none());
@@ -383,10 +378,7 @@ fn e2e_match_create_edge_between_existing_nodes() {
             results[0].get("a.name"),
             Some(&Value::String("Alice".into()))
         );
-        assert_eq!(
-            results[0].get("b.name"),
-            Some(&Value::String("Bob".into()))
-        );
+        assert_eq!(results[0].get("b.name"), Some(&Value::String("Bob".into())));
         tx.commit().unwrap();
     }
 }
@@ -398,10 +390,8 @@ fn e2e_match_create_bidirectional_edges() {
     // Make the reverse edges too.
     {
         let tx = db.begin_write().unwrap();
-        tx.query(
-            "MATCH (a:Person)-[:KNOWS]->(b:Person) CREATE (b)-[:KNOWS]->(a)",
-        )
-        .unwrap();
+        tx.query("MATCH (a:Person)-[:KNOWS]->(b:Person) CREATE (b)-[:KNOWS]->(a)")
+            .unwrap();
         tx.commit().unwrap();
     }
     {
@@ -497,9 +487,12 @@ fn e2e_grouped_count_aggregate() {
     let mut db = Database::open_memory().unwrap();
     {
         let tx = db.begin_write().unwrap();
-        tx.query("CREATE (a:Person {name: 'Alice', dept: 'eng'})").unwrap();
-        tx.query("CREATE (b:Person {name: 'Bob', dept: 'eng'})").unwrap();
-        tx.query("CREATE (c:Person {name: 'Charlie', dept: 'sales'})").unwrap();
+        tx.query("CREATE (a:Person {name: 'Alice', dept: 'eng'})")
+            .unwrap();
+        tx.query("CREATE (b:Person {name: 'Bob', dept: 'eng'})")
+            .unwrap();
+        tx.query("CREATE (c:Person {name: 'Charlie', dept: 'sales'})")
+            .unwrap();
         tx.commit().unwrap();
     }
     let tx = db.begin_read().unwrap();
@@ -509,7 +502,10 @@ fn e2e_grouped_count_aggregate() {
     assert_eq!(results.len(), 2);
     assert_eq!(results[0].get("n.dept"), Some(&Value::String("eng".into())));
     assert_eq!(results[0].get("cnt"), Some(&Value::I64(2)));
-    assert_eq!(results[1].get("n.dept"), Some(&Value::String("sales".into())));
+    assert_eq!(
+        results[1].get("n.dept"),
+        Some(&Value::String("sales".into()))
+    );
     assert_eq!(results[1].get("cnt"), Some(&Value::I64(1)));
     tx.commit().unwrap();
 }
@@ -524,7 +520,10 @@ fn e2e_grouped_collect_aggregate() {
         .unwrap();
     assert_eq!(results.len(), 2);
     // Alice knows Bob.
-    assert_eq!(results[0].get("a.name"), Some(&Value::String("Alice".into())));
+    assert_eq!(
+        results[0].get("a.name"),
+        Some(&Value::String("Alice".into()))
+    );
     match results[0].get("friends") {
         Some(Value::List(items)) => {
             assert_eq!(items, &vec![Value::String("Bob".into())]);
@@ -568,11 +567,20 @@ fn e2e_optional_match_with_results() {
         .unwrap();
     // Alice has WORKS_AT → Acme; Bob and Charlie don't → null.
     assert_eq!(results.len(), 3);
-    assert_eq!(results[0].get("a.name"), Some(&Value::String("Alice".into())));
-    assert_eq!(results[0].get("c.name"), Some(&Value::String("Acme".into())));
+    assert_eq!(
+        results[0].get("a.name"),
+        Some(&Value::String("Alice".into()))
+    );
+    assert_eq!(
+        results[0].get("c.name"),
+        Some(&Value::String("Acme".into()))
+    );
     assert_eq!(results[1].get("a.name"), Some(&Value::String("Bob".into())));
     assert_eq!(results[1].get("c.name"), Some(&Value::Null));
-    assert_eq!(results[2].get("a.name"), Some(&Value::String("Charlie".into())));
+    assert_eq!(
+        results[2].get("a.name"),
+        Some(&Value::String("Charlie".into()))
+    );
     assert_eq!(results[2].get("c.name"), Some(&Value::Null));
     tx.commit().unwrap();
 }
@@ -587,7 +595,10 @@ fn e2e_optional_match_all_matched() {
         .unwrap();
     // Alice knows Bob, so should get 1 row with both filled.
     assert_eq!(results.len(), 1);
-    assert_eq!(results[0].get("a.name"), Some(&Value::String("Alice".into())));
+    assert_eq!(
+        results[0].get("a.name"),
+        Some(&Value::String("Alice".into()))
+    );
     assert_eq!(results[0].get("b.name"), Some(&Value::String("Bob".into())));
     tx.commit().unwrap();
 }
@@ -601,7 +612,10 @@ fn e2e_optional_match_no_matches() {
         .query("MATCH (a:Person {name: 'Charlie'}) OPTIONAL MATCH (a)-[:WORKS_AT]->(c:Company) RETURN a.name, c.name")
         .unwrap();
     assert_eq!(results.len(), 1);
-    assert_eq!(results[0].get("a.name"), Some(&Value::String("Charlie".into())));
+    assert_eq!(
+        results[0].get("a.name"),
+        Some(&Value::String("Charlie".into()))
+    );
     assert_eq!(results[0].get("c.name"), Some(&Value::Null));
     tx.commit().unwrap();
 }
@@ -613,9 +627,12 @@ fn e2e_index_lookup_single_property() {
     let mut db = Database::open_memory().unwrap();
     {
         let tx = db.begin_write().unwrap();
-        tx.query("CREATE (a:Person {name: 'Alice', age: 30})").unwrap();
-        tx.query("CREATE (b:Person {name: 'Bob', age: 25})").unwrap();
-        tx.query("CREATE (c:Person {name: 'Charlie', age: 35})").unwrap();
+        tx.query("CREATE (a:Person {name: 'Alice', age: 30})")
+            .unwrap();
+        tx.query("CREATE (b:Person {name: 'Bob', age: 25})")
+            .unwrap();
+        tx.query("CREATE (c:Person {name: 'Charlie', age: 35})")
+            .unwrap();
         tx.create_index("Person", "name").unwrap();
         tx.commit().unwrap();
     }
@@ -625,7 +642,10 @@ fn e2e_index_lookup_single_property() {
         .query("MATCH (n:Person {name: 'Alice'}) RETURN n.name, n.age")
         .unwrap();
     assert_eq!(results.len(), 1);
-    assert_eq!(results[0].get("n.name"), Some(&Value::String("Alice".into())));
+    assert_eq!(
+        results[0].get("n.name"),
+        Some(&Value::String("Alice".into()))
+    );
     assert_eq!(results[0].get("n.age"), Some(&Value::I64(30)));
     tx.commit().unwrap();
 }
@@ -652,9 +672,12 @@ fn e2e_index_lookup_with_remaining_filter() {
     let mut db = Database::open_memory().unwrap();
     {
         let tx = db.begin_write().unwrap();
-        tx.query("CREATE (a:Person {name: 'Alice', age: 30})").unwrap();
-        tx.query("CREATE (b:Person {name: 'Alice', age: 25})").unwrap();
-        tx.query("CREATE (c:Person {name: 'Bob', age: 30})").unwrap();
+        tx.query("CREATE (a:Person {name: 'Alice', age: 30})")
+            .unwrap();
+        tx.query("CREATE (b:Person {name: 'Alice', age: 25})")
+            .unwrap();
+        tx.query("CREATE (c:Person {name: 'Bob', age: 30})")
+            .unwrap();
         tx.create_index("Person", "name").unwrap();
         tx.commit().unwrap();
     }
@@ -664,7 +687,10 @@ fn e2e_index_lookup_with_remaining_filter() {
         .query("MATCH (n:Person {name: 'Alice', age: 30}) RETURN n.name, n.age")
         .unwrap();
     assert_eq!(results.len(), 1);
-    assert_eq!(results[0].get("n.name"), Some(&Value::String("Alice".into())));
+    assert_eq!(
+        results[0].get("n.name"),
+        Some(&Value::String("Alice".into()))
+    );
     assert_eq!(results[0].get("n.age"), Some(&Value::I64(30)));
     tx.commit().unwrap();
 }
@@ -676,7 +702,8 @@ fn e2e_index_lookup_in_relationship_pattern() {
         let tx = db.begin_write().unwrap();
         tx.query("CREATE (a:Person {name: 'Alice'})").unwrap();
         tx.query("CREATE (b:Person {name: 'Bob'})").unwrap();
-        tx.create_edge(NodeId(1), NodeId(2), "KNOWS", HashMap::new()).unwrap();
+        tx.create_edge(NodeId(1), NodeId(2), "KNOWS", HashMap::new())
+            .unwrap();
         tx.create_index("Person", "name").unwrap();
         tx.commit().unwrap();
     }
@@ -686,7 +713,10 @@ fn e2e_index_lookup_in_relationship_pattern() {
         .query("MATCH (a:Person {name: 'Alice'})-[:KNOWS]->(b:Person) RETURN a.name, b.name")
         .unwrap();
     assert_eq!(results.len(), 1);
-    assert_eq!(results[0].get("a.name"), Some(&Value::String("Alice".into())));
+    assert_eq!(
+        results[0].get("a.name"),
+        Some(&Value::String("Alice".into()))
+    );
     assert_eq!(results[0].get("b.name"), Some(&Value::String("Bob".into())));
     tx.commit().unwrap();
 }
@@ -697,8 +727,10 @@ fn e2e_no_index_falls_back_to_scan() {
     let mut db = Database::open_memory().unwrap();
     {
         let tx = db.begin_write().unwrap();
-        tx.query("CREATE (a:Person {name: 'Alice', age: 30})").unwrap();
-        tx.query("CREATE (b:Person {name: 'Bob', age: 25})").unwrap();
+        tx.query("CREATE (a:Person {name: 'Alice', age: 30})")
+            .unwrap();
+        tx.query("CREATE (b:Person {name: 'Bob', age: 25})")
+            .unwrap();
         tx.commit().unwrap();
     }
     let tx = db.begin_read().unwrap();
@@ -706,7 +738,10 @@ fn e2e_no_index_falls_back_to_scan() {
         .query("MATCH (n:Person {name: 'Alice'}) RETURN n.name, n.age")
         .unwrap();
     assert_eq!(results.len(), 1);
-    assert_eq!(results[0].get("n.name"), Some(&Value::String("Alice".into())));
+    assert_eq!(
+        results[0].get("n.name"),
+        Some(&Value::String("Alice".into()))
+    );
     assert_eq!(results[0].get("n.age"), Some(&Value::I64(30)));
     tx.commit().unwrap();
 }
@@ -723,7 +758,10 @@ fn e2e_with_simple_projection() {
     assert_eq!(results.len(), 3);
     assert_eq!(results[0].get("name"), Some(&Value::String("Alice".into())));
     assert_eq!(results[1].get("name"), Some(&Value::String("Bob".into())));
-    assert_eq!(results[2].get("name"), Some(&Value::String("Charlie".into())));
+    assert_eq!(
+        results[2].get("name"),
+        Some(&Value::String("Charlie".into()))
+    );
     tx.commit().unwrap();
 }
 
@@ -736,7 +774,10 @@ fn e2e_with_where_filter() {
         .unwrap();
     assert_eq!(results.len(), 2);
     assert_eq!(results[0].get("name"), Some(&Value::String("Alice".into())));
-    assert_eq!(results[1].get("name"), Some(&Value::String("Charlie".into())));
+    assert_eq!(
+        results[1].get("name"),
+        Some(&Value::String("Charlie".into()))
+    );
     tx.commit().unwrap();
 }
 
@@ -745,10 +786,14 @@ fn e2e_with_aggregation() {
     let mut db = Database::open_memory().unwrap();
     {
         let tx = db.begin_write().unwrap();
-        tx.query("CREATE (a:Person {name: 'Alice', dept: 'eng'})").unwrap();
-        tx.query("CREATE (b:Person {name: 'Bob', dept: 'eng'})").unwrap();
-        tx.query("CREATE (c:Person {name: 'Charlie', dept: 'sales'})").unwrap();
-        tx.query("CREATE (d:Person {name: 'Diana', dept: 'eng'})").unwrap();
+        tx.query("CREATE (a:Person {name: 'Alice', dept: 'eng'})")
+            .unwrap();
+        tx.query("CREATE (b:Person {name: 'Bob', dept: 'eng'})")
+            .unwrap();
+        tx.query("CREATE (c:Person {name: 'Charlie', dept: 'sales'})")
+            .unwrap();
+        tx.query("CREATE (d:Person {name: 'Diana', dept: 'eng'})")
+            .unwrap();
         tx.commit().unwrap();
     }
     let tx = db.begin_read().unwrap();
@@ -770,9 +815,15 @@ fn e2e_with_passthrough_variable() {
         .query("MATCH (n:Person) WITH n RETURN n.name ORDER BY n.name")
         .unwrap();
     assert_eq!(results.len(), 3);
-    assert_eq!(results[0].get("n.name"), Some(&Value::String("Alice".into())));
+    assert_eq!(
+        results[0].get("n.name"),
+        Some(&Value::String("Alice".into()))
+    );
     assert_eq!(results[1].get("n.name"), Some(&Value::String("Bob".into())));
-    assert_eq!(results[2].get("n.name"), Some(&Value::String("Charlie".into())));
+    assert_eq!(
+        results[2].get("n.name"),
+        Some(&Value::String("Charlie".into()))
+    );
     tx.commit().unwrap();
 }
 
@@ -789,9 +840,18 @@ fn e2e_case_expression_with_else() {
         .unwrap();
     assert_eq!(results.len(), 3);
     // Alice (30) → junior, Bob (25) → junior, Charlie (35) → senior
-    assert_eq!(results[0].get("category"), Some(&Value::String("junior".into())));
-    assert_eq!(results[1].get("category"), Some(&Value::String("junior".into())));
-    assert_eq!(results[2].get("category"), Some(&Value::String("senior".into())));
+    assert_eq!(
+        results[0].get("category"),
+        Some(&Value::String("junior".into()))
+    );
+    assert_eq!(
+        results[1].get("category"),
+        Some(&Value::String("junior".into()))
+    );
+    assert_eq!(
+        results[2].get("category"),
+        Some(&Value::String("senior".into()))
+    );
     tx.commit().unwrap();
 }
 
@@ -808,7 +868,10 @@ fn e2e_case_expression_multiple_when() {
     // Alice (30) → mid, Bob (25) → young, Charlie (35) → senior
     assert_eq!(results[0].get("tier"), Some(&Value::String("mid".into())));
     assert_eq!(results[1].get("tier"), Some(&Value::String("young".into())));
-    assert_eq!(results[2].get("tier"), Some(&Value::String("senior".into())));
+    assert_eq!(
+        results[2].get("tier"),
+        Some(&Value::String("senior".into()))
+    );
     tx.commit().unwrap();
 }
 
@@ -852,7 +915,8 @@ fn e2e_plain_delete_succeeds_on_isolated_node() {
     {
         let tx = db.begin_write().unwrap();
         // Alice has no edges — plain DELETE should work.
-        tx.query("MATCH (n:Person) WHERE n.name = 'Alice' DELETE n").unwrap();
+        tx.query("MATCH (n:Person) WHERE n.name = 'Alice' DELETE n")
+            .unwrap();
         tx.commit().unwrap();
     }
     {
@@ -869,15 +933,24 @@ fn e2e_detach_delete_cascades_edges() {
     {
         let tx = db.begin_write().unwrap();
         // Bob has edges (Alice->Bob KNOWS, Bob->Charlie KNOWS) — DETACH DELETE cascades.
-        tx.query("MATCH (n:Person) WHERE n.name = 'Bob' DETACH DELETE n").unwrap();
+        tx.query("MATCH (n:Person) WHERE n.name = 'Bob' DETACH DELETE n")
+            .unwrap();
         tx.commit().unwrap();
     }
     {
         let tx = db.begin_read().unwrap();
-        let results = tx.query("MATCH (n:Person) RETURN n.name ORDER BY n.name").unwrap();
+        let results = tx
+            .query("MATCH (n:Person) RETURN n.name ORDER BY n.name")
+            .unwrap();
         assert_eq!(results.len(), 2);
-        assert_eq!(results[0].get("n.name"), Some(&Value::String("Alice".into())));
-        assert_eq!(results[1].get("n.name"), Some(&Value::String("Charlie".into())));
+        assert_eq!(
+            results[0].get("n.name"),
+            Some(&Value::String("Alice".into()))
+        );
+        assert_eq!(
+            results[1].get("n.name"),
+            Some(&Value::String("Charlie".into()))
+        );
         // No KNOWS edges should remain.
         let edges = tx.query("MATCH (a)-[:KNOWS]->(b) RETURN a.name").unwrap();
         assert_eq!(edges.len(), 0);
@@ -932,8 +1005,14 @@ fn e2e_starts_with() {
     let rows = tx
         .query("MATCH (n:Person) WHERE n.name STARTS WITH 'A' RETURN n.name ORDER BY n.name")
         .unwrap();
-    let names: Vec<_> = rows.iter().map(|r| r.get("n.name").unwrap().clone()).collect();
-    assert_eq!(names, vec![Value::String("Alice".into()), Value::String("Anna".into())]);
+    let names: Vec<_> = rows
+        .iter()
+        .map(|r| r.get("n.name").unwrap().clone())
+        .collect();
+    assert_eq!(
+        names,
+        vec![Value::String("Alice".into()), Value::String("Anna".into())]
+    );
     tx.commit().unwrap();
 }
 
@@ -950,8 +1029,14 @@ fn e2e_ends_with() {
     let rows = tx
         .query("MATCH (n:Person) WHERE n.name ENDS WITH 'ce' RETURN n.name ORDER BY n.name")
         .unwrap();
-    let names: Vec<_> = rows.iter().map(|r| r.get("n.name").unwrap().clone()).collect();
-    assert_eq!(names, vec![Value::String("Alice".into()), Value::String("Grace".into())]);
+    let names: Vec<_> = rows
+        .iter()
+        .map(|r| r.get("n.name").unwrap().clone())
+        .collect();
+    assert_eq!(
+        names,
+        vec![Value::String("Alice".into()), Value::String("Grace".into())]
+    );
     tx.commit().unwrap();
 }
 
@@ -983,7 +1068,10 @@ fn e2e_contains_string() {
     let rows = tx
         .query("MATCH (n:Person) WHERE n.name CONTAINS 'lic' RETURN n.name ORDER BY n.name")
         .unwrap();
-    let names: Vec<_> = rows.iter().map(|r| r.get("n.name").unwrap().clone()).collect();
+    let names: Vec<_> = rows
+        .iter()
+        .map(|r| r.get("n.name").unwrap().clone())
+        .collect();
     assert_eq!(names, vec![Value::String("Alice".into())]);
     tx.commit().unwrap();
 }
@@ -1053,7 +1141,10 @@ fn e2e_grouped_aggregate_order_by_count() {
     assert_eq!(rows.len(), 3);
     assert_eq!(rows[0].get("n.dept").unwrap(), &Value::String("eng".into()));
     assert_eq!(rows[0].get("cnt").unwrap(), &Value::I64(3));
-    assert_eq!(rows[1].get("n.dept").unwrap(), &Value::String("sales".into()));
+    assert_eq!(
+        rows[1].get("n.dept").unwrap(),
+        &Value::String("sales".into())
+    );
     assert_eq!(rows[1].get("cnt").unwrap(), &Value::I64(2));
     assert_eq!(rows[2].get("n.dept").unwrap(), &Value::String("hr".into()));
     assert_eq!(rows[2].get("cnt").unwrap(), &Value::I64(1));
@@ -1064,9 +1155,12 @@ fn e2e_grouped_aggregate_order_by_count() {
 fn e2e_multiple_aggregates_in_return() {
     let mut db = Database::open_memory().unwrap();
     let tx = db.begin_write().unwrap();
-    tx.query("CREATE (n:Person {dept: 'eng', age: 30})").unwrap();
-    tx.query("CREATE (n:Person {dept: 'eng', age: 40})").unwrap();
-    tx.query("CREATE (n:Person {dept: 'sales', age: 25})").unwrap();
+    tx.query("CREATE (n:Person {dept: 'eng', age: 30})")
+        .unwrap();
+    tx.query("CREATE (n:Person {dept: 'eng', age: 40})")
+        .unwrap();
+    tx.query("CREATE (n:Person {dept: 'sales', age: 25})")
+        .unwrap();
     tx.commit().unwrap();
 
     let tx = db.begin_read().unwrap();
@@ -1120,7 +1214,8 @@ fn e2e_where_on_missing_property() {
     let mut db = Database::open_memory().unwrap();
     let tx = db.begin_write().unwrap();
     tx.query("CREATE (a:Person {name: 'Alice'})").unwrap();
-    tx.query("CREATE (b:Person {name: 'Bob', email: 'bob@test.com'})").unwrap();
+    tx.query("CREATE (b:Person {name: 'Bob', email: 'bob@test.com'})")
+        .unwrap();
     tx.commit().unwrap();
 
     let tx = db.begin_read().unwrap();
@@ -1137,11 +1232,13 @@ fn e2e_where_on_missing_property() {
 fn e2e_set_property_to_null_removes_it() {
     let mut db = Database::open_memory().unwrap();
     let tx = db.begin_write().unwrap();
-    tx.query("CREATE (n:Person {name: 'Alice', age: 30})").unwrap();
+    tx.query("CREATE (n:Person {name: 'Alice', age: 30})")
+        .unwrap();
     tx.commit().unwrap();
 
     let tx = db.begin_write().unwrap();
-    tx.query("MATCH (n:Person) WHERE n.name = 'Alice' SET n.age = null").unwrap();
+    tx.query("MATCH (n:Person) WHERE n.name = 'Alice' SET n.age = null")
+        .unwrap();
     tx.commit().unwrap();
 
     let tx = db.begin_read().unwrap();
@@ -1157,7 +1254,8 @@ fn e2e_set_property_to_null_removes_it() {
 fn e2e_unicode_property_values() {
     let mut db = Database::open_memory().unwrap();
     let tx = db.begin_write().unwrap();
-    tx.query("CREATE (n:Person {name: '日本語テスト'})").unwrap();
+    tx.query("CREATE (n:Person {name: '日本語テスト'})")
+        .unwrap();
     tx.query("CREATE (n:Person {name: 'émojis 🎉🚀'})").unwrap();
     tx.query("CREATE (n:Person {name: 'Ñoño'})").unwrap();
     tx.commit().unwrap();
@@ -1173,7 +1271,10 @@ fn e2e_unicode_property_values() {
         .query("MATCH (n:Person) WHERE n.name STARTS WITH 'Ñ' RETURN n.name")
         .unwrap();
     assert_eq!(rows.len(), 1);
-    assert_eq!(rows[0].get("n.name").unwrap(), &Value::String("Ñoño".into()));
+    assert_eq!(
+        rows[0].get("n.name").unwrap(),
+        &Value::String("Ñoño".into())
+    );
     tx.commit().unwrap();
 }
 
@@ -1216,10 +1317,16 @@ fn e2e_aggregate_with_null_group_keys() {
         .unwrap();
     assert_eq!(rows.len(), 2);
     // Null group should have 3 nodes.
-    let null_group = rows.iter().find(|r| r.get("n.dept").unwrap() == &Value::Null).unwrap();
+    let null_group = rows
+        .iter()
+        .find(|r| r.get("n.dept").unwrap() == &Value::Null)
+        .unwrap();
     assert_eq!(null_group.get("cnt").unwrap(), &Value::I64(3));
     // eng group should have 2 nodes.
-    let eng_group = rows.iter().find(|r| r.get("n.dept").unwrap() == &Value::String("eng".into())).unwrap();
+    let eng_group = rows
+        .iter()
+        .find(|r| r.get("n.dept").unwrap() == &Value::String("eng".into()))
+        .unwrap();
     assert_eq!(eng_group.get("cnt").unwrap(), &Value::I64(2));
     tx.commit().unwrap();
 }
@@ -1268,8 +1375,10 @@ fn e2e_optional_match_with_aggregation() {
 
     let tx = db.begin_write().unwrap();
     // Only Alice knows people.
-    tx.create_edge(NodeId(1), NodeId(2), "KNOWS", HashMap::new()).unwrap();
-    tx.create_edge(NodeId(1), NodeId(3), "KNOWS", HashMap::new()).unwrap();
+    tx.create_edge(NodeId(1), NodeId(2), "KNOWS", HashMap::new())
+        .unwrap();
+    tx.create_edge(NodeId(1), NodeId(3), "KNOWS", HashMap::new())
+        .unwrap();
     tx.commit().unwrap();
 
     let tx = db.begin_read().unwrap();
@@ -1278,7 +1387,10 @@ fn e2e_optional_match_with_aggregation() {
         .unwrap();
     assert_eq!(rows.len(), 3);
     // Alice knows 2 people.
-    assert_eq!(rows[0].get("a.name").unwrap(), &Value::String("Alice".into()));
+    assert_eq!(
+        rows[0].get("a.name").unwrap(),
+        &Value::String("Alice".into())
+    );
     assert_eq!(rows[0].get("friends").unwrap(), &Value::I64(2));
     // Bob and Charlie know 0 people.
     assert_eq!(rows[1].get("friends").unwrap(), &Value::I64(0));
@@ -1296,7 +1408,10 @@ fn e2e_variable_length_path_with_where() {
         .unwrap();
     // Only Charlie (age 35) should match via 2 hops.
     assert_eq!(rows.len(), 1);
-    assert_eq!(rows[0].get("b.name").unwrap(), &Value::String("Charlie".into()));
+    assert_eq!(
+        rows[0].get("b.name").unwrap(),
+        &Value::String("Charlie".into())
+    );
     tx.commit().unwrap();
 }
 
@@ -1313,7 +1428,9 @@ fn e2e_merge_on_create_and_on_match_set() {
     // Verify created.
     {
         let tx = db.begin_read().unwrap();
-        let rows = tx.query("MATCH (n:Person {name: 'Alice'}) RETURN n.created, n.updated").unwrap();
+        let rows = tx
+            .query("MATCH (n:Person {name: 'Alice'}) RETURN n.created, n.updated")
+            .unwrap();
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0].get("n.created").unwrap(), &Value::Bool(true));
         assert_eq!(rows[0].get("n.updated").unwrap(), &Value::Null);
@@ -1329,7 +1446,9 @@ fn e2e_merge_on_create_and_on_match_set() {
     // Verify updated.
     {
         let tx = db.begin_read().unwrap();
-        let rows = tx.query("MATCH (n:Person {name: 'Alice'}) RETURN n.created, n.updated").unwrap();
+        let rows = tx
+            .query("MATCH (n:Person {name: 'Alice'}) RETURN n.created, n.updated")
+            .unwrap();
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0].get("n.created").unwrap(), &Value::Bool(true));
         assert_eq!(rows[0].get("n.updated").unwrap(), &Value::Bool(true));
@@ -1376,7 +1495,10 @@ fn e2e_delete_node_with_edges_fails() {
         .query("MATCH (n:Person {name: 'Alice'}) DELETE n")
         .unwrap_err();
     let msg = err.to_string();
-    assert!(msg.contains("still has edges"), "expected HasEdges error, got: {msg}");
+    assert!(
+        msg.contains("still has edges"),
+        "expected HasEdges error, got: {msg}"
+    );
     tx.commit().unwrap();
 }
 
@@ -1384,11 +1506,14 @@ fn e2e_delete_node_with_edges_fails() {
 fn e2e_detach_delete_node_with_edges_succeeds() {
     let mut db = setup_social_graph();
     let tx = db.begin_write().unwrap();
-    tx.query("MATCH (n:Person {name: 'Alice'}) DETACH DELETE n").unwrap();
+    tx.query("MATCH (n:Person {name: 'Alice'}) DETACH DELETE n")
+        .unwrap();
     tx.commit().unwrap();
 
     let tx = db.begin_read().unwrap();
-    let rows = tx.query("MATCH (n:Person {name: 'Alice'}) RETURN n").unwrap();
+    let rows = tx
+        .query("MATCH (n:Person {name: 'Alice'}) RETURN n")
+        .unwrap();
     assert!(rows.is_empty());
     tx.commit().unwrap();
 }
@@ -1399,8 +1524,10 @@ fn e2e_detach_delete_node_with_edges_succeeds() {
 fn e2e_large_integers() {
     let mut db = Database::open_memory().unwrap();
     let tx = db.begin_write().unwrap();
-    tx.query("CREATE (n:Num {val: 9223372036854775807})").unwrap(); // i64::MAX
-    tx.query("CREATE (n:Num {val: -9223372036854775808})").unwrap(); // i64::MIN
+    tx.query("CREATE (n:Num {val: 9223372036854775807})")
+        .unwrap(); // i64::MAX
+    tx.query("CREATE (n:Num {val: -9223372036854775808})")
+        .unwrap(); // i64::MIN
     tx.commit().unwrap();
 
     let tx = db.begin_read().unwrap();
@@ -1435,11 +1562,14 @@ fn e2e_float_property() {
 fn e2e_boolean_properties() {
     let mut db = Database::open_memory().unwrap();
     let tx = db.begin_write().unwrap();
-    tx.query("CREATE (n:Flag {active: true, deleted: false})").unwrap();
+    tx.query("CREATE (n:Flag {active: true, deleted: false})")
+        .unwrap();
     tx.commit().unwrap();
 
     let tx = db.begin_read().unwrap();
-    let rows = tx.query("MATCH (n:Flag) WHERE n.active = true RETURN n.deleted").unwrap();
+    let rows = tx
+        .query("MATCH (n:Flag) WHERE n.active = true RETURN n.deleted")
+        .unwrap();
     assert_eq!(rows.len(), 1);
     assert_eq!(rows[0].get("n.deleted").unwrap(), &Value::Bool(false));
     tx.commit().unwrap();
@@ -1478,7 +1608,10 @@ fn e2e_unwind_string_list() {
     assert_eq!(rows.len(), 3);
     assert_eq!(rows[0].get("name").unwrap(), &Value::String("Alice".into()));
     assert_eq!(rows[1].get("name").unwrap(), &Value::String("Bob".into()));
-    assert_eq!(rows[2].get("name").unwrap(), &Value::String("Charlie".into()));
+    assert_eq!(
+        rows[2].get("name").unwrap(),
+        &Value::String("Charlie".into())
+    );
     tx.commit().unwrap();
 }
 
@@ -1508,9 +1641,15 @@ fn e2e_unwind_create_nodes() {
         .query("MATCH (n:Person) RETURN n.name ORDER BY n.name")
         .unwrap();
     assert_eq!(rows.len(), 3);
-    assert_eq!(rows[0].get("n.name").unwrap(), &Value::String("Alice".into()));
+    assert_eq!(
+        rows[0].get("n.name").unwrap(),
+        &Value::String("Alice".into())
+    );
     assert_eq!(rows[1].get("n.name").unwrap(), &Value::String("Bob".into()));
-    assert_eq!(rows[2].get("n.name").unwrap(), &Value::String("Charlie".into()));
+    assert_eq!(
+        rows[2].get("n.name").unwrap(),
+        &Value::String("Charlie".into())
+    );
     tx.commit().unwrap();
 }
 
@@ -1531,7 +1670,8 @@ fn e2e_unwind_with_aggregation() {
 fn e2e_match_with_unwind() {
     let mut db = Database::open_memory().unwrap();
     let tx = db.begin_write().unwrap();
-    tx.query("CREATE (n:Person {name: 'Alice', tags: 'dev,lead'})").unwrap();
+    tx.query("CREATE (n:Person {name: 'Alice', tags: 'dev,lead'})")
+        .unwrap();
     tx.commit().unwrap();
 
     // Use UNWIND within a MATCH via collect + UNWIND in WITH chain.
@@ -1541,7 +1681,10 @@ fn e2e_match_with_unwind() {
         .unwrap();
     // Each person x each unwind element = 1 * 2 = 2 rows.
     assert_eq!(rows.len(), 2);
-    assert_eq!(rows[0].get("n.name").unwrap(), &Value::String("Alice".into()));
+    assert_eq!(
+        rows[0].get("n.name").unwrap(),
+        &Value::String("Alice".into())
+    );
     assert_eq!(rows[0].get("x").unwrap(), &Value::I64(1));
     assert_eq!(rows[1].get("x").unwrap(), &Value::I64(2));
     tx.commit().unwrap();
@@ -1579,7 +1722,10 @@ fn e2e_exists_simple_pattern() {
     // Alice -> Bob, Bob -> Charlie. Charlie has no outgoing KNOWS.
     let names: Vec<&str> = results
         .iter()
-        .map(|r| match r.get("n.name").unwrap() { Value::String(s) => s.as_str(), _ => panic!() })
+        .map(|r| match r.get("n.name").unwrap() {
+            Value::String(s) => s.as_str(),
+            _ => panic!(),
+        })
         .collect();
     assert_eq!(names, vec!["Alice", "Bob"]);
     tx.commit().unwrap();
@@ -1732,10 +1878,7 @@ fn e2e_list_comprehension_empty_input() {
         .query("MATCH (n:X) RETURN [x IN [] | x] AS empty")
         .unwrap();
     assert_eq!(results.len(), 1);
-    assert_eq!(
-        results[0].get("empty").unwrap(),
-        &Value::List(vec![])
-    );
+    assert_eq!(results[0].get("empty").unwrap(), &Value::List(vec![]));
     tx.commit().unwrap();
 }
 
@@ -1753,10 +1896,7 @@ fn e2e_list_comprehension_filter_all() {
         .query("MATCH (n:X) RETURN [x IN [1, 2, 3] WHERE x > 100] AS none")
         .unwrap();
     assert_eq!(results.len(), 1);
-    assert_eq!(
-        results[0].get("none").unwrap(),
-        &Value::List(vec![])
-    );
+    assert_eq!(results[0].get("none").unwrap(), &Value::List(vec![]));
     tx.commit().unwrap();
 }
 
@@ -1766,9 +1906,12 @@ fn e2e_list_comprehension_with_unwind_source() {
     let mut db = Database::open_memory().unwrap();
     {
         let tx = db.begin_write().unwrap();
-        tx.query("CREATE (n:Person {name: 'Alice', age: 30})").unwrap();
-        tx.query("CREATE (n:Person {name: 'Bob', age: 25})").unwrap();
-        tx.query("CREATE (n:Person {name: 'Charlie', age: 35})").unwrap();
+        tx.query("CREATE (n:Person {name: 'Alice', age: 30})")
+            .unwrap();
+        tx.query("CREATE (n:Person {name: 'Bob', age: 25})")
+            .unwrap();
+        tx.query("CREATE (n:Person {name: 'Charlie', age: 35})")
+            .unwrap();
         tx.commit().unwrap();
     }
     let tx = db.begin_read().unwrap();
@@ -1800,21 +1943,26 @@ fn setup_path_graph() -> Database {
     let mut db = Database::open_memory().unwrap();
     {
         let tx = db.begin_write().unwrap();
-        tx.query("CREATE (a:Person {name: 'A'})").unwrap();  // NodeId(1)
-        tx.query("CREATE (b:Person {name: 'B'})").unwrap();  // NodeId(2)
-        tx.query("CREATE (c:Person {name: 'C'})").unwrap();  // NodeId(3)
-        tx.query("CREATE (d:Person {name: 'D'})").unwrap();  // NodeId(4)
+        tx.query("CREATE (a:Person {name: 'A'})").unwrap(); // NodeId(1)
+        tx.query("CREATE (b:Person {name: 'B'})").unwrap(); // NodeId(2)
+        tx.query("CREATE (c:Person {name: 'C'})").unwrap(); // NodeId(3)
+        tx.query("CREATE (d:Person {name: 'D'})").unwrap(); // NodeId(4)
         tx.commit().unwrap();
     }
     {
         let tx = db.begin_write().unwrap();
         // Chain: A -> B -> C -> D
-        tx.create_edge(NodeId(1), NodeId(2), "KNOWS", HashMap::new()).unwrap();
-        tx.create_edge(NodeId(2), NodeId(3), "KNOWS", HashMap::new()).unwrap();
-        tx.create_edge(NodeId(3), NodeId(4), "KNOWS", HashMap::new()).unwrap();
+        tx.create_edge(NodeId(1), NodeId(2), "KNOWS", HashMap::new())
+            .unwrap();
+        tx.create_edge(NodeId(2), NodeId(3), "KNOWS", HashMap::new())
+            .unwrap();
+        tx.create_edge(NodeId(3), NodeId(4), "KNOWS", HashMap::new())
+            .unwrap();
         // Shortcuts: A -> C, A -> D
-        tx.create_edge(NodeId(1), NodeId(3), "KNOWS", HashMap::new()).unwrap();
-        tx.create_edge(NodeId(1), NodeId(4), "KNOWS", HashMap::new()).unwrap();
+        tx.create_edge(NodeId(1), NodeId(3), "KNOWS", HashMap::new())
+            .unwrap();
+        tx.create_edge(NodeId(1), NodeId(4), "KNOWS", HashMap::new())
+            .unwrap();
         tx.commit().unwrap();
     }
     db
@@ -1928,18 +2076,22 @@ fn e2e_all_shortest_paths_multiple() {
     let mut db = Database::open_memory().unwrap();
     {
         let tx = db.begin_write().unwrap();
-        tx.query("CREATE (a:N {name: 'A'})").unwrap();  // 1
-        tx.query("CREATE (b:N {name: 'B'})").unwrap();  // 2
-        tx.query("CREATE (c:N {name: 'C'})").unwrap();  // 3
-        tx.query("CREATE (d:N {name: 'D'})").unwrap();  // 4
+        tx.query("CREATE (a:N {name: 'A'})").unwrap(); // 1
+        tx.query("CREATE (b:N {name: 'B'})").unwrap(); // 2
+        tx.query("CREATE (c:N {name: 'C'})").unwrap(); // 3
+        tx.query("CREATE (d:N {name: 'D'})").unwrap(); // 4
         tx.commit().unwrap();
     }
     {
         let tx = db.begin_write().unwrap();
-        tx.create_edge(NodeId(1), NodeId(2), "E", HashMap::new()).unwrap();
-        tx.create_edge(NodeId(1), NodeId(3), "E", HashMap::new()).unwrap();
-        tx.create_edge(NodeId(2), NodeId(4), "E", HashMap::new()).unwrap();
-        tx.create_edge(NodeId(3), NodeId(4), "E", HashMap::new()).unwrap();
+        tx.create_edge(NodeId(1), NodeId(2), "E", HashMap::new())
+            .unwrap();
+        tx.create_edge(NodeId(1), NodeId(3), "E", HashMap::new())
+            .unwrap();
+        tx.create_edge(NodeId(2), NodeId(4), "E", HashMap::new())
+            .unwrap();
+        tx.create_edge(NodeId(3), NodeId(4), "E", HashMap::new())
+            .unwrap();
         tx.commit().unwrap();
     }
     let tx = db.begin_read().unwrap();
@@ -1954,8 +2106,14 @@ fn e2e_all_shortest_paths_multiple() {
     assert_eq!(results.len(), 2);
     let mut paths: Vec<&Value> = results.iter().map(|r| r.get("p").unwrap()).collect();
     paths.sort_by_key(|p| format!("{p}"));
-    assert_eq!(paths[0], &Value::Path(vec![NodeId(1), NodeId(2), NodeId(4)]));
-    assert_eq!(paths[1], &Value::Path(vec![NodeId(1), NodeId(3), NodeId(4)]));
+    assert_eq!(
+        paths[0],
+        &Value::Path(vec![NodeId(1), NodeId(2), NodeId(4)])
+    );
+    assert_eq!(
+        paths[1],
+        &Value::Path(vec![NodeId(1), NodeId(3), NodeId(4)])
+    );
     tx.commit().unwrap();
 }
 
@@ -1989,10 +2147,7 @@ fn e2e_shortest_path_same_node() {
         )
         .unwrap();
     assert_eq!(results.len(), 1);
-    assert_eq!(
-        results[0].get("p").unwrap(),
-        &Value::Path(vec![NodeId(1)])
-    );
+    assert_eq!(results[0].get("p").unwrap(), &Value::Path(vec![NodeId(1)]));
     assert_eq!(results[0].get("len").unwrap(), &Value::I64(0));
     tx.commit().unwrap();
 }
@@ -2010,7 +2165,10 @@ fn e2e_explain_returns_plan_not_data() {
     assert_eq!(results.len(), 1);
     let plan = results[0].get("plan").unwrap();
     if let Value::String(text) = plan {
-        assert!(text.contains("Scan :Person"), "plan should show Scan: {text}");
+        assert!(
+            text.contains("Scan :Person"),
+            "plan should show Scan: {text}"
+        );
         assert!(text.contains("Filter"), "plan should show Filter: {text}");
         assert!(text.contains("Project"), "plan should show Project: {text}");
         assert!(text.contains("est."), "plan should show estimates: {text}");
@@ -2027,24 +2185,27 @@ fn e2e_explain_shows_estimated_rows() {
         let tx = db.begin_write().unwrap();
         // Create 10 Person nodes — stats should track this.
         for i in 0..10 {
-            tx.query(&format!("CREATE (n:Person {{name: 'P{i}'}})")).unwrap();
+            tx.query(&format!("CREATE (n:Person {{name: 'P{i}'}})"))
+                .unwrap();
         }
         // Create 3 Company nodes.
         for i in 0..3 {
-            tx.query(&format!("CREATE (n:Company {{name: 'C{i}'}})")).unwrap();
+            tx.query(&format!("CREATE (n:Company {{name: 'C{i}'}})"))
+                .unwrap();
         }
         tx.commit().unwrap();
     }
     let tx = db.begin_read().unwrap();
-    let results = tx
-        .query("EXPLAIN MATCH (n:Person) RETURN n.name")
-        .unwrap();
+    let results = tx.query("EXPLAIN MATCH (n:Person) RETURN n.name").unwrap();
     let plan = match results[0].get("plan").unwrap() {
         Value::String(s) => s.clone(),
         other => panic!("expected string, got {other:?}"),
     };
     // Should show est. 10 rows for Person scan (from live stats).
-    assert!(plan.contains("est. 10 rows"), "expected 10 rows estimate: {plan}");
+    assert!(
+        plan.contains("est. 10 rows"),
+        "expected 10 rows estimate: {plan}"
+    );
     tx.commit().unwrap();
 }
 
@@ -2066,13 +2227,17 @@ fn e2e_stats_maintained_on_create_delete() {
             Value::String(s) => s.clone(),
             other => panic!("expected string, got {other:?}"),
         };
-        assert!(plan.contains("est. 3 rows"), "expected 3 after creates: {plan}");
+        assert!(
+            plan.contains("est. 3 rows"),
+            "expected 3 after creates: {plan}"
+        );
         tx.commit().unwrap();
     }
     // Delete one Animal.
     {
         let tx = db.begin_write().unwrap();
-        tx.query("MATCH (n:Animal {name: 'Bird'}) DELETE n").unwrap();
+        tx.query("MATCH (n:Animal {name: 'Bird'}) DELETE n")
+            .unwrap();
         tx.commit().unwrap();
     }
     // Check: should now show est. 2 rows.
@@ -2083,7 +2248,10 @@ fn e2e_stats_maintained_on_create_delete() {
             Value::String(s) => s.clone(),
             other => panic!("expected string, got {other:?}"),
         };
-        assert!(plan.contains("est. 2 rows"), "expected 2 after delete: {plan}");
+        assert!(
+            plan.contains("est. 2 rows"),
+            "expected 2 after delete: {plan}"
+        );
         tx.commit().unwrap();
     }
 }
@@ -2099,7 +2267,10 @@ fn e2e_explain_cross_product() {
         Value::String(s) => s.clone(),
         other => panic!("expected string, got {other:?}"),
     };
-    assert!(plan.contains("CrossProduct"), "should show CrossProduct: {plan}");
+    assert!(
+        plan.contains("CrossProduct"),
+        "should show CrossProduct: {plan}"
+    );
     tx.commit().unwrap();
 }
 

@@ -9,11 +9,7 @@ use crate::types::{
 };
 
 /// Create a new node with the given label and properties.
-pub fn create_node(
-    conn: &Connection,
-    label: &str,
-    properties: Properties,
-) -> Result<NodeId> {
+pub fn create_node(conn: &Connection, label: &str, properties: Properties) -> Result<NodeId> {
     validate_name(label)?;
     for key in properties.keys() {
         validate_name(key)?;
@@ -23,8 +19,7 @@ pub fn create_node(
         label: label.to_string(),
         properties,
     };
-    let data = rmp_serde::to_vec(&record)
-        .map_err(|e| GraphError::Serialization(e.to_string()))?;
+    let data = rmp_serde::to_vec(&record).map_err(|e| GraphError::Serialization(e.to_string()))?;
     put_node(conn, &id.to_be_bytes(), label, &data)?;
     stats::increment_label_count(conn, label)?;
     Ok(id)
@@ -32,10 +27,10 @@ pub fn create_node(
 
 /// Get a node by ID.
 pub fn get_node(conn: &Connection, id: NodeId) -> Result<Node> {
-    let data = kv::get(conn, kv::TABLE_NODES, &id.to_be_bytes())?
-        .ok_or(GraphError::NodeNotFound(id))?;
-    let record: NodeRecord = rmp_serde::from_slice(&data)
-        .map_err(|e| GraphError::Serialization(e.to_string()))?;
+    let data =
+        kv::get(conn, kv::TABLE_NODES, &id.to_be_bytes())?.ok_or(GraphError::NodeNotFound(id))?;
+    let record: NodeRecord =
+        rmp_serde::from_slice(&data).map_err(|e| GraphError::Serialization(e.to_string()))?;
     Ok(Node {
         id,
         label: record.label,
@@ -45,12 +40,8 @@ pub fn get_node(conn: &Connection, id: NodeId) -> Result<Node> {
 
 /// Check if a node exists (without fetching the full BLOB).
 pub fn node_exists(conn: &Connection, id: NodeId) -> Result<bool> {
-    let mut stmt = conn.prepare_cached(
-        "SELECT 1 FROM nodes WHERE key = ?1 LIMIT 1",
-    )?;
-    let exists = stmt
-        .query_row([&id.to_be_bytes()[..]], |_| Ok(()))
-        .is_ok();
+    let mut stmt = conn.prepare_cached("SELECT 1 FROM nodes WHERE key = ?1 LIMIT 1")?;
+    let exists = stmt.query_row([&id.to_be_bytes()[..]], |_| Ok(())).is_ok();
     Ok(exists)
 }
 
@@ -92,37 +83,28 @@ pub fn delete_node(conn: &Connection, id: NodeId) -> Result<()> {
 }
 
 /// Set a property on an existing node (read-modify-write).
-pub fn set_node_property(
-    conn: &Connection,
-    id: NodeId,
-    key: &str,
-    value: Value,
-) -> Result<()> {
+pub fn set_node_property(conn: &Connection, id: NodeId, key: &str, value: Value) -> Result<()> {
     validate_name(key)?;
-    let data = kv::get(conn, kv::TABLE_NODES, &id.to_be_bytes())?
-        .ok_or(GraphError::NodeNotFound(id))?;
-    let mut record: NodeRecord = rmp_serde::from_slice(&data)
-        .map_err(|e| GraphError::Serialization(e.to_string()))?;
+    let data =
+        kv::get(conn, kv::TABLE_NODES, &id.to_be_bytes())?.ok_or(GraphError::NodeNotFound(id))?;
+    let mut record: NodeRecord =
+        rmp_serde::from_slice(&data).map_err(|e| GraphError::Serialization(e.to_string()))?;
     record.properties.insert(key.to_string(), value);
-    let new_data = rmp_serde::to_vec(&record)
-        .map_err(|e| GraphError::Serialization(e.to_string()))?;
+    let new_data =
+        rmp_serde::to_vec(&record).map_err(|e| GraphError::Serialization(e.to_string()))?;
     put_node(conn, &id.to_be_bytes(), &record.label, &new_data)?;
     Ok(())
 }
 
 /// Remove a property from an existing node.
-pub fn remove_node_property(
-    conn: &Connection,
-    id: NodeId,
-    key: &str,
-) -> Result<()> {
-    let data = kv::get(conn, kv::TABLE_NODES, &id.to_be_bytes())?
-        .ok_or(GraphError::NodeNotFound(id))?;
-    let mut record: NodeRecord = rmp_serde::from_slice(&data)
-        .map_err(|e| GraphError::Serialization(e.to_string()))?;
+pub fn remove_node_property(conn: &Connection, id: NodeId, key: &str) -> Result<()> {
+    let data =
+        kv::get(conn, kv::TABLE_NODES, &id.to_be_bytes())?.ok_or(GraphError::NodeNotFound(id))?;
+    let mut record: NodeRecord =
+        rmp_serde::from_slice(&data).map_err(|e| GraphError::Serialization(e.to_string()))?;
     record.properties.remove(key);
-    let new_data = rmp_serde::to_vec(&record)
-        .map_err(|e| GraphError::Serialization(e.to_string()))?;
+    let new_data =
+        rmp_serde::to_vec(&record).map_err(|e| GraphError::Serialization(e.to_string()))?;
     put_node(conn, &id.to_be_bytes(), &record.label, &new_data)?;
     Ok(())
 }
@@ -130,14 +112,17 @@ pub fn remove_node_property(
 /// Scan nodes by label using the indexed label column.
 ///
 /// When `label` is empty, returns all nodes.
-pub fn find_nodes_by_label(
-    conn: &Connection,
-    label: &str,
-) -> Result<Vec<Node>> {
+pub fn find_nodes_by_label(conn: &Connection, label: &str) -> Result<Vec<Node>> {
     let (sql, use_param) = if label.is_empty() {
-        ("SELECT key, value FROM nodes ORDER BY key".to_string(), false)
+        (
+            "SELECT key, value FROM nodes ORDER BY key".to_string(),
+            false,
+        )
     } else {
-        ("SELECT key, value FROM nodes WHERE label = ?1 ORDER BY key".to_string(), true)
+        (
+            "SELECT key, value FROM nodes WHERE label = ?1 ORDER BY key".to_string(),
+            true,
+        )
     };
 
     let mut stmt = conn.prepare_cached(&sql)?;
@@ -155,8 +140,8 @@ pub fn find_nodes_by_label(
 
     let mut nodes = Vec::new();
     for (key, data) in rows {
-        let record: NodeRecord = rmp_serde::from_slice(&data)
-            .map_err(|e| GraphError::Serialization(e.to_string()))?;
+        let record: NodeRecord =
+            rmp_serde::from_slice(&data).map_err(|e| GraphError::Serialization(e.to_string()))?;
         let id = NodeId::from_be_bytes(
             key.get(..8)
                 .and_then(|s| s.try_into().ok())
@@ -172,15 +157,9 @@ pub fn find_nodes_by_label(
 }
 
 /// Insert or replace a node row in the v2 schema (key + label + value).
-fn put_node(
-    conn: &Connection,
-    key: &[u8],
-    label: &str,
-    value: &[u8],
-) -> Result<()> {
-    let mut stmt = conn.prepare_cached(
-        "INSERT OR REPLACE INTO nodes (key, label, value) VALUES (?1, ?2, ?3)"
-    )?;
+fn put_node(conn: &Connection, key: &[u8], label: &str, value: &[u8]) -> Result<()> {
+    let mut stmt = conn
+        .prepare_cached("INSERT OR REPLACE INTO nodes (key, label, value) VALUES (?1, ?2, ?3)")?;
     stmt.execute(rusqlite::params![key, label, value])?;
     Ok(())
 }

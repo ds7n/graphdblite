@@ -44,7 +44,9 @@ pub struct VecIter {
 
 impl VecIter {
     pub fn new(records: Vec<Record>) -> Self {
-        Self { records: records.into_iter() }
+        Self {
+            records: records.into_iter(),
+        }
     }
 }
 
@@ -238,7 +240,14 @@ impl<'a> RecordIter for ExpandIter<'a> {
             let dst_ids = if self.min_hops == 1 && self.max_hops == 1 {
                 edge::get_neighbors(self.conn, src_id, label, self.direction)?
             } else {
-                edge::traverse(self.conn, src_id, label, self.direction, self.min_hops, self.max_hops)?
+                edge::traverse(
+                    self.conn,
+                    src_id,
+                    label,
+                    self.direction,
+                    self.min_hops,
+                    self.max_hops,
+                )?
             };
 
             let mut expanded = Vec::with_capacity(dst_ids.len());
@@ -253,7 +262,10 @@ impl<'a> RecordIter for ExpandIter<'a> {
                     format!("{}.__label", self.dst_alias),
                     Value::String(dst_node.label.clone()),
                 );
-                new_rec.set(format!("{}.__id", self.dst_alias), Value::I64(dst_id.0 as i64));
+                new_rec.set(
+                    format!("{}.__id", self.dst_alias),
+                    Value::I64(dst_id.0 as i64),
+                );
                 expanded.push(new_rec);
             }
             self.buffer = expanded.into_iter();
@@ -282,7 +294,13 @@ pub fn build_iter<'a>(
             Ok(Box::new(VecIter::new(records)))
         }
 
-        LogicalOp::IndexLookup { label, alias, property, value, remaining_filters } => {
+        LogicalOp::IndexLookup {
+            label,
+            alias,
+            property,
+            value,
+            remaining_filters,
+        } => {
             let lookup_value = literal_to_value(value);
             let node_ids = index::index_lookup(conn, label, property, &lookup_value)?;
             let mut records = Vec::new();
@@ -334,7 +352,13 @@ pub fn build_iter<'a>(
         }
 
         LogicalOp::Expand {
-            input, src_alias, dst_alias, edge_types, direction, min_hops, max_hops,
+            input,
+            src_alias,
+            dst_alias,
+            edge_types,
+            direction,
+            min_hops,
+            max_hops,
         } => {
             let input_iter = build_iter(conn, input)?;
             Ok(Box::new(ExpandIter {

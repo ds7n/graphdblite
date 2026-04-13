@@ -1,15 +1,22 @@
 # graphdblite
 
-Embedded graph database with Cypher support. SQLite-grade simplicity, graph-native performance.
+Embedded graph database with Cypher support, built on SQLite.
 
-## What is this?
+**Embedded.** Single file, no server, no configuration. Open it, query it, close it — like SQLite.
 
-"SQLite but for graphs." Single-file, multi-process-safe, embeddable. Uses SQLite as a
-key-value engine (WAL mode, `WITHOUT ROWID` tables) with graph-native data structures on top.
+**Graph-first.** Cypher queries, adjacency-list storage, graph-aware query planning. The data model and query engine are designed around nodes and edges, not rows and joins.
 
-Think of graphdblite not as a replacement for Neo4j, but as a replacement for stuffing
-graph data into JSON files or relational tables. Local graph storage for applications
-and tools that need it, without running a server.
+**Multi-process safe.** Multiple processes can read and write the same database concurrently. Crash recovery is automatic. No lock management, no coordination code.
+
+### Design
+
+Graph databases built on SQLite typically store nodes and edges as rows, then translate graph operations into SQL JOINs. This forces graph queries through a relational planner that has no concept of adjacency or traversal.
+
+graphdblite uses SQLite strictly as a storage engine — a crash-safe, single-file, sorted key-value store. Graph data is stored as compact binary structures (packed adjacency lists, serialized node records), and query planning is handled by a graph-aware optimizer above SQLite. Traversals are direct key lookups, not JOINs.
+
+SQLite's resilience, without its relational model.
+
+**Why build on SQLite?** A correct, crash-safe storage engine is enormously difficult to build. SQLite has decades of testing behind its write-ahead log, file locking, and recovery logic. graphdblite uses that foundation, then replaces everything above it with graph-specific structures and planning.
 
 ## Quick start
 

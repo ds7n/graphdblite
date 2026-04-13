@@ -10,10 +10,6 @@ pub(crate) mod storage;
 mod transaction;
 pub mod types;
 
-#[cfg(feature = "python")]
-#[allow(unexpected_cfgs, deprecated, clippy::useless_conversion)] // pyo3 0.22 macro artifacts
-mod python;
-
 pub use cypher::record::Record;
 pub use db::{Config, Database, SyncMode};
 pub use transaction::{ReadTransaction, WriteTransaction};

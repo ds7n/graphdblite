@@ -1,3 +1,7 @@
+[workspace]
+members = [".", "crates/python", "crates/ffi", "crates/node"]
+resolver = "2"
+
 [package]
 name = "graphdblite"
 version = "0.1.0"
@@ -6,7 +10,7 @@ description = "Embedded graph database with Cypher support. SQLite-grade simplic
 license = "MPL-2.0"
 
 [lib]
-crate-type = ["lib", "cdylib"]
+crate-type = ["lib"]
 
 [dependencies]
 rusqlite = { version = "0.32", features = ["bundled"] }
@@ -16,14 +20,9 @@ thiserror = "2"
 indexmap = "2"
 pest = "2"
 pest_derive = "2"
-pyo3 = { version = "0.22", features = ["extension-module"], optional = true }
 
 [dev-dependencies]
 tempfile = "3"
-
-[features]
-default = []
-python = ["pyo3"]
 
 [[bin]]
 name = "graphdblite"

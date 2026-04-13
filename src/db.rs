@@ -71,9 +71,12 @@ impl Default for Config {
 /// no shared mutexes. Two handles in the same process are fully independent.
 pub struct Database {
     conn: Connection,
-    pub(crate) max_property_value_bytes: usize,
-    pub(crate) max_name_bytes: usize,
-    pub(crate) max_result_rows: usize,
+    /// Maximum byte length for a single property value.
+    pub max_property_value_bytes: usize,
+    /// Maximum byte length for label and property key names.
+    pub max_name_bytes: usize,
+    /// Maximum number of result rows before the executor aborts.
+    pub max_result_rows: usize,
 }
 
 impl Database {
@@ -130,9 +133,11 @@ impl Database {
         })
     }
 
-    /// Access the underlying connection (used by Python bindings).
-    #[cfg(feature = "python")]
-    pub(crate) fn connection(&self) -> &Connection {
+    /// Access the underlying SQLite connection.
+    ///
+    /// Used by language bindings (Python, Node.js, etc.) for manual transaction
+    /// management across separate method calls.
+    pub fn connection(&self) -> &Connection {
         &self.conn
     }
 

@@ -4,15 +4,12 @@
 set -e
 
 echo "==> cargo fmt --check"
-cargo fmt --check
+cargo fmt --check --all
 
 echo "==> cargo clippy --all-targets -- -D warnings"
 cargo clippy --all-targets -- -D warnings
 
-echo "==> cargo clippy --all-targets --features python -- -D warnings"
-cargo clippy --all-targets --features python -- -D warnings
-
-echo "==> cargo test"
-cargo test
+echo "==> cargo test --workspace"
+cargo test --workspace
 
 echo "==> All checks passed."

@@ -209,7 +209,7 @@ literal = { float_literal | integer_literal | string_literal | bool_literal | nu
 integer_literal = @{ "-"? ~ ASCII_DIGIT+ }
 float_literal = @{ "-"? ~ ASCII_DIGIT+ ~ "." ~ ASCII_DIGIT+ }
 string_literal = ${ "'" ~ string_inner ~ "'" }
-string_inner = @{ (!"'" ~ ANY)* }
+string_inner = @{ (!"'" ~ !"\\" ~ ANY | "\\" ~ ANY)* }
 bool_literal = { ^"TRUE" | ^"FALSE" }
 null_literal = { ^"NULL" }
 

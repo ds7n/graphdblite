@@ -10,6 +10,28 @@ use crate::types::GraphError;
 #[grammar = "cypher/grammar.pest"]
 struct CypherParser;
 
+/// Process backslash escape sequences in a string literal.
+fn unescape_string(raw: &str) -> String {
+    let mut out = String::with_capacity(raw.len());
+    let mut chars = raw.chars();
+    while let Some(ch) = chars.next() {
+        if ch == '\\' {
+            match chars.next() {
+                Some('n') => out.push('\n'),
+                Some('t') => out.push('\t'),
+                Some('r') => out.push('\r'),
+                Some('\\') => out.push('\\'),
+                Some('\'') => out.push('\''),
+                Some(other) => { out.push('\\'); out.push(other); }
+                None => out.push('\\'),
+            }
+        } else {
+            out.push(ch);
+        }
+    }
+    out
+}
+
 /// Parse a Cypher query string into a Statement AST.
 pub fn parse(input: &str) -> crate::types::Result<Statement> {
     let pairs = CypherParser::parse(Rule::statement, input)
@@ -930,13 +952,12 @@ fn parse_literal(pair: pest::iterators::Pair<Rule>) -> crate::types::Result<Expr
             Ok(Expr::Literal(LiteralValue::F64(n)))
         }
         Rule::string_literal => {
-            let s = inner
+            let raw = inner
                 .into_inner()
                 .find(|p| p.as_rule() == Rule::string_inner)
                 .unwrap()
-                .as_str()
-                .to_string();
-            Ok(Expr::Literal(LiteralValue::String(s)))
+                .as_str();
+            Ok(Expr::Literal(LiteralValue::String(unescape_string(raw))))
         }
         Rule::bool_literal => {
             let b = inner.as_str().to_uppercase() == "TRUE";

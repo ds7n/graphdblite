@@ -28,7 +28,7 @@ impl NodeId {
 }
 
 /// Dynamic property value stored on nodes and edges.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum Value {
     Null,
     Bool(bool),
@@ -37,6 +37,23 @@ pub enum Value {
     String(String),
     List(Vec<Value>),
     Path(Vec<NodeId>),
+}
+
+/// NaN-safe equality: two NaN values are considered equal (bit-equal comparison).
+/// This satisfies the `Eq` reflexivity contract that `derive(PartialEq)` would violate.
+impl PartialEq for Value {
+    fn eq(&self, other: &Self) -> bool {
+        match (self, other) {
+            (Value::Null, Value::Null) => true,
+            (Value::Bool(a), Value::Bool(b)) => a == b,
+            (Value::I64(a), Value::I64(b)) => a == b,
+            (Value::F64(a), Value::F64(b)) => a.to_bits() == b.to_bits(),
+            (Value::String(a), Value::String(b)) => a == b,
+            (Value::List(a), Value::List(b)) => a == b,
+            (Value::Path(a), Value::Path(b)) => a == b,
+            _ => false,
+        }
+    }
 }
 
 impl Eq for Value {}
@@ -158,6 +175,9 @@ pub enum GraphError {
 
     #[error("{0}")]
     SizeLimit(String),
+
+    #[error("schema version mismatch: database is v{0}, this library supports up to v{1}")]
+    SchemaMismatch(u64, u64),
 }
 
 pub type Result<T> = std::result::Result<T, GraphError>;

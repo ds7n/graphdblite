@@ -205,46 +205,64 @@ fn eval_exists(
 
 fn eval_binop(left: &Value, op: BinOp, right: &Value) -> crate::types::Result<Value> {
     match op {
+        // Three-valued AND: NULL AND false → false, NULL AND true → NULL
         BinOp::And => {
-            let l = matches!(left, Value::Bool(true));
-            let r = matches!(right, Value::Bool(true));
-            Ok(Value::Bool(l && r))
+            match (to_tribool(left), to_tribool(right)) {
+                (Some(false), _) | (_, Some(false)) => Ok(Value::Bool(false)),
+                (Some(true), Some(true)) => Ok(Value::Bool(true)),
+                _ => Ok(Value::Null), // at least one NULL, none false
+            }
         }
+        // Three-valued OR: NULL OR true → true, NULL OR false → NULL
         BinOp::Or => {
-            let l = matches!(left, Value::Bool(true));
-            let r = matches!(right, Value::Bool(true));
-            Ok(Value::Bool(l || r))
+            match (to_tribool(left), to_tribool(right)) {
+                (Some(true), _) | (_, Some(true)) => Ok(Value::Bool(true)),
+                (Some(false), Some(false)) => Ok(Value::Bool(false)),
+                _ => Ok(Value::Null), // at least one NULL, none true
+            }
         }
-        BinOp::Eq => Ok(Value::Bool(values_equal(left, right))),
-        BinOp::Neq => Ok(Value::Bool(!values_equal(left, right))),
-        BinOp::Lt => Ok(Value::Bool(compare_values(left, right) == Some(std::cmp::Ordering::Less))),
-        BinOp::Gt => Ok(Value::Bool(compare_values(left, right) == Some(std::cmp::Ordering::Greater))),
-        BinOp::Lte => Ok(Value::Bool(matches!(
-            compare_values(left, right),
-            Some(std::cmp::Ordering::Less | std::cmp::Ordering::Equal)
-        ))),
-        BinOp::Gte => Ok(Value::Bool(matches!(
-            compare_values(left, right),
-            Some(std::cmp::Ordering::Greater | std::cmp::Ordering::Equal)
-        ))),
+        BinOp::Eq => Ok(values_equal(left, right)),
+        BinOp::Neq => match values_equal(left, right) {
+            Value::Bool(b) => Ok(Value::Bool(!b)),
+            other => Ok(other), // propagate Null
+        },
+        BinOp::Lt => Ok(compare_to_value(left, right, |o| o == std::cmp::Ordering::Less)),
+        BinOp::Gt => Ok(compare_to_value(left, right, |o| o == std::cmp::Ordering::Greater)),
+        BinOp::Lte => Ok(compare_to_value(left, right, |o| matches!(o, std::cmp::Ordering::Less | std::cmp::Ordering::Equal))),
+        BinOp::Gte => Ok(compare_to_value(left, right, |o| matches!(o, std::cmp::Ordering::Greater | std::cmp::Ordering::Equal))),
         BinOp::StartsWith => match (left, right) {
+            (Value::Null, _) | (_, Value::Null) => Ok(Value::Null),
             (Value::String(l), Value::String(r)) => Ok(Value::Bool(l.starts_with(r.as_str()))),
             _ => Ok(Value::Null),
         },
         BinOp::EndsWith => match (left, right) {
+            (Value::Null, _) | (_, Value::Null) => Ok(Value::Null),
             (Value::String(l), Value::String(r)) => Ok(Value::Bool(l.ends_with(r.as_str()))),
             _ => Ok(Value::Null),
         },
         BinOp::Contains => match (left, right) {
+            (Value::Null, _) | (_, Value::Null) => Ok(Value::Null),
             (Value::String(l), Value::String(r)) => Ok(Value::Bool(l.contains(r.as_str()))),
             _ => Ok(Value::Null),
         },
     }
 }
 
-fn values_equal(a: &Value, b: &Value) -> bool {
-    match (a, b) {
-        (Value::Null, Value::Null) => true,
+/// Convert a Value to a three-valued boolean: Some(true), Some(false), or None (null).
+fn to_tribool(v: &Value) -> Option<bool> {
+    match v {
+        Value::Bool(b) => Some(*b),
+        Value::Null => None,
+        _ => Some(false), // non-boolean non-null → falsy
+    }
+}
+
+/// Three-valued equality: returns Null if either operand is null.
+fn values_equal(a: &Value, b: &Value) -> Value {
+    if matches!(a, Value::Null) || matches!(b, Value::Null) {
+        return Value::Null;
+    }
+    let eq = match (a, b) {
         (Value::Bool(a), Value::Bool(b)) => a == b,
         (Value::I64(a), Value::I64(b)) => a == b,
         (Value::F64(a), Value::F64(b)) => a == b,
@@ -253,6 +271,18 @@ fn values_equal(a: &Value, b: &Value) -> bool {
         (Value::String(a), Value::String(b)) => a == b,
         (Value::List(a), Value::List(b)) => a == b,
         _ => false,
+    };
+    Value::Bool(eq)
+}
+
+/// Compare two values, returning Null if either is null or types are incomparable.
+fn compare_to_value(a: &Value, b: &Value, pred: impl Fn(std::cmp::Ordering) -> bool) -> Value {
+    if matches!(a, Value::Null) || matches!(b, Value::Null) {
+        return Value::Null;
+    }
+    match compare_values(a, b) {
+        Some(ord) => Value::Bool(pred(ord)),
+        None => Value::Null,
     }
 }
 

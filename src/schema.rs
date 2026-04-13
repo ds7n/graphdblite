@@ -1,6 +1,6 @@
 use rusqlite::Connection;
 
-use crate::types::Result;
+use crate::types::{GraphError, Result};
 
 /// Current schema version. Bump when table layout changes.
 const SCHEMA_VERSION: u64 = 1;
@@ -53,6 +53,21 @@ pub fn init_schema(conn: &Connection) -> Result<()> {
         "INSERT OR IGNORE INTO metadata (key, value) VALUES ('next_node_id', ?1)",
         [&1u64.to_be_bytes()[..]],
     )?;
+
+    // Validate schema version — reject databases created by a newer library.
+    let mut stmt = conn.prepare_cached(
+        "SELECT value FROM metadata WHERE key = 'schema_version'",
+    )?;
+    if let Ok(raw) = stmt.query_row([], |row| row.get::<_, Vec<u8>>(0)) {
+        if raw.len() == 8 {
+            if let Ok(bytes) = <[u8; 8]>::try_from(&raw[..8]) {
+                let db_version = u64::from_be_bytes(bytes);
+                if db_version > SCHEMA_VERSION {
+                    return Err(GraphError::SchemaMismatch(db_version, SCHEMA_VERSION));
+                }
+            }
+        }
+    }
 
     Ok(())
 }

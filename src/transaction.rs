@@ -1,17 +1,20 @@
-use crate::cypher::{ast::Statement, cost, executor, parser, planner, record::Record};
+use crate::cypher::{ast::Statement, cost, executor::{self, ExecContext}, parser, planner, record::Record};
 use crate::edge;
 use crate::index;
 use crate::node;
-use crate::types::{Direction, GraphError, Node, NodeId, Properties, Result, Value};
+use crate::types::{
+    validate_properties, Direction, GraphError, Node, NodeId, Properties, Result, Value,
+};
 
 /// A read-only transaction. Provides snapshot isolation via SQLite's WAL.
 pub struct ReadTransaction<'a> {
     tx: rusqlite::Transaction<'a>,
+    max_result_rows: usize,
 }
 
 impl<'a> ReadTransaction<'a> {
-    pub(crate) fn new(tx: rusqlite::Transaction<'a>) -> Self {
-        Self { tx }
+    pub(crate) fn new(tx: rusqlite::Transaction<'a>, max_result_rows: usize) -> Self {
+        Self { tx, max_result_rows }
     }
 
     /// Get a node by ID.
@@ -78,7 +81,10 @@ impl<'a> ReadTransaction<'a> {
         if matches!(stmt, Statement::Explain(_)) {
             return Ok(cost::format_explain(&self.tx, &plan));
         }
-        executor::execute(&self.tx, &plan)
+        let ctx = ExecContext {
+            max_result_rows: self.max_result_rows,
+        };
+        executor::execute_with_ctx(&self.tx, &plan, &ctx)
     }
 
     /// Commit the read transaction (releases snapshot).
@@ -91,11 +97,24 @@ impl<'a> ReadTransaction<'a> {
 /// A read-write transaction. Acquires the write lock via BEGIN IMMEDIATE.
 pub struct WriteTransaction<'a> {
     tx: rusqlite::Transaction<'a>,
+    max_property_value_bytes: usize,
+    max_name_bytes: usize,
+    max_result_rows: usize,
 }
 
 impl<'a> WriteTransaction<'a> {
-    pub(crate) fn new(tx: rusqlite::Transaction<'a>) -> Self {
-        Self { tx }
+    pub(crate) fn new(
+        tx: rusqlite::Transaction<'a>,
+        max_property_value_bytes: usize,
+        max_name_bytes: usize,
+        max_result_rows: usize,
+    ) -> Self {
+        Self {
+            tx,
+            max_property_value_bytes,
+            max_name_bytes,
+            max_result_rows,
+        }
     }
 
     // --- Read operations (same as ReadTransaction) ---
@@ -164,7 +183,10 @@ impl<'a> WriteTransaction<'a> {
         if matches!(stmt, Statement::Explain(_)) {
             return Ok(cost::format_explain(&self.tx, &plan));
         }
-        executor::execute(&self.tx, &plan)
+        let ctx = ExecContext {
+            max_result_rows: self.max_result_rows,
+        };
+        executor::execute_with_ctx(&self.tx, &plan, &ctx)
     }
 
     // --- Write operations ---
@@ -175,6 +197,7 @@ impl<'a> WriteTransaction<'a> {
         label: &str,
         properties: Properties,
     ) -> Result<NodeId> {
+        validate_properties(label, &properties, self.max_name_bytes, self.max_property_value_bytes)?;
         let id = node::create_node(&self.tx, label, properties.clone())?;
         index::update_indexes_for_node(
             &self.tx,
@@ -205,6 +228,8 @@ impl<'a> WriteTransaction<'a> {
         key: &str,
         value: Value,
     ) -> Result<()> {
+        let props = std::collections::HashMap::from([(key.to_string(), value.clone())]);
+        validate_properties("_", &props, self.max_name_bytes, self.max_property_value_bytes)?;
         let old = node::get_node(&self.tx, id)?;
         node::set_node_property(&self.tx, id, key, value.clone())?;
         let mut new_props = old.properties.clone();
@@ -247,6 +272,7 @@ impl<'a> WriteTransaction<'a> {
         label: &str,
         properties: Properties,
     ) -> Result<()> {
+        validate_properties(label, &properties, self.max_name_bytes, self.max_property_value_bytes)?;
         // Verify both endpoints exist.
         if !node::node_exists(&self.tx, src)? {
             return Err(GraphError::NodeNotFound(src));

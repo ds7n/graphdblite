@@ -2,7 +2,7 @@ use std::collections::HashMap;
 
 use rusqlite::Connection;
 
-use crate::types::Result;
+use crate::types::{GraphError, Result};
 
 /// Metadata key prefix for label node counts.
 const LABEL_COUNT_PREFIX: &str = "stats:label_count:";
@@ -16,13 +16,20 @@ pub fn get_label_count(conn: &Connection, label: &str) -> Result<u64> {
     let result = stmt.query_row([&key], |row| row.get::<_, Vec<u8>>(0));
     match result {
         Ok(data) if data.len() == 8 => {
-            Ok(u64::from_be_bytes(data[..8].try_into().unwrap()))
+            Ok(u64::from_be_bytes(
+                data[..8]
+                    .try_into()
+                    .map_err(|_| GraphError::Serialization("corrupt label count bytes".into()))?,
+            ))
         }
         _ => Ok(0),
     }
 }
 
 /// Increment the node count for a label by 1.
+///
+/// Safe: always called within a BEGIN IMMEDIATE write transaction,
+/// which serializes all writers (even cross-process under WAL).
 pub fn increment_label_count(conn: &Connection, label: &str) -> Result<()> {
     let count = get_label_count(conn, label)?;
     set_label_count(conn, label, count + 1)
@@ -59,8 +66,9 @@ pub fn get_all_label_counts(conn: &Connection) -> Result<HashMap<String, u64>> {
         let (key, data) = row?;
         if let Some(label) = key.strip_prefix(LABEL_COUNT_PREFIX) {
             if data.len() == 8 {
-                let count = u64::from_be_bytes(data[..8].try_into().unwrap());
-                counts.insert(label.to_string(), count);
+                if let Ok(bytes) = <[u8; 8]>::try_from(&data[..8]) {
+                    counts.insert(label.to_string(), u64::from_be_bytes(bytes));
+                }
             }
         }
     }

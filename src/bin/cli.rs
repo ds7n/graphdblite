@@ -168,11 +168,16 @@ fn run_repl(db: &mut Database) {
 }
 
 fn is_read_query(cypher: &str) -> bool {
-    let upper = cypher.trim().to_uppercase();
-    upper.starts_with("MATCH")
-        && !upper.contains("DELETE")
-        && !upper.contains("SET ")
-        && !upper.contains("CREATE")
+    use graphdblite::cypher::ast::Statement;
+    use graphdblite::cypher::parser;
+    match parser::parse(cypher) {
+        Ok(Statement::Match(_) | Statement::Explain(_)) => true,
+        Ok(Statement::Unwind(u)) => matches!(
+            u.body,
+            graphdblite::cypher::ast::UnwindBody::Return { .. }
+        ),
+        _ => false,
+    }
 }
 
 fn print_records(records: &[graphdblite::Record]) {

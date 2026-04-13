@@ -4,7 +4,7 @@ use crate::storage::encoding::{
     decode_id_list, encode_id_list, insert_into_sorted, remove_from_sorted,
 };
 use crate::storage::kv;
-use crate::types::{Direction, GraphError, NodeId, Properties, Result};
+use crate::types::{validate_name, Direction, GraphError, NodeId, Properties, Result};
 
 /// Build the adjacency table key: [node_id: 8 bytes BE][label: UTF-8].
 fn adj_key(node_id: NodeId, label: &str) -> Vec<u8> {
@@ -31,6 +31,10 @@ pub fn create_edge(
     label: &str,
     properties: Properties,
 ) -> Result<()> {
+    validate_name(label)?;
+    for key in properties.keys() {
+        validate_name(key)?;
+    }
     // Update outgoing adjacency list for src.
     let out_key = adj_key(src, label);
     let mut out_ids = match kv::get(conn, kv::TABLE_ADJ_OUT, &out_key)? {
@@ -382,7 +386,8 @@ pub fn get_all_edge_labels(
     let mut result = Vec::new();
     for (key, data) in entries {
         if key.len() > 8 {
-            let label = String::from_utf8_lossy(&key[8..]).to_string();
+            let label = String::from_utf8(key[8..].to_vec())
+                .map_err(|e| GraphError::Serialization(format!("invalid UTF-8 in edge label: {e}")))?;
             let ids = decode_id_list(&data);
             result.push((label, ids));
         }

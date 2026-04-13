@@ -5,7 +5,7 @@ use crate::id::next_node_id;
 use crate::stats;
 use crate::storage::kv;
 use crate::types::{
-    Direction, GraphError, Node, NodeId, NodeRecord, Properties, Result, Value,
+    validate_name, Direction, GraphError, Node, NodeId, NodeRecord, Properties, Result, Value,
 };
 
 /// Create a new node with the given label and properties.
@@ -14,6 +14,10 @@ pub fn create_node(
     label: &str,
     properties: Properties,
 ) -> Result<NodeId> {
+    validate_name(label)?;
+    for key in properties.keys() {
+        validate_name(key)?;
+    }
     let id = next_node_id(conn)?;
     let record = NodeRecord {
         label: label.to_string(),
@@ -88,6 +92,7 @@ pub fn set_node_property(
     key: &str,
     value: Value,
 ) -> Result<()> {
+    validate_name(key)?;
     let data = kv::get(conn, kv::TABLE_NODES, &id.to_be_bytes())?
         .ok_or(GraphError::NodeNotFound(id))?;
     let mut record: NodeRecord = rmp_serde::from_slice(&data)
@@ -136,7 +141,11 @@ pub fn find_nodes_by_label(
         let record: NodeRecord = rmp_serde::from_slice(&data)
             .map_err(|e| GraphError::Serialization(e.to_string()))?;
         if label.is_empty() || record.label == label {
-            let id = NodeId::from_be_bytes(key[..8].try_into().unwrap());
+            let id = NodeId::from_be_bytes(
+                key.get(..8)
+                    .and_then(|s| s.try_into().ok())
+                    .ok_or_else(|| GraphError::Serialization("corrupt node key bytes".into()))?,
+            );
             nodes.push(Node {
                 id,
                 label: record.label,

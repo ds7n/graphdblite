@@ -6,9 +6,13 @@ use crate::types::Result;
 const SCHEMA_VERSION: u64 = 1;
 
 /// Initialize the database schema. Creates tables if they don't exist.
+///
+/// Runs inside an explicit transaction so the schema is created atomically.
 pub fn init_schema(conn: &Connection) -> Result<()> {
     conn.execute_batch(
         "
+        BEGIN;
+
         CREATE TABLE IF NOT EXISTS nodes (
             key BLOB PRIMARY KEY,
             value BLOB NOT NULL
@@ -33,6 +37,8 @@ pub fn init_schema(conn: &Connection) -> Result<()> {
             key TEXT PRIMARY KEY,
             value BLOB NOT NULL
         ) WITHOUT ROWID;
+
+        COMMIT;
         ",
     )?;
 

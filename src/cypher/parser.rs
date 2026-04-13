@@ -23,7 +23,8 @@ pub fn parse(input: &str) -> crate::types::Result<Statement> {
         .find(|p| {
             matches!(
                 p.as_rule(),
-                Rule::match_stmt
+                Rule::explain_stmt
+                    | Rule::match_stmt
                     | Rule::create_stmt
                     | Rule::match_create_stmt
                     | Rule::delete_stmt
@@ -35,6 +36,7 @@ pub fn parse(input: &str) -> crate::types::Result<Statement> {
         .ok_or_else(|| GraphError::Serialization("empty statement".to_string()))?;
 
     match statement_pair.as_rule() {
+        Rule::explain_stmt => parse_explain(statement_pair),
         Rule::match_stmt => parse_match(statement_pair).map(Statement::Match),
         Rule::create_stmt => parse_create(statement_pair).map(Statement::Create),
         Rule::match_create_stmt => parse_match_create(statement_pair).map(Statement::MatchCreate),
@@ -47,6 +49,22 @@ pub fn parse(input: &str) -> crate::types::Result<Statement> {
             statement_pair.as_rule()
         ))),
     }
+}
+
+fn parse_explain(pair: pest::iterators::Pair<Rule>) -> crate::types::Result<Statement> {
+    let inner = pair.into_inner().next().ok_or_else(|| {
+        GraphError::Serialization("EXPLAIN requires a statement".to_string())
+    })?;
+    let stmt = match inner.as_rule() {
+        Rule::match_stmt => parse_match(inner).map(Statement::Match)?,
+        Rule::match_create_stmt => parse_match_create(inner).map(Statement::MatchCreate)?,
+        Rule::unwind_stmt => parse_unwind(inner).map(Statement::Unwind)?,
+        _ => return Err(GraphError::Serialization(format!(
+            "EXPLAIN not supported for {:?}",
+            inner.as_rule()
+        ))),
+    };
+    Ok(Statement::Explain(Box::new(stmt)))
 }
 
 fn parse_match(pair: pest::iterators::Pair<Rule>) -> crate::types::Result<MatchStatement> {
@@ -971,7 +989,7 @@ fn parse_list_comprehension(pair: pest::iterators::Pair<Rule>) -> crate::types::
 /// Map pest grammar rule names to user-friendly descriptions.
 fn humanize_rule_name(rule: &str) -> &str {
     match rule {
-        "statement" => "a Cypher statement (MATCH, CREATE, DELETE, MERGE, ...)",
+        "statement" | "explain_stmt" => "a Cypher statement (MATCH, CREATE, DELETE, MERGE, EXPLAIN ...)",
         "expr" => "an expression (property, literal, or function call)",
         "bool_expr" | "bool_primary" | "bool_factor" | "bool_term" => "a condition",
         "comparison" => "a comparison (=, <>, <, >, <=, >=)",

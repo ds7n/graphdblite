@@ -5,6 +5,7 @@ mod id;
 mod index;
 mod node;
 mod schema;
+pub(crate) mod stats;
 pub(crate) mod storage;
 mod transaction;
 pub mod types;

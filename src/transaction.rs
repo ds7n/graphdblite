@@ -1,4 +1,4 @@
-use crate::cypher::{executor, parser, planner, record::Record};
+use crate::cypher::{ast::Statement, cost, executor, parser, planner, record::Record};
 use crate::edge;
 use crate::index;
 use crate::node;
@@ -75,6 +75,9 @@ impl<'a> ReadTransaction<'a> {
     pub fn query(&self, cypher: &str) -> Result<Vec<Record>> {
         let stmt = parser::parse(cypher)?;
         let plan = planner::plan(&self.tx, &stmt)?;
+        if matches!(stmt, Statement::Explain(_)) {
+            return Ok(cost::format_explain(&self.tx, &plan));
+        }
         executor::execute(&self.tx, &plan)
     }
 
@@ -158,6 +161,9 @@ impl<'a> WriteTransaction<'a> {
     pub fn query(&self, cypher: &str) -> Result<Vec<Record>> {
         let stmt = parser::parse(cypher)?;
         let plan = planner::plan(&self.tx, &stmt)?;
+        if matches!(stmt, Statement::Explain(_)) {
+            return Ok(cost::format_explain(&self.tx, &plan));
+        }
         executor::execute(&self.tx, &plan)
     }
 

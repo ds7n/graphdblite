@@ -1996,3 +1996,126 @@ fn e2e_shortest_path_same_node() {
     assert_eq!(results[0].get("len").unwrap(), &Value::I64(0));
     tx.commit().unwrap();
 }
+
+// === Cost optimizer / EXPLAIN tests ===
+
+#[test]
+fn e2e_explain_returns_plan_not_data() {
+    let mut db = setup_social_graph();
+    let tx = db.begin_read().unwrap();
+    let results = tx
+        .query("EXPLAIN MATCH (n:Person) WHERE n.age > 30 RETURN n.name")
+        .unwrap();
+    // EXPLAIN returns a single record with a "plan" column.
+    assert_eq!(results.len(), 1);
+    let plan = results[0].get("plan").unwrap();
+    if let Value::String(text) = plan {
+        assert!(text.contains("Scan :Person"), "plan should show Scan: {text}");
+        assert!(text.contains("Filter"), "plan should show Filter: {text}");
+        assert!(text.contains("Project"), "plan should show Project: {text}");
+        assert!(text.contains("est."), "plan should show estimates: {text}");
+    } else {
+        panic!("expected string plan output, got {plan:?}");
+    }
+    tx.commit().unwrap();
+}
+
+#[test]
+fn e2e_explain_shows_estimated_rows() {
+    let mut db = Database::open_memory().unwrap();
+    {
+        let tx = db.begin_write().unwrap();
+        // Create 10 Person nodes — stats should track this.
+        for i in 0..10 {
+            tx.query(&format!("CREATE (n:Person {{name: 'P{i}'}})")).unwrap();
+        }
+        // Create 3 Company nodes.
+        for i in 0..3 {
+            tx.query(&format!("CREATE (n:Company {{name: 'C{i}'}})")).unwrap();
+        }
+        tx.commit().unwrap();
+    }
+    let tx = db.begin_read().unwrap();
+    let results = tx
+        .query("EXPLAIN MATCH (n:Person) RETURN n.name")
+        .unwrap();
+    let plan = match results[0].get("plan").unwrap() {
+        Value::String(s) => s.clone(),
+        other => panic!("expected string, got {other:?}"),
+    };
+    // Should show est. 10 rows for Person scan (from live stats).
+    assert!(plan.contains("est. 10 rows"), "expected 10 rows estimate: {plan}");
+    tx.commit().unwrap();
+}
+
+#[test]
+fn e2e_stats_maintained_on_create_delete() {
+    let mut db = Database::open_memory().unwrap();
+    {
+        let tx = db.begin_write().unwrap();
+        tx.query("CREATE (a:Animal {name: 'Dog'})").unwrap();
+        tx.query("CREATE (b:Animal {name: 'Cat'})").unwrap();
+        tx.query("CREATE (c:Animal {name: 'Bird'})").unwrap();
+        tx.commit().unwrap();
+    }
+    // Check: EXPLAIN should show est. 3 rows for Animal.
+    {
+        let tx = db.begin_read().unwrap();
+        let results = tx.query("EXPLAIN MATCH (n:Animal) RETURN n").unwrap();
+        let plan = match results[0].get("plan").unwrap() {
+            Value::String(s) => s.clone(),
+            other => panic!("expected string, got {other:?}"),
+        };
+        assert!(plan.contains("est. 3 rows"), "expected 3 after creates: {plan}");
+        tx.commit().unwrap();
+    }
+    // Delete one Animal.
+    {
+        let tx = db.begin_write().unwrap();
+        tx.query("MATCH (n:Animal {name: 'Bird'}) DELETE n").unwrap();
+        tx.commit().unwrap();
+    }
+    // Check: should now show est. 2 rows.
+    {
+        let tx = db.begin_read().unwrap();
+        let results = tx.query("EXPLAIN MATCH (n:Animal) RETURN n").unwrap();
+        let plan = match results[0].get("plan").unwrap() {
+            Value::String(s) => s.clone(),
+            other => panic!("expected string, got {other:?}"),
+        };
+        assert!(plan.contains("est. 2 rows"), "expected 2 after delete: {plan}");
+        tx.commit().unwrap();
+    }
+}
+
+#[test]
+fn e2e_explain_cross_product() {
+    let mut db = setup_social_graph();
+    let tx = db.begin_read().unwrap();
+    let results = tx
+        .query("EXPLAIN MATCH (a:Person), (b:Company) RETURN a.name, b.name")
+        .unwrap();
+    let plan = match results[0].get("plan").unwrap() {
+        Value::String(s) => s.clone(),
+        other => panic!("expected string, got {other:?}"),
+    };
+    assert!(plan.contains("CrossProduct"), "should show CrossProduct: {plan}");
+    tx.commit().unwrap();
+}
+
+#[test]
+fn e2e_length_function_on_string() {
+    // length() also works on strings and lists.
+    let mut db = Database::open_memory().unwrap();
+    {
+        let tx = db.begin_write().unwrap();
+        tx.query("CREATE (n:X {name: 'hello'})").unwrap();
+        tx.commit().unwrap();
+    }
+    let tx = db.begin_read().unwrap();
+    let results = tx
+        .query("MATCH (n:X) RETURN length(n.name) AS len")
+        .unwrap();
+    assert_eq!(results[0].get("len").unwrap(), &Value::I64(5));
+    tx.commit().unwrap();
+}

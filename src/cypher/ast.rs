@@ -10,6 +10,7 @@ pub enum Statement {
     Set(SetStatement),
     Merge(MergeStatement),
     Unwind(UnwindStatement),
+    Explain(Box<Statement>),
 }
 
 /// MATCH ... WHERE ... WITH ... RETURN ... ORDER BY ... LIMIT

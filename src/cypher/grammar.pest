@@ -5,7 +5,9 @@ COMMENT = _{ "--" ~ (!"\n" ~ ANY)* }
 
 // === Top-level ===
 
-statement = { SOI ~ (match_create_stmt | match_stmt | unwind_stmt | create_stmt | delete_stmt | set_stmt | merge_stmt) ~ ";"? ~ EOI }
+statement = { SOI ~ (explain_stmt | match_create_stmt | match_stmt | unwind_stmt | create_stmt | delete_stmt | set_stmt | merge_stmt) ~ ";"? ~ EOI }
+
+explain_stmt = { ^"EXPLAIN" ~ (match_create_stmt | match_stmt | unwind_stmt) }
 
 // === MATCH statement ===
 
@@ -197,7 +199,7 @@ keyword = {
      ^"AS" | ^"IS" | ^"ON" | ^"ASC" | ^"DESC" | ^"STARTS" | ^"ENDS" | ^"WITH" | ^"CONTAINS" |
      ^"OPTIONAL" | ^"UNWIND" | ^"TRUE" | ^"FALSE" | ^"NULL" |
      ^"CASE" | ^"WHEN" | ^"THEN" | ^"ELSE" | ^"END" | ^"EXISTS" | ^"IN" |
-     ^"shortestPath" | ^"allShortestPaths" |
+     ^"shortestPath" | ^"allShortestPaths" | ^"EXPLAIN" |
      ^"count" | ^"sum" | ^"avg" | ^"min" | ^"max" | ^"collect" | ^"length" | ^"nodes")
     ~ !(ASCII_ALPHANUMERIC | "_")
 }

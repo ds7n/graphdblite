@@ -2,6 +2,7 @@ use rusqlite::Connection;
 
 use crate::edge;
 use crate::id::next_node_id;
+use crate::stats;
 use crate::storage::kv;
 use crate::types::{
     Direction, GraphError, Node, NodeId, NodeRecord, Properties, Result, Value,
@@ -21,6 +22,7 @@ pub fn create_node(
     let data = rmp_serde::to_vec(&record)
         .map_err(|e| GraphError::Serialization(e.to_string()))?;
     kv::put(conn, kv::TABLE_NODES, &id.to_be_bytes(), &data)?;
+    stats::increment_label_count(conn, label)?;
     Ok(id)
 }
 
@@ -54,10 +56,8 @@ pub fn node_has_edges(conn: &Connection, id: NodeId) -> Result<bool> {
 
 /// Delete a node and all its edges (cascading).
 pub fn delete_node(conn: &Connection, id: NodeId) -> Result<()> {
-    // Verify node exists.
-    if !node_exists(conn, id)? {
-        return Err(GraphError::NodeNotFound(id));
-    }
+    // Read the node to get its label for stats tracking.
+    let node = get_node(conn, id)?;
 
     // Delete all outgoing edges.
     let out_edges = edge::get_all_edge_labels(conn, id, Direction::Outgoing)?;
@@ -77,6 +77,7 @@ pub fn delete_node(conn: &Connection, id: NodeId) -> Result<()> {
 
     // Delete the node record.
     kv::delete(conn, kv::TABLE_NODES, &id.to_be_bytes())?;
+    stats::decrement_label_count(conn, &node.label)?;
     Ok(())
 }
 

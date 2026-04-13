@@ -1551,7 +1551,9 @@ fn e2e_float_property() {
     let rows = tx.query("MATCH (n:Num) RETURN n.val").unwrap();
     assert_eq!(rows.len(), 1);
     if let Value::F64(v) = rows[0].get("n.val").unwrap() {
-        assert!((v - 3.14159).abs() < 1e-10);
+        #[allow(clippy::approx_constant)]
+        let expected = 3.14159;
+        assert!((v - expected).abs() < 1e-10);
     } else {
         panic!("expected F64");
     }

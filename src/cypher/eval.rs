@@ -97,7 +97,7 @@ fn eval_function_call(
     record: &Record,
     conn: &Connection,
 ) -> crate::types::Result<Value> {
-    match name.as_ref() {
+    match name {
         "length" => {
             let arg = args
                 .first()

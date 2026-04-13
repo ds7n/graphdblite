@@ -130,11 +130,6 @@ impl Database {
         })
     }
 
-    /// Access the underlying connection (for manual transaction management).
-    pub(crate) fn connection(&self) -> &Connection {
-        &self.conn
-    }
-
     /// Begin a read-only transaction (snapshot isolation via WAL).
     pub fn begin_read(&mut self) -> Result<ReadTransaction<'_>> {
         let tx = self

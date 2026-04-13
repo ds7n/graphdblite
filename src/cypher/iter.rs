@@ -57,13 +57,14 @@ impl RecordIter for VecIter {
 }
 
 /// Yields a single empty record, then stops.
+#[derive(Default)]
 pub struct EmptyRowIter {
     done: bool,
 }
 
 impl EmptyRowIter {
     pub fn new() -> Self {
-        Self { done: false }
+        Self::default()
     }
 }
 

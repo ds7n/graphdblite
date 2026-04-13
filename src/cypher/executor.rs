@@ -269,6 +269,7 @@ fn exec_index_lookup(
     Ok(records)
 }
 
+#[allow(clippy::too_many_arguments)]
 fn exec_expand(
     conn: &Connection,
     input: &LogicalOp,
@@ -1192,6 +1193,7 @@ fn exec_correlated(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn exec_shortest_path(
     conn: &Connection,
     input: &LogicalOp,

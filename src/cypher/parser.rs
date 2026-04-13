@@ -412,26 +412,23 @@ fn parse_rel_pattern(pair: pest::iterators::Pair<Rule>) -> crate::types::Result<
     let mut var_length = None;
 
     for child in inner.into_inner() {
-        match child.as_rule() {
-            Rule::rel_detail => {
-                for detail in child.into_inner() {
-                    match detail.as_rule() {
-                        Rule::ident => variable = Some(detail.as_str().to_string()),
-                        Rule::rel_type_spec => {
-                            for rt in detail.into_inner() {
-                                if rt.as_rule() == Rule::ident {
-                                    rel_types.push(rt.as_str().to_string());
-                                }
+        if child.as_rule() == Rule::rel_detail {
+            for detail in child.into_inner() {
+                match detail.as_rule() {
+                    Rule::ident => variable = Some(detail.as_str().to_string()),
+                    Rule::rel_type_spec => {
+                        for rt in detail.into_inner() {
+                            if rt.as_rule() == Rule::ident {
+                                rel_types.push(rt.as_str().to_string());
                             }
                         }
-                        Rule::var_length => {
-                            var_length = Some(parse_var_length(detail)?);
-                        }
-                        _ => {}
                     }
+                    Rule::var_length => {
+                        var_length = Some(parse_var_length(detail)?);
+                    }
+                    _ => {}
                 }
             }
-            _ => {}
         }
     }
 

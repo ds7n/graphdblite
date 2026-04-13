@@ -1,4 +1,5 @@
 pub mod ast;
+pub mod cost;
 pub mod eval;
 pub mod executor;
 pub mod ir;

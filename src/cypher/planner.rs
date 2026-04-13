@@ -15,6 +15,7 @@ pub fn plan(conn: &Connection, stmt: &Statement) -> crate::types::Result<Logical
         Statement::Set(s) => plan_set(conn, s),
         Statement::Merge(m) => plan_merge(m),
         Statement::Unwind(u) => plan_unwind(conn, u),
+        Statement::Explain(inner) => plan(conn, inner),
     }
 }
 
@@ -274,20 +275,43 @@ fn plan_with(input: LogicalOp, with: &WithClause) -> crate::types::Result<Logica
 }
 
 /// Plan the scan/expand chain for a list of patterns.
+///
+/// Regular patterns are reordered by estimated cardinality (smallest first)
+/// to minimize cross-product intermediate sizes. Shortest-path patterns are
+/// processed after regular patterns since they depend on bound variables.
 pub fn plan_patterns(conn: &Connection, patterns: &[Pattern]) -> crate::types::Result<LogicalOp> {
+    use crate::cypher::cost;
+
     if patterns.is_empty() {
         return Ok(LogicalOp::EmptyRow);
     }
 
-    let mut op: Option<LogicalOp> = None;
-
-    for pattern in patterns {
-        let right = if pattern.shortest_path_mode != ShortestPathMode::None {
-            plan_shortest_path_pattern(conn, pattern, op.take())?
+    // Separate regular and shortest-path patterns.
+    let mut regular: Vec<&Pattern> = Vec::new();
+    let mut shortest: Vec<&Pattern> = Vec::new();
+    for pat in patterns {
+        if pat.shortest_path_mode != ShortestPathMode::None {
+            shortest.push(pat);
         } else {
-            plan_single_pattern(conn, pattern)?
-        };
+            regular.push(pat);
+        }
+    }
 
+    // Reorder regular patterns by estimated cost (smallest first).
+    if regular.len() > 1 {
+        regular.sort_by(|a, b| {
+            let plan_a = plan_single_pattern(conn, a).ok();
+            let plan_b = plan_single_pattern(conn, b).ok();
+            let cost_a = plan_a.map(|p| cost::estimate(conn, &p).estimated_rows).unwrap_or(f64::MAX);
+            let cost_b = plan_b.map(|p| cost::estimate(conn, &p).estimated_rows).unwrap_or(f64::MAX);
+            cost_a.partial_cmp(&cost_b).unwrap_or(std::cmp::Ordering::Equal)
+        });
+    }
+
+    // Build cross-product chain from regular patterns.
+    let mut op: Option<LogicalOp> = None;
+    for pattern in &regular {
+        let right = plan_single_pattern(conn, pattern)?;
         op = Some(match op.take() {
             None => right,
             Some(left) => LogicalOp::CrossProduct {
@@ -295,6 +319,12 @@ pub fn plan_patterns(conn: &Connection, patterns: &[Pattern]) -> crate::types::R
                 right: Box::new(right),
             },
         });
+    }
+
+    // Apply shortest-path patterns last (they need bound variables).
+    for pattern in &shortest {
+        let right = plan_shortest_path_pattern(conn, pattern, op.take())?;
+        op = Some(right);
     }
 
     op.ok_or_else(|| GraphError::Serialization("empty patterns".to_string()))

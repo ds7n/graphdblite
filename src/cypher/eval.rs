@@ -62,9 +62,8 @@ pub fn eval_expr(expr: &Expr, record: &Record, conn: &Connection) -> crate::type
         Expr::Exists { patterns, where_clause } => {
             eval_exists(patterns, where_clause.as_deref(), record, conn)
         }
-        Expr::FunctionCall { .. } => {
-            // Aggregate functions are handled by the Aggregate operator, not here.
-            Ok(Value::Null)
+        Expr::FunctionCall { name, args } => {
+            eval_function_call(name, args, record, conn)
         }
     }
 }
@@ -73,6 +72,41 @@ pub fn eval_expr(expr: &Expr, record: &Record, conn: &Connection) -> crate::type
 pub fn eval_predicate(expr: &Expr, record: &Record, conn: &Connection) -> crate::types::Result<bool> {
     let val = eval_expr(expr, record, conn)?;
     Ok(matches!(val, Value::Bool(true)))
+}
+
+/// Evaluate a function call.
+///
+/// Aggregate functions (count, sum, avg, etc.) are handled by the Aggregate
+/// operator, not here. Scalar functions like length() and nodes() are evaluated inline.
+fn eval_function_call(
+    name: &str,
+    args: &[Expr],
+    record: &Record,
+    conn: &Connection,
+) -> crate::types::Result<Value> {
+    match name.as_ref() {
+        "length" => {
+            let arg = args.first().map(|a| eval_expr(a, record, conn)).transpose()?;
+            match arg {
+                Some(Value::Path(nodes)) => Ok(Value::I64(nodes.len().saturating_sub(1) as i64)),
+                Some(Value::String(s)) => Ok(Value::I64(s.len() as i64)),
+                Some(Value::List(items)) => Ok(Value::I64(items.len() as i64)),
+                _ => Ok(Value::Null),
+            }
+        }
+        "nodes" => {
+            let arg = args.first().map(|a| eval_expr(a, record, conn)).transpose()?;
+            match arg {
+                Some(Value::Path(node_ids)) => {
+                    let list = node_ids.iter().map(|id| Value::I64(id.0 as i64)).collect();
+                    Ok(Value::List(list))
+                }
+                _ => Ok(Value::Null),
+            }
+        }
+        // Aggregate functions are handled by the Aggregate operator.
+        _ => Ok(Value::Null),
+    }
 }
 
 /// Evaluate a list comprehension: [x IN list WHERE pred | expr].

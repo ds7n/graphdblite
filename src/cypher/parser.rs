@@ -225,9 +225,57 @@ fn parse_pattern_list(
     pair: pest::iterators::Pair<Rule>,
 ) -> crate::types::Result<Vec<Pattern>> {
     pair.into_inner()
-        .filter(|p| p.as_rule() == Rule::pattern)
-        .map(parse_pattern)
+        .filter(|p| matches!(p.as_rule(), Rule::pattern_item))
+        .map(parse_pattern_item)
         .collect()
+}
+
+fn parse_pattern_item(pair: pest::iterators::Pair<Rule>) -> crate::types::Result<Pattern> {
+    let inner = pair.into_inner().next().unwrap();
+    match inner.as_rule() {
+        Rule::path_pattern => parse_path_pattern(inner),
+        Rule::pattern => parse_pattern(inner),
+        _ => Err(GraphError::Serialization(format!(
+            "unexpected pattern item: {:?}",
+            inner.as_rule()
+        ))),
+    }
+}
+
+fn parse_path_pattern(pair: pest::iterators::Pair<Rule>) -> crate::types::Result<Pattern> {
+    let mut path_variable = None;
+    let mut pattern = None;
+    let mut mode = ShortestPathMode::None;
+
+    for inner in pair.into_inner() {
+        match inner.as_rule() {
+            Rule::ident => path_variable = Some(inner.as_str().to_string()),
+            Rule::shortest_path_fn => {
+                mode = ShortestPathMode::Single;
+                for child in inner.into_inner() {
+                    if child.as_rule() == Rule::pattern {
+                        pattern = Some(parse_pattern(child)?);
+                    }
+                }
+            }
+            Rule::all_shortest_paths_fn => {
+                mode = ShortestPathMode::All;
+                for child in inner.into_inner() {
+                    if child.as_rule() == Rule::pattern {
+                        pattern = Some(parse_pattern(child)?);
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+
+    let mut pat = pattern.ok_or_else(|| {
+        GraphError::Serialization("missing pattern in path assignment".to_string())
+    })?;
+    pat.path_variable = path_variable;
+    pat.shortest_path_mode = mode;
+    Ok(pat)
 }
 
 fn parse_pattern(pair: pest::iterators::Pair<Rule>) -> crate::types::Result<Pattern> {
@@ -243,7 +291,11 @@ fn parse_pattern_inner(pair: pest::iterators::Pair<Rule>) -> crate::types::Resul
             _ => {}
         }
     }
-    Ok(Pattern { elements })
+    Ok(Pattern {
+        elements,
+        path_variable: None,
+        shortest_path_mode: ShortestPathMode::None,
+    })
 }
 
 fn parse_node_pattern(
@@ -924,7 +976,10 @@ fn humanize_rule_name(rule: &str) -> &str {
         "bool_expr" | "bool_primary" | "bool_factor" | "bool_term" => "a condition",
         "comparison" => "a comparison (=, <>, <, >, <=, >=)",
         "ident" => "an identifier",
-        "pattern" | "pattern_list" => "a graph pattern like (n:Label)",
+        "pattern" | "pattern_list" | "pattern_item" => "a graph pattern like (n:Label)",
+        "path_pattern" | "shortest_path_fn" | "all_shortest_paths_fn" => {
+            "a path pattern like p = shortestPath((a)-[*]->(b))"
+        }
         "node_pattern" => "a node pattern like (n:Label {prop: value})",
         "rel_pattern" | "rel_right" | "rel_left" | "rel_undirected" => {
             "a relationship pattern like -[:TYPE]->"

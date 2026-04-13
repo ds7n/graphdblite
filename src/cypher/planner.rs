@@ -56,7 +56,7 @@ fn plan_match(conn: &Connection, stmt: &MatchStatement) -> crate::types::Result<
 
     // Check if RETURN contains aggregates.
     let has_aggregates = stmt.return_clause.items.iter().any(|item| {
-        matches!(item.expr, Expr::FunctionCall { .. })
+        is_aggregate_fn(&item.expr)
     });
 
     if has_aggregates {
@@ -184,7 +184,7 @@ fn plan_unwind(_conn: &Connection, stmt: &UnwindStatement) -> crate::types::Resu
             }
 
             let has_aggregates = return_clause.items.iter().any(|item| {
-                matches!(item.expr, Expr::FunctionCall { .. })
+                is_aggregate_fn(&item.expr)
             });
 
             if has_aggregates {
@@ -244,7 +244,7 @@ fn plan_with(input: LogicalOp, with: &WithClause) -> crate::types::Result<Logica
 
     // Check if WITH items contain aggregates.
     let has_aggregates = with.items.iter().any(|item| {
-        matches!(item.expr, Expr::FunctionCall { .. })
+        is_aggregate_fn(&item.expr)
     });
 
     if has_aggregates {
@@ -279,18 +279,98 @@ pub fn plan_patterns(conn: &Connection, patterns: &[Pattern]) -> crate::types::R
         return Ok(LogicalOp::EmptyRow);
     }
 
-    let mut op = plan_single_pattern(conn, &patterns[0])?;
+    let mut op: Option<LogicalOp> = None;
 
-    // Multiple patterns produce a cross-product (nested loop join).
-    for pattern in &patterns[1..] {
-        let right = plan_single_pattern(conn, pattern)?;
-        op = LogicalOp::CrossProduct {
-            left: Box::new(op),
-            right: Box::new(right),
+    for pattern in patterns {
+        let right = if pattern.shortest_path_mode != ShortestPathMode::None {
+            plan_shortest_path_pattern(conn, pattern, op.take())?
+        } else {
+            plan_single_pattern(conn, pattern)?
         };
+
+        op = Some(match op.take() {
+            None => right,
+            Some(left) => LogicalOp::CrossProduct {
+                left: Box::new(left),
+                right: Box::new(right),
+            },
+        });
     }
 
-    Ok(op)
+    op.ok_or_else(|| GraphError::Serialization("empty patterns".to_string()))
+}
+
+/// Plan a shortestPath / allShortestPaths pattern.
+///
+/// The pattern must be: (src_node)-[rel*..N]->(dst_node).
+/// Both endpoint nodes need scans; the shortest path operator runs BFS between them.
+fn plan_shortest_path_pattern(
+    conn: &Connection,
+    pattern: &Pattern,
+    existing_input: Option<LogicalOp>,
+) -> crate::types::Result<LogicalOp> {
+    // Validate structure: must be exactly (node)-[rel]->(node).
+    if pattern.elements.len() != 3 {
+        return Err(GraphError::Serialization(
+            "shortestPath pattern must be (a)-[*..N]->(b)".to_string(),
+        ));
+    }
+
+    let src_node = match &pattern.elements[0] {
+        PatternElement::Node(n) => n,
+        _ => return Err(GraphError::Serialization(
+            "shortestPath pattern must start with a node".to_string(),
+        )),
+    };
+    let rel = match &pattern.elements[1] {
+        PatternElement::Relationship(r) => r,
+        _ => return Err(GraphError::Serialization(
+            "shortestPath pattern must have a relationship".to_string(),
+        )),
+    };
+    let dst_node = match &pattern.elements[2] {
+        PatternElement::Node(n) => n,
+        _ => return Err(GraphError::Serialization(
+            "shortestPath pattern must end with a node".to_string(),
+        )),
+    };
+
+    let src_alias = src_node.variable.clone().unwrap_or_else(|| "_sp_src".to_string());
+    let dst_alias = dst_node.variable.clone().unwrap_or_else(|| "_sp_dst".to_string());
+    let path_alias = pattern.path_variable.clone().unwrap_or_else(|| "_path".to_string());
+
+    let direction = match rel.direction {
+        RelDirection::Outgoing => Direction::Outgoing,
+        RelDirection::Incoming => Direction::Incoming,
+        RelDirection::Undirected => Direction::Both,
+    };
+
+    let (_, max_hops) = rel.var_length.unwrap_or((1, u32::MAX));
+
+    // Build input: scan both endpoints and cross-product them.
+    let input = if let Some(existing) = existing_input {
+        // If we already have bound variables, use the existing pipeline.
+        // Plan additional scans only for unbound nodes.
+        existing
+    } else {
+        let src_scan = plan_node_scan(conn, src_node, &src_alias)?;
+        let dst_scan = plan_node_scan(conn, dst_node, &dst_alias)?;
+        LogicalOp::CrossProduct {
+            left: Box::new(src_scan),
+            right: Box::new(dst_scan),
+        }
+    };
+
+    Ok(LogicalOp::ShortestPath {
+        input: Box::new(input),
+        src_alias,
+        dst_alias,
+        path_alias,
+        edge_type: rel.rel_type.clone(),
+        direction,
+        max_hops,
+        all_paths: pattern.shortest_path_mode == ShortestPathMode::All,
+    })
 }
 
 /// Plan OPTIONAL MATCH patterns. Returns (plan, new_aliases) where the plan is
@@ -561,6 +641,15 @@ fn get_last_alias(op: &Option<LogicalOp>) -> String {
     }
 }
 
+/// Returns true if the expression is an aggregate function call (count, sum, avg, etc.).
+fn is_aggregate_fn(expr: &Expr) -> bool {
+    matches!(
+        expr,
+        Expr::FunctionCall { name, .. }
+            if matches!(name.as_str(), "count" | "sum" | "avg" | "min" | "max" | "collect")
+    )
+}
+
 /// Split RETURN/WITH items into group keys (non-aggregate) and aggregate expressions.
 fn split_aggregates(
     items: &[ReturnItem],
@@ -572,24 +661,24 @@ fn split_aggregates(
         match &item.expr {
             Expr::FunctionCall { name, args } => {
                 let function = match name.as_str() {
-                    "count" => AggregateFunction::Count,
-                    "sum" => AggregateFunction::Sum,
-                    "avg" => AggregateFunction::Avg,
-                    "min" => AggregateFunction::Min,
-                    "max" => AggregateFunction::Max,
-                    "collect" => AggregateFunction::Collect,
-                    _ => {
-                        return Err(GraphError::Serialization(format!(
-                            "unknown aggregate function: {name}"
-                        )))
-                    }
+                    "count" => Some(AggregateFunction::Count),
+                    "sum" => Some(AggregateFunction::Sum),
+                    "avg" => Some(AggregateFunction::Avg),
+                    "min" => Some(AggregateFunction::Min),
+                    "max" => Some(AggregateFunction::Max),
+                    "collect" => Some(AggregateFunction::Collect),
+                    _ => None, // Scalar function — treat as regular expression.
                 };
-                let input = args.first().cloned().unwrap_or(Expr::Star);
-                aggregates.push(AggregateExpr {
-                    function,
-                    input,
-                    alias: item.alias.clone(),
-                });
+                if let Some(function) = function {
+                    let input = args.first().cloned().unwrap_or(Expr::Star);
+                    aggregates.push(AggregateExpr {
+                        function,
+                        input,
+                        alias: item.alias.clone(),
+                    });
+                } else {
+                    group_keys.push(item.expr.clone());
+                }
             }
             _ => group_keys.push(item.expr.clone()),
         }

@@ -1789,3 +1789,210 @@ fn e2e_list_comprehension_with_unwind_source() {
     }
     tx.commit().unwrap();
 }
+
+// === shortestPath / allShortestPaths tests ===
+
+/// Helper: build a graph with multiple paths for shortest path testing.
+/// Graph: A -KNOWS-> B -KNOWS-> C -KNOWS-> D
+///        A -KNOWS-> C (shortcut)
+///        A -KNOWS-> D (direct)
+fn setup_path_graph() -> Database {
+    let mut db = Database::open_memory().unwrap();
+    {
+        let tx = db.begin_write().unwrap();
+        tx.query("CREATE (a:Person {name: 'A'})").unwrap();  // NodeId(1)
+        tx.query("CREATE (b:Person {name: 'B'})").unwrap();  // NodeId(2)
+        tx.query("CREATE (c:Person {name: 'C'})").unwrap();  // NodeId(3)
+        tx.query("CREATE (d:Person {name: 'D'})").unwrap();  // NodeId(4)
+        tx.commit().unwrap();
+    }
+    {
+        let tx = db.begin_write().unwrap();
+        // Chain: A -> B -> C -> D
+        tx.create_edge(NodeId(1), NodeId(2), "KNOWS", HashMap::new()).unwrap();
+        tx.create_edge(NodeId(2), NodeId(3), "KNOWS", HashMap::new()).unwrap();
+        tx.create_edge(NodeId(3), NodeId(4), "KNOWS", HashMap::new()).unwrap();
+        // Shortcuts: A -> C, A -> D
+        tx.create_edge(NodeId(1), NodeId(3), "KNOWS", HashMap::new()).unwrap();
+        tx.create_edge(NodeId(1), NodeId(4), "KNOWS", HashMap::new()).unwrap();
+        tx.commit().unwrap();
+    }
+    db
+}
+
+#[test]
+fn e2e_shortest_path_direct() {
+    // A -> D exists directly (1 hop). Also A->B->C->D (3 hops).
+    let mut db = setup_path_graph();
+    let tx = db.begin_read().unwrap();
+    let results = tx
+        .query(
+            "MATCH (a:Person {name: 'A'}), (d:Person {name: 'D'}), \
+             p = shortestPath((a)-[:KNOWS*1..10]->(d)) \
+             RETURN p",
+        )
+        .unwrap();
+    assert_eq!(results.len(), 1);
+    let path = results[0].get("p").unwrap();
+    // Direct path: A(1) -> D(4)
+    assert_eq!(path, &Value::Path(vec![NodeId(1), NodeId(4)]));
+    tx.commit().unwrap();
+}
+
+#[test]
+fn e2e_shortest_path_multi_hop() {
+    // A -> B is 1 hop (direct).
+    let mut db = setup_path_graph();
+    let tx = db.begin_read().unwrap();
+    let results = tx
+        .query(
+            "MATCH (a:Person {name: 'A'}), (b:Person {name: 'B'}), \
+             p = shortestPath((a)-[:KNOWS*1..10]->(b)) \
+             RETURN p, length(p) AS len",
+        )
+        .unwrap();
+    assert_eq!(results.len(), 1);
+    assert_eq!(
+        results[0].get("p").unwrap(),
+        &Value::Path(vec![NodeId(1), NodeId(2)])
+    );
+    assert_eq!(results[0].get("len").unwrap(), &Value::I64(1));
+    tx.commit().unwrap();
+}
+
+#[test]
+fn e2e_shortest_path_no_path() {
+    // B -> A has no path (edges are directed A->B only).
+    let mut db = setup_path_graph();
+    let tx = db.begin_read().unwrap();
+    let results = tx
+        .query(
+            "MATCH (b:Person {name: 'B'}), (a:Person {name: 'A'}), \
+             p = shortestPath((b)-[:KNOWS*1..10]->(a)) \
+             RETURN p",
+        )
+        .unwrap();
+    assert_eq!(results.len(), 1);
+    assert_eq!(results[0].get("p").unwrap(), &Value::Null);
+    tx.commit().unwrap();
+}
+
+#[test]
+fn e2e_shortest_path_length_function() {
+    // A -> C: direct (1 hop) and A->B->C (2 hops). Shortest is 1.
+    let mut db = setup_path_graph();
+    let tx = db.begin_read().unwrap();
+    let results = tx
+        .query(
+            "MATCH (a:Person {name: 'A'}), (c:Person {name: 'C'}), \
+             p = shortestPath((a)-[:KNOWS*1..10]->(c)) \
+             RETURN length(p) AS len, nodes(p) AS node_ids",
+        )
+        .unwrap();
+    assert_eq!(results.len(), 1);
+    assert_eq!(results[0].get("len").unwrap(), &Value::I64(1));
+    assert_eq!(
+        results[0].get("node_ids").unwrap(),
+        &Value::List(vec![Value::I64(1), Value::I64(3)])
+    );
+    tx.commit().unwrap();
+}
+
+#[test]
+fn e2e_all_shortest_paths() {
+    // A -> C: two paths of length 1 (A->C direct). Wait — there's only one
+    // direct edge. Let me think about the graph.
+    // A->C (1 hop): only one path of length 1.
+    // So allShortestPaths should return just that one.
+    let mut db = setup_path_graph();
+    let tx = db.begin_read().unwrap();
+    let results = tx
+        .query(
+            "MATCH (a:Person {name: 'A'}), (c:Person {name: 'C'}), \
+             p = allShortestPaths((a)-[:KNOWS*1..10]->(c)) \
+             RETURN p",
+        )
+        .unwrap();
+    // Only 1 shortest path: A->C (length 1).
+    assert_eq!(results.len(), 1);
+    assert_eq!(
+        results[0].get("p").unwrap(),
+        &Value::Path(vec![NodeId(1), NodeId(3)])
+    );
+    tx.commit().unwrap();
+}
+
+#[test]
+fn e2e_all_shortest_paths_multiple() {
+    // Build a diamond graph: A->B->D, A->C->D (both length 2).
+    let mut db = Database::open_memory().unwrap();
+    {
+        let tx = db.begin_write().unwrap();
+        tx.query("CREATE (a:N {name: 'A'})").unwrap();  // 1
+        tx.query("CREATE (b:N {name: 'B'})").unwrap();  // 2
+        tx.query("CREATE (c:N {name: 'C'})").unwrap();  // 3
+        tx.query("CREATE (d:N {name: 'D'})").unwrap();  // 4
+        tx.commit().unwrap();
+    }
+    {
+        let tx = db.begin_write().unwrap();
+        tx.create_edge(NodeId(1), NodeId(2), "E", HashMap::new()).unwrap();
+        tx.create_edge(NodeId(1), NodeId(3), "E", HashMap::new()).unwrap();
+        tx.create_edge(NodeId(2), NodeId(4), "E", HashMap::new()).unwrap();
+        tx.create_edge(NodeId(3), NodeId(4), "E", HashMap::new()).unwrap();
+        tx.commit().unwrap();
+    }
+    let tx = db.begin_read().unwrap();
+    let results = tx
+        .query(
+            "MATCH (a:N {name: 'A'}), (d:N {name: 'D'}), \
+             p = allShortestPaths((a)-[:E*1..10]->(d)) \
+             RETURN p",
+        )
+        .unwrap();
+    // Two shortest paths of length 2: A->B->D and A->C->D.
+    assert_eq!(results.len(), 2);
+    let mut paths: Vec<&Value> = results.iter().map(|r| r.get("p").unwrap()).collect();
+    paths.sort_by_key(|p| format!("{p}"));
+    assert_eq!(paths[0], &Value::Path(vec![NodeId(1), NodeId(2), NodeId(4)]));
+    assert_eq!(paths[1], &Value::Path(vec![NodeId(1), NodeId(3), NodeId(4)]));
+    tx.commit().unwrap();
+}
+
+#[test]
+fn e2e_shortest_path_respects_direction() {
+    // A -> B exists, but B -> A does not.
+    let mut db = setup_path_graph();
+    let tx = db.begin_read().unwrap();
+    let results = tx
+        .query(
+            "MATCH (b:Person {name: 'B'}), (a:Person {name: 'A'}), \
+             p = shortestPath((b)-[:KNOWS*1..10]->(a)) \
+             RETURN p",
+        )
+        .unwrap();
+    // No outgoing path from B to A.
+    assert_eq!(results[0].get("p").unwrap(), &Value::Null);
+    tx.commit().unwrap();
+}
+
+#[test]
+fn e2e_shortest_path_same_node() {
+    // Path from A to A should be a single-node path.
+    let mut db = setup_path_graph();
+    let tx = db.begin_read().unwrap();
+    let results = tx
+        .query(
+            "MATCH (a:Person {name: 'A'}), (a2:Person {name: 'A'}), \
+             p = shortestPath((a)-[:KNOWS*1..10]->(a2)) \
+             RETURN p, length(p) AS len",
+        )
+        .unwrap();
+    assert_eq!(results.len(), 1);
+    assert_eq!(
+        results[0].get("p").unwrap(),
+        &Value::Path(vec![NodeId(1)])
+    );
+    assert_eq!(results[0].get("len").unwrap(), &Value::I64(0));
+    tx.commit().unwrap();
+}

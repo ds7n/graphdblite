@@ -36,6 +36,7 @@ pub enum Value {
     F64(f64),
     String(String),
     List(Vec<Value>),
+    Path(Vec<NodeId>),
 }
 
 impl Eq for Value {}
@@ -50,6 +51,7 @@ impl Hash for Value {
             Value::F64(f) => f.to_bits().hash(state),
             Value::String(s) => s.hash(state),
             Value::List(items) => items.hash(state),
+            Value::Path(nodes) => nodes.hash(state),
         }
     }
 }
@@ -71,6 +73,16 @@ impl fmt::Display for Value {
                     write!(f, "{v}")?;
                 }
                 write!(f, "]")
+            }
+            Value::Path(nodes) => {
+                write!(f, "<")?;
+                for (i, id) in nodes.iter().enumerate() {
+                    if i > 0 {
+                        write!(f, "--")?;
+                    }
+                    write!(f, "({})", id.0)?;
+                }
+                write!(f, ">")
             }
         }
     }

@@ -95,7 +95,11 @@ on_match_clause = { ^"ON" ~ ^"MATCH" ~ ^"SET" ~ assignment_list }
 
 // === Patterns ===
 
-pattern_list = { pattern ~ ("," ~ pattern)* }
+pattern_list = { pattern_item ~ ("," ~ pattern_item)* }
+pattern_item = { path_pattern | pattern }
+path_pattern = { ident ~ "=" ~ (shortest_path_fn | all_shortest_paths_fn) }
+shortest_path_fn = { ^"shortestPath" ~ "(" ~ pattern ~ ")" }
+all_shortest_paths_fn = { ^"allShortestPaths" ~ "(" ~ pattern ~ ")" }
 pattern = { node_pattern ~ (rel_pattern ~ node_pattern)* }
 
 node_pattern = { "(" ~ ident? ~ label_spec? ~ property_map? ~ ")" }
@@ -172,7 +176,7 @@ variable = { ident }
 star = { "*" }
 
 function_call = { function_name ~ "(" ~ function_args ~ ")" }
-function_name = @{ ^"count" | ^"sum" | ^"avg" | ^"min" | ^"max" | ^"collect" }
+function_name = @{ ^"count" | ^"sum" | ^"avg" | ^"min" | ^"max" | ^"collect" | ^"length" | ^"nodes" }
 function_args = { star | expr_list | "" }
 expr_list = { expr ~ ("," ~ expr)* }
 
@@ -193,7 +197,8 @@ keyword = {
      ^"AS" | ^"IS" | ^"ON" | ^"ASC" | ^"DESC" | ^"STARTS" | ^"ENDS" | ^"WITH" | ^"CONTAINS" |
      ^"OPTIONAL" | ^"UNWIND" | ^"TRUE" | ^"FALSE" | ^"NULL" |
      ^"CASE" | ^"WHEN" | ^"THEN" | ^"ELSE" | ^"END" | ^"EXISTS" | ^"IN" |
-     ^"count" | ^"sum" | ^"avg" | ^"min" | ^"max" | ^"collect")
+     ^"shortestPath" | ^"allShortestPaths" |
+     ^"count" | ^"sum" | ^"avg" | ^"min" | ^"max" | ^"collect" | ^"length" | ^"nodes")
     ~ !(ASCII_ALPHANUMERIC | "_")
 }
 

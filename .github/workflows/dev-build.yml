@@ -13,7 +13,19 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+      - run: cargo fmt --check
+      - run: cargo clippy --all-targets -- -D warnings
+      - run: cargo test
+
   build:
+    needs: test
     strategy:
       matrix:
         include:
@@ -59,6 +71,7 @@ jobs:
             graphdblite-${{ matrix.target }}.${{ matrix.ext }}.sha256
 
   build-wheels:
+    needs: test
     strategy:
       matrix:
         include:
@@ -89,7 +102,7 @@ jobs:
 
       - uses: actions/upload-artifact@v4
         with:
-          name: wheel-${{ matrix.os }}-${{ matrix.target }}
+          name: wheels-${{ matrix.os }}-${{ matrix.target }}
           path: dist/*.whl
 
   publish:
@@ -107,7 +120,7 @@ jobs:
 
       - uses: actions/download-artifact@v4
         with:
-          pattern: wheel-*
+          pattern: wheels-*
           merge-multiple: true
           path: wheels/
 
@@ -126,9 +139,9 @@ jobs:
           Date: $(date -u +%Y-%m-%d)
 
           ## Python wheels
-          Install without Rust:
+          Download the wheel for your platform from the [release assets](https://github.com/ds7n/graphdblite/releases/tag/dev-latest), then:
           \`\`\`
-          pip install https://github.com/ds7n/graphdblite/releases/download/dev-latest/<wheel-filename>.whl
+          pip install graphdblite-<version>-<platform>.whl
           \`\`\`" \
             --prerelease \
             --target ${{ github.sha }} \

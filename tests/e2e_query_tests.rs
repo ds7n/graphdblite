@@ -1676,3 +1676,116 @@ fn e2e_exists_combined_with_and() {
     );
     tx.commit().unwrap();
 }
+
+// === List comprehension tests ===
+
+#[test]
+fn e2e_list_comprehension_identity() {
+    let mut db = Database::open_memory().unwrap();
+    {
+        let tx = db.begin_write().unwrap();
+        tx.query("CREATE (n:X {name: 'a'})").unwrap();
+        tx.commit().unwrap();
+    }
+    let tx = db.begin_read().unwrap();
+    let results = tx
+        .query("MATCH (n:X) RETURN [x IN [1, 2, 3] | x] AS nums")
+        .unwrap();
+    assert_eq!(results.len(), 1);
+    assert_eq!(
+        results[0].get("nums").unwrap(),
+        &Value::List(vec![Value::I64(1), Value::I64(2), Value::I64(3)])
+    );
+    tx.commit().unwrap();
+}
+
+#[test]
+fn e2e_list_comprehension_with_filter() {
+    let mut db = Database::open_memory().unwrap();
+    {
+        let tx = db.begin_write().unwrap();
+        tx.query("CREATE (n:X {name: 'a'})").unwrap();
+        tx.commit().unwrap();
+    }
+    let tx = db.begin_read().unwrap();
+    let results = tx
+        .query("MATCH (n:X) RETURN [x IN [1, 2, 3, 4, 5] WHERE x > 3] AS big")
+        .unwrap();
+    assert_eq!(results.len(), 1);
+    assert_eq!(
+        results[0].get("big").unwrap(),
+        &Value::List(vec![Value::I64(4), Value::I64(5)])
+    );
+    tx.commit().unwrap();
+}
+
+#[test]
+fn e2e_list_comprehension_empty_input() {
+    let mut db = Database::open_memory().unwrap();
+    {
+        let tx = db.begin_write().unwrap();
+        tx.query("CREATE (n:X {name: 'a'})").unwrap();
+        tx.commit().unwrap();
+    }
+    let tx = db.begin_read().unwrap();
+    let results = tx
+        .query("MATCH (n:X) RETURN [x IN [] | x] AS empty")
+        .unwrap();
+    assert_eq!(results.len(), 1);
+    assert_eq!(
+        results[0].get("empty").unwrap(),
+        &Value::List(vec![])
+    );
+    tx.commit().unwrap();
+}
+
+#[test]
+fn e2e_list_comprehension_filter_all() {
+    // Filter removes all elements.
+    let mut db = Database::open_memory().unwrap();
+    {
+        let tx = db.begin_write().unwrap();
+        tx.query("CREATE (n:X {name: 'a'})").unwrap();
+        tx.commit().unwrap();
+    }
+    let tx = db.begin_read().unwrap();
+    let results = tx
+        .query("MATCH (n:X) RETURN [x IN [1, 2, 3] WHERE x > 100] AS none")
+        .unwrap();
+    assert_eq!(results.len(), 1);
+    assert_eq!(
+        results[0].get("none").unwrap(),
+        &Value::List(vec![])
+    );
+    tx.commit().unwrap();
+}
+
+#[test]
+fn e2e_list_comprehension_with_unwind_source() {
+    // Use UNWIND to create a list, then comprehension to filter it.
+    let mut db = Database::open_memory().unwrap();
+    {
+        let tx = db.begin_write().unwrap();
+        tx.query("CREATE (n:Person {name: 'Alice', age: 30})").unwrap();
+        tx.query("CREATE (n:Person {name: 'Bob', age: 25})").unwrap();
+        tx.query("CREATE (n:Person {name: 'Charlie', age: 35})").unwrap();
+        tx.commit().unwrap();
+    }
+    let tx = db.begin_read().unwrap();
+    // Collect ages into a list, then filter with comprehension.
+    let results = tx
+        .query(
+            "MATCH (n:Person) WITH collect(n.age) AS ages RETURN [a IN ages WHERE a > 28] AS old_ages",
+        )
+        .unwrap();
+    assert_eq!(results.len(), 1);
+    let old_ages = results[0].get("old_ages").unwrap();
+    if let Value::List(items) = old_ages {
+        assert_eq!(items.len(), 2); // 30 and 35
+        assert!(items.contains(&Value::I64(30)));
+        assert!(items.contains(&Value::I64(35)));
+    } else {
+        panic!("expected list, got {old_ages:?}");
+    }
+    tx.commit().unwrap();
+}

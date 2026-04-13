@@ -792,6 +792,7 @@ fn parse_expr(pair: pest::iterators::Pair<Rule>) -> crate::types::Result<Expr> {
             Ok(Expr::Property(var, prop))
         }
         Rule::literal => parse_literal(inner),
+        Rule::list_comprehension => parse_list_comprehension(inner),
         Rule::list_literal => {
             let items: crate::types::Result<Vec<Expr>> = inner
                 .into_inner()
@@ -879,6 +880,40 @@ fn parse_literal(pair: pest::iterators::Pair<Rule>) -> crate::types::Result<Expr
     }
 }
 
+fn parse_list_comprehension(pair: pest::iterators::Pair<Rule>) -> crate::types::Result<Expr> {
+    let mut variable = None;
+    let mut list_expr = None;
+    let mut filter = None;
+    let mut map_expr = None;
+
+    for inner in pair.into_inner() {
+        match inner.as_rule() {
+            Rule::ident => variable = Some(inner.as_str().to_string()),
+            Rule::expr => list_expr = Some(Box::new(parse_expr(inner)?)),
+            Rule::list_comp_where => {
+                let bool_expr = inner.into_inner().next().unwrap();
+                filter = Some(Box::new(parse_bool_expr(bool_expr)?));
+            }
+            Rule::list_comp_map => {
+                let expr = inner.into_inner().next().unwrap();
+                map_expr = Some(Box::new(parse_expr(expr)?));
+            }
+            _ => {}
+        }
+    }
+
+    Ok(Expr::ListComprehension {
+        variable: variable.ok_or_else(|| {
+            GraphError::Serialization("missing variable in list comprehension".to_string())
+        })?,
+        list_expr: list_expr.ok_or_else(|| {
+            GraphError::Serialization("missing list expression in list comprehension".to_string())
+        })?,
+        filter,
+        map_expr,
+    })
+}
+
 // === Error humanization ===
 
 /// Map pest grammar rule names to user-friendly descriptions.
@@ -912,6 +947,7 @@ fn humanize_rule_name(rule: &str) -> &str {
         "case_else_clause" => "an ELSE value",
         "case_expr" => "a CASE expression",
         "exists_subquery" => "an EXISTS { } subquery",
+        "list_comprehension" => "a list comprehension like [x IN list | expr]",
         "comp_op" => "a comparison operator (=, <>, <, >)",
         "alias" => "an alias (AS name)",
         "assignment" | "assignment_list" => "a property assignment like n.prop = value",

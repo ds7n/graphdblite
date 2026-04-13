@@ -56,6 +56,9 @@ pub fn eval_expr(expr: &Expr, record: &Record, conn: &Connection) -> crate::type
                 None => Ok(Value::Null),
             }
         }
+        Expr::ListComprehension { variable, list_expr, filter, map_expr } => {
+            eval_list_comprehension(variable, list_expr, filter.as_deref(), map_expr.as_deref(), record, conn)
+        }
         Expr::Exists { patterns, where_clause } => {
             eval_exists(patterns, where_clause.as_deref(), record, conn)
         }
@@ -70,6 +73,47 @@ pub fn eval_expr(expr: &Expr, record: &Record, conn: &Connection) -> crate::type
 pub fn eval_predicate(expr: &Expr, record: &Record, conn: &Connection) -> crate::types::Result<bool> {
     let val = eval_expr(expr, record, conn)?;
     Ok(matches!(val, Value::Bool(true)))
+}
+
+/// Evaluate a list comprehension: [x IN list WHERE pred | expr].
+fn eval_list_comprehension(
+    variable: &str,
+    list_expr: &Expr,
+    filter: Option<&Expr>,
+    map_expr: Option<&Expr>,
+    record: &Record,
+    conn: &Connection,
+) -> crate::types::Result<Value> {
+    let list_val = eval_expr(list_expr, record, conn)?;
+    let items = match list_val {
+        Value::List(items) => items,
+        Value::Null => return Ok(Value::List(vec![])),
+        _ => {
+            return Err(crate::types::GraphError::Serialization(
+                "list comprehension requires a list input".to_string(),
+            ))
+        }
+    };
+
+    let mut results = Vec::new();
+    for item in items {
+        let mut local = record.clone();
+        local.set(variable.to_string(), item.clone());
+
+        if let Some(pred) = filter {
+            if !eval_predicate(pred, &local, conn)? {
+                continue;
+            }
+        }
+
+        let val = match map_expr {
+            Some(expr) => eval_expr(expr, &local, conn)?,
+            None => item,
+        };
+        results.push(val);
+    }
+
+    Ok(Value::List(results))
 }
 
 /// Evaluate an EXISTS { pattern [WHERE expr] } subquery.

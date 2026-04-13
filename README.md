@@ -63,26 +63,25 @@ graphdblite my.db -q "MATCH (n:Person) RETURN n.name"
 ## Cypher support
 
 ```cypher
-MATCH (a:Person)-[:KNOWS]->(b:Person)           -- pattern matching
-MATCH (a)-[:KNOWS*1..3]->(b)                     -- variable-length paths
-OPTIONAL MATCH (a)-[:KNOWS]->(b)                 -- optional patterns
-MATCH p = shortestPath((a)-[:KNOWS*]->(b))       -- graph algorithms
-WHERE a.name STARTS WITH 'A' AND b.age > 25     -- filtering
-WHERE EXISTS { (a)-[:KNOWS]->(b) }               -- subquery predicates
-RETURN a.name, count(*) AS cnt, collect(b.name)  -- aggregation
-WITH a, count(*) AS cnt WHERE cnt > 1            -- intermediate processing
-UNWIND [1, 2, 3] AS x RETURN x                   -- list expansion
-[x IN list WHERE x > 2 | x * 10]                -- list comprehensions
-CASE WHEN a.age > 30 THEN 'senior' END          -- conditionals
-CREATE (n:Label {key: value})                    -- mutations
-MERGE (n:Label {key: val}) ON CREATE SET ...     -- upsert
-EXPLAIN MATCH (a:Person) RETURN a.name           -- query planning
+-- Query
+MATCH (a:Person)-[:KNOWS]->(b:Person) WHERE a.age > 25 RETURN a.name, b.name
+MATCH (a)-[:KNOWS*1..3]->(b) RETURN b                -- variable-length paths
+MATCH p = shortestPath((a)-[:KNOWS*]->(b)) RETURN p  -- shortest path
+
+-- Mutate
+CREATE (n:Person {name: 'Alice', age: 30})
+MERGE (n:Person {name: 'Alice'}) ON CREATE SET n.created = true
+SET n.age = 31
+DELETE n
 ```
 
-**Aggregations:** `count(*)`, `collect()`, `sum()`, `avg()`, `min()`, `max()`
-**Scalar functions:** `length()`, `nodes()`
+Supports `OPTIONAL MATCH`, `WITH`, `UNWIND`, `ORDER BY`, `LIMIT`, `CASE`,
+`EXISTS {}` subqueries, list comprehensions, and `EXPLAIN`.
 
-Full Cypher reference: [docs/cypher.md](docs/cypher.md)
+**Scalar functions:** `length()`, `nodes()`
+**Aggregations:** `count(*)`, `sum()`, `avg()`, `min()`, `max()`, `collect()`
+
+See the full [Cypher Reference](docs/cypher.md) for complete syntax and examples.
 
 ## Architecture
 

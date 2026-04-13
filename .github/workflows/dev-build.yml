@@ -58,8 +58,42 @@ jobs:
             graphdblite-${{ matrix.target }}.${{ matrix.ext }}
             graphdblite-${{ matrix.target }}.${{ matrix.ext }}.sha256
 
+  build-wheels:
+    strategy:
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: x86_64
+          - os: ubuntu-latest
+            target: aarch64
+          - os: macos-latest
+            target: x86_64
+          - os: macos-latest
+            target: aarch64
+          - os: windows-latest
+            target: x64
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Build wheels
+        uses: PyO3/maturin-action@v1
+        with:
+          target: ${{ matrix.target }}
+          args: --release --out dist
+          manylinux: auto
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: wheel-${{ matrix.os }}-${{ matrix.target }}
+          path: dist/*.whl
+
   publish:
-    needs: build
+    needs: [build, build-wheels]
     runs-on: ubuntu-latest
     env:
       GH_TOKEN: ${{ github.token }}
@@ -68,7 +102,14 @@ jobs:
 
       - uses: actions/download-artifact@v4
         with:
+          pattern: binary-*
           merge-multiple: true
+
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: wheel-*
+          merge-multiple: true
+          path: wheels/
 
       - name: Combine checksums
         run: cat *.sha256 > sha256sums.txt
@@ -82,7 +123,13 @@ jobs:
             --title "Dev Build (latest main)" \
             --notes "Rolling development build from main branch.
           Commit: ${{ github.sha }}
-          Date: $(date -u +%Y-%m-%d)" \
+          Date: $(date -u +%Y-%m-%d)
+
+          ## Python wheels
+          Install without Rust:
+          \`\`\`
+          pip install https://github.com/ds7n/graphdblite/releases/download/dev-latest/<wheel-filename>.whl
+          \`\`\`" \
             --prerelease \
             --target ${{ github.sha }} \
-            graphdblite-*.tar.gz graphdblite-*.zip sha256sums.txt
+            graphdblite-*.tar.gz graphdblite-*.zip sha256sums.txt wheels/*.whl

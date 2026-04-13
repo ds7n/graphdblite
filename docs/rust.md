@@ -2,9 +2,11 @@
 
 ## Installation
 
+Add graphdblite as a git dependency in your `Cargo.toml`:
+
 ```toml
 [dependencies]
-graphdblite = "0.1"
+graphdblite = { git = "https://github.com/ds7n/graphdblite.git" }
 ```
 
 ## Example

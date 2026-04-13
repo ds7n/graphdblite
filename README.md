@@ -7,8 +7,9 @@ Embedded graph database with Cypher support. SQLite-grade simplicity, graph-nati
 "SQLite but for graphs." Single-file, multi-process-safe, embeddable. Uses SQLite as a
 key-value engine (WAL mode, `WITHOUT ROWID` tables) with graph-native data structures on top.
 
-Not competing with Neo4j on billion-edge workloads — designed for <1M nodes / <5M edges
-with a ceiling around 50M nodes.
+Think of graphdblite not as a replacement for Neo4j, but as a replacement for stuffing
+graph data into JSON files or relational tables. Local graph storage for applications
+and tools that need it, without running a server.
 
 ## Quick start
 
@@ -31,8 +32,11 @@ let results = tx.query("MATCH (a:Person)-[:KNOWS]->(b:Person) RETURN a.name, b.n
 
 ### Python
 
+Prebuilt wheels available from [GitHub Releases](https://github.com/ds7n/graphdblite/releases/tag/dev-latest),
+or build from source (requires Rust):
+
 ```bash
-pip install graphdblite
+pip install git+https://github.com/ds7n/graphdblite.git
 ```
 
 ```python

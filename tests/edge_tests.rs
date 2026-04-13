@@ -14,12 +14,18 @@ fn create_edge_and_get_neighbors() {
     let mut db = Database::open_memory().unwrap();
     let tx = db.begin_write().unwrap();
 
-    let alice = tx.create_node("Person", props(&[("name", Value::String("Alice".into()))])).unwrap();
-    let bob = tx.create_node("Person", props(&[("name", Value::String("Bob".into()))])).unwrap();
+    let alice = tx
+        .create_node("Person", props(&[("name", Value::String("Alice".into()))]))
+        .unwrap();
+    let bob = tx
+        .create_node("Person", props(&[("name", Value::String("Bob".into()))]))
+        .unwrap();
 
     tx.create_edge(alice, bob, "KNOWS", HashMap::new()).unwrap();
 
-    let out = tx.get_neighbors(alice, "KNOWS", Direction::Outgoing).unwrap();
+    let out = tx
+        .get_neighbors(alice, "KNOWS", Direction::Outgoing)
+        .unwrap();
     assert_eq!(out, vec![bob]);
 
     let inc = tx.get_neighbors(bob, "KNOWS", Direction::Incoming).unwrap();
@@ -40,7 +46,8 @@ fn edge_with_properties() {
     let a = tx.create_node("A", HashMap::new()).unwrap();
     let b = tx.create_node("B", HashMap::new()).unwrap();
 
-    tx.create_edge(a, b, "REL", props(&[("weight", Value::F64(0.5))])).unwrap();
+    tx.create_edge(a, b, "REL", props(&[("weight", Value::F64(0.5))]))
+        .unwrap();
 
     let ep = tx.get_edge_properties(a, b, "REL").unwrap();
     assert_eq!(ep.get("weight"), Some(&Value::F64(0.5)));
@@ -57,11 +64,22 @@ fn delete_edge() {
     let b = tx.create_node("B", HashMap::new()).unwrap();
 
     tx.create_edge(a, b, "REL", HashMap::new()).unwrap();
-    assert_eq!(tx.get_neighbors(a, "REL", Direction::Outgoing).unwrap().len(), 1);
+    assert_eq!(
+        tx.get_neighbors(a, "REL", Direction::Outgoing)
+            .unwrap()
+            .len(),
+        1
+    );
 
     tx.delete_edge(a, b, "REL").unwrap();
-    assert!(tx.get_neighbors(a, "REL", Direction::Outgoing).unwrap().is_empty());
-    assert!(tx.get_neighbors(b, "REL", Direction::Incoming).unwrap().is_empty());
+    assert!(tx
+        .get_neighbors(a, "REL", Direction::Outgoing)
+        .unwrap()
+        .is_empty());
+    assert!(tx
+        .get_neighbors(b, "REL", Direction::Incoming)
+        .unwrap()
+        .is_empty());
 
     tx.commit().unwrap();
 }
@@ -81,8 +99,14 @@ fn cascading_delete_on_node_removal() {
     // Delete node a — edges (a->b) and (c->a) should be removed.
     tx.delete_node(a).unwrap();
 
-    assert!(tx.get_neighbors(b, "X", Direction::Incoming).unwrap().is_empty());
-    assert!(tx.get_neighbors(c, "Y", Direction::Outgoing).unwrap().is_empty());
+    assert!(tx
+        .get_neighbors(b, "X", Direction::Incoming)
+        .unwrap()
+        .is_empty());
+    assert!(tx
+        .get_neighbors(c, "Y", Direction::Outgoing)
+        .unwrap()
+        .is_empty());
 
     tx.commit().unwrap();
 }
@@ -101,7 +125,9 @@ fn multiple_edge_labels() {
     let knows = tx.get_neighbors(a, "KNOWS", Direction::Outgoing).unwrap();
     assert_eq!(knows, vec![b]);
 
-    let works = tx.get_neighbors(a, "WORKS_WITH", Direction::Outgoing).unwrap();
+    let works = tx
+        .get_neighbors(a, "WORKS_WITH", Direction::Outgoing)
+        .unwrap();
     assert_eq!(works, vec![b]);
 
     tx.commit().unwrap();

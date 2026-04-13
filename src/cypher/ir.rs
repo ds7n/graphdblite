@@ -7,10 +7,7 @@ use crate::types::Direction;
 #[derive(Debug, Clone, PartialEq)]
 pub enum LogicalOp {
     /// Scan all nodes with a label.
-    Scan {
-        label: String,
-        alias: String,
-    },
+    Scan { label: String, alias: String },
 
     /// Index-based lookup: use a secondary index instead of a full label scan.
     IndexLookup {
@@ -66,21 +63,13 @@ pub enum LogicalOp {
     },
 
     /// Remove duplicate records.
-    Distinct {
-        input: Box<LogicalOp>,
-    },
+    Distinct { input: Box<LogicalOp> },
 
     /// Skip the first N records.
-    Skip {
-        input: Box<LogicalOp>,
-        count: u64,
-    },
+    Skip { input: Box<LogicalOp>, count: u64 },
 
     /// Limit the number of output records.
-    Limit {
-        input: Box<LogicalOp>,
-        count: u64,
-    },
+    Limit { input: Box<LogicalOp>, count: u64 },
 
     /// Create a node.
     CreateNode {
@@ -98,9 +87,7 @@ pub enum LogicalOp {
     },
 
     /// Sequence of create operations (for multi-pattern CREATE).
-    CreateSequence {
-        ops: Vec<LogicalOp>,
-    },
+    CreateSequence { ops: Vec<LogicalOp> },
 
     /// MATCH ... CREATE: run input pipeline, then create edges/nodes using bound variables.
     MatchCreate {
@@ -156,10 +143,7 @@ pub enum LogicalOp {
     },
 
     /// Union of multiple pipelines. `all` = keep duplicates.
-    Union {
-        inputs: Vec<LogicalOp>,
-        all: bool,
-    },
+    Union { inputs: Vec<LogicalOp>, all: bool },
 
     /// Produce a single empty record (used as starting input for scans).
     EmptyRow,

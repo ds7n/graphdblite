@@ -63,10 +63,7 @@ fn child_writer() {
         Ok(p) => p,
         Err(_) => return, // Not a child invocation.
     };
-    let writer_id: u32 = std::env::var("GRAPHDB_WRITER_ID")
-        .unwrap()
-        .parse()
-        .unwrap();
+    let writer_id: u32 = std::env::var("GRAPHDB_WRITER_ID").unwrap().parse().unwrap();
     let count: u32 = std::env::var("GRAPHDB_NODES_COUNT")
         .unwrap()
         .parse()
@@ -78,10 +75,7 @@ fn child_writer() {
         let tx = db.begin_write().unwrap();
         tx.create_node("Writer", {
             let mut props = HashMap::new();
-            props.insert(
-                "writer_id".to_string(),
-                Value::I64(writer_id as i64),
-            );
+            props.insert("writer_id".to_string(), Value::I64(writer_id as i64));
             props.insert("seq".to_string(), Value::I64(i as i64));
             props
         })

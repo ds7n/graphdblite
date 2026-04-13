@@ -79,8 +79,7 @@ fn parse_match_with_variable_length_path() {
 
 #[test]
 fn parse_match_with_order_by_and_limit() {
-    let stmt =
-        parse("MATCH (n:Person) RETURN n.name ORDER BY n.name DESC LIMIT 10").unwrap();
+    let stmt = parse("MATCH (n:Person) RETURN n.name ORDER BY n.name DESC LIMIT 10").unwrap();
     match stmt {
         Statement::Match(m) => {
             assert_eq!(m.order_by.len(), 1);
@@ -142,7 +141,8 @@ fn parse_create_node() {
 
 #[test]
 fn parse_create_edge() {
-    let stmt = parse("CREATE (a:Person {name: 'Alice'})-[:KNOWS]->(b:Person {name: 'Bob'})").unwrap();
+    let stmt =
+        parse("CREATE (a:Person {name: 'Alice'})-[:KNOWS]->(b:Person {name: 'Bob'})").unwrap();
     match stmt {
         Statement::Create(c) => {
             assert_eq!(c.patterns[0].elements.len(), 3);
@@ -195,12 +195,10 @@ fn parse_merge() {
 fn parse_boolean_logic() {
     let stmt = parse("MATCH (n:Person) WHERE n.age > 20 AND n.age < 40 RETURN n").unwrap();
     match stmt {
-        Statement::Match(m) => {
-            match m.where_clause.unwrap() {
-                Expr::BinaryOp { op, .. } => assert_eq!(op, BinOp::And),
-                _ => panic!("expected AND"),
-            }
-        }
+        Statement::Match(m) => match m.where_clause.unwrap() {
+            Expr::BinaryOp { op, .. } => assert_eq!(op, BinOp::And),
+            _ => panic!("expected AND"),
+        },
         _ => panic!("expected Match"),
     }
 }
@@ -209,14 +207,12 @@ fn parse_boolean_logic() {
 fn parse_incoming_relationship() {
     let stmt = parse("MATCH (a:Person)<-[:KNOWS]-(b:Person) RETURN a").unwrap();
     match stmt {
-        Statement::Match(m) => {
-            match &m.patterns[0].elements[1] {
-                PatternElement::Relationship(r) => {
-                    assert_eq!(r.direction, RelDirection::Incoming);
-                }
-                _ => panic!("expected relationship"),
+        Statement::Match(m) => match &m.patterns[0].elements[1] {
+            PatternElement::Relationship(r) => {
+                assert_eq!(r.direction, RelDirection::Incoming);
             }
-        }
+            _ => panic!("expected relationship"),
+        },
         _ => panic!("expected Match"),
     }
 }
@@ -225,14 +221,14 @@ fn parse_incoming_relationship() {
 fn parse_string_literal() {
     let stmt = parse("MATCH (n:Person) WHERE n.name = 'Alice' RETURN n").unwrap();
     match stmt {
-        Statement::Match(m) => {
-            match m.where_clause.unwrap() {
-                Expr::BinaryOp { right, .. } => {
-                    assert!(matches!(*right, Expr::Literal(LiteralValue::String(ref s)) if s == "Alice"));
-                }
-                _ => panic!("expected comparison"),
+        Statement::Match(m) => match m.where_clause.unwrap() {
+            Expr::BinaryOp { right, .. } => {
+                assert!(
+                    matches!(*right, Expr::Literal(LiteralValue::String(ref s)) if s == "Alice")
+                );
             }
-        }
+            _ => panic!("expected comparison"),
+        },
         _ => panic!("expected Match"),
     }
 }

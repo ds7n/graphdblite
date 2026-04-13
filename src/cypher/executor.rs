@@ -54,9 +54,7 @@ pub fn execute_with_ctx(
 /// Check whether a plan tree contains only read-only operators.
 fn is_read_only(plan: &LogicalOp) -> bool {
     match plan {
-        LogicalOp::Scan { .. }
-        | LogicalOp::IndexLookup { .. }
-        | LogicalOp::EmptyRow => true,
+        LogicalOp::Scan { .. } | LogicalOp::IndexLookup { .. } | LogicalOp::EmptyRow => true,
 
         LogicalOp::Filter { input, .. }
         | LogicalOp::Project { input, .. }
@@ -71,9 +69,9 @@ fn is_read_only(plan: &LogicalOp) -> bool {
         LogicalOp::Expand { input, .. } => is_read_only(input),
 
         LogicalOp::CrossProduct { left, right }
-        | LogicalOp::LeftOuterJoin { input: left, right, .. } => {
-            is_read_only(left) && is_read_only(right)
-        }
+        | LogicalOp::LeftOuterJoin {
+            input: left, right, ..
+        } => is_read_only(left) && is_read_only(right),
 
         LogicalOp::Union { inputs, .. } => inputs.iter().all(is_read_only),
 
@@ -100,7 +98,14 @@ fn exec(conn: &Connection, plan: &LogicalOp, ctx: &ExecContext) -> Result<Vec<Re
             property,
             value,
             remaining_filters,
-        } => exec_index_lookup(conn, label, alias, property, value, remaining_filters.as_ref()),
+        } => exec_index_lookup(
+            conn,
+            label,
+            alias,
+            property,
+            value,
+            remaining_filters.as_ref(),
+        ),
 
         LogicalOp::Expand {
             input,
@@ -111,8 +116,7 @@ fn exec(conn: &Connection, plan: &LogicalOp, ctx: &ExecContext) -> Result<Vec<Re
             min_hops,
             max_hops,
         } => exec_expand(
-            conn, input, src_alias, dst_alias, edge_types,
-            *direction, *min_hops, *max_hops, ctx,
+            conn, input, src_alias, dst_alias, edge_types, *direction, *min_hops, *max_hops, ctx,
         ),
 
         LogicalOp::CrossProduct { left, right } => exec_cross_product(conn, left, right, ctx),
@@ -154,7 +158,11 @@ fn exec(conn: &Connection, plan: &LogicalOp, ctx: &ExecContext) -> Result<Vec<Re
             exec_match_create(conn, input, create_ops, ctx)
         }
 
-        LogicalOp::Delete { input, variables, detach } => exec_delete(conn, input, variables, *detach, ctx),
+        LogicalOp::Delete {
+            input,
+            variables,
+            detach,
+        } => exec_delete(conn, input, variables, *detach, ctx),
 
         LogicalOp::SetProperty { input, assignments } => {
             exec_set_property(conn, input, assignments, ctx)
@@ -166,11 +174,7 @@ fn exec(conn: &Connection, plan: &LogicalOp, ctx: &ExecContext) -> Result<Vec<Re
             on_match,
         } => exec_merge(conn, pattern, on_create, on_match),
 
-        LogicalOp::Unwind {
-            input,
-            expr,
-            alias,
-        } => exec_unwind(conn, input, expr, alias, ctx),
+        LogicalOp::Unwind { input, expr, alias } => exec_unwind(conn, input, expr, alias, ctx),
 
         LogicalOp::LeftOuterJoin {
             input,
@@ -188,8 +192,16 @@ fn exec(conn: &Connection, plan: &LogicalOp, ctx: &ExecContext) -> Result<Vec<Re
             max_hops,
             all_paths,
         } => exec_shortest_path(
-            conn, input, src_alias, dst_alias, path_alias,
-            edge_type.as_deref(), *direction, *max_hops, *all_paths, ctx,
+            conn,
+            input,
+            src_alias,
+            dst_alias,
+            path_alias,
+            edge_type.as_deref(),
+            *direction,
+            *max_hops,
+            *all_paths,
+            ctx,
         ),
 
         LogicalOp::Union { inputs, all } => {
@@ -214,7 +226,12 @@ fn exec(conn: &Connection, plan: &LogicalOp, ctx: &ExecContext) -> Result<Vec<Re
     }
 }
 
-fn exec_scan(conn: &Connection, label: &str, alias: &str, ctx: &ExecContext) -> Result<Vec<Record>> {
+fn exec_scan(
+    conn: &Connection,
+    label: &str,
+    alias: &str,
+    ctx: &ExecContext,
+) -> Result<Vec<Record>> {
     let nodes = node::find_nodes_by_label(conn, label)?;
     let mut records = Vec::with_capacity(nodes.len());
     for n in nodes {
@@ -279,43 +296,41 @@ fn exec_expand(
         };
 
         for &label in &labels {
-
-        if min_hops == 1 && max_hops == 1 {
-            // Single hop — direct neighbor lookup.
-            let neighbors = edge::get_neighbors(conn, src_id, label, direction)?;
-            for dst_id in neighbors {
-                let dst_node = node::get_node(conn, dst_id)?;
-                let mut new_rec = rec.clone();
-                new_rec.set(dst_alias.to_string(), Value::I64(dst_id.0 as i64));
-                for (key, val) in &dst_node.properties {
-                    new_rec.set(format!("{dst_alias}.{key}"), val.clone());
+            if min_hops == 1 && max_hops == 1 {
+                // Single hop — direct neighbor lookup.
+                let neighbors = edge::get_neighbors(conn, src_id, label, direction)?;
+                for dst_id in neighbors {
+                    let dst_node = node::get_node(conn, dst_id)?;
+                    let mut new_rec = rec.clone();
+                    new_rec.set(dst_alias.to_string(), Value::I64(dst_id.0 as i64));
+                    for (key, val) in &dst_node.properties {
+                        new_rec.set(format!("{dst_alias}.{key}"), val.clone());
+                    }
+                    new_rec.set(
+                        format!("{dst_alias}.__label"),
+                        Value::String(dst_node.label.clone()),
+                    );
+                    new_rec.set(format!("{dst_alias}.__id"), Value::I64(dst_id.0 as i64));
+                    results.push(new_rec);
                 }
-                new_rec.set(
-                    format!("{dst_alias}.__label"),
-                    Value::String(dst_node.label.clone()),
-                );
-                new_rec.set(format!("{dst_alias}.__id"), Value::I64(dst_id.0 as i64));
-                results.push(new_rec);
-            }
-        } else {
-            // Variable-length traversal.
-            let reachable =
-                edge::traverse(conn, src_id, label, direction, min_hops, max_hops)?;
-            for dst_id in reachable {
-                let dst_node = node::get_node(conn, dst_id)?;
-                let mut new_rec = rec.clone();
-                new_rec.set(dst_alias.to_string(), Value::I64(dst_id.0 as i64));
-                for (key, val) in &dst_node.properties {
-                    new_rec.set(format!("{dst_alias}.{key}"), val.clone());
+            } else {
+                // Variable-length traversal.
+                let reachable = edge::traverse(conn, src_id, label, direction, min_hops, max_hops)?;
+                for dst_id in reachable {
+                    let dst_node = node::get_node(conn, dst_id)?;
+                    let mut new_rec = rec.clone();
+                    new_rec.set(dst_alias.to_string(), Value::I64(dst_id.0 as i64));
+                    for (key, val) in &dst_node.properties {
+                        new_rec.set(format!("{dst_alias}.{key}"), val.clone());
+                    }
+                    new_rec.set(
+                        format!("{dst_alias}.__label"),
+                        Value::String(dst_node.label.clone()),
+                    );
+                    new_rec.set(format!("{dst_alias}.__id"), Value::I64(dst_id.0 as i64));
+                    results.push(new_rec);
                 }
-                new_rec.set(
-                    format!("{dst_alias}.__label"),
-                    Value::String(dst_node.label.clone()),
-                );
-                new_rec.set(format!("{dst_alias}.__id"), Value::I64(dst_id.0 as i64));
-                results.push(new_rec);
             }
-        }
         } // end for &label in &labels
     }
 
@@ -542,7 +557,11 @@ fn compute_aggregate(agg: &AggregateExpr, records: &[Record], conn: &Connection)
                     _ => {}
                 }
             }
-            if all_integer { Ok(Value::I64(i64_sum)) } else { Ok(Value::F64(f64_sum)) }
+            if all_integer {
+                Ok(Value::I64(i64_sum))
+            } else {
+                Ok(Value::F64(f64_sum))
+            }
         }
         AggregateFunction::Avg => {
             let mut sum = 0.0f64;
@@ -652,12 +671,22 @@ fn exec_distinct(conn: &Connection, input: &LogicalOp, ctx: &ExecContext) -> Res
     Ok(results)
 }
 
-fn exec_skip(conn: &Connection, input: &LogicalOp, count: u64, ctx: &ExecContext) -> Result<Vec<Record>> {
+fn exec_skip(
+    conn: &Connection,
+    input: &LogicalOp,
+    count: u64,
+    ctx: &ExecContext,
+) -> Result<Vec<Record>> {
     let records = exec(conn, input, ctx)?;
     Ok(records.into_iter().skip(count as usize).collect())
 }
 
-fn exec_limit(conn: &Connection, input: &LogicalOp, count: u64, ctx: &ExecContext) -> Result<Vec<Record>> {
+fn exec_limit(
+    conn: &Connection,
+    input: &LogicalOp,
+    count: u64,
+    ctx: &ExecContext,
+) -> Result<Vec<Record>> {
     let records = exec(conn, input, ctx)?;
     Ok(records.into_iter().take(count as usize).collect())
 }
@@ -789,8 +818,7 @@ fn exec_match_create(
                         let val = eval_expr(expr, rec, conn)?;
                         props.insert(key.clone(), val);
                     }
-                    let id =
-                        node::create_node(conn, label.as_deref().unwrap_or(""), props)?;
+                    let id = node::create_node(conn, label.as_deref().unwrap_or(""), props)?;
                     if let Some(alias) = alias {
                         bindings.insert(alias.clone(), id);
                     }
@@ -861,7 +889,11 @@ fn exec_set_property(
                 let mut new_props = old.properties.clone();
                 new_props.insert(assignment.property.clone(), val);
                 index::update_indexes_for_node(
-                    conn, node_id, &old.label, Some(&old.properties), &new_props,
+                    conn,
+                    node_id,
+                    &old.label,
+                    Some(&old.properties),
+                    &new_props,
                 )?;
             }
         }
@@ -900,7 +932,11 @@ fn exec_merge(
                 let mut new_props = old.properties.clone();
                 new_props.insert(assignment.property.clone(), val);
                 index::update_indexes_for_node(
-                    conn, n.id, &old.label, Some(&old.properties), &new_props,
+                    conn,
+                    n.id,
+                    &old.label,
+                    Some(&old.properties),
+                    &new_props,
                 )?;
             }
             let mut rec = Record::new();
@@ -929,7 +965,11 @@ fn exec_merge(
                 let mut new_props = old.properties.clone();
                 new_props.insert(assignment.property.clone(), val);
                 index::update_indexes_for_node(
-                    conn, id, &old.label, Some(&old.properties), &new_props,
+                    conn,
+                    id,
+                    &old.label,
+                    Some(&old.properties),
+                    &new_props,
                 )?;
             }
 
@@ -1038,7 +1078,13 @@ fn exec_correlated(
             }
         }
 
-        LogicalOp::IndexLookup { label, alias, property, value, remaining_filters } => {
+        LogicalOp::IndexLookup {
+            label,
+            alias,
+            property,
+            value,
+            remaining_filters,
+        } => {
             if let Some(Value::I64(id)) = outer.get(alias) {
                 let node = node::get_node(conn, NodeId(*id as u64))?;
                 if !label.is_empty() && node.label != *label {
@@ -1058,12 +1104,25 @@ fn exec_correlated(
                 }
                 Ok(vec![rec])
             } else {
-                exec_index_lookup(conn, label, alias, property, value, remaining_filters.as_ref())
+                exec_index_lookup(
+                    conn,
+                    label,
+                    alias,
+                    property,
+                    value,
+                    remaining_filters.as_ref(),
+                )
             }
         }
 
         LogicalOp::Expand {
-            input, src_alias, dst_alias, edge_types, direction, min_hops, max_hops,
+            input,
+            src_alias,
+            dst_alias,
+            edge_types,
+            direction,
+            min_hops,
+            max_hops,
         } => {
             let input_records = exec_correlated(conn, input, outer, ctx)?;
             let label = edge_types.first().map(|s| s.as_str()).unwrap_or("");
@@ -1411,11 +1470,9 @@ pub(crate) fn node_to_record(n: &crate::types::Node, alias: &str) -> Record {
 /// A binding matches if the record either doesn't contain the key (no
 /// constraint) or contains it with an equal value.
 fn record_matches_bindings(rec: &Record, bindings: &[(String, Value)]) -> bool {
-    bindings.iter().all(|(key, outer_val)| {
-        match rec.get(key) {
-            Some(inner_val) => inner_val == outer_val,
-            None => true,
-        }
+    bindings.iter().all(|(key, outer_val)| match rec.get(key) {
+        Some(inner_val) => inner_val == outer_val,
+        None => true,
     })
 }
 

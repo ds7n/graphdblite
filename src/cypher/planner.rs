@@ -17,11 +17,12 @@ pub fn plan(conn: &Connection, stmt: &Statement) -> crate::types::Result<Logical
         Statement::Unwind(u) => plan_unwind(conn, u),
         Statement::Explain(inner) => plan(conn, inner),
         Statement::Union { statements, all } => {
-            let inputs: crate::types::Result<Vec<LogicalOp>> = statements
-                .iter()
-                .map(|s| plan(conn, s))
-                .collect();
-            Ok(LogicalOp::Union { inputs: inputs?, all: *all })
+            let inputs: crate::types::Result<Vec<LogicalOp>> =
+                statements.iter().map(|s| plan(conn, s)).collect();
+            Ok(LogicalOp::Union {
+                inputs: inputs?,
+                all: *all,
+            })
         }
     }
 }
@@ -77,9 +78,11 @@ fn plan_match(conn: &Connection, stmt: &MatchStatement) -> crate::types::Result<
     }
 
     // Check if RETURN contains aggregates.
-    let has_aggregates = stmt.return_clause.items.iter().any(|item| {
-        is_aggregate_fn(&item.expr)
-    });
+    let has_aggregates = stmt
+        .return_clause
+        .items
+        .iter()
+        .any(|item| is_aggregate_fn(&item.expr));
 
     if has_aggregates {
         let (group_keys, aggregates) = split_aggregates(&stmt.return_clause.items)?;
@@ -145,7 +148,10 @@ fn plan_create(stmt: &CreateStatement) -> crate::types::Result<LogicalOp> {
     }
 }
 
-fn plan_match_create(conn: &Connection, stmt: &MatchCreateStatement) -> crate::types::Result<LogicalOp> {
+fn plan_match_create(
+    conn: &Connection,
+    stmt: &MatchCreateStatement,
+) -> crate::types::Result<LogicalOp> {
     let mut op = plan_patterns(conn, &stmt.patterns)?;
 
     if let Some(ref predicate) = stmt.where_clause {
@@ -221,9 +227,10 @@ fn plan_unwind(_conn: &Connection, stmt: &UnwindStatement) -> crate::types::Resu
                 };
             }
 
-            let has_aggregates = return_clause.items.iter().any(|item| {
-                is_aggregate_fn(&item.expr)
-            });
+            let has_aggregates = return_clause
+                .items
+                .iter()
+                .any(|item| is_aggregate_fn(&item.expr));
 
             if has_aggregates {
                 let (group_keys, aggregates) = split_aggregates(&return_clause.items)?;
@@ -303,9 +310,7 @@ fn plan_with(input: LogicalOp, with: &WithClause) -> crate::types::Result<Logica
     let mut op = input;
 
     // Check if WITH items contain aggregates.
-    let has_aggregates = with.items.iter().any(|item| {
-        is_aggregate_fn(&item.expr)
-    });
+    let has_aggregates = with.items.iter().any(|item| is_aggregate_fn(&item.expr));
 
     if has_aggregates {
         let (group_keys, aggregates) = split_aggregates(&with.items)?;
@@ -415,26 +420,41 @@ fn plan_shortest_path_pattern(
 
     let src_node = match &pattern.elements[0] {
         PatternElement::Node(n) => n,
-        _ => return Err(GraphError::Serialization(
-            "shortestPath pattern must start with a node".to_string(),
-        )),
+        _ => {
+            return Err(GraphError::Serialization(
+                "shortestPath pattern must start with a node".to_string(),
+            ))
+        }
     };
     let rel = match &pattern.elements[1] {
         PatternElement::Relationship(r) => r,
-        _ => return Err(GraphError::Serialization(
-            "shortestPath pattern must have a relationship".to_string(),
-        )),
+        _ => {
+            return Err(GraphError::Serialization(
+                "shortestPath pattern must have a relationship".to_string(),
+            ))
+        }
     };
     let dst_node = match &pattern.elements[2] {
         PatternElement::Node(n) => n,
-        _ => return Err(GraphError::Serialization(
-            "shortestPath pattern must end with a node".to_string(),
-        )),
+        _ => {
+            return Err(GraphError::Serialization(
+                "shortestPath pattern must end with a node".to_string(),
+            ))
+        }
     };
 
-    let src_alias = src_node.variable.clone().unwrap_or_else(|| "_sp_src".to_string());
-    let dst_alias = dst_node.variable.clone().unwrap_or_else(|| "_sp_dst".to_string());
-    let path_alias = pattern.path_variable.clone().unwrap_or_else(|| "_path".to_string());
+    let src_alias = src_node
+        .variable
+        .clone()
+        .unwrap_or_else(|| "_sp_src".to_string());
+    let dst_alias = dst_node
+        .variable
+        .clone()
+        .unwrap_or_else(|| "_sp_dst".to_string());
+    let path_alias = pattern
+        .path_variable
+        .clone()
+        .unwrap_or_else(|| "_path".to_string());
 
     let direction = match rel.direction {
         RelDirection::Outgoing => Direction::Outgoing,
@@ -605,10 +625,10 @@ fn plan_node_scan(
                     Expr::Literal(l) => crate::cypher::executor::literal_to_value(l),
                     _ => unreachable!(),
                 };
-                let count_a = index::index_count_for_value(conn, &label, key_a, &val_a)
-                    .unwrap_or(usize::MAX);
-                let count_b = index::index_count_for_value(conn, &label, key_b, &val_b)
-                    .unwrap_or(usize::MAX);
+                let count_a =
+                    index::index_count_for_value(conn, &label, key_a, &val_a).unwrap_or(usize::MAX);
+                let count_b =
+                    index::index_count_for_value(conn, &label, key_b, &val_b).unwrap_or(usize::MAX);
                 count_a.cmp(&count_b).then_with(|| key_a.cmp(key_b))
             });
         }
@@ -697,16 +717,12 @@ fn plan_create_pattern(pattern: &Pattern) -> crate::types::Result<Vec<LogicalOp>
                     properties: dst_node.properties.clone(),
                 });
 
-                let src = last_alias
-                    .clone()
-                    .ok_or_else(|| {
-                        GraphError::Serialization("edge without source node".to_string())
-                    })?;
-                let dst = dst_alias
-                    .clone()
-                    .ok_or_else(|| {
-                        GraphError::Serialization("edge target must have a variable".to_string())
-                    })?;
+                let src = last_alias.clone().ok_or_else(|| {
+                    GraphError::Serialization("edge without source node".to_string())
+                })?;
+                let dst = dst_alias.clone().ok_or_else(|| {
+                    GraphError::Serialization("edge target must have a variable".to_string())
+                })?;
 
                 ops.push(LogicalOp::CreateEdge {
                     src_alias: src,
@@ -775,9 +791,7 @@ fn is_aggregate_fn(expr: &Expr) -> bool {
 }
 
 /// Split RETURN/WITH items into group keys (non-aggregate) and aggregate expressions.
-fn split_aggregates(
-    items: &[ReturnItem],
-) -> crate::types::Result<(Vec<Expr>, Vec<AggregateExpr>)> {
+fn split_aggregates(items: &[ReturnItem]) -> crate::types::Result<(Vec<Expr>, Vec<AggregateExpr>)> {
     let mut group_keys = Vec::new();
     let mut aggregates = Vec::new();
 
@@ -816,7 +830,11 @@ fn split_aggregates(
 /// Flatten a predicate into AND-connected conjuncts.
 fn decompose_conjuncts(expr: &Expr) -> Vec<Expr> {
     match expr {
-        Expr::BinaryOp { left, op: BinOp::And, right } => {
+        Expr::BinaryOp {
+            left,
+            op: BinOp::And,
+            right,
+        } => {
             let mut out = decompose_conjuncts(left);
             out.extend(decompose_conjuncts(right));
             out
@@ -850,13 +868,11 @@ fn try_push_predicate(
             left,
             op: BinOp::Eq,
             right,
-        } => {
-            match (left.as_ref(), right.as_ref()) {
-                (Expr::Property(a, p), Expr::Literal(l)) => (a.clone(), p.clone(), l.clone()),
-                (Expr::Literal(l), Expr::Property(a, p)) => (a.clone(), p.clone(), l.clone()),
-                _ => return None,
-            }
-        }
+        } => match (left.as_ref(), right.as_ref()) {
+            (Expr::Property(a, p), Expr::Literal(l)) => (a.clone(), p.clone(), l.clone()),
+            (Expr::Literal(l), Expr::Property(a, p)) => (a.clone(), p.clone(), l.clone()),
+            _ => return None,
+        },
         _ => return None,
     };
 
@@ -876,7 +892,10 @@ fn try_replace_scan(
     lit: &LiteralValue,
 ) -> Option<LogicalOp> {
     match op {
-        LogicalOp::Scan { label, alias: scan_alias } if scan_alias == alias => {
+        LogicalOp::Scan {
+            label,
+            alias: scan_alias,
+        } if scan_alias == alias => {
             if label.is_empty() {
                 return None;
             }
@@ -895,7 +914,10 @@ fn try_replace_scan(
         }
 
         // Walk through wrapper operators that preserve the scan.
-        LogicalOp::Filter { input, predicate: existing } => {
+        LogicalOp::Filter {
+            input,
+            predicate: existing,
+        } => {
             if let Some(new_input) = try_replace_scan(conn, input, alias, prop, lit) {
                 Some(LogicalOp::Filter {
                     input: Box::new(new_input),
@@ -907,7 +929,13 @@ fn try_replace_scan(
         }
 
         LogicalOp::Expand {
-            input, src_alias, dst_alias, edge_types, direction, min_hops, max_hops,
+            input,
+            src_alias,
+            dst_alias,
+            edge_types,
+            direction,
+            min_hops,
+            max_hops,
         } => {
             if let Some(new_input) = try_replace_scan(conn, input, alias, prop, lit) {
                 Some(LogicalOp::Expand {

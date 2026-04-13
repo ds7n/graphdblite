@@ -10,10 +10,7 @@ use crate::types::Value;
 pub fn eval_expr(expr: &Expr, record: &Record, conn: &Connection) -> crate::types::Result<Value> {
     match expr {
         Expr::Literal(lit) => Ok(literal_to_value(lit)),
-        Expr::Variable(name) => Ok(record
-            .get(name)
-            .cloned()
-            .unwrap_or(Value::Null)),
+        Expr::Variable(name) => Ok(record.get(name).cloned().unwrap_or(Value::Null)),
         Expr::Property(var, prop) => {
             // Look up "var.prop" as a flattened key in the record.
             let key = format!("{var}.{prop}");
@@ -45,7 +42,10 @@ pub fn eval_expr(expr: &Expr, record: &Record, conn: &Connection) -> crate::type
             let val = eval_expr(inner, record, conn)?;
             Ok(Value::Bool(!matches!(val, Value::Null)))
         }
-        Expr::Case { alternatives, default } => {
+        Expr::Case {
+            alternatives,
+            default,
+        } => {
             for (cond, result) in alternatives {
                 if eval_predicate(cond, record, conn)? {
                     return eval_expr(result, record, conn);
@@ -56,20 +56,33 @@ pub fn eval_expr(expr: &Expr, record: &Record, conn: &Connection) -> crate::type
                 None => Ok(Value::Null),
             }
         }
-        Expr::ListComprehension { variable, list_expr, filter, map_expr } => {
-            eval_list_comprehension(variable, list_expr, filter.as_deref(), map_expr.as_deref(), record, conn)
-        }
-        Expr::Exists { patterns, where_clause } => {
-            eval_exists(patterns, where_clause.as_deref(), record, conn)
-        }
-        Expr::FunctionCall { name, args } => {
-            eval_function_call(name, args, record, conn)
-        }
+        Expr::ListComprehension {
+            variable,
+            list_expr,
+            filter,
+            map_expr,
+        } => eval_list_comprehension(
+            variable,
+            list_expr,
+            filter.as_deref(),
+            map_expr.as_deref(),
+            record,
+            conn,
+        ),
+        Expr::Exists {
+            patterns,
+            where_clause,
+        } => eval_exists(patterns, where_clause.as_deref(), record, conn),
+        Expr::FunctionCall { name, args } => eval_function_call(name, args, record, conn),
     }
 }
 
 /// Evaluate a boolean expression, returning true/false.
-pub fn eval_predicate(expr: &Expr, record: &Record, conn: &Connection) -> crate::types::Result<bool> {
+pub fn eval_predicate(
+    expr: &Expr,
+    record: &Record,
+    conn: &Connection,
+) -> crate::types::Result<bool> {
     let val = eval_expr(expr, record, conn)?;
     Ok(matches!(val, Value::Bool(true)))
 }
@@ -86,7 +99,10 @@ fn eval_function_call(
 ) -> crate::types::Result<Value> {
     match name.as_ref() {
         "length" => {
-            let arg = args.first().map(|a| eval_expr(a, record, conn)).transpose()?;
+            let arg = args
+                .first()
+                .map(|a| eval_expr(a, record, conn))
+                .transpose()?;
             match arg {
                 Some(Value::Path(nodes)) => Ok(Value::I64(nodes.len().saturating_sub(1) as i64)),
                 Some(Value::String(s)) => Ok(Value::I64(s.len() as i64)),
@@ -95,7 +111,10 @@ fn eval_function_call(
             }
         }
         "nodes" => {
-            let arg = args.first().map(|a| eval_expr(a, record, conn)).transpose()?;
+            let arg = args
+                .first()
+                .map(|a| eval_expr(a, record, conn))
+                .transpose()?;
             match arg {
                 Some(Value::Path(node_ids)) => {
                     let list = node_ids.iter().map(|id| Value::I64(id.0 as i64)).collect();
@@ -211,10 +230,18 @@ fn eval_binop(left: &Value, op: BinOp, right: &Value) -> crate::types::Result<Va
             Value::Bool(b) => Ok(Value::Bool(!b)),
             other => Ok(other), // propagate Null
         },
-        BinOp::Lt => Ok(compare_to_value(left, right, |o| o == std::cmp::Ordering::Less)),
-        BinOp::Gt => Ok(compare_to_value(left, right, |o| o == std::cmp::Ordering::Greater)),
-        BinOp::Lte => Ok(compare_to_value(left, right, |o| matches!(o, std::cmp::Ordering::Less | std::cmp::Ordering::Equal))),
-        BinOp::Gte => Ok(compare_to_value(left, right, |o| matches!(o, std::cmp::Ordering::Greater | std::cmp::Ordering::Equal))),
+        BinOp::Lt => Ok(compare_to_value(left, right, |o| {
+            o == std::cmp::Ordering::Less
+        })),
+        BinOp::Gt => Ok(compare_to_value(left, right, |o| {
+            o == std::cmp::Ordering::Greater
+        })),
+        BinOp::Lte => Ok(compare_to_value(left, right, |o| {
+            matches!(o, std::cmp::Ordering::Less | std::cmp::Ordering::Equal)
+        })),
+        BinOp::Gte => Ok(compare_to_value(left, right, |o| {
+            matches!(o, std::cmp::Ordering::Greater | std::cmp::Ordering::Equal)
+        })),
         BinOp::StartsWith => match (left, right) {
             (Value::Null, _) | (_, Value::Null) => Ok(Value::Null),
             (Value::String(l), Value::String(r)) => Ok(Value::Bool(l.starts_with(r.as_str()))),
@@ -269,20 +296,36 @@ fn eval_binop(left: &Value, op: BinOp, right: &Value) -> crate::types::Result<Va
             match (left, right) {
                 (Value::Null, _) | (_, Value::Null) => Ok(Value::Null),
                 (Value::I64(a), Value::I64(b)) => {
-                    if *b == 0 { Ok(Value::Null) } else { Ok(Value::I64(a / b)) }
+                    if *b == 0 {
+                        Ok(Value::Null)
+                    } else {
+                        Ok(Value::I64(a / b))
+                    }
                 }
                 (Value::F64(a), Value::F64(b)) => {
-                    if *b == 0.0 { Ok(Value::Null) } else { Ok(Value::F64(a / b)) }
+                    if *b == 0.0 {
+                        Ok(Value::Null)
+                    } else {
+                        Ok(Value::F64(a / b))
+                    }
                 }
                 (Value::I64(a), Value::F64(b)) => {
-                    if *b == 0.0 { Ok(Value::Null) } else { Ok(Value::F64(*a as f64 / b)) }
+                    if *b == 0.0 {
+                        Ok(Value::Null)
+                    } else {
+                        Ok(Value::F64(*a as f64 / b))
+                    }
                 }
                 (Value::F64(a), Value::I64(b)) => {
-                    if *b == 0 { Ok(Value::Null) } else { Ok(Value::F64(a / *b as f64)) }
+                    if *b == 0 {
+                        Ok(Value::Null)
+                    } else {
+                        Ok(Value::F64(a / *b as f64))
+                    }
                 }
                 _ => Ok(Value::Null),
             }
-        },
+        }
     }
 }
 

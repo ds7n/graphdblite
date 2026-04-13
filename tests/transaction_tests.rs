@@ -72,7 +72,8 @@ fn persistent_across_reopen() {
             let mut m = HashMap::new();
             m.insert("name".to_string(), Value::String("Alice".into()));
             m
-        }).unwrap();
+        })
+        .unwrap();
         tx.commit().unwrap();
     }
 

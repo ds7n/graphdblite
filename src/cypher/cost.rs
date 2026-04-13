@@ -23,7 +23,9 @@ const DEFAULT_EXPAND_FAN_OUT: f64 = 5.0;
 /// Estimate the cardinality of a logical plan operator.
 pub fn estimate(conn: &Connection, plan: &LogicalOp) -> CostEstimate {
     let rows = estimate_rows(conn, plan);
-    CostEstimate { estimated_rows: rows }
+    CostEstimate {
+        estimated_rows: rows,
+    }
 }
 
 /// Recursively estimate the number of output rows for a plan operator.
@@ -33,7 +35,11 @@ fn estimate_rows(conn: &Connection, plan: &LogicalOp) -> f64 {
 
         LogicalOp::Scan { label, .. } => {
             let count = stats::get_label_count(conn, label).unwrap_or(0);
-            if count > 0 { count as f64 } else { DEFAULT_LABEL_COUNT }
+            if count > 0 {
+                count as f64
+            } else {
+                DEFAULT_LABEL_COUNT
+            }
         }
 
         LogicalOp::IndexLookup { .. } => {
@@ -41,21 +47,19 @@ fn estimate_rows(conn: &Connection, plan: &LogicalOp) -> f64 {
             1.0
         }
 
-        LogicalOp::Expand { input, .. } => {
-            estimate_rows(conn, input) * DEFAULT_EXPAND_FAN_OUT
-        }
+        LogicalOp::Expand { input, .. } => estimate_rows(conn, input) * DEFAULT_EXPAND_FAN_OUT,
 
         LogicalOp::CrossProduct { left, right } => {
             estimate_rows(conn, left) * estimate_rows(conn, right)
         }
 
-        LogicalOp::Filter { input, .. } => {
-            estimate_rows(conn, input) * DEFAULT_FILTER_SELECTIVITY
-        }
+        LogicalOp::Filter { input, .. } => estimate_rows(conn, input) * DEFAULT_FILTER_SELECTIVITY,
 
         LogicalOp::Project { input, .. } => estimate_rows(conn, input),
 
-        LogicalOp::Aggregate { input, group_keys, .. } => {
+        LogicalOp::Aggregate {
+            input, group_keys, ..
+        } => {
             if group_keys.is_empty() {
                 1.0 // No grouping — single aggregate row.
             } else {
@@ -71,13 +75,9 @@ fn estimate_rows(conn: &Connection, plan: &LogicalOp) -> f64 {
 
         LogicalOp::Sort { input, .. } => estimate_rows(conn, input),
 
-        LogicalOp::Skip { input, count } => {
-            (estimate_rows(conn, input) - *count as f64).max(0.0)
-        }
+        LogicalOp::Skip { input, count } => (estimate_rows(conn, input) - *count as f64).max(0.0),
 
-        LogicalOp::Limit { input, count } => {
-            estimate_rows(conn, input).min(*count as f64)
-        }
+        LogicalOp::Limit { input, count } => estimate_rows(conn, input).min(*count as f64),
 
         LogicalOp::Unwind { input, .. } => {
             // Assume average list length of 3.
@@ -92,7 +92,9 @@ fn estimate_rows(conn: &Connection, plan: &LogicalOp) -> f64 {
             left.max(left.min(left * right * 0.1))
         }
 
-        LogicalOp::ShortestPath { input, all_paths, .. } => {
+        LogicalOp::ShortestPath {
+            input, all_paths, ..
+        } => {
             let input_rows = estimate_rows(conn, input);
             if *all_paths {
                 input_rows * 2.0 // Rough: ~2 shortest paths per pair.
@@ -110,9 +112,7 @@ fn estimate_rows(conn: &Connection, plan: &LogicalOp) -> f64 {
         | LogicalOp::SetProperty { .. }
         | LogicalOp::Merge { .. } => 1.0,
 
-        LogicalOp::Union { inputs, .. } => {
-            inputs.iter().map(|i| estimate_rows(conn, i)).sum()
-        }
+        LogicalOp::Union { inputs, .. } => inputs.iter().map(|i| estimate_rows(conn, i)).sum(),
     }
 }
 
@@ -135,39 +135,85 @@ fn format_plan_tree(conn: &Connection, plan: &LogicalOp, depth: usize, lines: &m
 
     let desc = match plan {
         LogicalOp::Scan { label, alias } => format!("Scan :{label} AS {alias}"),
-        LogicalOp::IndexLookup { label, alias, property, value, .. } => {
+        LogicalOp::IndexLookup {
+            label,
+            alias,
+            property,
+            value,
+            ..
+        } => {
             format!("IndexLookup :{label}.{property} = {value:?} AS {alias}")
         }
-        LogicalOp::Expand { src_alias, dst_alias, edge_types, min_hops, max_hops, .. } => {
-            let et = if edge_types.is_empty() { "*".to_string() } else { edge_types.join("|") };
+        LogicalOp::Expand {
+            src_alias,
+            dst_alias,
+            edge_types,
+            min_hops,
+            max_hops,
+            ..
+        } => {
+            let et = if edge_types.is_empty() {
+                "*".to_string()
+            } else {
+                edge_types.join("|")
+            };
             format!("Expand ({src_alias})-[:{et}*{min_hops}..{max_hops}]->({dst_alias})")
         }
         LogicalOp::CrossProduct { .. } => "CrossProduct".to_string(),
         LogicalOp::Filter { .. } => "Filter".to_string(),
         LogicalOp::Project { .. } => "Project".to_string(),
-        LogicalOp::Aggregate { group_keys, aggregates, .. } => {
-            format!("Aggregate (keys={}, aggs={})", group_keys.len(), aggregates.len())
+        LogicalOp::Aggregate {
+            group_keys,
+            aggregates,
+            ..
+        } => {
+            format!(
+                "Aggregate (keys={}, aggs={})",
+                group_keys.len(),
+                aggregates.len()
+            )
         }
         LogicalOp::Sort { .. } => "Sort".to_string(),
         LogicalOp::Distinct { .. } => "Distinct".to_string(),
         LogicalOp::Skip { count, .. } => format!("Skip {count}"),
         LogicalOp::Limit { count, .. } => format!("Limit {count}"),
-        LogicalOp::ShortestPath { src_alias, dst_alias, path_alias, all_paths, .. } => {
-            let fn_name = if *all_paths { "allShortestPaths" } else { "shortestPath" };
+        LogicalOp::ShortestPath {
+            src_alias,
+            dst_alias,
+            path_alias,
+            all_paths,
+            ..
+        } => {
+            let fn_name = if *all_paths {
+                "allShortestPaths"
+            } else {
+                "shortestPath"
+            };
             format!("{fn_name} ({src_alias})->({dst_alias}) AS {path_alias}")
         }
         LogicalOp::LeftOuterJoin { .. } => "LeftOuterJoin".to_string(),
         LogicalOp::Unwind { alias, .. } => format!("Unwind AS {alias}"),
         LogicalOp::EmptyRow => "EmptyRow".to_string(),
         LogicalOp::CreateNode { label, alias, .. } => {
-            format!("CreateNode :{} AS {}", label.as_deref().unwrap_or(""), alias.as_deref().unwrap_or("_"))
+            format!(
+                "CreateNode :{} AS {}",
+                label.as_deref().unwrap_or(""),
+                alias.as_deref().unwrap_or("_")
+            )
         }
-        LogicalOp::CreateEdge { src_alias, dst_alias, edge_type, .. } => {
+        LogicalOp::CreateEdge {
+            src_alias,
+            dst_alias,
+            edge_type,
+            ..
+        } => {
             format!("CreateEdge ({src_alias})-[:{edge_type}]->({dst_alias})")
         }
         LogicalOp::CreateSequence { ops } => format!("CreateSequence ({} ops)", ops.len()),
         LogicalOp::MatchCreate { .. } => "MatchCreate".to_string(),
-        LogicalOp::Delete { variables, detach, .. } => {
+        LogicalOp::Delete {
+            variables, detach, ..
+        } => {
             let d = if *detach { "DETACH " } else { "" };
             format!("{d}Delete {:?}", variables)
         }
@@ -199,7 +245,9 @@ fn format_plan_tree(conn: &Connection, plan: &LogicalOp, depth: usize, lines: &m
             format_plan_tree(conn, input, depth + 1, lines);
         }
         LogicalOp::CrossProduct { left, right }
-        | LogicalOp::LeftOuterJoin { input: left, right, .. } => {
+        | LogicalOp::LeftOuterJoin {
+            input: left, right, ..
+        } => {
             format_plan_tree(conn, left, depth + 1, lines);
             format_plan_tree(conn, right, depth + 1, lines);
         }

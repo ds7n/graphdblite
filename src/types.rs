@@ -158,7 +158,9 @@ pub enum GraphError {
     #[error("edge not found")]
     EdgeNotFound(NodeId, String, NodeId),
 
-    #[error("cannot delete node because it still has edges; use DETACH DELETE to remove edges too")]
+    #[error(
+        "cannot delete node because it still has edges; use DETACH DELETE to remove edges too"
+    )]
     HasEdges(NodeId),
 
     #[error("transaction error: {0}")]

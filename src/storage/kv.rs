@@ -9,11 +9,7 @@ pub const TABLE_ADJ_IN: &str = "adj_in";
 pub const TABLE_EDGE_PROPS: &str = "edge_props";
 
 /// Get a value by key from a KV table. Returns None if not found.
-pub fn get(
-    conn: &rusqlite::Connection,
-    table: &str,
-    key: &[u8],
-) -> Result<Option<Vec<u8>>> {
+pub fn get(conn: &rusqlite::Connection, table: &str, key: &[u8]) -> Result<Option<Vec<u8>>> {
     let sql = format!("SELECT value FROM \"{table}\" WHERE key = ?1");
     let mut stmt = conn.prepare_cached(&sql)?;
     let result = stmt.query_row(params![key], |row| row.get::<_, Vec<u8>>(0));
@@ -25,26 +21,15 @@ pub fn get(
 }
 
 /// Put a key-value pair into a KV table (insert or replace).
-pub fn put(
-    conn: &rusqlite::Connection,
-    table: &str,
-    key: &[u8],
-    value: &[u8],
-) -> Result<()> {
-    let sql = format!(
-        "INSERT OR REPLACE INTO \"{table}\" (key, value) VALUES (?1, ?2)"
-    );
+pub fn put(conn: &rusqlite::Connection, table: &str, key: &[u8], value: &[u8]) -> Result<()> {
+    let sql = format!("INSERT OR REPLACE INTO \"{table}\" (key, value) VALUES (?1, ?2)");
     let mut stmt = conn.prepare_cached(&sql)?;
     stmt.execute(params![key, value])?;
     Ok(())
 }
 
 /// Delete a key from a KV table. Returns true if a row was deleted.
-pub fn delete(
-    conn: &rusqlite::Connection,
-    table: &str,
-    key: &[u8],
-) -> Result<bool> {
+pub fn delete(conn: &rusqlite::Connection, table: &str, key: &[u8]) -> Result<bool> {
     let sql = format!("DELETE FROM \"{table}\" WHERE key = ?1");
     let mut stmt = conn.prepare_cached(&sql)?;
     let count = stmt.execute(params![key])?;
@@ -62,12 +47,10 @@ pub fn scan_prefix(
     // Upper bound is prefix with last byte incremented (or extended with 0xFF).
     let upper = prefix_upper_bound(prefix);
     let sql = match &upper {
-        Some(_) => format!(
-            "SELECT key, value FROM \"{table}\" WHERE key >= ?1 AND key < ?2 ORDER BY key"
-        ),
-        None => format!(
-            "SELECT key, value FROM \"{table}\" WHERE key >= ?1 ORDER BY key"
-        ),
+        Some(_) => {
+            format!("SELECT key, value FROM \"{table}\" WHERE key >= ?1 AND key < ?2 ORDER BY key")
+        }
+        None => format!("SELECT key, value FROM \"{table}\" WHERE key >= ?1 ORDER BY key"),
     };
 
     let mut stmt = conn.prepare_cached(&sql)?;

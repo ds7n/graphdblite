@@ -14,19 +14,28 @@ fn create_index_and_lookup() {
     let mut db = Database::open_memory().unwrap();
     let tx = db.begin_write().unwrap();
 
-    tx.create_node("Person", props(&[("name", Value::String("Alice".into()))])).unwrap();
-    tx.create_node("Person", props(&[("name", Value::String("Bob".into()))])).unwrap();
-    tx.create_node("Person", props(&[("name", Value::String("Alice".into()))])).unwrap();
+    tx.create_node("Person", props(&[("name", Value::String("Alice".into()))]))
+        .unwrap();
+    tx.create_node("Person", props(&[("name", Value::String("Bob".into()))]))
+        .unwrap();
+    tx.create_node("Person", props(&[("name", Value::String("Alice".into()))]))
+        .unwrap();
 
     tx.create_index("Person", "name").unwrap();
 
-    let results = tx.index_lookup("Person", "name", &Value::String("Alice".into())).unwrap();
+    let results = tx
+        .index_lookup("Person", "name", &Value::String("Alice".into()))
+        .unwrap();
     assert_eq!(results.len(), 2);
 
-    let results = tx.index_lookup("Person", "name", &Value::String("Bob".into())).unwrap();
+    let results = tx
+        .index_lookup("Person", "name", &Value::String("Bob".into()))
+        .unwrap();
     assert_eq!(results.len(), 1);
 
-    let results = tx.index_lookup("Person", "name", &Value::String("Charlie".into())).unwrap();
+    let results = tx
+        .index_lookup("Person", "name", &Value::String("Charlie".into()))
+        .unwrap();
     assert!(results.is_empty());
 
     tx.commit().unwrap();
@@ -39,20 +48,29 @@ fn index_updated_on_property_change() {
 
     tx.create_index("Person", "name").unwrap();
 
-    let id = tx.create_node("Person", props(&[("name", Value::String("Alice".into()))])).unwrap();
+    let id = tx
+        .create_node("Person", props(&[("name", Value::String("Alice".into()))]))
+        .unwrap();
 
-    let results = tx.index_lookup("Person", "name", &Value::String("Alice".into())).unwrap();
+    let results = tx
+        .index_lookup("Person", "name", &Value::String("Alice".into()))
+        .unwrap();
     assert_eq!(results.len(), 1);
 
     // Change the name.
-    tx.set_node_property(id, "name", Value::String("Alicia".into())).unwrap();
+    tx.set_node_property(id, "name", Value::String("Alicia".into()))
+        .unwrap();
 
     // Old value should be gone.
-    let results = tx.index_lookup("Person", "name", &Value::String("Alice".into())).unwrap();
+    let results = tx
+        .index_lookup("Person", "name", &Value::String("Alice".into()))
+        .unwrap();
     assert!(results.is_empty());
 
     // New value should be found.
-    let results = tx.index_lookup("Person", "name", &Value::String("Alicia".into())).unwrap();
+    let results = tx
+        .index_lookup("Person", "name", &Value::String("Alicia".into()))
+        .unwrap();
     assert_eq!(results.len(), 1);
 
     tx.commit().unwrap();
@@ -65,16 +83,21 @@ fn index_updated_on_node_delete() {
 
     tx.create_index("Person", "name").unwrap();
 
-    let id = tx.create_node("Person", props(&[("name", Value::String("Alice".into()))])).unwrap();
+    let id = tx
+        .create_node("Person", props(&[("name", Value::String("Alice".into()))]))
+        .unwrap();
     assert_eq!(
-        tx.index_lookup("Person", "name", &Value::String("Alice".into())).unwrap().len(),
+        tx.index_lookup("Person", "name", &Value::String("Alice".into()))
+            .unwrap()
+            .len(),
         1
     );
 
     tx.delete_node(id).unwrap();
-    assert!(
-        tx.index_lookup("Person", "name", &Value::String("Alice".into())).unwrap().is_empty()
-    );
+    assert!(tx
+        .index_lookup("Person", "name", &Value::String("Alice".into()))
+        .unwrap()
+        .is_empty());
 
     tx.commit().unwrap();
 }

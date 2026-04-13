@@ -172,10 +172,9 @@ fn is_read_query(cypher: &str) -> bool {
     use graphdblite::cypher::parser;
     match parser::parse(cypher) {
         Ok(Statement::Match(_) | Statement::Explain(_)) => true,
-        Ok(Statement::Unwind(u)) => matches!(
-            u.body,
-            graphdblite::cypher::ast::UnwindBody::Return { .. }
-        ),
+        Ok(Statement::Unwind(u)) => {
+            matches!(u.body, graphdblite::cypher::ast::UnwindBody::Return { .. })
+        }
         _ => false,
     }
 }

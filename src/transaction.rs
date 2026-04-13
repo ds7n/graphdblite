@@ -1,4 +1,10 @@
-use crate::cypher::{ast::Statement, cost, executor::{self, ExecContext}, parser, planner, record::Record};
+use crate::cypher::{
+    ast::Statement,
+    cost,
+    executor::{self, ExecContext},
+    parser, planner,
+    record::Record,
+};
 use crate::edge;
 use crate::index;
 use crate::node;
@@ -91,7 +97,10 @@ pub struct ReadTransaction<'a> {
 
 impl<'a> ReadTransaction<'a> {
     pub(crate) fn new(tx: rusqlite::Transaction<'a>, max_result_rows: usize) -> Self {
-        Self { tx, max_result_rows }
+        Self {
+            tx,
+            max_result_rows,
+        }
     }
 
     /// Commit the read transaction (releases snapshot).
@@ -129,44 +138,34 @@ impl<'a> WriteTransaction<'a> {
     // --- Write operations ---
 
     /// Create a new node.
-    pub fn create_node(
-        &self,
-        label: &str,
-        properties: Properties,
-    ) -> Result<NodeId> {
-        validate_properties(label, &properties, self.max_name_bytes, self.max_property_value_bytes)?;
-        let id = node::create_node(&self.tx, label, properties.clone())?;
-        index::update_indexes_for_node(
-            &self.tx,
-            id,
+    pub fn create_node(&self, label: &str, properties: Properties) -> Result<NodeId> {
+        validate_properties(
             label,
-            None,
             &properties,
+            self.max_name_bytes,
+            self.max_property_value_bytes,
         )?;
+        let id = node::create_node(&self.tx, label, properties.clone())?;
+        index::update_indexes_for_node(&self.tx, id, label, None, &properties)?;
         Ok(id)
     }
 
     /// Delete a node and all its edges.
     pub fn delete_node(&self, id: NodeId) -> Result<()> {
         let n = node::get_node(&self.tx, id)?;
-        index::remove_indexes_for_node(
-            &self.tx,
-            id,
-            &n.label,
-            &n.properties,
-        )?;
+        index::remove_indexes_for_node(&self.tx, id, &n.label, &n.properties)?;
         node::delete_node(&self.tx, id)
     }
 
     /// Set a property on a node.
-    pub fn set_node_property(
-        &self,
-        id: NodeId,
-        key: &str,
-        value: Value,
-    ) -> Result<()> {
+    pub fn set_node_property(&self, id: NodeId, key: &str, value: Value) -> Result<()> {
         let props = std::collections::HashMap::from([(key.to_string(), value.clone())]);
-        validate_properties("_", &props, self.max_name_bytes, self.max_property_value_bytes)?;
+        validate_properties(
+            "_",
+            &props,
+            self.max_name_bytes,
+            self.max_property_value_bytes,
+        )?;
         let old = node::get_node(&self.tx, id)?;
         node::set_node_property(&self.tx, id, key, value.clone())?;
         let mut new_props = old.properties.clone();
@@ -182,11 +181,7 @@ impl<'a> WriteTransaction<'a> {
     }
 
     /// Remove a property from a node.
-    pub fn remove_node_property(
-        &self,
-        id: NodeId,
-        key: &str,
-    ) -> Result<()> {
+    pub fn remove_node_property(&self, id: NodeId, key: &str) -> Result<()> {
         let old = node::get_node(&self.tx, id)?;
         node::remove_node_property(&self.tx, id, key)?;
         let mut new_props = old.properties.clone();
@@ -209,7 +204,12 @@ impl<'a> WriteTransaction<'a> {
         label: &str,
         properties: Properties,
     ) -> Result<()> {
-        validate_properties(label, &properties, self.max_name_bytes, self.max_property_value_bytes)?;
+        validate_properties(
+            label,
+            &properties,
+            self.max_name_bytes,
+            self.max_property_value_bytes,
+        )?;
         // Verify both endpoints exist.
         if !node::node_exists(&self.tx, src)? {
             return Err(GraphError::NodeNotFound(src));
@@ -221,30 +221,17 @@ impl<'a> WriteTransaction<'a> {
     }
 
     /// Delete an edge.
-    pub fn delete_edge(
-        &self,
-        src: NodeId,
-        dst: NodeId,
-        label: &str,
-    ) -> Result<()> {
+    pub fn delete_edge(&self, src: NodeId, dst: NodeId, label: &str) -> Result<()> {
         edge::delete_edge(&self.tx, src, dst, label)
     }
 
     /// Create a secondary index.
-    pub fn create_index(
-        &self,
-        label: &str,
-        property: &str,
-    ) -> Result<()> {
+    pub fn create_index(&self, label: &str, property: &str) -> Result<()> {
         index::create_index(&self.tx, label, property)
     }
 
     /// Drop a secondary index.
-    pub fn drop_index(
-        &self,
-        label: &str,
-        property: &str,
-    ) -> Result<()> {
+    pub fn drop_index(&self, label: &str, property: &str) -> Result<()> {
         index::drop_index(&self.tx, label, property)
     }
 

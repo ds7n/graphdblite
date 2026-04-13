@@ -10,17 +10,13 @@ const LABEL_COUNT_PREFIX: &str = "stats:label_count:";
 /// Get the node count for a label. Returns 0 if no stats available.
 pub fn get_label_count(conn: &Connection, label: &str) -> Result<u64> {
     let key = format!("{LABEL_COUNT_PREFIX}{label}");
-    let mut stmt = conn.prepare_cached(
-        "SELECT value FROM metadata WHERE key = ?1",
-    )?;
+    let mut stmt = conn.prepare_cached("SELECT value FROM metadata WHERE key = ?1")?;
     let result = stmt.query_row([&key], |row| row.get::<_, Vec<u8>>(0));
     match result {
         Ok(data) if data.len() == 8 => {
-            Ok(u64::from_be_bytes(
-                data[..8]
-                    .try_into()
-                    .map_err(|_| GraphError::Serialization("corrupt label count bytes".into()))?,
-            ))
+            Ok(u64::from_be_bytes(data[..8].try_into().map_err(|_| {
+                GraphError::Serialization("corrupt label count bytes".into())
+            })?))
         }
         _ => Ok(0),
     }
@@ -54,9 +50,8 @@ fn set_label_count(conn: &Connection, label: &str, count: u64) -> Result<()> {
 /// Get all label counts as a map.
 #[allow(dead_code)]
 pub fn get_all_label_counts(conn: &Connection) -> Result<HashMap<String, u64>> {
-    let mut stmt = conn.prepare_cached(
-        "SELECT key, value FROM metadata WHERE key LIKE 'stats:label_count:%'",
-    )?;
+    let mut stmt = conn
+        .prepare_cached("SELECT key, value FROM metadata WHERE key LIKE 'stats:label_count:%'")?;
     let rows = stmt.query_map([], |row| {
         Ok((row.get::<_, String>(0)?, row.get::<_, Vec<u8>>(1)?))
     })?;
@@ -87,9 +82,7 @@ pub fn refresh_stats(conn: &Connection) -> Result<()> {
     )?;
 
     // Full scan of nodes table, counting by label.
-    let mut stmt = conn.prepare_cached(
-        "SELECT value FROM nodes",
-    )?;
+    let mut stmt = conn.prepare_cached("SELECT value FROM nodes")?;
     let rows = stmt.query_map([], |row| row.get::<_, Vec<u8>>(0))?;
 
     let mut counts: HashMap<String, u64> = HashMap::new();

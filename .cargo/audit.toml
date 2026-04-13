@@ -1,0 +1,5 @@
+[advisories]
+# RUSTSEC-2025-0020: pyo3 PyString::from_object buffer overflow (fixed in >=0.24.1)
+# We don't use PyString::from_object. Upgrading pyo3 to 0.23+ requires Sync on
+# all pyclass structs, which is a larger migration (rusqlite::Connection isn't Sync).
+ignore = ["RUSTSEC-2025-0020"]

@@ -238,17 +238,13 @@ impl PyWriteTransaction {
     fn execute(&self, py: Python, cypher: &str) -> PyResult<Vec<PyObject>> {
         let db = self.get_db()?;
         let conn = db.connection();
-        let cypher = cypher.to_string();
-        let records = py
-            .allow_threads(|| {
-                let stmt = crate::cypher::parser::parse(&cypher)?;
-                let plan = crate::cypher::planner::plan(conn, &stmt)?;
-                let ctx = crate::cypher::executor::ExecContext {
-                    max_result_rows: db.max_result_rows,
-                };
-                crate::cypher::executor::execute_with_ctx(conn, &plan, &ctx)
-            })
-            .map_err(to_py_err)?;
+        let stmt = crate::cypher::parser::parse(cypher).map_err(to_py_err)?;
+        let plan = crate::cypher::planner::plan(conn, &stmt).map_err(to_py_err)?;
+        let ctx = crate::cypher::executor::ExecContext {
+            max_result_rows: db.max_result_rows,
+        };
+        let records =
+            crate::cypher::executor::execute_with_ctx(conn, &plan, &ctx).map_err(to_py_err)?;
         records_to_py(py, &records)
     }
 
@@ -335,17 +331,13 @@ impl PyReadTransaction {
     fn query(&self, py: Python, cypher: &str) -> PyResult<Vec<PyObject>> {
         let db = self.get_db()?;
         let conn = db.connection();
-        let cypher = cypher.to_string();
-        let records = py
-            .allow_threads(|| {
-                let stmt = crate::cypher::parser::parse(&cypher)?;
-                let plan = crate::cypher::planner::plan(conn, &stmt)?;
-                let ctx = crate::cypher::executor::ExecContext {
-                    max_result_rows: db.max_result_rows,
-                };
-                crate::cypher::executor::execute_with_ctx(conn, &plan, &ctx)
-            })
-            .map_err(to_py_err)?;
+        let stmt = crate::cypher::parser::parse(cypher).map_err(to_py_err)?;
+        let plan = crate::cypher::planner::plan(conn, &stmt).map_err(to_py_err)?;
+        let ctx = crate::cypher::executor::ExecContext {
+            max_result_rows: db.max_result_rows,
+        };
+        let records =
+            crate::cypher::executor::execute_with_ctx(conn, &plan, &ctx).map_err(to_py_err)?;
         records_to_py(py, &records)
     }
 

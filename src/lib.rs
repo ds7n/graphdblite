@@ -11,6 +11,7 @@ mod transaction;
 pub mod types;
 
 #[cfg(feature = "python")]
+#[allow(unexpected_cfgs, deprecated, clippy::useless_conversion)] // pyo3 0.22 macro artifacts
 mod python;
 
 pub use cypher::record::Record;

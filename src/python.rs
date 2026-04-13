@@ -1,7 +1,7 @@
 use std::path::PathBuf;
 
 use pyo3::create_exception;
-use pyo3::exceptions::{PyKeyError, PyRuntimeError, PySyntaxError, PyValueError};
+use pyo3::exceptions::{PyRuntimeError, PyValueError};
 use pyo3::prelude::*;
 use pyo3::types::PyDict;
 
@@ -61,7 +61,6 @@ fn records_to_py(py: Python, records: &[crate::cypher::record::Record]) -> PyRes
 pub struct PyDatabase {
     inner: Option<RustDatabase>,
     path: String,
-    in_transaction: bool,
 }
 
 #[pymethods]
@@ -95,7 +94,6 @@ impl PyDatabase {
         Ok(Self {
             inner: Some(db),
             path: display_path,
-            in_transaction: false,
         })
     }
 
@@ -106,7 +104,6 @@ impl PyDatabase {
         Ok(Self {
             inner: Some(db),
             path: ":memory:".to_string(),
-            in_transaction: false,
         })
     }
 

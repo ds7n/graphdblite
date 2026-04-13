@@ -2,7 +2,7 @@ use rusqlite::Connection;
 
 use crate::node;
 use crate::storage::kv;
-use crate::types::{GraphError, NodeId, Properties, Result, Value};
+use crate::types::{validate_name, GraphError, NodeId, Properties, Result, Value};
 
 /// Build the index table name for a (label, property) pair.
 fn index_table_name(label: &str, property: &str) -> String {
@@ -24,6 +24,8 @@ pub fn create_index(
     label: &str,
     property: &str,
 ) -> Result<()> {
+    validate_name(label)?;
+    validate_name(property)?;
     let table = index_table_name(label, property);
 
     // Check if index table already exists.
@@ -113,7 +115,9 @@ pub fn index_lookup(
         // Key = [msgpack(value)][node_id: 8 BE]
         // Extract the last 8 bytes as node_id.
         if key.len() >= 8 {
-            let id_bytes: [u8; 8] = key[key.len() - 8..].try_into().unwrap();
+            let id_bytes: [u8; 8] = key[key.len() - 8..]
+                .try_into()
+                .map_err(|_| GraphError::Serialization("corrupt index key bytes".into()))?;
             ids.push(NodeId::from_be_bytes(id_bytes));
         }
     }

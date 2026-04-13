@@ -135,13 +135,13 @@ pub enum GraphError {
     #[error("{0}")]
     ParseError(String),
 
-    #[error("node not found: {0}")]
+    #[error("node not found")]
     NodeNotFound(NodeId),
 
-    #[error("edge not found: {0} -[{1}]-> {2}")]
+    #[error("edge not found")]
     EdgeNotFound(NodeId, String, NodeId),
 
-    #[error("cannot delete node {0} because it still has edges; use DETACH DELETE to remove edges too")]
+    #[error("cannot delete node because it still has edges; use DETACH DELETE to remove edges too")]
     HasEdges(NodeId),
 
     #[error("transaction error: {0}")]
@@ -152,6 +152,61 @@ pub enum GraphError {
 
     #[error("index not found: {0}.{1}")]
     IndexNotFound(String, String),
+
+    #[error("invalid name '{0}': must contain only ASCII letters, digits, or underscores")]
+    InvalidName(String),
+
+    #[error("{0}")]
+    SizeLimit(String),
 }
 
 pub type Result<T> = std::result::Result<T, GraphError>;
+
+/// Validate that a name (label, property key) contains only `[A-Za-z0-9_]`.
+pub fn validate_name(name: &str) -> Result<()> {
+    if name.is_empty() || !name.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_') {
+        return Err(GraphError::InvalidName(name.to_string()));
+    }
+    Ok(())
+}
+
+/// Validate name length against a configured maximum.
+pub fn validate_name_length(name: &str, max_bytes: usize) -> Result<()> {
+    if name.len() > max_bytes {
+        return Err(GraphError::SizeLimit(format!(
+            "name '{}...' exceeds maximum length of {max_bytes} bytes",
+            &name[..max_bytes.min(32)]
+        )));
+    }
+    Ok(())
+}
+
+/// Estimate the byte size of a property value.
+fn value_byte_size(val: &Value) -> usize {
+    match val {
+        Value::Null | Value::Bool(_) | Value::I64(_) | Value::F64(_) => 8,
+        Value::String(s) => s.len(),
+        Value::List(items) => items.iter().map(value_byte_size).sum(),
+        Value::Path(nodes) => nodes.len() * 8,
+    }
+}
+
+/// Validate that all property values are within size limits.
+pub fn validate_properties(
+    label: &str,
+    properties: &Properties,
+    max_name_bytes: usize,
+    max_value_bytes: usize,
+) -> Result<()> {
+    validate_name_length(label, max_name_bytes)?;
+    for (key, val) in properties {
+        validate_name_length(key, max_name_bytes)?;
+        let size = value_byte_size(val);
+        if size > max_value_bytes {
+            return Err(GraphError::SizeLimit(format!(
+                "property '{key}' value ({size} bytes) exceeds maximum of {max_value_bytes} bytes"
+            )));
+        }
+    }
+    Ok(())
+}

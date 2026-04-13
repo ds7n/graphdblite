@@ -407,8 +407,8 @@ fn parse_var_length(
             }
         }
     }
-    // Bare * with no range — default to 1..max
-    Ok((1, u32::MAX))
+    // Bare * with no range — default to 1..15 to prevent unbounded traversal.
+    Ok((1, 15))
 }
 
 fn parse_property_map(

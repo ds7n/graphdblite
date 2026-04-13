@@ -1,4 +1,6 @@
-use pyo3::exceptions::PyRuntimeError;
+use std::path::PathBuf;
+
+use pyo3::exceptions::{PyRuntimeError, PyValueError};
 use pyo3::prelude::*;
 use pyo3::types::PyDict;
 
@@ -17,6 +19,10 @@ fn value_to_py(py: Python, val: &Value) -> PyObject {
             let py_items: Vec<PyObject> = items.iter().map(|v| value_to_py(py, v)).collect();
             py_items.to_object(py)
         }
+        Value::Path(nodes) => {
+            let ids: Vec<PyObject> = nodes.iter().map(|id| id.0.to_object(py)).collect();
+            ids.to_object(py)
+        }
     }
 }
 
@@ -29,14 +35,35 @@ pub struct PyDatabase {
 #[pymethods]
 impl PyDatabase {
     /// Open a database at the given path.
+    ///
+    /// The path is canonicalized to prevent directory traversal. Paths
+    /// containing `..` components that resolve outside the working
+    /// directory are allowed — canonicalization simply normalizes them.
     #[new]
     #[pyo3(signature = (path, busy_timeout_ms=5000))]
     fn new(path: &str, busy_timeout_ms: u32) -> PyResult<Self> {
+        // Resolve to an absolute path so callers can't accidentally open
+        // special files via relative traversal (e.g. "../../proc/self/mem").
+        let resolved = PathBuf::from(path);
+        let resolved = if resolved.exists() {
+            resolved
+                .canonicalize()
+                .map_err(|e| PyValueError::new_err(format!("invalid path '{path}': {e}")))?
+        } else {
+            // File doesn't exist yet — canonicalize the parent directory.
+            let parent = resolved.parent().unwrap_or(std::path::Path::new("."));
+            let parent = parent
+                .canonicalize()
+                .map_err(|e| PyValueError::new_err(format!("invalid path '{path}': {e}")))?;
+            parent.join(resolved.file_name().ok_or_else(|| {
+                PyValueError::new_err(format!("invalid path '{path}': no filename"))
+            })?)
+        };
         let config = Config {
             busy_timeout_ms,
             ..Config::default()
         };
-        let db = RustDatabase::open_with_config(path, config)
+        let db = RustDatabase::open_with_config(&resolved, config)
             .map_err(|e| PyRuntimeError::new_err(e.to_string()))?;
         Ok(Self { inner: db })
     }
@@ -51,32 +78,32 @@ impl PyDatabase {
 
     /// Execute a read-only Cypher query. Returns a list of dicts.
     fn query(&mut self, py: Python, cypher: &str) -> PyResult<Vec<PyObject>> {
-        let tx = self
-            .inner
-            .begin_read()
-            .map_err(|e| PyRuntimeError::new_err(e.to_string()))?;
-        let records = tx
-            .query(cypher)
-            .map_err(|e| PyRuntimeError::new_err(e.to_string()))?;
-        tx.commit()
+        let cypher = cypher.to_string();
+        let inner = &mut self.inner;
+        let records = py
+            .allow_threads(|| {
+                let tx = inner.begin_read()?;
+                let r = tx.query(&cypher)?;
+                tx.commit()?;
+                Ok::<_, crate::types::GraphError>(r)
+            })
             .map_err(|e| PyRuntimeError::new_err(e.to_string()))?;
         records_to_py(py, &records)
     }
 
     /// Execute a write Cypher query (CREATE, DELETE, SET, MERGE). Returns a list of dicts.
     fn execute(&mut self, py: Python, cypher: &str) -> PyResult<Vec<PyObject>> {
-        let tx = self
-            .inner
-            .begin_write()
+        let cypher = cypher.to_string();
+        let inner = &mut self.inner;
+        let records = py
+            .allow_threads(|| {
+                let tx = inner.begin_write()?;
+                let r = tx.query(&cypher)?;
+                tx.commit()?;
+                Ok::<_, crate::types::GraphError>(r)
+            })
             .map_err(|e| PyRuntimeError::new_err(e.to_string()))?;
-        match tx.query(cypher) {
-            Ok(records) => {
-                tx.commit()
-                    .map_err(|e| PyRuntimeError::new_err(e.to_string()))?;
-                records_to_py(py, &records)
-            }
-            Err(e) => Err(PyRuntimeError::new_err(e.to_string())),
-        }
+        records_to_py(py, &records)
     }
 }
 

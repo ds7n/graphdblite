@@ -11,12 +11,43 @@ use crate::index;
 use crate::node;
 use crate::types::{Direction, GraphError, NodeId, Properties, Result, Value};
 
+/// Execution context carrying runtime limits.
+#[derive(Default)]
+pub struct ExecContext {
+    /// Maximum rows any operator may produce. 0 = unlimited.
+    pub max_result_rows: usize,
+}
+
+/// Check that a result set hasn't exceeded the row cap.
+fn check_row_limit(results: &[Record], ctx: &ExecContext) -> Result<()> {
+    if ctx.max_result_rows > 0 && results.len() > ctx.max_result_rows {
+        return Err(GraphError::Transaction(format!(
+            "result set exceeded maximum of {} rows",
+            ctx.max_result_rows
+        )));
+    }
+    Ok(())
+}
+
 /// Execute a logical plan against the database, producing result records.
 pub fn execute(conn: &Connection, plan: &LogicalOp) -> Result<Vec<Record>> {
+    exec(conn, plan, &ExecContext::default())
+}
+
+/// Execute with an explicit context carrying runtime limits.
+pub fn execute_with_ctx(
+    conn: &Connection,
+    plan: &LogicalOp,
+    ctx: &ExecContext,
+) -> Result<Vec<Record>> {
+    exec(conn, plan, ctx)
+}
+
+fn exec(conn: &Connection, plan: &LogicalOp, ctx: &ExecContext) -> Result<Vec<Record>> {
     match plan {
         LogicalOp::EmptyRow => Ok(vec![Record::new()]),
 
-        LogicalOp::Scan { label, alias } => exec_scan(conn, label, alias),
+        LogicalOp::Scan { label, alias } => exec_scan(conn, label, alias, ctx),
 
         LogicalOp::IndexLookup {
             label,
@@ -36,24 +67,24 @@ pub fn execute(conn: &Connection, plan: &LogicalOp) -> Result<Vec<Record>> {
             max_hops,
         } => exec_expand(
             conn, input, src_alias, dst_alias, edge_type.as_deref(),
-            *direction, *min_hops, *max_hops,
+            *direction, *min_hops, *max_hops, ctx,
         ),
 
-        LogicalOp::CrossProduct { left, right } => exec_cross_product(conn, left, right),
+        LogicalOp::CrossProduct { left, right } => exec_cross_product(conn, left, right, ctx),
 
-        LogicalOp::Filter { input, predicate } => exec_filter(conn, input, predicate),
+        LogicalOp::Filter { input, predicate } => exec_filter(conn, input, predicate, ctx),
 
-        LogicalOp::Project { input, items } => exec_project(conn, input, items),
+        LogicalOp::Project { input, items } => exec_project(conn, input, items, ctx),
 
         LogicalOp::Aggregate {
             input,
             group_keys,
             aggregates,
-        } => exec_aggregate(conn, input, group_keys, aggregates),
+        } => exec_aggregate(conn, input, group_keys, aggregates, ctx),
 
-        LogicalOp::Sort { input, items } => exec_sort(conn, input, items),
+        LogicalOp::Sort { input, items } => exec_sort(conn, input, items, ctx),
 
-        LogicalOp::Limit { input, count } => exec_limit(conn, input, *count),
+        LogicalOp::Limit { input, count } => exec_limit(conn, input, *count, ctx),
 
         LogicalOp::CreateNode {
             label,
@@ -71,13 +102,13 @@ pub fn execute(conn: &Connection, plan: &LogicalOp) -> Result<Vec<Record>> {
         LogicalOp::CreateSequence { ops } => exec_create_sequence(conn, ops),
 
         LogicalOp::MatchCreate { input, create_ops } => {
-            exec_match_create(conn, input, create_ops)
+            exec_match_create(conn, input, create_ops, ctx)
         }
 
-        LogicalOp::Delete { input, variables, detach } => exec_delete(conn, input, variables, *detach),
+        LogicalOp::Delete { input, variables, detach } => exec_delete(conn, input, variables, *detach, ctx),
 
         LogicalOp::SetProperty { input, assignments } => {
-            exec_set_property(conn, input, assignments)
+            exec_set_property(conn, input, assignments, ctx)
         }
 
         LogicalOp::Merge {
@@ -90,13 +121,13 @@ pub fn execute(conn: &Connection, plan: &LogicalOp) -> Result<Vec<Record>> {
             input,
             expr,
             alias,
-        } => exec_unwind(conn, input, expr, alias),
+        } => exec_unwind(conn, input, expr, alias, ctx),
 
         LogicalOp::LeftOuterJoin {
             input,
             right,
             optional_aliases,
-        } => exec_left_outer_join(conn, input, right, optional_aliases),
+        } => exec_left_outer_join(conn, input, right, optional_aliases, ctx),
 
         LogicalOp::ShortestPath {
             input,
@@ -109,12 +140,12 @@ pub fn execute(conn: &Connection, plan: &LogicalOp) -> Result<Vec<Record>> {
             all_paths,
         } => exec_shortest_path(
             conn, input, src_alias, dst_alias, path_alias,
-            edge_type.as_deref(), *direction, *max_hops, *all_paths,
+            edge_type.as_deref(), *direction, *max_hops, *all_paths, ctx,
         ),
     }
 }
 
-fn exec_scan(conn: &Connection, label: &str, alias: &str) -> Result<Vec<Record>> {
+fn exec_scan(conn: &Connection, label: &str, alias: &str, ctx: &ExecContext) -> Result<Vec<Record>> {
     let nodes = node::find_nodes_by_label(conn, label)?;
     let mut records = Vec::new();
     for n in nodes {
@@ -129,6 +160,7 @@ fn exec_scan(conn: &Connection, label: &str, alias: &str) -> Result<Vec<Record>>
         rec.set(format!("{alias}.__id"), Value::I64(n.id.0 as i64));
         records.push(rec);
     }
+    check_row_limit(&records, ctx)?;
     Ok(records)
 }
 
@@ -175,8 +207,9 @@ fn exec_expand(
     direction: Direction,
     min_hops: u32,
     max_hops: u32,
+    ctx: &ExecContext,
 ) -> Result<Vec<Record>> {
-    let input_records = execute(conn, input)?;
+    let input_records = exec(conn, input, ctx)?;
     let mut results = Vec::new();
 
     for rec in &input_records {
@@ -225,6 +258,7 @@ fn exec_expand(
         }
     }
 
+    check_row_limit(&results, ctx)?;
     Ok(results)
 }
 
@@ -232,9 +266,10 @@ fn exec_cross_product(
     conn: &Connection,
     left: &LogicalOp,
     right: &LogicalOp,
+    ctx: &ExecContext,
 ) -> Result<Vec<Record>> {
-    let left_records = execute(conn, left)?;
-    let right_records = execute(conn, right)?;
+    let left_records = exec(conn, left, ctx)?;
+    let right_records = exec(conn, right, ctx)?;
     let mut results = Vec::new();
     for l in &left_records {
         for r in &right_records {
@@ -243,6 +278,13 @@ fn exec_cross_product(
                 combined.set(key.clone(), val.clone());
             }
             results.push(combined);
+            // Check inline to fail fast on runaway cross products.
+            if ctx.max_result_rows > 0 && results.len() > ctx.max_result_rows {
+                return Err(GraphError::Transaction(format!(
+                    "cross product exceeded maximum of {} rows",
+                    ctx.max_result_rows
+                )));
+            }
         }
     }
     Ok(results)
@@ -252,8 +294,9 @@ fn exec_filter(
     conn: &Connection,
     input: &LogicalOp,
     predicate: &Expr,
+    ctx: &ExecContext,
 ) -> Result<Vec<Record>> {
-    let records = execute(conn, input)?;
+    let records = exec(conn, input, ctx)?;
     let mut results = Vec::new();
     for rec in records {
         if eval_predicate(predicate, &rec, conn)? {
@@ -267,8 +310,9 @@ fn exec_project(
     conn: &Connection,
     input: &LogicalOp,
     items: &[crate::cypher::ast::ReturnItem],
+    ctx: &ExecContext,
 ) -> Result<Vec<Record>> {
-    let records = execute(conn, input)?;
+    let records = exec(conn, input, ctx)?;
     let mut results = Vec::new();
 
     for rec in &records {
@@ -345,8 +389,9 @@ fn exec_aggregate(
     input: &LogicalOp,
     group_keys: &[Expr],
     aggregates: &[AggregateExpr],
+    ctx: &ExecContext,
 ) -> Result<Vec<Record>> {
-    let records = execute(conn, input)?;
+    let records = exec(conn, input, ctx)?;
 
     if group_keys.is_empty() {
         // No grouping — aggregate over all records.
@@ -505,8 +550,9 @@ fn exec_sort(
     conn: &Connection,
     input: &LogicalOp,
     items: &[crate::cypher::ast::SortItem],
+    ctx: &ExecContext,
 ) -> Result<Vec<Record>> {
-    let mut records = execute(conn, input)?;
+    let mut records = exec(conn, input, ctx)?;
     records.sort_by(|a, b| {
         for item in items {
             let va = eval_expr(&item.expr, a, conn).unwrap_or(Value::Null);
@@ -522,8 +568,8 @@ fn exec_sort(
     Ok(records)
 }
 
-fn exec_limit(conn: &Connection, input: &LogicalOp, count: u64) -> Result<Vec<Record>> {
-    let records = execute(conn, input)?;
+fn exec_limit(conn: &Connection, input: &LogicalOp, count: u64, ctx: &ExecContext) -> Result<Vec<Record>> {
+    let records = exec(conn, input, ctx)?;
     Ok(records.into_iter().take(count as usize).collect())
 }
 
@@ -620,8 +666,9 @@ fn exec_match_create(
     conn: &Connection,
     input: &LogicalOp,
     create_ops: &[LogicalOp],
+    ctx: &ExecContext,
 ) -> Result<Vec<Record>> {
-    let records = execute(conn, input)?;
+    let records = exec(conn, input, ctx)?;
 
     for rec in &records {
         // Seed bindings from MATCH-bound variables (var → NodeId).
@@ -691,8 +738,9 @@ fn exec_delete(
     input: &LogicalOp,
     variables: &[String],
     detach: bool,
+    ctx: &ExecContext,
 ) -> Result<Vec<Record>> {
-    let records = execute(conn, input)?;
+    let records = exec(conn, input, ctx)?;
     for rec in &records {
         for var in variables {
             if let Some(Value::I64(id)) = rec.get(var) {
@@ -711,8 +759,9 @@ fn exec_set_property(
     conn: &Connection,
     input: &LogicalOp,
     assignments: &[crate::cypher::ast::Assignment],
+    ctx: &ExecContext,
 ) -> Result<Vec<Record>> {
-    let records = execute(conn, input)?;
+    let records = exec(conn, input, ctx)?;
     for rec in &records {
         for assignment in assignments {
             if let Some(Value::I64(id)) = rec.get(&assignment.variable) {
@@ -803,8 +852,9 @@ fn exec_unwind(
     input: &LogicalOp,
     expr: &Expr,
     alias: &str,
+    ctx: &ExecContext,
 ) -> Result<Vec<Record>> {
-    let records = execute(conn, input)?;
+    let records = exec(conn, input, ctx)?;
     let mut results = Vec::new();
 
     for rec in &records {
@@ -836,9 +886,10 @@ fn exec_left_outer_join(
     input: &LogicalOp,
     right: &LogicalOp,
     optional_aliases: &[String],
+    ctx: &ExecContext,
 ) -> Result<Vec<Record>> {
-    let left_records = execute(conn, input)?;
-    let right_records = execute(conn, right)?;
+    let left_records = exec(conn, input, ctx)?;
+    let right_records = exec(conn, right, ctx)?;
 
     // Find shared aliases: keys present in both left and right records (bare alias keys, no dots).
     // These are the join keys.
@@ -903,8 +954,9 @@ fn exec_shortest_path(
     direction: Direction,
     max_hops: u32,
     all_paths: bool,
+    ctx: &ExecContext,
 ) -> Result<Vec<Record>> {
-    let records = execute(conn, input)?;
+    let records = exec(conn, input, ctx)?;
     let label = edge_type.unwrap_or("");
     let mut results = Vec::new();
 

@@ -159,7 +159,11 @@ starts_with_op = { ^"STARTS" ~ ^"WITH" }
 ends_with_op = { ^"ENDS" ~ ^"WITH" }
 contains_op = { ^"CONTAINS" }
 
-expr = { case_expr | function_call | property_access | literal | list_literal | star | variable }
+expr = { case_expr | function_call | property_access | literal | list_comprehension | list_literal | star | variable }
+
+list_comprehension = { "[" ~ ident ~ ^"IN" ~ expr ~ list_comp_where? ~ list_comp_map? ~ "]" }
+list_comp_where = { ^"WHERE" ~ bool_expr }
+list_comp_map = { "|" ~ expr }
 
 list_literal = { "[" ~ (expr ~ ("," ~ expr)*)? ~ "]" }
 
@@ -188,7 +192,7 @@ keyword = {
      ^"MERGE" | ^"ORDER" | ^"BY" | ^"LIMIT" | ^"AND" | ^"OR" | ^"NOT" |
      ^"AS" | ^"IS" | ^"ON" | ^"ASC" | ^"DESC" | ^"STARTS" | ^"ENDS" | ^"WITH" | ^"CONTAINS" |
      ^"OPTIONAL" | ^"UNWIND" | ^"TRUE" | ^"FALSE" | ^"NULL" |
-     ^"CASE" | ^"WHEN" | ^"THEN" | ^"ELSE" | ^"END" | ^"EXISTS" |
+     ^"CASE" | ^"WHEN" | ^"THEN" | ^"ELSE" | ^"END" | ^"EXISTS" | ^"IN" |
      ^"count" | ^"sum" | ^"avg" | ^"min" | ^"max" | ^"collect")
     ~ !(ASCII_ALPHANUMERIC | "_")
 }

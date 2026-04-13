@@ -199,6 +199,13 @@ pub enum Expr {
     },
     /// List literal: [expr, expr, ...]
     List(Vec<Expr>),
+    /// List comprehension: [x IN list WHERE pred | expr]
+    ListComprehension {
+        variable: String,
+        list_expr: Box<Expr>,
+        filter: Option<Box<Expr>>,
+        map_expr: Option<Box<Expr>>,
+    },
     /// EXISTS { pattern [WHERE expr] } subquery predicate.
     Exists {
         patterns: Vec<Pattern>,

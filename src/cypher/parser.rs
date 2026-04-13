@@ -665,6 +665,7 @@ fn parse_bool_primary(pair: pest::iterators::Pair<Rule>) -> crate::types::Result
     let inner = pair.into_inner().next().unwrap();
     match inner.as_rule() {
         Rule::case_expr => parse_case_expr(inner),
+        Rule::exists_subquery => parse_exists_subquery(inner),
         Rule::is_null_check => parse_is_null_check(inner, false),
         Rule::is_not_null_check => parse_is_null_check(inner, true),
         Rule::comparison => parse_comparison(inner),
@@ -699,6 +700,30 @@ fn parse_case_expr(pair: pest::iterators::Pair<Rule>) -> crate::types::Result<Ex
     Ok(Expr::Case {
         alternatives,
         default,
+    })
+}
+
+fn parse_exists_subquery(pair: pest::iterators::Pair<Rule>) -> crate::types::Result<Expr> {
+    let mut patterns = Vec::new();
+    let mut where_clause = None;
+
+    for inner in pair.into_inner() {
+        match inner.as_rule() {
+            Rule::pattern_list => patterns = parse_pattern_list(inner)?,
+            Rule::where_clause => where_clause = Some(Box::new(parse_where(inner)?)),
+            _ => {}
+        }
+    }
+
+    if patterns.is_empty() {
+        return Err(GraphError::Serialization(
+            "EXISTS subquery requires at least one pattern".to_string(),
+        ));
+    }
+
+    Ok(Expr::Exists {
+        patterns,
+        where_clause,
     })
 }
 
@@ -886,6 +911,7 @@ fn humanize_rule_name(rule: &str) -> &str {
         "case_when_clause" => "a WHEN condition",
         "case_else_clause" => "an ELSE value",
         "case_expr" => "a CASE expression",
+        "exists_subquery" => "an EXISTS { } subquery",
         "comp_op" => "a comparison operator (=, <>, <, >)",
         "alias" => "an alias (AS name)",
         "assignment" | "assignment_list" => "a property assignment like n.prop = value",

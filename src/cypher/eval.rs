@@ -1,9 +1,13 @@
+use rusqlite::Connection;
+
 use crate::cypher::ast::{BinOp, Expr, LiteralValue};
 use crate::cypher::record::Record;
 use crate::types::Value;
 
 /// Evaluate an expression against a record, producing a Value.
-pub fn eval_expr(expr: &Expr, record: &Record) -> crate::types::Result<Value> {
+///
+/// The `conn` parameter is needed for EXISTS subquery evaluation.
+pub fn eval_expr(expr: &Expr, record: &Record, conn: &Connection) -> crate::types::Result<Value> {
     match expr {
         Expr::Literal(lit) => Ok(literal_to_value(lit)),
         Expr::Variable(name) => Ok(record
@@ -17,40 +21,43 @@ pub fn eval_expr(expr: &Expr, record: &Record) -> crate::types::Result<Value> {
         }
         Expr::List(items) => {
             let values: crate::types::Result<Vec<Value>> =
-                items.iter().map(|e| eval_expr(e, record)).collect();
+                items.iter().map(|e| eval_expr(e, record, conn)).collect();
             Ok(Value::List(values?))
         }
         Expr::Star => Ok(Value::Null),
         Expr::BinaryOp { left, op, right } => {
-            let lval = eval_expr(left, record)?;
-            let rval = eval_expr(right, record)?;
+            let lval = eval_expr(left, record, conn)?;
+            let rval = eval_expr(right, record, conn)?;
             eval_binop(&lval, *op, &rval)
         }
         Expr::Not(inner) => {
-            let val = eval_expr(inner, record)?;
+            let val = eval_expr(inner, record, conn)?;
             match val {
                 Value::Bool(b) => Ok(Value::Bool(!b)),
                 _ => Ok(Value::Null),
             }
         }
         Expr::IsNull(inner) => {
-            let val = eval_expr(inner, record)?;
+            let val = eval_expr(inner, record, conn)?;
             Ok(Value::Bool(matches!(val, Value::Null)))
         }
         Expr::IsNotNull(inner) => {
-            let val = eval_expr(inner, record)?;
+            let val = eval_expr(inner, record, conn)?;
             Ok(Value::Bool(!matches!(val, Value::Null)))
         }
         Expr::Case { alternatives, default } => {
             for (cond, result) in alternatives {
-                if eval_predicate(cond, record)? {
-                    return eval_expr(result, record);
+                if eval_predicate(cond, record, conn)? {
+                    return eval_expr(result, record, conn);
                 }
             }
             match default {
-                Some(expr) => eval_expr(expr, record),
+                Some(expr) => eval_expr(expr, record, conn),
                 None => Ok(Value::Null),
             }
+        }
+        Expr::Exists { patterns, where_clause } => {
+            eval_exists(patterns, where_clause.as_deref(), record, conn)
         }
         Expr::FunctionCall { .. } => {
             // Aggregate functions are handled by the Aggregate operator, not here.
@@ -60,9 +67,62 @@ pub fn eval_expr(expr: &Expr, record: &Record) -> crate::types::Result<Value> {
 }
 
 /// Evaluate a boolean expression, returning true/false.
-pub fn eval_predicate(expr: &Expr, record: &Record) -> crate::types::Result<bool> {
-    let val = eval_expr(expr, record)?;
+pub fn eval_predicate(expr: &Expr, record: &Record, conn: &Connection) -> crate::types::Result<bool> {
+    let val = eval_expr(expr, record, conn)?;
     Ok(matches!(val, Value::Bool(true)))
+}
+
+/// Evaluate an EXISTS { pattern [WHERE expr] } subquery.
+///
+/// Plans and executes the subquery patterns against the current record's
+/// bindings. Returns true if any row matches, false otherwise.
+fn eval_exists(
+    patterns: &[crate::cypher::ast::Pattern],
+    where_clause: Option<&Expr>,
+    record: &Record,
+    conn: &Connection,
+) -> crate::types::Result<Value> {
+    use crate::cypher::executor::execute;
+    use crate::cypher::ir::LogicalOp;
+    use crate::cypher::planner::plan_patterns;
+
+    // Plan the subquery patterns into a scan/expand chain.
+    let mut op = plan_patterns(conn, patterns)?;
+
+    // Apply the optional WHERE filter from within the EXISTS block.
+    if let Some(predicate) = where_clause {
+        op = LogicalOp::Filter {
+            input: Box::new(op),
+            predicate: predicate.clone(),
+        };
+    }
+
+    // Execute the subquery.
+    let results = execute(conn, &op)?;
+
+    // Check if any result matches the outer record's correlated bindings.
+    // Correlated variables: if the outer record binds a variable (bare alias key,
+    // no dots) and the subquery also produces that variable, the values must match.
+    let outer_bindings: Vec<(String, Value)> = record
+        .fields
+        .iter()
+        .filter(|(k, _)| !k.contains('.'))
+        .map(|(k, v)| (k.clone(), v.clone()))
+        .collect();
+
+    for sub_rec in &results {
+        let matches = outer_bindings.iter().all(|(key, outer_val)| {
+            match sub_rec.get(key) {
+                Some(inner_val) => inner_val == outer_val,
+                None => true, // subquery doesn't produce this variable — no constraint
+            }
+        });
+        if matches {
+            return Ok(Value::Bool(true));
+        }
+    }
+
+    Ok(Value::Bool(false))
 }
 
 fn eval_binop(left: &Value, op: BinOp, right: &Value) -> crate::types::Result<Value> {

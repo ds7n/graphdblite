@@ -199,6 +199,11 @@ pub enum Expr {
     },
     /// List literal: [expr, expr, ...]
     List(Vec<Expr>),
+    /// EXISTS { pattern [WHERE expr] } subquery predicate.
+    Exists {
+        patterns: Vec<Pattern>,
+        where_clause: Option<Box<Expr>>,
+    },
     /// Wildcard * (used in count(*) and RETURN *)
     Star,
 }

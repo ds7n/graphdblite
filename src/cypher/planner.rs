@@ -274,7 +274,7 @@ fn plan_with(input: LogicalOp, with: &WithClause) -> crate::types::Result<Logica
 }
 
 /// Plan the scan/expand chain for a list of patterns.
-fn plan_patterns(conn: &Connection, patterns: &[Pattern]) -> crate::types::Result<LogicalOp> {
+pub fn plan_patterns(conn: &Connection, patterns: &[Pattern]) -> crate::types::Result<LogicalOp> {
     if patterns.is_empty() {
         return Ok(LogicalOp::EmptyRow);
     }

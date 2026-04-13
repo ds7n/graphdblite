@@ -33,12 +33,26 @@ fn plan_match(conn: &Connection, stmt: &MatchStatement) -> crate::types::Result<
         };
     }
 
-    // Apply WHERE filter.
+    // Apply WHERE filter with predicate pushdown.
     if let Some(ref predicate) = stmt.where_clause {
-        op = LogicalOp::Filter {
-            input: Box::new(op),
-            predicate: predicate.clone(),
-        };
+        let conjuncts = decompose_conjuncts(predicate);
+        let mut remaining = Vec::new();
+
+        for conj in conjuncts {
+            if let Some(pushed) = try_push_predicate(conn, &mut op, &conj) {
+                op = pushed;
+            } else {
+                remaining.push(conj);
+            }
+        }
+
+        // Wrap any remaining (non-pushable) conjuncts as a Filter.
+        if let Some(filter_pred) = rebuild_conjunction(remaining) {
+            op = LogicalOp::Filter {
+                input: Box::new(op),
+                predicate: filter_pred,
+            };
+        }
     }
 
     // Apply intermediate clauses (WITH/UNWIND).
@@ -533,10 +547,36 @@ fn plan_node_scan(
         let indexes = index::list_indexes_for_label(conn, &label).unwrap_or_default();
         let indexed_props: Vec<&str> = indexes.iter().map(|(_, p)| p.as_str()).collect();
 
-        // Find the first inline property that has an index and a literal value.
-        let indexed_match = node.properties.iter().find(|(key, val)| {
-            indexed_props.contains(&key.as_str()) && matches!(val, Expr::Literal(_))
-        });
+        // Collect all inline properties that have an index and a literal value.
+        let mut candidates: Vec<(&String, &Expr)> = node
+            .properties
+            .iter()
+            .filter(|(key, val)| {
+                indexed_props.contains(&key.as_str()) && matches!(val, Expr::Literal(_))
+            })
+            .collect();
+
+        // Pick the most selective index: lowest cardinality, ties broken
+        // alphabetically for determinism.
+        if candidates.len() > 1 {
+            candidates.sort_by(|(key_a, expr_a), (key_b, expr_b)| {
+                let val_a = match expr_a {
+                    Expr::Literal(l) => crate::cypher::executor::literal_to_value(l),
+                    _ => unreachable!(),
+                };
+                let val_b = match expr_b {
+                    Expr::Literal(l) => crate::cypher::executor::literal_to_value(l),
+                    _ => unreachable!(),
+                };
+                let count_a = index::index_count_for_value(conn, &label, key_a, &val_a)
+                    .unwrap_or(usize::MAX);
+                let count_b = index::index_count_for_value(conn, &label, key_b, &val_b)
+                    .unwrap_or(usize::MAX);
+                count_a.cmp(&count_b).then_with(|| key_a.cmp(key_b))
+            });
+        }
+
+        let indexed_match = candidates.into_iter().next();
 
         if let Some((prop, expr)) = indexed_match {
             let lit = match expr {
@@ -732,4 +772,137 @@ fn split_aggregates(
     }
 
     Ok((group_keys, aggregates))
+}
+
+// ── Predicate pushdown helpers ──────────────────────────────────────────
+
+/// Flatten a predicate into AND-connected conjuncts.
+fn decompose_conjuncts(expr: &Expr) -> Vec<Expr> {
+    match expr {
+        Expr::BinaryOp { left, op: BinOp::And, right } => {
+            let mut out = decompose_conjuncts(left);
+            out.extend(decompose_conjuncts(right));
+            out
+        }
+        _ => vec![expr.clone()],
+    }
+}
+
+/// Rebuild a conjunction from a list of conjuncts. Returns None if empty.
+fn rebuild_conjunction(conjuncts: Vec<Expr>) -> Option<Expr> {
+    conjuncts.into_iter().reduce(|acc, c| Expr::BinaryOp {
+        left: Box::new(acc),
+        op: BinOp::And,
+        right: Box::new(c),
+    })
+}
+
+/// Try to push a single equality predicate (`alias.prop = literal`) into an
+/// existing Scan node in the plan tree, converting it to an IndexLookup.
+///
+/// Returns `Some(modified_op)` if the predicate was pushed, `None` if it
+/// cannot be pushed (no matching scan, no index, non-eligible predicate).
+fn try_push_predicate(
+    conn: &Connection,
+    op: &mut LogicalOp,
+    predicate: &Expr,
+) -> Option<LogicalOp> {
+    // Only handle: Property(alias, prop) = Literal(val)
+    let (alias, prop, lit) = match predicate {
+        Expr::BinaryOp {
+            left,
+            op: BinOp::Eq,
+            right,
+        } => {
+            match (left.as_ref(), right.as_ref()) {
+                (Expr::Property(a, p), Expr::Literal(l)) => (a.clone(), p.clone(), l.clone()),
+                (Expr::Literal(l), Expr::Property(a, p)) => (a.clone(), p.clone(), l.clone()),
+                _ => return None,
+            }
+        }
+        _ => return None,
+    };
+
+    // Check if there's an index for this label+property.
+    // Walk the plan tree to find the Scan for this alias.
+    try_replace_scan(conn, op, &alias, &prop, &lit)
+}
+
+/// Recursively search the plan tree for a `Scan` with the given alias and
+/// replace it with an `IndexLookup` if an index exists. Returns the new
+/// root op if a replacement was made.
+fn try_replace_scan(
+    conn: &Connection,
+    op: &mut LogicalOp,
+    alias: &str,
+    prop: &str,
+    lit: &LiteralValue,
+) -> Option<LogicalOp> {
+    match op {
+        LogicalOp::Scan { label, alias: scan_alias } if scan_alias == alias => {
+            if label.is_empty() {
+                return None;
+            }
+            let indexes = index::list_indexes_for_label(conn, label).unwrap_or_default();
+            let has_index = indexes.iter().any(|(_, p)| p == prop);
+            if !has_index {
+                return None;
+            }
+            Some(LogicalOp::IndexLookup {
+                label: label.clone(),
+                alias: alias.to_string(),
+                property: prop.to_string(),
+                value: lit.clone(),
+                remaining_filters: None,
+            })
+        }
+
+        // Walk through wrapper operators that preserve the scan.
+        LogicalOp::Filter { input, predicate: existing } => {
+            if let Some(new_input) = try_replace_scan(conn, input, alias, prop, lit) {
+                Some(LogicalOp::Filter {
+                    input: Box::new(new_input),
+                    predicate: existing.clone(),
+                })
+            } else {
+                None
+            }
+        }
+
+        LogicalOp::Expand {
+            input, src_alias, dst_alias, edge_type, direction, min_hops, max_hops,
+        } => {
+            if let Some(new_input) = try_replace_scan(conn, input, alias, prop, lit) {
+                Some(LogicalOp::Expand {
+                    input: Box::new(new_input),
+                    src_alias: src_alias.clone(),
+                    dst_alias: dst_alias.clone(),
+                    edge_type: edge_type.clone(),
+                    direction: *direction,
+                    min_hops: *min_hops,
+                    max_hops: *max_hops,
+                })
+            } else {
+                None
+            }
+        }
+
+        LogicalOp::CrossProduct { left, right } => {
+            if let Some(new_left) = try_replace_scan(conn, left, alias, prop, lit) {
+                Some(LogicalOp::CrossProduct {
+                    left: Box::new(new_left),
+                    right: right.clone(),
+                })
+            } else if let Some(new_right) = try_replace_scan(conn, right, alias, prop, lit) {
+                Some(LogicalOp::CrossProduct {
+                    left: left.clone(),
+                    right: Box::new(new_right),
+                })
+            } else {
+                None
+            }
+        }
+
+        _ => None,
+    }
 }

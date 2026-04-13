@@ -30,8 +30,16 @@ fn check_row_limit(results: &[Record], ctx: &ExecContext) -> Result<()> {
 }
 
 /// Execute a logical plan against the database, producing result records.
+///
+/// For read-only plans, uses the pull-based iterator model so that pipeline
+/// operators (Filter, Limit, Project) stream without full materialization.
 pub fn execute(conn: &Connection, plan: &LogicalOp) -> Result<Vec<Record>> {
-    exec(conn, plan, &ExecContext::default())
+    if is_read_only(plan) {
+        let mut iter = crate::cypher::iter::build_iter(conn, plan)?;
+        crate::cypher::iter::collect_all(&mut *iter)
+    } else {
+        exec(conn, plan, &ExecContext::default())
+    }
 }
 
 /// Execute with an explicit context carrying runtime limits.
@@ -41,6 +49,39 @@ pub fn execute_with_ctx(
     ctx: &ExecContext,
 ) -> Result<Vec<Record>> {
     exec(conn, plan, ctx)
+}
+
+/// Check whether a plan tree contains only read-only operators.
+fn is_read_only(plan: &LogicalOp) -> bool {
+    match plan {
+        LogicalOp::Scan { .. }
+        | LogicalOp::IndexLookup { .. }
+        | LogicalOp::EmptyRow => true,
+
+        LogicalOp::Filter { input, .. }
+        | LogicalOp::Project { input, .. }
+        | LogicalOp::Sort { input, .. }
+        | LogicalOp::Limit { input, .. }
+        | LogicalOp::Unwind { input, .. }
+        | LogicalOp::Aggregate { input, .. }
+        | LogicalOp::ShortestPath { input, .. } => is_read_only(input),
+
+        LogicalOp::Expand { input, .. } => is_read_only(input),
+
+        LogicalOp::CrossProduct { left, right }
+        | LogicalOp::LeftOuterJoin { input: left, right, .. } => {
+            is_read_only(left) && is_read_only(right)
+        }
+
+        // Write operations.
+        LogicalOp::CreateNode { .. }
+        | LogicalOp::CreateEdge { .. }
+        | LogicalOp::CreateSequence { .. }
+        | LogicalOp::MatchCreate { .. }
+        | LogicalOp::Delete { .. }
+        | LogicalOp::SetProperty { .. }
+        | LogicalOp::Merge { .. } => false,
+    }
 }
 
 fn exec(conn: &Connection, plan: &LogicalOp, ctx: &ExecContext) -> Result<Vec<Record>> {
@@ -147,18 +188,9 @@ fn exec(conn: &Connection, plan: &LogicalOp, ctx: &ExecContext) -> Result<Vec<Re
 
 fn exec_scan(conn: &Connection, label: &str, alias: &str, ctx: &ExecContext) -> Result<Vec<Record>> {
     let nodes = node::find_nodes_by_label(conn, label)?;
-    let mut records = Vec::new();
+    let mut records = Vec::with_capacity(nodes.len());
     for n in nodes {
-        let mut rec = Record::new();
-        rec.set(alias.to_string(), Value::I64(n.id.0 as i64));
-        // Flatten properties as "alias.prop" keys.
-        for (key, val) in &n.properties {
-            rec.set(format!("{alias}.{key}"), val.clone());
-        }
-        // Store label for potential use.
-        rec.set(format!("{alias}.__label"), Value::String(n.label.clone()));
-        rec.set(format!("{alias}.__id"), Value::I64(n.id.0 as i64));
-        records.push(rec);
+        records.push(node_to_record(&n, alias));
     }
     check_row_limit(&records, ctx)?;
     Ok(records)
@@ -178,13 +210,7 @@ fn exec_index_lookup(
 
     for id in node_ids {
         let n = node::get_node(conn, id)?;
-        let mut rec = Record::new();
-        rec.set(alias.to_string(), Value::I64(n.id.0 as i64));
-        for (key, val) in &n.properties {
-            rec.set(format!("{alias}.{key}"), val.clone());
-        }
-        rec.set(format!("{alias}.__label"), Value::String(n.label.clone()));
-        rec.set(format!("{alias}.__id"), Value::I64(n.id.0 as i64));
+        let rec = node_to_record(&n, alias);
 
         if let Some(filter) = remaining_filters {
             if !eval_predicate(filter, &rec, conn)? {
@@ -268,17 +294,19 @@ fn exec_cross_product(
     right: &LogicalOp,
     ctx: &ExecContext,
 ) -> Result<Vec<Record>> {
+    // Materialize only the left side. Re-execute the right side per left
+    // record so peak memory is O(left + right + output) instead of
+    // O(left * right).
     let left_records = exec(conn, left, ctx)?;
-    let right_records = exec(conn, right, ctx)?;
     let mut results = Vec::new();
     for l in &left_records {
+        let right_records = exec(conn, right, ctx)?;
         for r in &right_records {
             let mut combined = l.clone();
             for (key, val) in &r.fields {
                 combined.set(key.clone(), val.clone());
             }
             results.push(combined);
-            // Check inline to fail fast on runaway cross products.
             if ctx.max_result_rows > 0 && results.len() > ctx.max_result_rows {
                 return Err(GraphError::Transaction(format!(
                     "cross product exceeded maximum of {} rows",
@@ -377,7 +405,7 @@ fn exec_project(
 
 /// Returns true if a record field should be visible to the user.
 /// Filters out bare alias keys (no dot — raw node IDs) and internal `__` properties.
-fn is_user_visible_field(key: &str) -> bool {
+pub(crate) fn is_user_visible_field(key: &str) -> bool {
     match key.split_once('.') {
         Some((_, prop)) => !prop.starts_with("__"),
         None => false, // bare alias like "n" is the raw node ID — hide it
@@ -901,50 +929,25 @@ fn exec_left_outer_join(
     ctx: &ExecContext,
 ) -> Result<Vec<Record>> {
     let left_records = exec(conn, input, ctx)?;
-    let right_records = exec(conn, right, ctx)?;
-
-    // Find shared aliases: keys present in both left and right records (bare alias keys, no dots).
-    // These are the join keys.
-    let shared_aliases: Vec<String> = if let (Some(l), Some(r)) =
-        (left_records.first(), right_records.first())
-    {
-        l.fields
-            .keys()
-            .filter(|k| !k.contains('.') && r.fields.contains_key(*k))
-            .cloned()
-            .collect()
-    } else {
-        vec![]
-    };
-
     let mut results = Vec::new();
 
     for l_rec in &left_records {
-        // Find right records that match on all shared aliases.
-        let matching: Vec<&Record> = right_records
-            .iter()
-            .filter(|r| {
-                shared_aliases.iter().all(|alias| {
-                    l_rec.get(alias) == r.get(alias)
-                })
-            })
-            .collect();
+        // Execute the right side with correlated bindings from this left record.
+        let right_records = exec_correlated(conn, right, l_rec, ctx)?;
 
-        if matching.is_empty() {
-            // No match — emit left record with NULLs for optional aliases and their properties.
+        if right_records.is_empty() {
+            // No match — emit left record with NULLs for optional aliases.
             let mut rec = l_rec.clone();
             for alias in optional_aliases {
                 rec.set(alias.clone(), Value::Null);
             }
             results.push(rec);
         } else {
-            // Matches found — merge each right record into the left record.
-            for r_rec in matching {
+            // Merge each right record into the left record.
+            for r_rec in &right_records {
                 let mut combined = l_rec.clone();
                 for (key, val) in &r_rec.fields {
-                    // Only copy keys from the right that aren't already in the left
-                    // (avoid overwriting shared alias bindings).
-                    if !combined.fields.contains_key(key) || shared_aliases.iter().all(|a| a != key) {
+                    if !combined.fields.contains_key(key) {
                         combined.set(key.clone(), val.clone());
                     }
                 }
@@ -954,6 +957,127 @@ fn exec_left_outer_join(
     }
 
     Ok(results)
+}
+
+/// Execute a plan with correlated bindings from an outer record.
+///
+/// When a `Scan` alias is already bound in the outer record, returns just
+/// that single node instead of scanning all nodes with that label. This
+/// turns O(N*M) uncorrelated joins into O(N) correlated lookups.
+fn exec_correlated(
+    conn: &Connection,
+    plan: &LogicalOp,
+    outer: &Record,
+    ctx: &ExecContext,
+) -> Result<Vec<Record>> {
+    match plan {
+        LogicalOp::Scan { label, alias } => {
+            // If the alias is already bound in the outer record, return just that node.
+            if let Some(Value::I64(id)) = outer.get(alias) {
+                let node = node::get_node(conn, NodeId(*id as u64))?;
+                // Verify label matches if the scan has a label filter.
+                if !label.is_empty() && node.label != *label {
+                    return Ok(vec![]);
+                }
+                Ok(vec![node_to_record(&node, alias)])
+            } else {
+                exec_scan(conn, label, alias, ctx)
+            }
+        }
+
+        LogicalOp::IndexLookup { label, alias, property, value, remaining_filters } => {
+            if let Some(Value::I64(id)) = outer.get(alias) {
+                let node = node::get_node(conn, NodeId(*id as u64))?;
+                if !label.is_empty() && node.label != *label {
+                    return Ok(vec![]);
+                }
+                let rec = node_to_record(&node, alias);
+                // Check the index property matches.
+                let expected = literal_to_value(value);
+                let actual_key = format!("{alias}.{property}");
+                if rec.get(&actual_key) != Some(&expected) {
+                    return Ok(vec![]);
+                }
+                if let Some(filter) = remaining_filters {
+                    if !eval_predicate(filter, &rec, conn)? {
+                        return Ok(vec![]);
+                    }
+                }
+                Ok(vec![rec])
+            } else {
+                exec_index_lookup(conn, label, alias, property, value, remaining_filters.as_ref())
+            }
+        }
+
+        LogicalOp::Expand {
+            input, src_alias, dst_alias, edge_type, direction, min_hops, max_hops,
+        } => {
+            let input_records = exec_correlated(conn, input, outer, ctx)?;
+            let label = edge_type.as_deref().unwrap_or("");
+            let mut results = Vec::new();
+
+            for rec in &input_records {
+                let src_id = match rec.get(src_alias) {
+                    Some(Value::I64(id)) => NodeId(*id as u64),
+                    _ => continue,
+                };
+
+                let dst_ids = if *min_hops == 1 && *max_hops == 1 {
+                    edge::get_neighbors(conn, src_id, label, *direction)?
+                } else {
+                    edge::traverse(conn, src_id, label, *direction, *min_hops, *max_hops)?
+                };
+
+                for dst_id in dst_ids {
+                    let dst_node = node::get_node(conn, dst_id)?;
+                    let mut new_rec = rec.clone();
+                    new_rec.set(dst_alias.to_string(), Value::I64(dst_id.0 as i64));
+                    for (key, val) in &dst_node.properties {
+                        new_rec.set(format!("{dst_alias}.{key}"), val.clone());
+                    }
+                    new_rec.set(
+                        format!("{dst_alias}.__label"),
+                        Value::String(dst_node.label.clone()),
+                    );
+                    new_rec.set(format!("{dst_alias}.__id"), Value::I64(dst_id.0 as i64));
+                    results.push(new_rec);
+                }
+            }
+
+            check_row_limit(&results, ctx)?;
+            Ok(results)
+        }
+
+        LogicalOp::Filter { input, predicate } => {
+            let records = exec_correlated(conn, input, outer, ctx)?;
+            let mut results = Vec::new();
+            for rec in records {
+                if eval_predicate(predicate, &rec, conn)? {
+                    results.push(rec);
+                }
+            }
+            Ok(results)
+        }
+
+        LogicalOp::CrossProduct { left, right } => {
+            let left_records = exec_correlated(conn, left, outer, ctx)?;
+            let mut results = Vec::new();
+            for l in &left_records {
+                let right_records = exec_correlated(conn, right, outer, ctx)?;
+                for r in &right_records {
+                    let mut combined = l.clone();
+                    for (key, val) in &r.fields {
+                        combined.set(key.clone(), val.clone());
+                    }
+                    results.push(combined);
+                }
+            }
+            Ok(results)
+        }
+
+        // Fallback: execute normally (no correlation pushdown).
+        _ => exec(conn, plan, ctx),
+    }
 }
 
 fn exec_shortest_path(
@@ -1057,7 +1181,7 @@ fn find_merge_match(
     }))
 }
 
-fn literal_to_value(lit: &LiteralValue) -> Value {
+pub(crate) fn literal_to_value(lit: &LiteralValue) -> Value {
     match lit {
         LiteralValue::Null => Value::Null,
         LiteralValue::Bool(b) => Value::Bool(*b),
@@ -1095,6 +1219,146 @@ fn compare_values_for_sort(a: &Value, b: &Value) -> std::cmp::Ordering {
         (_, Value::Null) => std::cmp::Ordering::Less,
         _ => std::cmp::Ordering::Equal,
     }
+}
+
+/// Check whether any record produced by `plan` matches the given correlated
+/// bindings.  Short-circuits on the first hit instead of materializing the
+/// entire result set, which is the key optimisation for EXISTS subqueries.
+///
+/// For leaf/pipeline operators we iterate one record at a time. For operators
+/// we don't special-case we fall back to `execute()` + linear scan.
+pub fn execute_first_match(
+    conn: &Connection,
+    plan: &LogicalOp,
+    correlated_bindings: &[(String, Value)],
+) -> Result<bool> {
+    match plan {
+        LogicalOp::Scan { label, alias } => {
+            let nodes = node::find_nodes_by_label(conn, label)?;
+            for n in nodes {
+                let rec = node_to_record(&n, alias);
+                if record_matches_bindings(&rec, correlated_bindings) {
+                    return Ok(true);
+                }
+            }
+            Ok(false)
+        }
+
+        LogicalOp::IndexLookup {
+            label,
+            alias,
+            property,
+            value,
+            remaining_filters,
+        } => {
+            let lookup_value = literal_to_value(value);
+            let node_ids = index::index_lookup(conn, label, property, &lookup_value)?;
+            for id in node_ids {
+                let n = node::get_node(conn, id)?;
+                let rec = node_to_record(&n, alias);
+                if let Some(filter) = remaining_filters {
+                    if !eval_predicate(filter, &rec, conn)? {
+                        continue;
+                    }
+                }
+                if record_matches_bindings(&rec, correlated_bindings) {
+                    return Ok(true);
+                }
+            }
+            Ok(false)
+        }
+
+        LogicalOp::Filter { input, predicate } => {
+            // For filter over a scannable input, iterate the input one record
+            // at a time, applying predicate + bindings check.
+            let records = exec(conn, input, &ExecContext::default())?;
+            for rec in records {
+                if eval_predicate(predicate, &rec, conn)?
+                    && record_matches_bindings(&rec, correlated_bindings)
+                {
+                    return Ok(true);
+                }
+            }
+            Ok(false)
+        }
+
+        LogicalOp::Expand {
+            input,
+            src_alias,
+            dst_alias,
+            edge_type,
+            direction,
+            min_hops,
+            max_hops,
+        } => {
+            let input_records = exec(conn, input, &ExecContext::default())?;
+            let label = edge_type.as_deref().unwrap_or("");
+            for rec in &input_records {
+                let src_id = match rec.get(src_alias) {
+                    Some(Value::I64(id)) => NodeId(*id as u64),
+                    _ => continue,
+                };
+                let dst_ids = if *min_hops == 1 && *max_hops == 1 {
+                    edge::get_neighbors(conn, src_id, label, *direction)?
+                } else {
+                    edge::traverse(conn, src_id, label, *direction, *min_hops, *max_hops)?
+                };
+                for dst_id in dst_ids {
+                    let dst_node = node::get_node(conn, dst_id)?;
+                    let mut new_rec = rec.clone();
+                    new_rec.set(dst_alias.to_string(), Value::I64(dst_id.0 as i64));
+                    for (key, val) in &dst_node.properties {
+                        new_rec.set(format!("{dst_alias}.{key}"), val.clone());
+                    }
+                    new_rec.set(
+                        format!("{dst_alias}.__label"),
+                        Value::String(dst_node.label.clone()),
+                    );
+                    new_rec.set(format!("{dst_alias}.__id"), Value::I64(dst_id.0 as i64));
+                    if record_matches_bindings(&new_rec, correlated_bindings) {
+                        return Ok(true);
+                    }
+                }
+            }
+            Ok(false)
+        }
+
+        // Fallback: materialize and scan.
+        _ => {
+            let results = execute(conn, plan)?;
+            for rec in &results {
+                if record_matches_bindings(rec, correlated_bindings) {
+                    return Ok(true);
+                }
+            }
+            Ok(false)
+        }
+    }
+}
+
+/// Build a `Record` from a `Node`, keyed under the given alias.
+pub(crate) fn node_to_record(n: &crate::types::Node, alias: &str) -> Record {
+    let mut rec = Record::new();
+    rec.set(alias.to_string(), Value::I64(n.id.0 as i64));
+    for (key, val) in &n.properties {
+        rec.set(format!("{alias}.{key}"), val.clone());
+    }
+    rec.set(format!("{alias}.__label"), Value::String(n.label.clone()));
+    rec.set(format!("{alias}.__id"), Value::I64(n.id.0 as i64));
+    rec
+}
+
+/// Check whether a record satisfies correlated bindings from an outer scope.
+///
+/// A binding matches if the record either doesn't contain the key (no
+/// constraint) or contains it with an equal value.
+fn record_matches_bindings(rec: &Record, bindings: &[(String, Value)]) -> bool {
+    bindings.iter().all(|(key, outer_val)| {
+        match rec.get(key) {
+            Some(inner_val) => inner_val == outer_val,
+            None => true,
+        }
+    })
 }
 
 fn agg_fn_name(f: AggregateFunction) -> &'static str {

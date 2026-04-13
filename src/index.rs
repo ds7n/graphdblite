@@ -171,6 +171,29 @@ pub fn remove_indexes_for_node(
     Ok(())
 }
 
+/// Count the number of index entries matching a given value.
+///
+/// Used by the planner to pick the most selective index when multiple
+/// indexed properties are available.
+pub fn index_count_for_value(
+    conn: &Connection,
+    label: &str,
+    property: &str,
+    value: &Value,
+) -> Result<usize> {
+    let table = index_table_name(label, property);
+    let prefix = rmp_serde::to_vec(value)
+        .map_err(|e| GraphError::Serialization(e.to_string()))?;
+    let entries = match kv::scan_prefix(conn, &table, &prefix) {
+        Ok(e) => e,
+        Err(GraphError::Storage(ref e)) if e.to_string().contains("no such table") => {
+            return Ok(0);
+        }
+        Err(e) => return Err(e),
+    };
+    Ok(entries.len())
+}
+
 /// List all indexes that exist for a given label.
 /// Returns Vec<(label, property)>.
 pub fn list_indexes_for_label(

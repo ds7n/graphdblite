@@ -60,7 +60,9 @@ fn is_read_only(plan: &LogicalOp) -> bool {
 
         LogicalOp::Filter { input, .. }
         | LogicalOp::Project { input, .. }
+        | LogicalOp::Distinct { input }
         | LogicalOp::Sort { input, .. }
+        | LogicalOp::Skip { input, .. }
         | LogicalOp::Limit { input, .. }
         | LogicalOp::Unwind { input, .. }
         | LogicalOp::Aggregate { input, .. }
@@ -72,6 +74,8 @@ fn is_read_only(plan: &LogicalOp) -> bool {
         | LogicalOp::LeftOuterJoin { input: left, right, .. } => {
             is_read_only(left) && is_read_only(right)
         }
+
+        LogicalOp::Union { inputs, .. } => inputs.iter().all(is_read_only),
 
         // Write operations.
         LogicalOp::CreateNode { .. }
@@ -102,12 +106,12 @@ fn exec(conn: &Connection, plan: &LogicalOp, ctx: &ExecContext) -> Result<Vec<Re
             input,
             src_alias,
             dst_alias,
-            edge_type,
+            edge_types,
             direction,
             min_hops,
             max_hops,
         } => exec_expand(
-            conn, input, src_alias, dst_alias, edge_type.as_deref(),
+            conn, input, src_alias, dst_alias, edge_types,
             *direction, *min_hops, *max_hops, ctx,
         ),
 
@@ -123,7 +127,11 @@ fn exec(conn: &Connection, plan: &LogicalOp, ctx: &ExecContext) -> Result<Vec<Re
             aggregates,
         } => exec_aggregate(conn, input, group_keys, aggregates, ctx),
 
+        LogicalOp::Distinct { input } => exec_distinct(conn, input, ctx),
+
         LogicalOp::Sort { input, items } => exec_sort(conn, input, items, ctx),
+
+        LogicalOp::Skip { input, count } => exec_skip(conn, input, *count, ctx),
 
         LogicalOp::Limit { input, count } => exec_limit(conn, input, *count, ctx),
 
@@ -183,6 +191,26 @@ fn exec(conn: &Connection, plan: &LogicalOp, ctx: &ExecContext) -> Result<Vec<Re
             conn, input, src_alias, dst_alias, path_alias,
             edge_type.as_deref(), *direction, *max_hops, *all_paths, ctx,
         ),
+
+        LogicalOp::Union { inputs, all } => {
+            let mut results = Vec::new();
+            for input in inputs {
+                results.extend(exec(conn, input, ctx)?);
+            }
+            if !all {
+                // Deduplicate for plain UNION.
+                let mut seen = Vec::new();
+                results.retain(|rec| {
+                    if seen.iter().any(|s: &Record| s.fields == rec.fields) {
+                        false
+                    } else {
+                        seen.push(rec.clone());
+                        true
+                    }
+                });
+            }
+            Ok(results)
+        }
     }
 }
 
@@ -229,7 +257,7 @@ fn exec_expand(
     input: &LogicalOp,
     src_alias: &str,
     dst_alias: &str,
-    edge_type: Option<&str>,
+    edge_types: &[String],
     direction: Direction,
     min_hops: u32,
     max_hops: u32,
@@ -237,6 +265,12 @@ fn exec_expand(
 ) -> Result<Vec<Record>> {
     let input_records = exec(conn, input, ctx)?;
     let mut results = Vec::new();
+    // If no types specified, match any edge type (empty string = wildcard).
+    let labels: Vec<&str> = if edge_types.is_empty() {
+        vec![""]
+    } else {
+        edge_types.iter().map(|s| s.as_str()).collect()
+    };
 
     for rec in &input_records {
         let src_id = match rec.get(src_alias) {
@@ -244,7 +278,7 @@ fn exec_expand(
             _ => continue,
         };
 
-        let label = edge_type.unwrap_or("");
+        for &label in &labels {
 
         if min_hops == 1 && max_hops == 1 {
             // Single hop — direct neighbor lookup.
@@ -282,6 +316,7 @@ fn exec_expand(
                 results.push(new_rec);
             }
         }
+        } // end for &label in &labels
     }
 
     check_row_limit(&results, ctx)?;
@@ -604,6 +639,24 @@ fn exec_sort(
     Ok(records)
 }
 
+fn exec_distinct(conn: &Connection, input: &LogicalOp, ctx: &ExecContext) -> Result<Vec<Record>> {
+    let records = exec(conn, input, ctx)?;
+    let mut seen = Vec::new();
+    let mut results = Vec::new();
+    for rec in records {
+        if !seen.iter().any(|s: &Record| s.fields == rec.fields) {
+            seen.push(rec.clone());
+            results.push(rec);
+        }
+    }
+    Ok(results)
+}
+
+fn exec_skip(conn: &Connection, input: &LogicalOp, count: u64, ctx: &ExecContext) -> Result<Vec<Record>> {
+    let records = exec(conn, input, ctx)?;
+    Ok(records.into_iter().skip(count as usize).collect())
+}
+
 fn exec_limit(conn: &Connection, input: &LogicalOp, count: u64, ctx: &ExecContext) -> Result<Vec<Record>> {
     let records = exec(conn, input, ctx)?;
     Ok(records.into_iter().take(count as usize).collect())
@@ -828,7 +881,7 @@ fn exec_merge(
         _ => unreachable!("MERGE pattern validated at plan time"),
     };
 
-    let label = node_pat.label.as_deref().unwrap_or("");
+    let label = node_pat.labels.first().map(|s| s.as_str()).unwrap_or("");
     let alias = node_pat.variable.as_deref().unwrap_or("_merge");
 
     // Try to find an existing node — use index lookup if one exists for a
@@ -1010,10 +1063,10 @@ fn exec_correlated(
         }
 
         LogicalOp::Expand {
-            input, src_alias, dst_alias, edge_type, direction, min_hops, max_hops,
+            input, src_alias, dst_alias, edge_types, direction, min_hops, max_hops,
         } => {
             let input_records = exec_correlated(conn, input, outer, ctx)?;
-            let label = edge_type.as_deref().unwrap_or("");
+            let label = edge_types.first().map(|s| s.as_str()).unwrap_or("");
             let mut results = Vec::new();
 
             for rec in &input_records {
@@ -1286,13 +1339,13 @@ pub fn execute_first_match(
             input,
             src_alias,
             dst_alias,
-            edge_type,
+            edge_types,
             direction,
             min_hops,
             max_hops,
         } => {
             let input_records = exec(conn, input, &ExecContext::default())?;
-            let label = edge_type.as_deref().unwrap_or("");
+            let label = edge_types.first().map(|s| s.as_str()).unwrap_or("");
             for rec in &input_records {
                 let src_id = match rec.get(src_alias) {
                     Some(Value::I64(id)) => NodeId(*id as u64),
@@ -1337,7 +1390,12 @@ pub fn execute_first_match(
 }
 
 /// Build a `Record` from a `Node`, keyed under the given alias.
+///
+/// Note: NodeId (u64) is transmitted as i64. This wraps for IDs above
+/// i64::MAX (~9.2e18), which is practically unreachable — sequential IDs
+/// would take thousands of years at millions of inserts per second.
 pub(crate) fn node_to_record(n: &crate::types::Node, alias: &str) -> Record {
+    debug_assert!(n.id.0 <= i64::MAX as u64, "NodeId exceeds i64::MAX");
     let mut rec = Record::new();
     rec.set(alias.to_string(), Value::I64(n.id.0 as i64));
     for (key, val) in &n.properties {

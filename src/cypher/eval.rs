@@ -230,6 +230,78 @@ fn eval_binop(left: &Value, op: BinOp, right: &Value) -> crate::types::Result<Va
             (Value::String(l), Value::String(r)) => Ok(Value::Bool(l.contains(r.as_str()))),
             _ => Ok(Value::Null),
         },
+        BinOp::In => match (left, right) {
+            (_, Value::Null) => Ok(Value::Null),
+            (Value::Null, Value::List(items)) => {
+                // NULL IN [1, 2] → NULL; NULL IN [] → false
+                if items.is_empty() {
+                    Ok(Value::Bool(false))
+                } else {
+                    Ok(Value::Null)
+                }
+            }
+            (val, Value::List(items)) => {
+                let mut found = false;
+                let mut has_null = false;
+                for item in items {
+                    if matches!(item, Value::Null) {
+                        has_null = true;
+                    } else if values_equal(val, item) == Value::Bool(true) {
+                        found = true;
+                        break;
+                    }
+                }
+                if found {
+                    Ok(Value::Bool(true))
+                } else if has_null {
+                    Ok(Value::Null)
+                } else {
+                    Ok(Value::Bool(false))
+                }
+            }
+            _ => Ok(Value::Null),
+        },
+        BinOp::Add => eval_arithmetic(left, right, |a, b| a + b, |a, b| a + b),
+        BinOp::Sub => eval_arithmetic(left, right, |a, b| a - b, |a, b| a - b),
+        BinOp::Mul => eval_arithmetic(left, right, |a, b| a * b, |a, b| a * b),
+        BinOp::Div => {
+            // Division by zero → Null (Cypher semantics).
+            match (left, right) {
+                (Value::Null, _) | (_, Value::Null) => Ok(Value::Null),
+                (Value::I64(a), Value::I64(b)) => {
+                    if *b == 0 { Ok(Value::Null) } else { Ok(Value::I64(a / b)) }
+                }
+                (Value::F64(a), Value::F64(b)) => {
+                    if *b == 0.0 { Ok(Value::Null) } else { Ok(Value::F64(a / b)) }
+                }
+                (Value::I64(a), Value::F64(b)) => {
+                    if *b == 0.0 { Ok(Value::Null) } else { Ok(Value::F64(*a as f64 / b)) }
+                }
+                (Value::F64(a), Value::I64(b)) => {
+                    if *b == 0 { Ok(Value::Null) } else { Ok(Value::F64(a / *b as f64)) }
+                }
+                _ => Ok(Value::Null),
+            }
+        },
+    }
+}
+
+/// Evaluate an arithmetic binary operation with numeric coercion.
+fn eval_arithmetic(
+    left: &Value,
+    right: &Value,
+    int_op: impl Fn(i64, i64) -> i64,
+    float_op: impl Fn(f64, f64) -> f64,
+) -> crate::types::Result<Value> {
+    match (left, right) {
+        (Value::Null, _) | (_, Value::Null) => Ok(Value::Null),
+        (Value::I64(a), Value::I64(b)) => Ok(Value::I64(int_op(*a, *b))),
+        (Value::F64(a), Value::F64(b)) => Ok(Value::F64(float_op(*a, *b))),
+        (Value::I64(a), Value::F64(b)) => Ok(Value::F64(float_op(*a as f64, *b))),
+        (Value::F64(a), Value::I64(b)) => Ok(Value::F64(float_op(*a, *b as f64))),
+        // String concatenation with +.
+        (Value::String(a), Value::String(b)) => Ok(Value::String(format!("{a}{b}"))),
+        _ => Ok(Value::Null),
     }
 }
 

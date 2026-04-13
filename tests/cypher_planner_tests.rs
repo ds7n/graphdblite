@@ -36,7 +36,7 @@ fn plan_scan_with_expand() {
             LogicalOp::Expand {
                 ref src_alias,
                 ref dst_alias,
-                ref edge_type,
+                ref edge_types,
                 direction,
                 min_hops,
                 max_hops,
@@ -44,7 +44,7 @@ fn plan_scan_with_expand() {
             } => {
                 assert_eq!(src_alias, "a");
                 assert_eq!(dst_alias, "b");
-                assert_eq!(edge_type.as_deref(), Some("KNOWS"));
+                assert_eq!(edge_types.first().map(|s| s.as_str()), Some("KNOWS"));
                 assert_eq!(direction, Direction::Outgoing);
                 assert_eq!(min_hops, 1);
                 assert_eq!(max_hops, 1);

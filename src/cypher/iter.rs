@@ -96,6 +96,24 @@ impl<'a> RecordIter for FilterIter<'a> {
     }
 }
 
+/// Skips the first `count` records from input, then yields the rest.
+pub struct SkipIter<'a> {
+    input: Box<dyn RecordIter + 'a>,
+    remaining_to_skip: u64,
+}
+
+impl<'a> RecordIter for SkipIter<'a> {
+    fn next_record(&mut self) -> Result<Option<Record>> {
+        while self.remaining_to_skip > 0 {
+            if self.input.next_record()?.is_none() {
+                return Ok(None);
+            }
+            self.remaining_to_skip -= 1;
+        }
+        self.input.next_record()
+    }
+}
+
 /// Yields at most `count` records from input, then stops.
 pub struct LimitIter<'a> {
     input: Box<dyn RecordIter + 'a>,
@@ -189,7 +207,7 @@ pub struct ExpandIter<'a> {
     conn: &'a Connection,
     src_alias: String,
     dst_alias: String,
-    edge_type: Option<String>,
+    edge_types: Vec<String>,
     direction: Direction,
     min_hops: u32,
     max_hops: u32,
@@ -216,7 +234,7 @@ impl<'a> RecordIter for ExpandIter<'a> {
                 _ => continue,
             };
 
-            let label = self.edge_type.as_deref().unwrap_or("");
+            let label = self.edge_types.first().map(|s| s.as_str()).unwrap_or("");
             let dst_ids = if self.min_hops == 1 && self.max_hops == 1 {
                 edge::get_neighbors(self.conn, src_id, label, self.direction)?
             } else {
@@ -290,6 +308,14 @@ pub fn build_iter<'a>(
             }))
         }
 
+        LogicalOp::Skip { input, count } => {
+            let input_iter = build_iter(conn, input)?;
+            Ok(Box::new(SkipIter {
+                input: input_iter,
+                remaining_to_skip: *count,
+            }))
+        }
+
         LogicalOp::Limit { input, count } => {
             let input_iter = build_iter(conn, input)?;
             Ok(Box::new(LimitIter {
@@ -308,7 +334,7 @@ pub fn build_iter<'a>(
         }
 
         LogicalOp::Expand {
-            input, src_alias, dst_alias, edge_type, direction, min_hops, max_hops,
+            input, src_alias, dst_alias, edge_types, direction, min_hops, max_hops,
         } => {
             let input_iter = build_iter(conn, input)?;
             Ok(Box::new(ExpandIter {
@@ -316,12 +342,27 @@ pub fn build_iter<'a>(
                 conn,
                 src_alias: src_alias.clone(),
                 dst_alias: dst_alias.clone(),
-                edge_type: edge_type.clone(),
+                edge_types: edge_types.clone(),
                 direction: *direction,
                 min_hops: *min_hops,
                 max_hops: *max_hops,
                 buffer: Vec::new().into_iter(),
             }))
+        }
+
+        LogicalOp::Distinct { input } => {
+            // Blocking: must materialize to deduplicate.
+            let mut input_iter = build_iter(conn, input)?;
+            let records = collect_all(&mut *input_iter)?;
+            let mut seen = Vec::new();
+            let mut deduped = Vec::new();
+            for rec in records {
+                if !seen.iter().any(|s: &Record| s.fields == rec.fields) {
+                    seen.push(rec.clone());
+                    deduped.push(rec);
+                }
+            }
+            Ok(Box::new(VecIter::new(deduped)))
         }
 
         LogicalOp::Sort { input, items } => {

@@ -12,7 +12,7 @@ fn parse_simple_match() {
             match &pat.elements[0] {
                 PatternElement::Node(n) => {
                     assert_eq!(n.variable.as_deref(), Some("n"));
-                    assert_eq!(n.label.as_deref(), Some("Person"));
+                    assert_eq!(n.labels.first().map(|s| s.as_str()), Some("Person"));
                 }
                 _ => panic!("expected node pattern"),
             }
@@ -31,7 +31,7 @@ fn parse_match_with_relationship() {
             assert_eq!(pat.elements.len(), 3); // node, rel, node
             match &pat.elements[1] {
                 PatternElement::Relationship(r) => {
-                    assert_eq!(r.rel_type.as_deref(), Some("KNOWS"));
+                    assert_eq!(r.rel_types.first().map(|s| s.as_str()), Some("KNOWS"));
                     assert_eq!(r.direction, RelDirection::Outgoing);
                 }
                 _ => panic!("expected relationship"),
@@ -130,7 +130,7 @@ fn parse_create_node() {
             match &c.patterns[0].elements[0] {
                 PatternElement::Node(n) => {
                     assert_eq!(n.variable.as_deref(), Some("n"));
-                    assert_eq!(n.label.as_deref(), Some("Person"));
+                    assert_eq!(n.labels.first().map(|s| s.as_str()), Some("Person"));
                     assert_eq!(n.properties.len(), 2);
                 }
                 _ => panic!("expected node"),

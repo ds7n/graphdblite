@@ -11,6 +11,12 @@ pub enum Statement {
     Merge(MergeStatement),
     Unwind(UnwindStatement),
     Explain(Box<Statement>),
+    /// UNION [ALL] of multiple statements.
+    Union {
+        statements: Vec<Statement>,
+        /// true = UNION ALL (keep duplicates), false = UNION (deduplicate).
+        all: bool,
+    },
 }
 
 /// MATCH ... WHERE ... WITH ... RETURN ... ORDER BY ... LIMIT
@@ -22,6 +28,7 @@ pub struct MatchStatement {
     pub intermediate_clauses: Vec<IntermediateClause>,
     pub return_clause: ReturnClause,
     pub order_by: Vec<SortItem>,
+    pub skip: Option<u64>,
     pub limit: Option<u64>,
 }
 
@@ -86,6 +93,7 @@ pub enum UnwindBody {
         where_clause: Option<Expr>,
         return_clause: ReturnClause,
         order_by: Vec<SortItem>,
+        skip: Option<u64>,
         limit: Option<u64>,
     },
     Create {
@@ -133,14 +141,14 @@ pub enum PatternElement {
 #[derive(Debug, Clone, PartialEq)]
 pub struct NodePattern {
     pub variable: Option<String>,
-    pub label: Option<String>,
+    pub labels: Vec<String>,
     pub properties: HashMap<String, Expr>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct RelPattern {
     pub variable: Option<String>,
-    pub rel_type: Option<String>,
+    pub rel_types: Vec<String>,
     pub direction: RelDirection,
     pub var_length: Option<(u32, u32)>,
 }
@@ -156,6 +164,7 @@ pub enum RelDirection {
 #[derive(Debug, Clone, PartialEq)]
 pub struct ReturnClause {
     pub items: Vec<ReturnItem>,
+    pub distinct: bool,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -249,4 +258,9 @@ pub enum BinOp {
     StartsWith,
     EndsWith,
     Contains,
+    In,
+    Add,
+    Sub,
+    Mul,
+    Div,
 }

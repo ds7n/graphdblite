@@ -1,0 +1,16 @@
+[package]
+name = "graphdblite-ffi"
+version = "0.1.0"
+edition = "2021"
+description = "C FFI bindings for graphdblite"
+license = "MPL-2.0"
+publish = false
+
+[lib]
+crate-type = ["cdylib", "staticlib"]
+
+[dependencies]
+graphdblite = { path = "../.." }
+
+[build-dependencies]
+cbindgen = "0.27"

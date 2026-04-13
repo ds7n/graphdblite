@@ -7,3 +7,14 @@ uv.lock
 .symtext/
 .symtext.toml
 dev/
+
+# Generated C header (regenerated on build)
+crates/ffi/graphdblite.h
+
+# Node.js
+crates/node/node_modules/
+crates/node/*.node
+
+# Python compiled extensions
+crates/python/python/graphdblite/*.so
+crates/python/python/graphdblite/__pycache__/

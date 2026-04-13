@@ -1,0 +1,15 @@
+[package]
+name = "graphdblite-python"
+version = "0.1.0"
+edition = "2021"
+description = "Python bindings for graphdblite"
+license = "MPL-2.0"
+publish = false
+
+[lib]
+name = "_graphdblite"
+crate-type = ["cdylib"]
+
+[dependencies]
+graphdblite = { path = "../.." }
+pyo3 = { version = "0.22", features = ["extension-module"] }

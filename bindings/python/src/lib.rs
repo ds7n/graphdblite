@@ -5,8 +5,7 @@ use pyo3::exceptions::{PyRuntimeError, PyValueError};
 use pyo3::prelude::*;
 use pyo3::types::PyDict;
 
-use crate::db::{Config, Database as RustDatabase};
-use crate::types::{GraphError, Value};
+use graphdblite::{Config, Database as RustDatabase, GraphError, Value};
 
 // --- Exception hierarchy ---
 
@@ -44,7 +43,10 @@ fn value_to_py(py: Python, val: &Value) -> PyObject {
     }
 }
 
-fn records_to_py(py: Python, records: &[crate::cypher::record::Record]) -> PyResult<Vec<PyObject>> {
+fn records_to_py(
+    py: Python,
+    records: &[graphdblite::cypher::record::Record],
+) -> PyResult<Vec<PyObject>> {
     let mut result = Vec::new();
     for rec in records {
         let dict = PyDict::new_bound(py);
@@ -250,13 +252,13 @@ impl PyWriteTransaction {
     fn execute(&self, py: Python, cypher: &str) -> PyResult<Vec<PyObject>> {
         let db = self.get_db()?;
         let conn = db.connection();
-        let stmt = crate::cypher::parser::parse(cypher).map_err(to_py_err)?;
-        let plan = crate::cypher::planner::plan(conn, &stmt).map_err(to_py_err)?;
-        let ctx = crate::cypher::executor::ExecContext {
+        let stmt = graphdblite::cypher::parser::parse(cypher).map_err(to_py_err)?;
+        let plan = graphdblite::cypher::planner::plan(conn, &stmt).map_err(to_py_err)?;
+        let ctx = graphdblite::cypher::executor::ExecContext {
             max_result_rows: db.max_result_rows,
         };
-        let records =
-            crate::cypher::executor::execute_with_ctx(conn, &plan, &ctx).map_err(to_py_err)?;
+        let records = graphdblite::cypher::executor::execute_with_ctx(conn, &plan, &ctx)
+            .map_err(to_py_err)?;
         records_to_py(py, &records)
     }
 
@@ -347,13 +349,13 @@ impl PyReadTransaction {
     fn query(&self, py: Python, cypher: &str) -> PyResult<Vec<PyObject>> {
         let db = self.get_db()?;
         let conn = db.connection();
-        let stmt = crate::cypher::parser::parse(cypher).map_err(to_py_err)?;
-        let plan = crate::cypher::planner::plan(conn, &stmt).map_err(to_py_err)?;
-        let ctx = crate::cypher::executor::ExecContext {
+        let stmt = graphdblite::cypher::parser::parse(cypher).map_err(to_py_err)?;
+        let plan = graphdblite::cypher::planner::plan(conn, &stmt).map_err(to_py_err)?;
+        let ctx = graphdblite::cypher::executor::ExecContext {
             max_result_rows: db.max_result_rows,
         };
-        let records =
-            crate::cypher::executor::execute_with_ctx(conn, &plan, &ctx).map_err(to_py_err)?;
+        let records = graphdblite::cypher::executor::execute_with_ctx(conn, &plan, &ctx)
+            .map_err(to_py_err)?;
         records_to_py(py, &records)
     }
 

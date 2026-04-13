@@ -1,0 +1,21 @@
+{
+  "name": "graphdblite",
+  "version": "0.1.0",
+  "description": "Embedded graph database with Cypher support",
+  "main": "index.js",
+  "types": "index.d.ts",
+  "napi": {
+    "name": "graphdblite",
+    "triples": {
+      "defaults": true
+    }
+  },
+  "license": "MPL-2.0",
+  "devDependencies": {
+    "@napi-rs/cli": "^2.18.0"
+  },
+  "scripts": {
+    "build": "napi build --platform --release",
+    "build-debug": "napi build --platform"
+  }
+}

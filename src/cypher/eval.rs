@@ -160,7 +160,7 @@ fn eval_exists(
     record: &Record,
     conn: &Connection,
 ) -> crate::types::Result<Value> {
-    use crate::cypher::executor::execute;
+    use crate::cypher::executor::execute_first_match;
     use crate::cypher::ir::LogicalOp;
     use crate::cypher::planner::plan_patterns;
 
@@ -175,12 +175,7 @@ fn eval_exists(
         };
     }
 
-    // Execute the subquery.
-    let results = execute(conn, &op)?;
-
-    // Check if any result matches the outer record's correlated bindings.
-    // Correlated variables: if the outer record binds a variable (bare alias key,
-    // no dots) and the subquery also produces that variable, the values must match.
+    // Extract correlated bindings from the outer record (bare alias keys, no dots).
     let outer_bindings: Vec<(String, Value)> = record
         .fields
         .iter()
@@ -188,19 +183,9 @@ fn eval_exists(
         .map(|(k, v)| (k.clone(), v.clone()))
         .collect();
 
-    for sub_rec in &results {
-        let matches = outer_bindings.iter().all(|(key, outer_val)| {
-            match sub_rec.get(key) {
-                Some(inner_val) => inner_val == outer_val,
-                None => true, // subquery doesn't produce this variable — no constraint
-            }
-        });
-        if matches {
-            return Ok(Value::Bool(true));
-        }
-    }
-
-    Ok(Value::Bool(false))
+    // Short-circuit: return true on the first matching row.
+    let found = execute_first_match(conn, &op, &outer_bindings)?;
+    Ok(Value::Bool(found))
 }
 
 fn eval_binop(left: &Value, op: BinOp, right: &Value) -> crate::types::Result<Value> {

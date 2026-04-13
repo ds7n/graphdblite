@@ -25,7 +25,7 @@ pub fn create_node(
     };
     let data = rmp_serde::to_vec(&record)
         .map_err(|e| GraphError::Serialization(e.to_string()))?;
-    kv::put(conn, kv::TABLE_NODES, &id.to_be_bytes(), &data)?;
+    put_node(conn, &id.to_be_bytes(), label, &data)?;
     stats::increment_label_count(conn, label)?;
     Ok(id)
 }
@@ -106,7 +106,7 @@ pub fn set_node_property(
     record.properties.insert(key.to_string(), value);
     let new_data = rmp_serde::to_vec(&record)
         .map_err(|e| GraphError::Serialization(e.to_string()))?;
-    kv::put(conn, kv::TABLE_NODES, &id.to_be_bytes(), &new_data)?;
+    put_node(conn, &id.to_be_bytes(), &record.label, &new_data)?;
     Ok(())
 }
 
@@ -123,41 +123,64 @@ pub fn remove_node_property(
     record.properties.remove(key);
     let new_data = rmp_serde::to_vec(&record)
         .map_err(|e| GraphError::Serialization(e.to_string()))?;
-    kv::put(conn, kv::TABLE_NODES, &id.to_be_bytes(), &new_data)?;
+    put_node(conn, &id.to_be_bytes(), &record.label, &new_data)?;
     Ok(())
 }
 
-/// Scan all nodes with a given label.
+/// Scan nodes by label using the indexed label column.
+///
+/// When `label` is empty, returns all nodes.
 pub fn find_nodes_by_label(
     conn: &Connection,
     label: &str,
 ) -> Result<Vec<Node>> {
-    // Full scan of nodes table — filter by label after deserialization.
-    // For indexed lookups, use index::index_lookup instead.
-    let mut stmt = conn.prepare_cached(
-        "SELECT key, value FROM nodes ORDER BY key",
-    )?;
-    let rows = stmt.query_map([], |row| {
-        Ok((row.get::<_, Vec<u8>>(0)?, row.get::<_, Vec<u8>>(1)?))
-    })?;
+    let (sql, use_param) = if label.is_empty() {
+        ("SELECT key, value FROM nodes ORDER BY key".to_string(), false)
+    } else {
+        ("SELECT key, value FROM nodes WHERE label = ?1 ORDER BY key".to_string(), true)
+    };
+
+    let mut stmt = conn.prepare_cached(&sql)?;
+    let rows = if use_param {
+        stmt.query_map(rusqlite::params![label], |row| {
+            Ok((row.get::<_, Vec<u8>>(0)?, row.get::<_, Vec<u8>>(1)?))
+        })?
+        .collect::<std::result::Result<Vec<_>, _>>()?
+    } else {
+        stmt.query_map([], |row| {
+            Ok((row.get::<_, Vec<u8>>(0)?, row.get::<_, Vec<u8>>(1)?))
+        })?
+        .collect::<std::result::Result<Vec<_>, _>>()?
+    };
 
     let mut nodes = Vec::new();
-    for row in rows {
-        let (key, data) = row?;
+    for (key, data) in rows {
         let record: NodeRecord = rmp_serde::from_slice(&data)
             .map_err(|e| GraphError::Serialization(e.to_string()))?;
-        if label.is_empty() || record.label == label {
-            let id = NodeId::from_be_bytes(
-                key.get(..8)
-                    .and_then(|s| s.try_into().ok())
-                    .ok_or_else(|| GraphError::Serialization("corrupt node key bytes".into()))?,
-            );
-            nodes.push(Node {
-                id,
-                label: record.label,
-                properties: record.properties,
-            });
-        }
+        let id = NodeId::from_be_bytes(
+            key.get(..8)
+                .and_then(|s| s.try_into().ok())
+                .ok_or_else(|| GraphError::Serialization("corrupt node key bytes".into()))?,
+        );
+        nodes.push(Node {
+            id,
+            label: record.label,
+            properties: record.properties,
+        });
     }
     Ok(nodes)
+}
+
+/// Insert or replace a node row in the v2 schema (key + label + value).
+fn put_node(
+    conn: &Connection,
+    key: &[u8],
+    label: &str,
+    value: &[u8],
+) -> Result<()> {
+    let mut stmt = conn.prepare_cached(
+        "INSERT OR REPLACE INTO nodes (key, label, value) VALUES (?1, ?2, ?3)"
+    )?;
+    stmt.execute(rusqlite::params![key, label, value])?;
+    Ok(())
 }

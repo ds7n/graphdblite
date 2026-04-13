@@ -131,6 +131,18 @@ pub enum LogicalOp {
         alias: String,
     },
 
+    /// Find shortest path(s) between two bound nodes.
+    ShortestPath {
+        input: Box<LogicalOp>,
+        src_alias: String,
+        dst_alias: String,
+        path_alias: String,
+        edge_type: Option<String>,
+        direction: Direction,
+        max_hops: u32,
+        all_paths: bool,
+    },
+
     /// Produce a single empty record (used as starting input for scans).
     EmptyRow,
 }

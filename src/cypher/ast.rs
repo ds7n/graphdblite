@@ -106,10 +106,21 @@ pub struct UnwindClause {
     pub alias: String,
 }
 
-/// A graph pattern: sequence of node and relationship elements.
+/// Whether a pattern is wrapped in shortestPath / allShortestPaths.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ShortestPathMode {
+    None,
+    Single,
+    All,
+}
+
+/// A graph pattern: sequence of node and relationship elements,
+/// with optional path variable binding and shortest path mode.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Pattern {
     pub elements: Vec<PatternElement>,
+    pub path_variable: Option<String>,
+    pub shortest_path_mode: ShortestPathMode,
 }
 
 #[derive(Debug, Clone, PartialEq)]

@@ -97,6 +97,20 @@ pub fn execute(conn: &Connection, plan: &LogicalOp) -> Result<Vec<Record>> {
             right,
             optional_aliases,
         } => exec_left_outer_join(conn, input, right, optional_aliases),
+
+        LogicalOp::ShortestPath {
+            input,
+            src_alias,
+            dst_alias,
+            path_alias,
+            edge_type,
+            direction,
+            max_hops,
+            all_paths,
+        } => exec_shortest_path(
+            conn, input, src_alias, dst_alias, path_alias,
+            edge_type.as_deref(), *direction, *max_hops, *all_paths,
+        ),
     }
 }
 
@@ -873,6 +887,59 @@ fn exec_left_outer_join(
                 }
                 results.push(combined);
             }
+        }
+    }
+
+    Ok(results)
+}
+
+fn exec_shortest_path(
+    conn: &Connection,
+    input: &LogicalOp,
+    src_alias: &str,
+    dst_alias: &str,
+    path_alias: &str,
+    edge_type: Option<&str>,
+    direction: Direction,
+    max_hops: u32,
+    all_paths: bool,
+) -> Result<Vec<Record>> {
+    let records = execute(conn, input)?;
+    let label = edge_type.unwrap_or("");
+    let mut results = Vec::new();
+
+    for rec in &records {
+        let src_id = match rec.get(src_alias) {
+            Some(Value::I64(id)) => NodeId(*id as u64),
+            _ => continue,
+        };
+        let dst_id = match rec.get(dst_alias) {
+            Some(Value::I64(id)) => NodeId(*id as u64),
+            _ => continue,
+        };
+
+        if all_paths {
+            let paths = edge::all_shortest_paths(conn, src_id, dst_id, label, direction, max_hops)?;
+            if paths.is_empty() {
+                // No path found — emit record with null path.
+                let mut new_rec = rec.clone();
+                new_rec.set(path_alias.to_string(), Value::Null);
+                results.push(new_rec);
+            } else {
+                for path in paths {
+                    let mut new_rec = rec.clone();
+                    new_rec.set(path_alias.to_string(), Value::Path(path));
+                    results.push(new_rec);
+                }
+            }
+        } else {
+            let path = edge::shortest_path(conn, src_id, dst_id, label, direction, max_hops)?;
+            let mut new_rec = rec.clone();
+            match path {
+                Some(p) => new_rec.set(path_alias.to_string(), Value::Path(p)),
+                None => new_rec.set(path_alias.to_string(), Value::Null),
+            }
+            results.push(new_rec);
         }
     }
 

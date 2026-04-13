@@ -210,6 +210,154 @@ pub fn traverse(
     Ok(result)
 }
 
+/// Find the shortest path between two nodes using BFS.
+///
+/// Returns the path as an ordered list of node IDs (including start and end),
+/// or `None` if no path exists within `max_hops`.
+pub fn shortest_path(
+    conn: &Connection,
+    start: NodeId,
+    end: NodeId,
+    label: &str,
+    direction: Direction,
+    max_hops: u32,
+) -> Result<Option<Vec<NodeId>>> {
+    use std::collections::{HashMap, VecDeque};
+
+    if start == end {
+        return Ok(Some(vec![start]));
+    }
+
+    // BFS with parent tracking.
+    let mut parent: HashMap<u64, u64> = HashMap::new();
+    let mut queue: VecDeque<(NodeId, u32)> = VecDeque::new();
+    queue.push_back((start, 0));
+    parent.insert(start.0, start.0); // sentinel: start's parent is itself
+
+    while let Some((current, depth)) = queue.pop_front() {
+        if depth >= max_hops {
+            continue;
+        }
+
+        let neighbors = get_neighbors(conn, current, label, direction)?;
+        for neighbor in neighbors {
+            if parent.contains_key(&neighbor.0) {
+                continue; // already visited
+            }
+            parent.insert(neighbor.0, current.0);
+
+            if neighbor == end {
+                // Reconstruct path.
+                let mut path = vec![end];
+                let mut cur = end.0;
+                while cur != start.0 {
+                    cur = parent[&cur];
+                    path.push(NodeId(cur));
+                }
+                path.reverse();
+                return Ok(Some(path));
+            }
+
+            queue.push_back((neighbor, depth + 1));
+        }
+    }
+
+    Ok(None)
+}
+
+/// Find all shortest paths between two nodes using BFS.
+///
+/// Returns all paths of minimum length as ordered lists of node IDs.
+/// Returns an empty vec if no path exists within `max_hops`.
+pub fn all_shortest_paths(
+    conn: &Connection,
+    start: NodeId,
+    end: NodeId,
+    label: &str,
+    direction: Direction,
+    max_hops: u32,
+) -> Result<Vec<Vec<NodeId>>> {
+    use std::collections::{HashMap, VecDeque};
+
+    if start == end {
+        return Ok(vec![vec![start]]);
+    }
+
+    // BFS tracking ALL parents per node (not just the first).
+    // parents[node] = set of nodes that reach it at the shortest distance.
+    let mut parents: HashMap<u64, Vec<u64>> = HashMap::new();
+    let mut depth_of: HashMap<u64, u32> = HashMap::new();
+    let mut queue: VecDeque<(NodeId, u32)> = VecDeque::new();
+
+    queue.push_back((start, 0));
+    depth_of.insert(start.0, 0);
+    parents.insert(start.0, vec![]);
+
+    let mut found_depth: Option<u32> = None;
+
+    while let Some((current, depth)) = queue.pop_front() {
+        // If we've already found the target at a shorter depth, stop.
+        if let Some(fd) = found_depth {
+            if depth >= fd {
+                continue;
+            }
+        }
+        if depth >= max_hops {
+            continue;
+        }
+
+        let neighbors = get_neighbors(conn, current, label, direction)?;
+        let next_depth = depth + 1;
+
+        for neighbor in neighbors {
+            if let Some(&existing_depth) = depth_of.get(&neighbor.0) {
+                // Already visited at this or shorter depth — add parent if same depth.
+                if existing_depth == next_depth {
+                    parents.entry(neighbor.0).or_default().push(current.0);
+                }
+                continue;
+            }
+
+            // First visit.
+            depth_of.insert(neighbor.0, next_depth);
+            parents.insert(neighbor.0, vec![current.0]);
+
+            if neighbor == end {
+                found_depth = Some(next_depth);
+                // Don't stop yet — finish this BFS level to find all equal-length paths.
+            } else if found_depth.is_none() {
+                queue.push_back((neighbor, next_depth));
+            }
+        }
+    }
+
+    if !depth_of.contains_key(&end.0) {
+        return Ok(vec![]);
+    }
+
+    // Reconstruct all paths from end back to start using parent pointers.
+    let mut all_paths = Vec::new();
+    let mut stack: Vec<(u64, Vec<NodeId>)> = vec![(end.0, vec![end])];
+
+    while let Some((node, path)) = stack.pop() {
+        if node == start.0 {
+            let mut complete = path;
+            complete.reverse();
+            all_paths.push(complete);
+            continue;
+        }
+        if let Some(pars) = parents.get(&node) {
+            for &p in pars {
+                let mut extended = path.clone();
+                extended.push(NodeId(p));
+                stack.push((p, extended));
+            }
+        }
+    }
+
+    Ok(all_paths)
+}
+
 /// Get all edge labels and their neighbor IDs for a node in a given direction.
 /// Used internally for cascading node deletion.
 pub fn get_all_edge_labels(

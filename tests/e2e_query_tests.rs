@@ -1076,11 +1076,11 @@ fn e2e_multiple_aggregates_in_return() {
     assert_eq!(rows.len(), 2);
     // eng: count=2, sum=70, avg=35
     assert_eq!(rows[0].get("cnt").unwrap(), &Value::I64(2));
-    assert_eq!(rows[0].get("total").unwrap(), &Value::F64(70.0));
+    assert_eq!(rows[0].get("total").unwrap(), &Value::I64(70));
     assert_eq!(rows[0].get("average").unwrap(), &Value::F64(35.0));
     // sales: count=1, sum=25, avg=25
     assert_eq!(rows[1].get("cnt").unwrap(), &Value::I64(1));
-    assert_eq!(rows[1].get("total").unwrap(), &Value::F64(25.0));
+    assert_eq!(rows[1].get("total").unwrap(), &Value::I64(25));
     assert_eq!(rows[1].get("average").unwrap(), &Value::F64(25.0));
     tx.commit().unwrap();
 }
@@ -1522,7 +1522,7 @@ fn e2e_unwind_with_aggregation() {
         .query("UNWIND [1, 2, 3, 4, 5] AS x RETURN sum(x) AS total, count(*) AS cnt")
         .unwrap();
     assert_eq!(rows.len(), 1);
-    assert_eq!(rows[0].get("total").unwrap(), &Value::F64(15.0));
+    assert_eq!(rows[0].get("total").unwrap(), &Value::I64(15));
     assert_eq!(rows[0].get("cnt").unwrap(), &Value::I64(5));
     tx.commit().unwrap();
 }

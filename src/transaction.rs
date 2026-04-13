@@ -6,6 +6,83 @@ use crate::types::{
     validate_properties, Direction, GraphError, Node, NodeId, Properties, Result, Value,
 };
 
+/// Shared read operations — implemented identically on both transaction types.
+macro_rules! impl_read_ops {
+    ($ty:ident) => {
+        impl<'a> $ty<'a> {
+            /// Get a node by ID.
+            pub fn get_node(&self, id: NodeId) -> Result<Node> {
+                node::get_node(&self.tx, id)
+            }
+
+            /// Check if a node exists.
+            pub fn node_exists(&self, id: NodeId) -> Result<bool> {
+                node::node_exists(&self.tx, id)
+            }
+
+            /// Get neighbor node IDs.
+            pub fn get_neighbors(
+                &self,
+                id: NodeId,
+                label: &str,
+                direction: Direction,
+            ) -> Result<Vec<NodeId>> {
+                edge::get_neighbors(&self.tx, id, label, direction)
+            }
+
+            /// Get edge properties.
+            pub fn get_edge_properties(
+                &self,
+                src: NodeId,
+                dst: NodeId,
+                label: &str,
+            ) -> Result<Properties> {
+                edge::get_edge_properties(&self.tx, src, dst, label)
+            }
+
+            /// Find nodes by label (full scan).
+            pub fn find_nodes_by_label(&self, label: &str) -> Result<Vec<Node>> {
+                node::find_nodes_by_label(&self.tx, label)
+            }
+
+            /// Lookup nodes via secondary index.
+            pub fn index_lookup(
+                &self,
+                label: &str,
+                property: &str,
+                value: &Value,
+            ) -> Result<Vec<NodeId>> {
+                index::index_lookup(&self.tx, label, property, value)
+            }
+
+            /// Variable-length path traversal (BFS).
+            pub fn traverse(
+                &self,
+                start: NodeId,
+                label: &str,
+                direction: Direction,
+                min_hops: u32,
+                max_hops: u32,
+            ) -> Result<Vec<NodeId>> {
+                edge::traverse(&self.tx, start, label, direction, min_hops, max_hops)
+            }
+
+            /// Execute a Cypher query string and return result records.
+            pub fn query(&self, cypher: &str) -> Result<Vec<Record>> {
+                let stmt = parser::parse(cypher)?;
+                let plan = planner::plan(&self.tx, &stmt)?;
+                if matches!(stmt, Statement::Explain(_)) {
+                    return Ok(cost::format_explain(&self.tx, &plan));
+                }
+                let ctx = ExecContext {
+                    max_result_rows: self.max_result_rows,
+                };
+                executor::execute_with_ctx(&self.tx, &plan, &ctx)
+            }
+        }
+    };
+}
+
 /// A read-only transaction. Provides snapshot isolation via SQLite's WAL.
 pub struct ReadTransaction<'a> {
     tx: rusqlite::Transaction<'a>,
@@ -17,82 +94,14 @@ impl<'a> ReadTransaction<'a> {
         Self { tx, max_result_rows }
     }
 
-    /// Get a node by ID.
-    pub fn get_node(&self, id: NodeId) -> Result<Node> {
-        node::get_node(&self.tx, id)
-    }
-
-    /// Check if a node exists.
-    pub fn node_exists(&self, id: NodeId) -> Result<bool> {
-        node::node_exists(&self.tx, id)
-    }
-
-    /// Get neighbor node IDs.
-    pub fn get_neighbors(
-        &self,
-        id: NodeId,
-        label: &str,
-        direction: Direction,
-    ) -> Result<Vec<NodeId>> {
-        edge::get_neighbors(&self.tx, id, label, direction)
-    }
-
-    /// Get edge properties.
-    pub fn get_edge_properties(
-        &self,
-        src: NodeId,
-        dst: NodeId,
-        label: &str,
-    ) -> Result<Properties> {
-        edge::get_edge_properties(&self.tx, src, dst, label)
-    }
-
-    /// Find nodes by label (full scan).
-    pub fn find_nodes_by_label(&self, label: &str) -> Result<Vec<Node>> {
-        node::find_nodes_by_label(&self.tx, label)
-    }
-
-    /// Lookup nodes via secondary index.
-    pub fn index_lookup(
-        &self,
-        label: &str,
-        property: &str,
-        value: &Value,
-    ) -> Result<Vec<NodeId>> {
-        index::index_lookup(&self.tx, label, property, value)
-    }
-
-    /// Variable-length path traversal (BFS).
-    pub fn traverse(
-        &self,
-        start: NodeId,
-        label: &str,
-        direction: Direction,
-        min_hops: u32,
-        max_hops: u32,
-    ) -> Result<Vec<NodeId>> {
-        edge::traverse(&self.tx, start, label, direction, min_hops, max_hops)
-    }
-
-    /// Execute a Cypher query string and return result records.
-    pub fn query(&self, cypher: &str) -> Result<Vec<Record>> {
-        let stmt = parser::parse(cypher)?;
-        let plan = planner::plan(&self.tx, &stmt)?;
-        if matches!(stmt, Statement::Explain(_)) {
-            return Ok(cost::format_explain(&self.tx, &plan));
-        }
-        let ctx = ExecContext {
-            max_result_rows: self.max_result_rows,
-        };
-        executor::execute_with_ctx(&self.tx, &plan, &ctx)
-    }
-
     /// Commit the read transaction (releases snapshot).
     pub fn commit(self) -> Result<()> {
         self.tx.commit()?;
         Ok(())
     }
 }
+
+impl_read_ops!(ReadTransaction);
 
 /// A read-write transaction. Acquires the write lock via BEGIN IMMEDIATE.
 pub struct WriteTransaction<'a> {
@@ -115,78 +124,6 @@ impl<'a> WriteTransaction<'a> {
             max_name_bytes,
             max_result_rows,
         }
-    }
-
-    // --- Read operations (same as ReadTransaction) ---
-
-    /// Get a node by ID.
-    pub fn get_node(&self, id: NodeId) -> Result<Node> {
-        node::get_node(&self.tx, id)
-    }
-
-    /// Check if a node exists.
-    pub fn node_exists(&self, id: NodeId) -> Result<bool> {
-        node::node_exists(&self.tx, id)
-    }
-
-    /// Get neighbor node IDs.
-    pub fn get_neighbors(
-        &self,
-        id: NodeId,
-        label: &str,
-        direction: Direction,
-    ) -> Result<Vec<NodeId>> {
-        edge::get_neighbors(&self.tx, id, label, direction)
-    }
-
-    /// Get edge properties.
-    pub fn get_edge_properties(
-        &self,
-        src: NodeId,
-        dst: NodeId,
-        label: &str,
-    ) -> Result<Properties> {
-        edge::get_edge_properties(&self.tx, src, dst, label)
-    }
-
-    /// Find nodes by label (full scan).
-    pub fn find_nodes_by_label(&self, label: &str) -> Result<Vec<Node>> {
-        node::find_nodes_by_label(&self.tx, label)
-    }
-
-    /// Lookup nodes via secondary index.
-    pub fn index_lookup(
-        &self,
-        label: &str,
-        property: &str,
-        value: &Value,
-    ) -> Result<Vec<NodeId>> {
-        index::index_lookup(&self.tx, label, property, value)
-    }
-
-    /// Variable-length path traversal (BFS).
-    pub fn traverse(
-        &self,
-        start: NodeId,
-        label: &str,
-        direction: Direction,
-        min_hops: u32,
-        max_hops: u32,
-    ) -> Result<Vec<NodeId>> {
-        edge::traverse(&self.tx, start, label, direction, min_hops, max_hops)
-    }
-
-    /// Execute a Cypher query string and return result records.
-    pub fn query(&self, cypher: &str) -> Result<Vec<Record>> {
-        let stmt = parser::parse(cypher)?;
-        let plan = planner::plan(&self.tx, &stmt)?;
-        if matches!(stmt, Statement::Explain(_)) {
-            return Ok(cost::format_explain(&self.tx, &plan));
-        }
-        let ctx = ExecContext {
-            max_result_rows: self.max_result_rows,
-        };
-        executor::execute_with_ctx(&self.tx, &plan, &ctx)
     }
 
     // --- Write operations ---
@@ -323,3 +260,5 @@ impl<'a> WriteTransaction<'a> {
         Ok(())
     }
 }
+
+impl_read_ops!(WriteTransaction);

@@ -34,7 +34,8 @@ pub fn put(
     let sql = format!(
         "INSERT OR REPLACE INTO \"{table}\" (key, value) VALUES (?1, ?2)"
     );
-    conn.execute(&sql, params![key, value])?;
+    let mut stmt = conn.prepare_cached(&sql)?;
+    stmt.execute(params![key, value])?;
     Ok(())
 }
 
@@ -45,7 +46,8 @@ pub fn delete(
     key: &[u8],
 ) -> Result<bool> {
     let sql = format!("DELETE FROM \"{table}\" WHERE key = ?1");
-    let count = conn.execute(&sql, params![key])?;
+    let mut stmt = conn.prepare_cached(&sql)?;
+    let count = stmt.execute(params![key])?;
     Ok(count > 0)
 }
 

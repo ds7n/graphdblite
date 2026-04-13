@@ -18,15 +18,21 @@ pub fn encode_id_list(ids: &[u64]) -> Vec<u8> {
 }
 
 /// Decode a delta-varint encoded byte buffer back to sorted u64 values.
+///
+/// Silently stops on truncated/corrupt varints rather than producing garbage.
 pub fn decode_id_list(data: &[u8]) -> Vec<u64> {
     let mut ids = Vec::new();
     let mut pos = 0;
     let mut prev = 0u64;
     while pos < data.len() {
-        let (delta, bytes_read) = decode_varint(&data[pos..]);
-        pos += bytes_read;
-        prev += delta;
-        ids.push(prev);
+        match decode_varint(&data[pos..]) {
+            Some((delta, bytes_read)) => {
+                pos += bytes_read;
+                prev += delta;
+                ids.push(prev);
+            }
+            None => break, // truncated varint — stop decoding
+        }
     }
     ids
 }
@@ -46,18 +52,19 @@ fn encode_varint(mut value: u64, buf: &mut Vec<u8>) {
     }
 }
 
-/// Decode an unsigned LEB128 varint. Returns (value, bytes_consumed).
-fn decode_varint(data: &[u8]) -> (u64, usize) {
+/// Decode an unsigned LEB128 varint. Returns `None` if the input is
+/// truncated (all bytes have the continuation bit set).
+fn decode_varint(data: &[u8]) -> Option<(u64, usize)> {
     let mut value: u64 = 0;
     let mut shift = 0;
     for (i, &byte) in data.iter().enumerate() {
         value |= ((byte & 0x7F) as u64) << shift;
         if byte & 0x80 == 0 {
-            return (value, i + 1);
+            return Some((value, i + 1));
         }
         shift += 7;
     }
-    (value, data.len())
+    None // truncated — no terminating byte found
 }
 
 /// Insert an ID into a sorted list (maintains sorted order, no duplicates).

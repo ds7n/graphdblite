@@ -1,17 +1,20 @@
-use std::collections::HashMap;
+use indexmap::IndexMap;
 
 use crate::types::Value;
 
 /// A single result record — a row of named values produced by the executor.
+///
+/// Uses `IndexMap` to preserve insertion order, giving deterministic column
+/// ordering in query results.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Record {
-    pub fields: HashMap<String, Value>,
+    pub fields: IndexMap<String, Value>,
 }
 
 impl Record {
     pub fn new() -> Self {
         Self {
-            fields: HashMap::new(),
+            fields: IndexMap::new(),
         }
     }
 

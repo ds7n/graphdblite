@@ -159,6 +159,7 @@ dependencies = [
 name = "graphdblite"
 version = "0.1.0"
 dependencies = [
+ "indexmap",
  "pest",
  "pest_derive",
  "pyo3",

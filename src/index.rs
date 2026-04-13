@@ -92,23 +92,16 @@ pub fn index_lookup(
 ) -> Result<Vec<NodeId>> {
     let table = index_table_name(label, property);
 
-    // Check if index exists.
-    let exists: bool = conn.query_row(
-        "SELECT COUNT(*) > 0 FROM sqlite_master WHERE type='table' AND name=?1",
-        [&table],
-        |row| row.get(0),
-    )?;
-    if !exists {
-        return Err(GraphError::IndexNotFound(
-            label.to_string(),
-            property.to_string(),
-        ));
-    }
-
     // Build prefix from the serialized value.
     let prefix = rmp_serde::to_vec(value)
         .map_err(|e| GraphError::Serialization(e.to_string()))?;
-    let entries = kv::scan_prefix(conn, &table, &prefix)?;
+    let entries = match kv::scan_prefix(conn, &table, &prefix) {
+        Ok(e) => e,
+        Err(GraphError::Storage(ref e)) if e.to_string().contains("no such table") => {
+            return Err(GraphError::IndexNotFound(label.to_string(), property.to_string()));
+        }
+        Err(e) => return Err(e),
+    };
 
     let mut ids = Vec::new();
     for (key, _) in entries {
@@ -185,7 +178,7 @@ pub fn list_indexes_for_label(
     label: &str,
 ) -> Result<Vec<(String, String)>> {
     let prefix = format!("node_idx_{label}_");
-    let mut stmt = conn.prepare(
+    let mut stmt = conn.prepare_cached(
         "SELECT name FROM sqlite_master WHERE type='table' AND name LIKE ?1",
     )?;
     let rows = stmt.query_map([format!("{prefix}%")], |row| {

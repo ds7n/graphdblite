@@ -232,6 +232,15 @@ fn plan_unwind(_conn: &Connection, stmt: &UnwindStatement) -> crate::types::Resu
 }
 
 fn plan_merge(stmt: &MergeStatement) -> crate::types::Result<LogicalOp> {
+    // Validate: MERGE only supports single node patterns.
+    match stmt.pattern.elements.first() {
+        Some(crate::cypher::ast::PatternElement::Node(_)) if stmt.pattern.elements.len() == 1 => {}
+        _ => {
+            return Err(crate::types::GraphError::ParseError(
+                "MERGE only supports single node patterns".to_string(),
+            ));
+        }
+    }
     Ok(LogicalOp::Merge {
         pattern: stmt.pattern.clone(),
         on_create: stmt.on_create.clone(),
@@ -298,14 +307,22 @@ pub fn plan_patterns(conn: &Connection, patterns: &[Pattern]) -> crate::types::R
     }
 
     // Reorder regular patterns by estimated cost (smallest first).
+    // Pre-compute costs to avoid re-planning inside the sort comparator.
     if regular.len() > 1 {
-        regular.sort_by(|a, b| {
-            let plan_a = plan_single_pattern(conn, a).ok();
-            let plan_b = plan_single_pattern(conn, b).ok();
-            let cost_a = plan_a.map(|p| cost::estimate(conn, &p).estimated_rows).unwrap_or(f64::MAX);
-            let cost_b = plan_b.map(|p| cost::estimate(conn, &p).estimated_rows).unwrap_or(f64::MAX);
-            cost_a.partial_cmp(&cost_b).unwrap_or(std::cmp::Ordering::Equal)
-        });
+        let mut indexed: Vec<(usize, f64)> = regular
+            .iter()
+            .enumerate()
+            .map(|(i, pat)| {
+                let cost = plan_single_pattern(conn, pat)
+                    .ok()
+                    .map(|p| cost::estimate(conn, &p).estimated_rows)
+                    .unwrap_or(f64::MAX);
+                (i, cost)
+            })
+            .collect();
+        indexed.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal));
+        let reordered: Vec<&Pattern> = indexed.into_iter().map(|(i, _)| regular[i]).collect();
+        regular = reordered;
     }
 
     // Build cross-product chain from regular patterns.

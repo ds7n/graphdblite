@@ -463,15 +463,23 @@ fn compute_aggregate(agg: &AggregateExpr, records: &[Record], conn: &Connection)
             }
         }
         AggregateFunction::Sum => {
-            let mut sum = 0.0f64;
+            let mut i64_sum: i64 = 0;
+            let mut f64_sum: f64 = 0.0;
+            let mut all_integer = true;
             for rec in records {
                 match eval_expr(&agg.input, rec, conn)? {
-                    Value::I64(n) => sum += n as f64,
-                    Value::F64(n) => sum += n,
+                    Value::I64(n) => {
+                        i64_sum = i64_sum.wrapping_add(n);
+                        f64_sum += n as f64;
+                    }
+                    Value::F64(n) => {
+                        all_integer = false;
+                        f64_sum += n;
+                    }
                     _ => {}
                 }
             }
-            Ok(Value::F64(sum))
+            if all_integer { Ok(Value::I64(i64_sum)) } else { Ok(Value::F64(f64_sum)) }
         }
         AggregateFunction::Avg => {
             let mut sum = 0.0f64;
@@ -765,12 +773,14 @@ fn exec_set_property(
     for rec in &records {
         for assignment in assignments {
             if let Some(Value::I64(id)) = rec.get(&assignment.variable) {
+                let node_id = NodeId(*id as u64);
+                let old = node::get_node(conn, node_id)?;
                 let val = eval_expr(&assignment.value, rec, conn)?;
-                node::set_node_property(
-                    conn,
-                    NodeId(*id as u64),
-                    &assignment.property,
-                    val,
+                node::set_node_property(conn, node_id, &assignment.property, val.clone())?;
+                let mut new_props = old.properties.clone();
+                new_props.insert(assignment.property.clone(), val);
+                index::update_indexes_for_node(
+                    conn, node_id, &old.label, Some(&old.properties), &new_props,
                 )?;
             }
         }
@@ -784,39 +794,33 @@ fn exec_merge(
     on_create: &[crate::cypher::ast::Assignment],
     on_match: &[crate::cypher::ast::Assignment],
 ) -> Result<Vec<Record>> {
-    // MERGE only supports single node patterns in v0.1.
+    // Safety: MERGE pattern is validated at plan time to be a single node.
     let node_pat = match pattern.elements.first() {
         Some(PatternElement::Node(n)) => n,
-        _ => {
-            return Err(GraphError::Transaction(
-                "MERGE only supports single node patterns in v0.1".to_string(),
-            ))
-        }
+        _ => unreachable!("MERGE pattern validated at plan time"),
     };
 
     let label = node_pat.label.as_deref().unwrap_or("");
     let alias = node_pat.variable.as_deref().unwrap_or("_merge");
 
-    // Try to find an existing node matching all inline properties.
-    let existing = node::find_nodes_by_label(conn, label)?;
-    let matched = existing.into_iter().find(|n| {
-        node_pat.properties.iter().all(|(key, expr)| {
-            let expected = match expr {
-                Expr::Literal(lit) => literal_to_value(lit),
-                _ => return false,
-            };
-            n.properties.get(key) == Some(&expected)
-        })
-    });
+    // Try to find an existing node — use index lookup if one exists for a
+    // literal property in the MERGE pattern, otherwise fall back to label scan.
+    let matched = find_merge_match(conn, label, &node_pat.properties)?;
 
     match matched {
         Some(n) => {
-            // ON MATCH SET
+            // ON MATCH SET — update indexes alongside properties.
             for assignment in on_match {
+                let old = node::get_node(conn, n.id)?;
                 let mut rec = Record::new();
                 rec.set(assignment.variable.clone(), Value::I64(n.id.0 as i64));
                 let val = eval_expr(&assignment.value, &rec, conn)?;
-                node::set_node_property(conn, n.id, &assignment.property, val)?;
+                node::set_node_property(conn, n.id, &assignment.property, val.clone())?;
+                let mut new_props = old.properties.clone();
+                new_props.insert(assignment.property.clone(), val);
+                index::update_indexes_for_node(
+                    conn, n.id, &old.label, Some(&old.properties), &new_props,
+                )?;
             }
             let mut rec = Record::new();
             rec.set(alias.to_string(), Value::I64(n.id.0 as i64));
@@ -830,14 +834,22 @@ fn exec_merge(
                 let val = eval_expr(expr, &dummy_rec, conn)?;
                 props.insert(key.clone(), val);
             }
-            let id = node::create_node(conn, label, props)?;
+            let id = node::create_node(conn, label, props.clone())?;
+            // Backfill indexes for the newly created node.
+            index::update_indexes_for_node(conn, id, label, None, &props)?;
 
-            // ON CREATE SET
+            // ON CREATE SET — update indexes alongside properties.
             for assignment in on_create {
+                let old = node::get_node(conn, id)?;
                 let mut rec = Record::new();
                 rec.set(assignment.variable.clone(), Value::I64(id.0 as i64));
                 let val = eval_expr(&assignment.value, &rec, conn)?;
-                node::set_node_property(conn, id, &assignment.property, val)?;
+                node::set_node_property(conn, id, &assignment.property, val.clone())?;
+                let mut new_props = old.properties.clone();
+                new_props.insert(assignment.property.clone(), val);
+                index::update_indexes_for_node(
+                    conn, id, &old.label, Some(&old.properties), &new_props,
+                )?;
             }
 
             let mut rec = Record::new();
@@ -996,6 +1008,53 @@ fn exec_shortest_path(
     }
 
     Ok(results)
+}
+
+/// Find a node matching a MERGE pattern, using index lookup when available.
+fn find_merge_match(
+    conn: &Connection,
+    label: &str,
+    properties: &HashMap<String, Expr>,
+) -> Result<Option<crate::types::Node>> {
+    // Try to find an indexed property with a literal value.
+    let indexes = index::list_indexes_for_label(conn, label)?;
+    let indexed_props: Vec<&str> = indexes.iter().map(|(_, p)| p.as_str()).collect();
+
+    for (key, expr) in properties {
+        if let Expr::Literal(lit) = expr {
+            if indexed_props.contains(&key.as_str()) {
+                let value = literal_to_value(lit);
+                let ids = index::index_lookup(conn, label, key, &value)?;
+                // Filter candidates by remaining properties.
+                for id in ids {
+                    let n = node::get_node(conn, id)?;
+                    let all_match = properties.iter().all(|(k, e)| {
+                        let expected = match e {
+                            Expr::Literal(l) => literal_to_value(l),
+                            _ => return false,
+                        };
+                        n.properties.get(k) == Some(&expected)
+                    });
+                    if all_match {
+                        return Ok(Some(n));
+                    }
+                }
+                return Ok(None);
+            }
+        }
+    }
+
+    // No index available — fall back to label scan.
+    let existing = node::find_nodes_by_label(conn, label)?;
+    Ok(existing.into_iter().find(|n| {
+        properties.iter().all(|(key, expr)| {
+            let expected = match expr {
+                Expr::Literal(lit) => literal_to_value(lit),
+                _ => return false,
+            };
+            n.properties.get(key) == Some(&expected)
+        })
+    }))
 }
 
 fn literal_to_value(lit: &LiteralValue) -> Value {

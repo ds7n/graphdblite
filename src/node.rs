@@ -43,9 +43,15 @@ pub fn get_node(conn: &Connection, id: NodeId) -> Result<Node> {
     })
 }
 
-/// Check if a node exists.
+/// Check if a node exists (without fetching the full BLOB).
 pub fn node_exists(conn: &Connection, id: NodeId) -> Result<bool> {
-    Ok(kv::get(conn, kv::TABLE_NODES, &id.to_be_bytes())?.is_some())
+    let mut stmt = conn.prepare_cached(
+        "SELECT 1 FROM nodes WHERE key = ?1 LIMIT 1",
+    )?;
+    let exists = stmt
+        .query_row([&id.to_be_bytes()[..]], |_| Ok(()))
+        .is_ok();
+    Ok(exists)
 }
 
 /// Check if a node has any edges (incoming or outgoing).

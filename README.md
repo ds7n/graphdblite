@@ -39,8 +39,11 @@ pip install graphdblite
 from graphdblite import Database
 
 db = Database("my.db")
-db.query("CREATE (n:Person {name: 'Alice', age: 30})")
+db.execute("CREATE (n:Person {name: 'Alice', age: 30})")
 results = db.query("MATCH (n:Person) RETURN n.name, n.age")
+
+# In-memory database (useful for testing)
+db = Database.open_memory()
 ```
 
 ### CLI
@@ -56,56 +59,52 @@ graphdblite my.db -q "MATCH (n:Person) RETURN n.name"
 ## Cypher support
 
 ```cypher
--- Pattern matching
-MATCH (a:Label)-[:EDGE_TYPE]->(b)
-MATCH (a)-[:TYPE*1..3]->(b)           -- variable-length paths
-OPTIONAL MATCH (a)-[:KNOWS]->(b)
-
--- Filtering and projection
-WHERE a.name = 'Alice' AND b.age > 25
-WHERE a.name STARTS WITH 'A'
-WHERE a.name ENDS WITH 'son'
-WHERE a.name CONTAINS 'li'
-WHERE a.name IS NULL
-RETURN a.name, count(*) AS cnt, collect(b.name) AS names
-ORDER BY cnt DESC
-LIMIT 10
-
--- Intermediate processing
-WITH a, count(*) AS cnt WHERE cnt > 1 RETURN a.name, cnt
-
--- List expansion
-UNWIND [1, 2, 3] AS x RETURN x
-UNWIND ['Alice', 'Bob'] AS name CREATE (n:Person {name: name})
-
--- Conditionals
-RETURN CASE WHEN a.age > 30 THEN 'senior' ELSE 'junior' END AS level
-
--- Mutations
-CREATE (n:Label {key: value})
-CREATE (a)-[:TYPE]->(b)
-SET n.property = value
-DELETE n
-DETACH DELETE n
-MERGE (n:Label {key: value}) ON CREATE SET n.created = true
+MATCH (a:Person)-[:KNOWS]->(b:Person)           -- pattern matching
+MATCH (a)-[:KNOWS*1..3]->(b)                     -- variable-length paths
+OPTIONAL MATCH (a)-[:KNOWS]->(b)                 -- optional patterns
+MATCH p = shortestPath((a)-[:KNOWS*]->(b))       -- graph algorithms
+WHERE a.name STARTS WITH 'A' AND b.age > 25     -- filtering
+WHERE EXISTS { (a)-[:KNOWS]->(b) }               -- subquery predicates
+RETURN a.name, count(*) AS cnt, collect(b.name)  -- aggregation
+WITH a, count(*) AS cnt WHERE cnt > 1            -- intermediate processing
+UNWIND [1, 2, 3] AS x RETURN x                   -- list expansion
+[x IN list WHERE x > 2 | x * 10]                -- list comprehensions
+CASE WHEN a.age > 30 THEN 'senior' END          -- conditionals
+CREATE (n:Label {key: value})                    -- mutations
+MERGE (n:Label {key: val}) ON CREATE SET ...     -- upsert
+EXPLAIN MATCH (a:Person) RETURN a.name           -- query planning
 ```
 
 **Aggregations:** `count(*)`, `collect()`, `sum()`, `avg()`, `min()`, `max()`
+**Scalar functions:** `length()`, `nodes()`
+
+Full Cypher reference: [docs/cypher.md](docs/cypher.md)
 
 ## Architecture
 
 ```
-Cypher Parser (pest) ──► Logical IR ──► Executor (Volcano iterator model)
-                              │
+Cypher Parser (pest) --> Logical IR --> Query Planner --> Executor (Volcano iterator model)
+                              |              |
+                              |         Cost Estimator
+                              |         (cardinality stats)
+                              |
                          Graph Storage (adjacency blobs, secondary indexes)
-                              │
+                              |
                          SQLite (KV mode, WAL, WITHOUT ROWID)
 ```
 
 - **Storage:** SQLite as a B-tree + WAL engine — no SQL JOINs, no relational query planning
 - **Concurrency:** SQLite WAL mode handles multi-process reads/writes
-- **Encoding:** msgpack for node/edge properties, sorted varint arrays for adjacency lists
-- **Indexes:** secondary property indexes for O(log n) lookups, used automatically by the query planner
+- **Optimizer:** cost-based planning with cardinality estimation and index selection
+
+More details: [docs/architecture.md](docs/architecture.md)
+
+## Documentation
+
+- [Cypher Reference](docs/cypher.md) — full query language coverage with examples
+- [Python API](docs/python.md) — installation, usage, and examples
+- [Rust API](docs/rust.md) — types, transactions, and method reference
+- [Architecture](docs/architecture.md) — storage design, concurrency, optimizer internals
 
 ## Building
 

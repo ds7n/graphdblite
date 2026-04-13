@@ -3,7 +3,6 @@
 /// IDs are sorted, then stored as deltas encoded with unsigned LEB128 (varint).
 /// This compresses sequential IDs significantly: 1000 sequential u64s go from
 /// 8KB to ~1.5KB.
-
 /// Encode a sorted slice of u64 values using delta-varint encoding.
 pub fn encode_id_list(ids: &[u64]) -> Vec<u8> {
     let mut buf = Vec::with_capacity(ids.len() * 2);

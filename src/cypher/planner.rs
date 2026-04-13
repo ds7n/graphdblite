@@ -917,16 +917,10 @@ fn try_replace_scan(
         LogicalOp::Filter {
             input,
             predicate: existing,
-        } => {
-            if let Some(new_input) = try_replace_scan(conn, input, alias, prop, lit) {
-                Some(LogicalOp::Filter {
-                    input: Box::new(new_input),
-                    predicate: existing.clone(),
-                })
-            } else {
-                None
-            }
-        }
+        } => try_replace_scan(conn, input, alias, prop, lit).map(|new_input| LogicalOp::Filter {
+            input: Box::new(new_input),
+            predicate: existing.clone(),
+        }),
 
         LogicalOp::Expand {
             input,
@@ -936,21 +930,15 @@ fn try_replace_scan(
             direction,
             min_hops,
             max_hops,
-        } => {
-            if let Some(new_input) = try_replace_scan(conn, input, alias, prop, lit) {
-                Some(LogicalOp::Expand {
-                    input: Box::new(new_input),
-                    src_alias: src_alias.clone(),
-                    dst_alias: dst_alias.clone(),
-                    edge_types: edge_types.clone(),
-                    direction: *direction,
-                    min_hops: *min_hops,
-                    max_hops: *max_hops,
-                })
-            } else {
-                None
-            }
-        }
+        } => try_replace_scan(conn, input, alias, prop, lit).map(|new_input| LogicalOp::Expand {
+            input: Box::new(new_input),
+            src_alias: src_alias.clone(),
+            dst_alias: dst_alias.clone(),
+            edge_types: edge_types.clone(),
+            direction: *direction,
+            min_hops: *min_hops,
+            max_hops: *max_hops,
+        }),
 
         LogicalOp::CrossProduct { left, right } => {
             if let Some(new_left) = try_replace_scan(conn, left, alias, prop, lit) {
@@ -958,13 +946,13 @@ fn try_replace_scan(
                     left: Box::new(new_left),
                     right: right.clone(),
                 })
-            } else if let Some(new_right) = try_replace_scan(conn, right, alias, prop, lit) {
-                Some(LogicalOp::CrossProduct {
-                    left: left.clone(),
-                    right: Box::new(new_right),
-                })
             } else {
-                None
+                try_replace_scan(conn, right, alias, prop, lit).map(|new_right| {
+                    LogicalOp::CrossProduct {
+                        left: left.clone(),
+                        right: Box::new(new_right),
+                    }
+                })
             }
         }
 

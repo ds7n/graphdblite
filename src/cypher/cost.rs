@@ -215,7 +215,7 @@ fn format_plan_tree(conn: &Connection, plan: &LogicalOp, depth: usize, lines: &m
             variables, detach, ..
         } => {
             let d = if *detach { "DETACH " } else { "" };
-            format!("{d}Delete {:?}", variables)
+            format!("{d}Delete {variables:?}")
         }
         LogicalOp::SetProperty { .. } => "SetProperty".to_string(),
         LogicalOp::Merge { .. } => "Merge".to_string(),

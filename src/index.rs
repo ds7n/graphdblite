@@ -156,7 +156,7 @@ pub fn remove_indexes_for_node(
     let tables = list_indexes_for_label(conn, label)?;
     for (_, property) in &tables {
         if let Some(val) = properties.get(property.as_str()) {
-            let table = index_table_name(label, &property);
+            let table = index_table_name(label, property);
             let key = index_key(val, node_id)?;
             kv::delete(conn, &table, &key)?;
         }

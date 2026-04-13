@@ -6,4 +6,4 @@ uv.lock
 .claude/
 .symtext/
 .symtext.toml
-.dev/
+dev/

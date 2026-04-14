@@ -1,3 +1,5 @@
+#![allow(unexpected_cfgs)]
+
 use std::path::PathBuf;
 
 use pyo3::create_exception;
@@ -197,6 +199,7 @@ impl PyDatabase {
         slf
     }
 
+    #[pyo3(signature = (_exc_type=None, _exc_val=None, _exc_tb=None))]
     fn __exit__(
         &mut self,
         _exc_type: Option<&Bound<'_, pyo3::types::PyAny>>,
@@ -291,6 +294,7 @@ impl PyWriteTransaction {
         slf
     }
 
+    #[pyo3(signature = (exc_type=None, _exc_val=None, _exc_tb=None))]
     fn __exit__(
         &mut self,
         py: Python,
@@ -374,6 +378,7 @@ impl PyReadTransaction {
         slf
     }
 
+    #[pyo3(signature = (_exc_type=None, _exc_val=None, _exc_tb=None))]
     fn __exit__(
         &mut self,
         py: Python,

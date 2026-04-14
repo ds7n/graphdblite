@@ -2508,7 +2508,10 @@ fn regression_return_alias_collision_with_match_variable() {
         )
         .unwrap();
     assert_eq!(results.len(), 1);
-    assert_eq!(results[0].get("caller"), Some(&Value::String("main".into())));
+    assert_eq!(
+        results[0].get("caller"),
+        Some(&Value::String("main".into()))
+    );
     tx.commit().unwrap();
 }
 
@@ -2536,10 +2539,7 @@ fn regression_delete_matched_relationship_preserves_others() {
             .query("MATCH (a:File)-[:IMP]->(b:Module) RETURN b.key")
             .unwrap();
         assert_eq!(remaining.len(), 1);
-        assert_eq!(
-            remaining[0].get("b.key"),
-            Some(&Value::String("m1".into()))
-        );
+        assert_eq!(remaining[0].get("b.key"), Some(&Value::String("m1".into())));
         tx.commit().unwrap();
     }
 }

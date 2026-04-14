@@ -480,8 +480,7 @@ fn exec_project(
                     // Check if the col_name collides with a MATCH variable binding
                     // (which stores raw node IDs). MATCH variables always have
                     // accompanying `var.__id` metadata; aggregate results don't.
-                    let is_match_binding =
-                        rec.get(&format!("{col_name}.__id")).is_some();
+                    let is_match_binding = rec.get(&format!("{col_name}.__id")).is_some();
                     let val = if !is_match_binding {
                         if let Some(existing) = rec.get(&col_name) {
                             existing.clone()

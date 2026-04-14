@@ -316,7 +316,7 @@ jobs:
           - **Node.js addons**: Linux (x86_64, arm64), macOS (x86_64, arm64), Windows (x86_64)" \
             --prerelease \
             --target ${{ github.sha }} \
-            cli/graphdblite-*.tar.gz cli/graphdblite-*.zip cli/sha256sums.txt \
+            cli/graphdblite-*.tar.gz cli/graphdblite-*.zip sha256sums.txt \
             ffi/graphdblite-ffi-*.tar.gz ffi/graphdblite-ffi-*.zip \
             node/*.node \
             wheels/*.whl

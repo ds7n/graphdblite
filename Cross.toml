@@ -1,0 +1,11 @@
+# Cross-rs configuration for local cross-compilation.
+# Used by: scripts/build-release.sh for aarch64-unknown-linux-gnu targets.
+# Docs: https://github.com/cross-rs/cross/wiki/Configuration
+
+[target.aarch64-unknown-linux-gnu]
+# Uses the default cross Docker image.
+# Uncomment to pin or customise:
+# image = "ghcr.io/cross-rs/aarch64-unknown-linux-gnu:main"
+
+[build.env]
+passthrough = ["RUST_LOG"]

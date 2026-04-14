@@ -1,9 +1,10 @@
 name: Dev Build
 
 on:
-  push:
-    branches:
-      - main
+  workflow_dispatch:  # manual only — local builds replace this (scripts/build-release.sh)
+  # push:
+  #   branches:
+  #     - main
 
 permissions:
   contents: write

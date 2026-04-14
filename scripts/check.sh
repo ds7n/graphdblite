@@ -14,6 +14,14 @@ cargo clippy --all-targets -- -D warnings
 echo "  cargo test --workspace"
 cargo test --workspace
 
+# Security audit
+if command -v cargo-audit &>/dev/null; then
+  echo "  cargo audit"
+  cargo audit
+else
+  echo "  [skip] cargo-audit not found — install with: cargo install cargo-audit"
+fi
+
 # Lint GitHub Actions workflows (integrates shellcheck automatically)
 if command -v actionlint &>/dev/null; then
   echo "  actionlint (+ shellcheck)"

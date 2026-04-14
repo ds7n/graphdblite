@@ -1,0 +1,13 @@
+# Cargo cross-compilation configuration.
+
+# osxcross — uncomment when installed and OSXCROSS_ROOT is set.
+# Install: https://github.com/tpoechtrager/osxcross
+# SDK:     extract from Xcode.app or xcode-select --install
+#
+# [target.aarch64-apple-darwin]
+# linker = "aarch64-apple-darwin-clang"
+# ar = "aarch64-apple-darwin-ar"
+#
+# [target.x86_64-apple-darwin]
+# linker = "x86_64-apple-darwin-clang"
+# ar = "x86_64-apple-darwin-ar"

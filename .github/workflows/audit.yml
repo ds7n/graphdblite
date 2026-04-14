@@ -1,11 +1,15 @@
 name: Security Audit
 
+# Now handled locally via scripts/check.sh (cargo audit).
+# Kept as manual fallback.
+
 on:
-  push:
-    branches: [main]
-  pull_request:
-  schedule:
-    - cron: "0 6 * * 1" # weekly Monday 6am UTC
+  workflow_dispatch: # manual only
+  # push:
+  #   branches: [main]
+  # pull_request:
+  # schedule:
+  #   - cron: "0 6 * * 1"
 
 permissions:
   contents: read

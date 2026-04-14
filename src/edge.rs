@@ -150,6 +150,44 @@ pub fn get_edge_properties(
     }
 }
 
+/// Set a single property on an existing edge.
+pub fn set_edge_property(
+    conn: &Connection,
+    src: NodeId,
+    dst: NodeId,
+    label: &str,
+    key: &str,
+    value: crate::types::Value,
+) -> Result<()> {
+    let mut props = get_edge_properties(conn, src, dst, label)?;
+    if value == crate::types::Value::Null {
+        props.remove(key);
+    } else {
+        props.insert(key.to_string(), value);
+    }
+    let props_key = edge_props_key(src, dst, label);
+    if props.is_empty() {
+        kv::delete(conn, kv::TABLE_EDGE_PROPS, &props_key)?;
+    } else {
+        let data =
+            rmp_serde::to_vec(&props).map_err(|e| GraphError::Serialization(e.to_string()))?;
+        kv::put(conn, kv::TABLE_EDGE_PROPS, &props_key, &data)?;
+    }
+    Ok(())
+}
+
+/// Check if a specific edge exists.
+pub fn edge_exists(conn: &Connection, src: NodeId, dst: NodeId, label: &str) -> Result<bool> {
+    let out_key = adj_key(src, label);
+    match kv::get(conn, kv::TABLE_ADJ_OUT, &out_key)? {
+        Some(data) => {
+            let ids = decode_id_list(&data);
+            Ok(ids.binary_search(&dst.0).is_ok())
+        }
+        None => Ok(false),
+    }
+}
+
 /// Variable-length path traversal using BFS.
 ///
 /// Returns all distinct node IDs reachable from `start` by following edges with

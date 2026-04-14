@@ -210,6 +210,7 @@ pub struct ExpandIter<'a> {
     conn: &'a Connection,
     src_alias: String,
     dst_alias: String,
+    rel_alias: Option<String>,
     edge_types: Vec<String>,
     direction: Direction,
     min_hops: u32,
@@ -267,6 +268,20 @@ impl<'a> RecordIter for ExpandIter<'a> {
                     format!("{}.__id", self.dst_alias),
                     Value::I64(dst_id.0 as i64),
                 );
+                if let Some(ref r_alias) = self.rel_alias {
+                    let (edge_src, edge_dst) = match self.direction {
+                        Direction::Incoming => (dst_id, src_id),
+                        _ => (src_id, dst_id),
+                    };
+                    new_rec.set(format!("{r_alias}.__src"), Value::I64(edge_src.0 as i64));
+                    new_rec.set(format!("{r_alias}.__dst"), Value::I64(edge_dst.0 as i64));
+                    new_rec.set(format!("{r_alias}.__type"), Value::String(label.to_string()));
+                    if let Ok(props) = edge::get_edge_properties(self.conn, edge_src, edge_dst, label) {
+                        for (key, val) in &props {
+                            new_rec.set(format!("{r_alias}.{key}"), val.clone());
+                        }
+                    }
+                }
                 expanded.push(new_rec);
             }
             self.buffer = expanded.into_iter();
@@ -356,6 +371,7 @@ pub fn build_iter<'a>(
             input,
             src_alias,
             dst_alias,
+            rel_alias,
             edge_types,
             direction,
             min_hops,
@@ -367,6 +383,7 @@ pub fn build_iter<'a>(
                 conn,
                 src_alias: src_alias.clone(),
                 dst_alias: dst_alias.clone(),
+                rel_alias: rel_alias.clone(),
                 edge_types: edge_types.clone(),
                 direction: *direction,
                 min_hops: *min_hops,

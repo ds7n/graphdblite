@@ -2388,8 +2388,10 @@ fn e2e_match_merge_creates_edge() {
     }
     {
         let tx = db.begin_write().unwrap();
-        tx.query("MATCH (a:File {key: 'main.py'}), (b:Module {key: 'os'}) MERGE (a)-[:IMPORTS]->(b)")
-            .unwrap();
+        tx.query(
+            "MATCH (a:File {key: 'main.py'}), (b:Module {key: 'os'}) MERGE (a)-[:IMPORTS]->(b)",
+        )
+        .unwrap();
         tx.commit().unwrap();
     }
     let tx = db.begin_read().unwrap();
@@ -2412,8 +2414,10 @@ fn e2e_match_merge_idempotent_edge() {
     // Run MERGE twice — should create the edge only once.
     for _ in 0..2 {
         let tx = db.begin_write().unwrap();
-        tx.query("MATCH (a:File {key: 'main.py'}), (b:Module {key: 'os'}) MERGE (a)-[:IMPORTS]->(b)")
-            .unwrap();
+        tx.query(
+            "MATCH (a:File {key: 'main.py'}), (b:Module {key: 'os'}) MERGE (a)-[:IMPORTS]->(b)",
+        )
+        .unwrap();
         tx.commit().unwrap();
     }
     let tx = db.begin_read().unwrap();

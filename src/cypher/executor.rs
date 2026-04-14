@@ -339,8 +339,13 @@ fn exec_expand(
                         };
                         new_rec.set(format!("{r_alias}.__src"), Value::I64(edge_src.0 as i64));
                         new_rec.set(format!("{r_alias}.__dst"), Value::I64(edge_dst.0 as i64));
-                        new_rec.set(format!("{r_alias}.__type"), Value::String(label.to_string()));
-                        if let Ok(props) = edge::get_edge_properties(conn, edge_src, edge_dst, label) {
+                        new_rec.set(
+                            format!("{r_alias}.__type"),
+                            Value::String(label.to_string()),
+                        );
+                        if let Ok(props) =
+                            edge::get_edge_properties(conn, edge_src, edge_dst, label)
+                        {
                             for (key, val) in &props {
                                 new_rec.set(format!("{r_alias}.{key}"), val.clone());
                             }
@@ -904,12 +909,7 @@ fn exec_delete(
                 rec.get(&edge_dst_key),
                 rec.get(&edge_type_key),
             ) {
-                edge::delete_edge(
-                    conn,
-                    NodeId(*src as u64),
-                    NodeId(*dst as u64),
-                    label,
-                )?;
+                edge::delete_edge(conn, NodeId(*src as u64), NodeId(*dst as u64), label)?;
             } else if let Some(Value::I64(id)) = rec.get(var) {
                 let node_id = NodeId(*id as u64);
                 if !detach && node::node_has_edges(conn, node_id)? {
@@ -1106,7 +1106,11 @@ fn exec_match_merge(
     };
     let rel = match &elements[1] {
         PatternElement::Relationship(r) => r,
-        _ => return Err(GraphError::ParseError("expected relationship pattern".to_string())),
+        _ => {
+            return Err(GraphError::ParseError(
+                "expected relationship pattern".to_string(),
+            ))
+        }
     };
     let dst_node = match &elements[2] {
         PatternElement::Node(n) => n,
@@ -1347,8 +1351,13 @@ fn exec_correlated(
                         };
                         new_rec.set(format!("{r_alias}.__src"), Value::I64(edge_src.0 as i64));
                         new_rec.set(format!("{r_alias}.__dst"), Value::I64(edge_dst.0 as i64));
-                        new_rec.set(format!("{r_alias}.__type"), Value::String(label.to_string()));
-                        if let Ok(props) = edge::get_edge_properties(conn, edge_src, edge_dst, label) {
+                        new_rec.set(
+                            format!("{r_alias}.__type"),
+                            Value::String(label.to_string()),
+                        );
+                        if let Ok(props) =
+                            edge::get_edge_properties(conn, edge_src, edge_dst, label)
+                        {
                             for (key, val) in &props {
                                 new_rec.set(format!("{r_alias}.{key}"), val.clone());
                             }

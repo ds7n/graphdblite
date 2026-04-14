@@ -623,9 +623,7 @@ fn plan_single_pattern(conn: &Connection, pattern: &Pattern) -> crate::types::Re
                                 "__label".to_string(),
                             )),
                             op: BinOp::Eq,
-                            right: Box::new(Expr::Literal(LiteralValue::String(
-                                dst_label.clone(),
-                            ))),
+                            right: Box::new(Expr::Literal(LiteralValue::String(dst_label.clone()))),
                         };
                         op = Some(LogicalOp::Filter {
                             input: Box::new(op.unwrap()),

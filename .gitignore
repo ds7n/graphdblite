@@ -1,12 +1,17 @@
 /target
 *.db
-*.so
 .venv/
 uv.lock
 .claude/
 .symtext/
 .symtext.toml
 dev/
+data/
+
+# Build artifacts
+dist/
+staging/
+*.whl
 
 # Generated C header (regenerated on build)
 crates/ffi/graphdblite.h
@@ -17,4 +22,5 @@ crates/node/*.node
 
 # Python compiled extensions
 crates/python/python/graphdblite/*.so
+crates/python/python/graphdblite/*.dylib
 crates/python/python/graphdblite/__pycache__/

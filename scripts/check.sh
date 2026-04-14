@@ -3,13 +3,23 @@
 # Use as a pre-push hook: cp scripts/check.sh .git/hooks/pre-push
 set -e
 
-echo "==> cargo fmt --check"
+echo "==> Running pre-push checks (mirrors CI)..."
+
+echo "  cargo fmt --check"
 cargo fmt --check --all
 
-echo "==> cargo clippy --all-targets -- -D warnings"
+echo "  cargo clippy --all-targets -- -D warnings"
 cargo clippy --all-targets -- -D warnings
 
-echo "==> cargo test --workspace"
+echo "  cargo test --workspace"
 cargo test --workspace
+
+# Lint GitHub Actions workflows (integrates shellcheck automatically)
+if command -v actionlint &>/dev/null; then
+  echo "  actionlint (+ shellcheck)"
+  actionlint
+else
+  echo "  [skip] actionlint not found — install with: go install github.com/rhysd/actionlint/cmd/actionlint@latest"
+fi
 
 echo "==> All checks passed."

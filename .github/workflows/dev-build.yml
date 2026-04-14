@@ -13,6 +13,15 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  lint-workflows:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: actionlint
+        run: |
+          bash <(curl -fsSL https://raw.githubusercontent.com/rhysd/actionlint/main/scripts/download-actionlint.bash)
+          ./actionlint -color
+
   test:
     runs-on: ubuntu-latest
     steps:
@@ -25,7 +34,7 @@ jobs:
       - run: cargo test --workspace
 
   build-cli:
-    needs: test
+    needs: [test, lint-workflows]
     strategy:
       matrix:
         include:
@@ -88,7 +97,7 @@ jobs:
             graphdblite-${{ matrix.target }}.${{ matrix.ext }}.sha256
 
   build-ffi:
-    needs: test
+    needs: [test, lint-workflows]
     strategy:
       matrix:
         include:
@@ -157,7 +166,7 @@ jobs:
             graphdblite-ffi-${{ matrix.target }}.*
 
   build-node:
-    needs: test
+    needs: [test, lint-workflows]
     strategy:
       fail-fast: false
       matrix:
@@ -206,7 +215,7 @@ jobs:
           path: crates/node/*.node
 
   build-wheels:
-    needs: test
+    needs: [test, lint-workflows]
     strategy:
       matrix:
         include:

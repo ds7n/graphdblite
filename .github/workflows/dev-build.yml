@@ -24,7 +24,7 @@ jobs:
       - run: cargo clippy --all-targets -- -D warnings
       - run: cargo test --workspace
 
-  build:
+  build-cli:
     needs: test
     strategy:
       matrix:
@@ -32,6 +32,10 @@ jobs:
           - os: ubuntu-latest
             target: x86_64-unknown-linux-gnu
             ext: tar.gz
+          - os: ubuntu-latest
+            target: aarch64-unknown-linux-gnu
+            ext: tar.gz
+            cross: true
           - os: macos-latest
             target: aarch64-apple-darwin
             ext: tar.gz
@@ -42,19 +46,32 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
-      - run: cargo build --release --bin graphdblite
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Install cross
+        if: matrix.cross
+        run: cargo install cross --locked
+
+      - name: Build (native)
+        if: ${{ !matrix.cross }}
+        run: cargo build --release --bin graphdblite --target ${{ matrix.target }}
+
+      - name: Build (cross)
+        if: matrix.cross
+        run: cross build --release --bin graphdblite --target ${{ matrix.target }}
 
       - name: Package (unix)
         if: runner.os != 'Windows'
         run: |
           tar czf graphdblite-${{ matrix.target }}.${{ matrix.ext }} \
-            -C target/release graphdblite
+            -C target/${{ matrix.target }}/release graphdblite
 
       - name: Package (windows)
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
-          Compress-Archive -Path target\release\graphdblite.exe `
+          Compress-Archive -Path target\${{ matrix.target }}\release\graphdblite.exe `
             -DestinationPath graphdblite-${{ matrix.target }}.${{ matrix.ext }}
 
       - name: Checksum
@@ -65,33 +82,123 @@ jobs:
 
       - uses: actions/upload-artifact@v4
         with:
-          name: binary-${{ matrix.target }}
+          name: cli-${{ matrix.target }}
           path: |
             graphdblite-${{ matrix.target }}.${{ matrix.ext }}
             graphdblite-${{ matrix.target }}.${{ matrix.ext }}.sha256
 
-  build-c-ffi:
+  build-ffi:
     needs: test
     strategy:
       matrix:
         include:
           - os: ubuntu-latest
             target: x86_64-unknown-linux-gnu
+          - os: ubuntu-latest
+            target: aarch64-unknown-linux-gnu
+            cross: true
           - os: macos-latest
             target: aarch64-apple-darwin
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
-      - run: cargo build --release -p graphdblite-ffi
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Install cross
+        if: matrix.cross
+        run: cargo install cross --locked
+
+      - name: Build (native)
+        if: ${{ !matrix.cross }}
+        run: cargo build --release -p graphdblite-ffi --target ${{ matrix.target }}
+
+      - name: Build (cross)
+        if: matrix.cross
+        run: cross build --release -p graphdblite-ffi --target ${{ matrix.target }}
+
+      - name: Package (unix)
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          mkdir -p staging
+          cp crates/ffi/graphdblite.h staging/
+          cp target/${{ matrix.target }}/release/libgraphdblite_ffi.a staging/ 2>/dev/null || true
+          cp target/${{ matrix.target }}/release/libgraphdblite_ffi.so staging/ 2>/dev/null || true
+          cp target/${{ matrix.target }}/release/libgraphdblite_ffi.dylib staging/ 2>/dev/null || true
+          tar czf graphdblite-ffi-${{ matrix.target }}.tar.gz -C staging .
+
+      - name: Package (windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Path staging
+          Copy-Item crates\ffi\graphdblite.h staging\
+          Copy-Item target\${{ matrix.target }}\release\graphdblite_ffi.dll staging\
+          Copy-Item target\${{ matrix.target }}\release\graphdblite_ffi.dll.lib staging\ -ErrorAction SilentlyContinue
+          Copy-Item target\${{ matrix.target }}\release\graphdblite_ffi.lib staging\ -ErrorAction SilentlyContinue
+          Compress-Archive -Path staging\* -DestinationPath graphdblite-ffi-${{ matrix.target }}.zip
+
+      - name: Checksum
+        shell: bash
+        run: |
+          for f in graphdblite-ffi-${{ matrix.target }}.*; do
+            case "$f" in *.sha256) continue ;; esac
+            sha256sum "$f" > "$f.sha256"
+          done
 
       - uses: actions/upload-artifact@v4
         with:
           name: ffi-${{ matrix.target }}
           path: |
-            target/release/libgraphdblite_ffi.a
-            target/release/libgraphdblite_ffi.so
-            target/release/libgraphdblite_ffi.dylib
+            graphdblite-ffi-${{ matrix.target }}.*
+
+  build-node:
+    needs: test
+    strategy:
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+          - os: ubuntu-latest
+            target: aarch64-unknown-linux-gnu
+            use_zig: true
+          - os: macos-latest
+            target: aarch64-apple-darwin
+          - os: macos-latest
+            target: x86_64-apple-darwin
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        working-directory: crates/node
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+      - run: npm install
+
+      - name: Build (native)
+        if: ${{ !matrix.use_zig }}
+        run: npx napi build --platform --release --target ${{ matrix.target }}
+
+      - name: Build (zig cross)
+        if: matrix.use_zig
+        run: |
+          npx napi build --platform --release --target ${{ matrix.target }} --zig
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: node-${{ matrix.target }}
+          path: crates/node/*.node
 
   build-wheels:
     needs: test
@@ -100,14 +207,25 @@ jobs:
         include:
           - os: ubuntu-latest
             target: x86_64
+            manylinux: "2_28"
+          - os: ubuntu-latest
+            target: x86_64
+            manylinux: musllinux_1_2
           - os: ubuntu-latest
             target: aarch64
+            manylinux: "2_28"
+          - os: ubuntu-latest
+            target: aarch64
+            manylinux: musllinux_1_2
           - os: macos-latest
             target: x86_64
+            manylinux: auto
           - os: macos-latest
             target: aarch64
+            manylinux: auto
           - os: windows-latest
             target: x64
+            manylinux: auto
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
@@ -120,16 +238,16 @@ jobs:
         uses: PyO3/maturin-action@v1
         with:
           target: ${{ matrix.target }}
-          args: --release --out dist -i python3.12 --manifest-path crates/python/Cargo.toml
-          manylinux: 2_28
+          args: --release --out dist --manifest-path crates/python/Cargo.toml
+          manylinux: ${{ matrix.manylinux }}
 
       - uses: actions/upload-artifact@v4
         with:
-          name: wheels-${{ matrix.os }}-${{ matrix.target }}
+          name: wheels-${{ matrix.os }}-${{ matrix.target }}-${{ matrix.manylinux }}
           path: dist/*.whl
 
   test-go:
-    needs: build-c-ffi
+    needs: build-ffi
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -141,7 +259,7 @@ jobs:
         run: make -C bindings/go test
 
   publish:
-    needs: [build, build-wheels]
+    needs: [build-cli, build-ffi, build-node, build-wheels]
     runs-on: ubuntu-latest
     env:
       GH_TOKEN: ${{ github.token }}
@@ -150,8 +268,21 @@ jobs:
 
       - uses: actions/download-artifact@v4
         with:
-          pattern: binary-*
+          pattern: cli-*
           merge-multiple: true
+          path: cli/
+
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: ffi-*
+          merge-multiple: true
+          path: ffi/
+
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: node-*
+          merge-multiple: true
+          path: node/
 
       - uses: actions/download-artifact@v4
         with:
@@ -160,7 +291,7 @@ jobs:
           path: wheels/
 
       - name: Combine checksums
-        run: cat *.sha256 > sha256sums.txt
+        run: cat cli/*.sha256 ffi/*.sha256 > sha256sums.txt
 
       - name: Delete existing dev-latest release
         run: gh release delete dev-latest --yes --cleanup-tag || true
@@ -173,11 +304,14 @@ jobs:
           Commit: ${{ github.sha }}
           Date: $(date -u +%Y-%m-%d)
 
-          ## Python wheels
-          Download the wheel for your platform from the [release assets](https://github.com/ds7n/graphdblite/releases/tag/dev-latest), then:
-          \`\`\`
-          pip install graphdblite-<version>-<platform>.whl
-          \`\`\`" \
+          ## Artifacts
+          - **CLI binaries**: Linux (x86_64, arm64), macOS (arm64), Windows (x86_64)
+          - **Python wheels**: glibc + musl Linux, macOS, Windows — abi3 (Python 3.9+)
+          - **C FFI libraries**: Linux (x86_64, arm64), macOS (arm64), Windows (x86_64)
+          - **Node.js addons**: Linux (x86_64, arm64), macOS (x86_64, arm64), Windows (x86_64)" \
             --prerelease \
             --target ${{ github.sha }} \
-            graphdblite-*.tar.gz graphdblite-*.zip sha256sums.txt wheels/*.whl
+            cli/graphdblite-*.tar.gz cli/graphdblite-*.zip cli/sha256sums.txt \
+            ffi/graphdblite-ffi-*.tar.gz ffi/graphdblite-ffi-*.zip \
+            node/*.node \
+            wheels/*.whl

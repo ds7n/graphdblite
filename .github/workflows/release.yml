@@ -141,6 +141,7 @@ jobs:
 
   build-node:
     strategy:
+      fail-fast: false
       matrix:
         include:
           - os: ubuntu-latest
@@ -171,6 +172,10 @@ jobs:
       - name: Build (native)
         if: ${{ !matrix.use_zig }}
         run: npx napi build --platform --release --target ${{ matrix.target }}
+
+      - name: Install zig
+        if: matrix.use_zig
+        uses: mlugg/setup-zig@v2
 
       - name: Build (zig cross)
         if: matrix.use_zig

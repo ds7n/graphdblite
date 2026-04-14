@@ -275,8 +275,13 @@ impl<'a> RecordIter for ExpandIter<'a> {
                     };
                     new_rec.set(format!("{r_alias}.__src"), Value::I64(edge_src.0 as i64));
                     new_rec.set(format!("{r_alias}.__dst"), Value::I64(edge_dst.0 as i64));
-                    new_rec.set(format!("{r_alias}.__type"), Value::String(label.to_string()));
-                    if let Ok(props) = edge::get_edge_properties(self.conn, edge_src, edge_dst, label) {
+                    new_rec.set(
+                        format!("{r_alias}.__type"),
+                        Value::String(label.to_string()),
+                    );
+                    if let Ok(props) =
+                        edge::get_edge_properties(self.conn, edge_src, edge_dst, label)
+                    {
                         for (key, val) in &props {
                             new_rec.set(format!("{r_alias}.{key}"), val.clone());
                         }

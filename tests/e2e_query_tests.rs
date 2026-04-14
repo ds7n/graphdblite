@@ -2565,7 +2565,7 @@ fn regression_target_node_filter_in_relationship_match() {
                  RETURN a.key AS src",
             )
             .unwrap();
-        assert!(check.is_empty(), "expected no results, got {:?}", check);
+        assert!(check.is_empty(), "expected no results, got {check:?}");
 
         // Query for edge to m1 — should return a match.
         let check = tx

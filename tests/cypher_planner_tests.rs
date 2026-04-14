@@ -34,25 +34,29 @@ fn plan_simple_scan() {
 #[test]
 fn plan_scan_with_expand() {
     let op = plan_query("MATCH (a:Person)-[:KNOWS]->(b:Person) RETURN b");
+    // Plan is: Project → Filter(b.__label = "Person") → Expand → Scan
     match op {
         LogicalOp::Project { input, .. } => match *input {
-            LogicalOp::Expand {
-                ref src_alias,
-                ref dst_alias,
-                ref edge_types,
-                direction,
-                min_hops,
-                max_hops,
-                ..
-            } => {
-                assert_eq!(src_alias, "a");
-                assert_eq!(dst_alias, "b");
-                assert_eq!(edge_types.first().map(|s| s.as_str()), Some("KNOWS"));
-                assert_eq!(direction, Direction::Outgoing);
-                assert_eq!(min_hops, 1);
-                assert_eq!(max_hops, 1);
-            }
-            _ => panic!("expected Expand"),
+            LogicalOp::Filter { input, .. } => match *input {
+                LogicalOp::Expand {
+                    ref src_alias,
+                    ref dst_alias,
+                    ref edge_types,
+                    direction,
+                    min_hops,
+                    max_hops,
+                    ..
+                } => {
+                    assert_eq!(src_alias, "a");
+                    assert_eq!(dst_alias, "b");
+                    assert_eq!(edge_types.first().map(|s| s.as_str()), Some("KNOWS"));
+                    assert_eq!(direction, Direction::Outgoing);
+                    assert_eq!(min_hops, 1);
+                    assert_eq!(max_hops, 1);
+                }
+                _ => panic!("expected Expand"),
+            },
+            _ => panic!("expected Filter for destination label"),
         },
         _ => panic!("expected Project"),
     }

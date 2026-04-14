@@ -606,13 +606,42 @@ fn plan_single_pattern(conn: &Connection, pattern: &Pattern) -> crate::types::Re
                 op = Some(LogicalOp::Expand {
                     input: Box::new(op.unwrap()),
                     src_alias,
-                    dst_alias,
+                    dst_alias: dst_alias.clone(),
                     rel_alias: rel.variable.clone(),
                     edge_types: rel.rel_types.clone(),
                     direction,
                     min_hops,
                     max_hops,
                 });
+
+                // Apply destination node's label filter.
+                if let Some(dst_label) = dst_node.labels.first() {
+                    if !dst_label.is_empty() {
+                        let predicate = Expr::BinaryOp {
+                            left: Box::new(Expr::Property(
+                                dst_alias.clone(),
+                                "__label".to_string(),
+                            )),
+                            op: BinOp::Eq,
+                            right: Box::new(Expr::Literal(LiteralValue::String(
+                                dst_label.clone(),
+                            ))),
+                        };
+                        op = Some(LogicalOp::Filter {
+                            input: Box::new(op.unwrap()),
+                            predicate,
+                        });
+                    }
+                }
+
+                // Apply destination node's inline property filters.
+                if !dst_node.properties.is_empty() {
+                    let predicate = properties_to_filter(&dst_alias, &dst_node.properties);
+                    op = Some(LogicalOp::Filter {
+                        input: Box::new(op.unwrap()),
+                        predicate,
+                    });
+                }
 
                 i += 2; // skip rel + dst node
             }

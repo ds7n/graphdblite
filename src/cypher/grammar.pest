@@ -132,7 +132,7 @@ rel_detail = { ident? ~ rel_type_spec? ~ property_map? ~ var_length? }
 rel_type_spec = { ":" ~ ident ~ ("|" ~ ident)* }
 
 var_length = { "*" ~ int_range? }
-int_range = { integer ~ ".." ~ integer }
+int_range = { integer ~ ".." ~ integer? }
 
 // === Clauses ===
 

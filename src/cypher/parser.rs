@@ -507,6 +507,9 @@ fn parse_var_length(pair: pest::iterators::Pair<Rule>) -> crate::types::Result<(
                 .collect();
             if nums.len() == 2 {
                 return Ok((nums[0], nums[1]));
+            } else if nums.len() == 1 {
+                // Open-ended range like *1.. — use default max traversal depth.
+                return Ok((nums[0], 15));
             }
         }
     }

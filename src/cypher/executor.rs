@@ -477,9 +477,17 @@ fn exec_project(
                         .alias
                         .clone()
                         .unwrap_or_else(|| expr_to_column_name(&item.expr));
-                    // Check if the aggregate result is already in the record (from Aggregate operator).
-                    let val = if let Some(existing) = rec.get(&col_name) {
-                        existing.clone()
+                    // Check if the col_name collides with a MATCH variable binding
+                    // (which stores raw node IDs). MATCH variables always have
+                    // accompanying `var.__id` metadata; aggregate results don't.
+                    let is_match_binding =
+                        rec.get(&format!("{col_name}.__id")).is_some();
+                    let val = if !is_match_binding {
+                        if let Some(existing) = rec.get(&col_name) {
+                            existing.clone()
+                        } else {
+                            eval_expr(&item.expr, rec, conn)?
+                        }
                     } else {
                         eval_expr(&item.expr, rec, conn)?
                     };

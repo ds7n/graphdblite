@@ -2476,3 +2476,142 @@ fn e2e_delete_after_optional_match_no_edge() {
     assert_eq!(nodes.len(), 1);
     tx.commit().unwrap();
 }
+
+// ---------------------------------------------------------------------------
+// Regression tests for bugs found during symtext migration
+// ---------------------------------------------------------------------------
+
+/// Bug 1: RETURN alias collision with MATCH variable name.
+/// When a RETURN alias matches a MATCH variable, the alias should resolve to the
+/// expression value, not the node's internal ID.
+#[test]
+fn regression_return_alias_collision_with_match_variable() {
+    let mut db = Database::open_memory().unwrap();
+    {
+        let tx = db.begin_write().unwrap();
+        tx.query("CREATE (a:Function {key: 'f1', name: 'main'})")
+            .unwrap();
+        tx.query("CREATE (b:Function {key: 'f2', name: 'helper'})")
+            .unwrap();
+        tx.query(
+            "MATCH (a:Function {key: 'f1'}), (b:Function {key: 'f2'}) CREATE (a)-[:CALLS]->(b)",
+        )
+        .unwrap();
+        tx.commit().unwrap();
+    }
+    let tx = db.begin_read().unwrap();
+    // Alias "caller" collides with MATCH variable "caller" — should still return property value.
+    let results = tx
+        .query(
+            "MATCH (caller:Function)-[:CALLS]->(tgt:Function {name: 'helper'}) \
+             RETURN caller.name AS caller",
+        )
+        .unwrap();
+    assert_eq!(results.len(), 1);
+    assert_eq!(results[0].get("caller"), Some(&Value::String("main".into())));
+    tx.commit().unwrap();
+}
+
+/// Bug 2: DELETE on matched relationship should only delete the matched edge,
+/// not ALL edges of that type from the source.
+#[test]
+fn regression_delete_matched_relationship_preserves_others() {
+    let mut db = Database::open_memory().unwrap();
+    {
+        let tx = db.begin_write().unwrap();
+        tx.query("CREATE (f:File {key: 'f1'})").unwrap();
+        tx.query("CREATE (m1:Module {key: 'm1'})").unwrap();
+        tx.query("CREATE (m2:Module {key: 'm2'})").unwrap();
+        tx.query("MATCH (a:File {key: 'f1'}), (b:Module {key: 'm1'}) CREATE (a)-[:IMP]->(b)")
+            .unwrap();
+        tx.query("MATCH (a:File {key: 'f1'}), (b:Module {key: 'm2'}) CREATE (a)-[:IMP]->(b)")
+            .unwrap();
+
+        // Delete only the m2 edge.
+        tx.query("MATCH (a:File {key: 'f1'})-[old:IMP]->(b:Module {key: 'm2'}) DELETE old")
+            .unwrap();
+
+        // m1 edge should survive.
+        let remaining = tx
+            .query("MATCH (a:File)-[:IMP]->(b:Module) RETURN b.key")
+            .unwrap();
+        assert_eq!(remaining.len(), 1);
+        assert_eq!(
+            remaining[0].get("b.key"),
+            Some(&Value::String("m1".into()))
+        );
+        tx.commit().unwrap();
+    }
+}
+
+/// Bug 3: Target node filter in relationship MATCH pattern must be applied.
+/// `(a)-[:TYPE]->(b {key: X})` should only match neighbors with that property.
+#[test]
+fn regression_target_node_filter_in_relationship_match() {
+    let mut db = Database::open_memory().unwrap();
+    {
+        let tx = db.begin_write().unwrap();
+        tx.query("CREATE (f:File {key: 'f1'})").unwrap();
+        tx.query("CREATE (m1:Module {key: 'm1'})").unwrap();
+        tx.query("CREATE (m2:Module {key: 'm2'})").unwrap();
+        // Only create edge to m1.
+        tx.query("MATCH (a:File {key: 'f1'}), (b:Module {key: 'm1'}) CREATE (a)-[:IMP]->(b)")
+            .unwrap();
+
+        // Query for edge to m2 (which doesn't exist) — should return empty.
+        let check = tx
+            .query(
+                "MATCH (a:File {key: 'f1'})-[r:IMP]->(b:Module {key: 'm2'}) \
+                 RETURN a.key AS src",
+            )
+            .unwrap();
+        assert!(check.is_empty(), "expected no results, got {:?}", check);
+
+        // Query for edge to m1 — should return a match.
+        let check = tx
+            .query(
+                "MATCH (a:File {key: 'f1'})-[r:IMP]->(b:Module {key: 'm1'}) \
+                 RETURN a.key AS src",
+            )
+            .unwrap();
+        assert_eq!(check.len(), 1);
+        assert_eq!(check[0].get("src"), Some(&Value::String("f1".into())));
+        tx.commit().unwrap();
+    }
+}
+
+/// Bug 4: Open-ended variable-length path `*1..` should be parsed (not rejected).
+#[test]
+fn regression_open_ended_variable_length_path() {
+    let mut db = Database::open_memory().unwrap();
+    {
+        let tx = db.begin_write().unwrap();
+        tx.query("CREATE (a:Class {name: 'Base'})").unwrap();
+        tx.query("CREATE (b:Class {name: 'Mid'})").unwrap();
+        tx.query("CREATE (c:Class {name: 'Leaf'})").unwrap();
+        tx.query(
+            "MATCH (a:Class {name: 'Mid'}), (b:Class {name: 'Base'}) CREATE (a)-[:INHERITS]->(b)",
+        )
+        .unwrap();
+        tx.query(
+            "MATCH (a:Class {name: 'Leaf'}), (b:Class {name: 'Mid'}) CREATE (a)-[:INHERITS]->(b)",
+        )
+        .unwrap();
+        tx.commit().unwrap();
+    }
+    let tx = db.begin_read().unwrap();
+    // Open-ended range *1.. should now parse and find transitive ancestors.
+    let results = tx
+        .query("MATCH (a:Class {name: 'Leaf'})-[:INHERITS*1..]->(b:Class) RETURN b.name")
+        .unwrap();
+    let names: Vec<&str> = results
+        .iter()
+        .filter_map(|r| match r.get("b.name") {
+            Some(Value::String(s)) => Some(s.as_str()),
+            _ => None,
+        })
+        .collect();
+    assert!(names.contains(&"Mid"), "should find Mid ancestor");
+    assert!(names.contains(&"Base"), "should find Base ancestor");
+    tx.commit().unwrap();
+}

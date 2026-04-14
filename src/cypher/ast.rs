@@ -6,6 +6,7 @@ pub enum Statement {
     Match(MatchStatement),
     Create(CreateStatement),
     MatchCreate(MatchCreateStatement),
+    MatchMerge(MatchMergeStatement),
     Delete(DeleteStatement),
     Set(SetStatement),
     Merge(MergeStatement),
@@ -57,6 +58,7 @@ pub struct MatchCreateStatement {
 #[derive(Debug, Clone, PartialEq)]
 pub struct DeleteStatement {
     pub patterns: Vec<Pattern>,
+    pub optional_patterns: Vec<Vec<Pattern>>,
     pub where_clause: Option<Expr>,
     pub detach: bool,
     pub variables: Vec<String>,
@@ -68,6 +70,16 @@ pub struct SetStatement {
     pub patterns: Vec<Pattern>,
     pub where_clause: Option<Expr>,
     pub assignments: Vec<Assignment>,
+}
+
+/// MATCH ... MERGE pattern ON CREATE SET ... ON MATCH SET ...
+#[derive(Debug, Clone, PartialEq)]
+pub struct MatchMergeStatement {
+    pub patterns: Vec<Pattern>,
+    pub where_clause: Option<Expr>,
+    pub merge_pattern: Pattern,
+    pub on_create: Vec<Assignment>,
+    pub on_match: Vec<Assignment>,
 }
 
 /// MERGE (n:Label {props}) ON CREATE SET ... ON MATCH SET ...
@@ -149,6 +161,7 @@ pub struct NodePattern {
 pub struct RelPattern {
     pub variable: Option<String>,
     pub rel_types: Vec<String>,
+    pub properties: HashMap<String, Expr>,
     pub direction: RelDirection,
     pub var_length: Option<(u32, u32)>,
 }

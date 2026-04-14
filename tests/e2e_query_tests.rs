@@ -2292,3 +2292,183 @@ fn e2e_length_function_on_string() {
     assert_eq!(results[0].get("len").unwrap(), &Value::I64(5));
     tx.commit().unwrap();
 }
+
+// ── Issue 1: Relationship properties in CREATE ────────────────────────
+
+#[test]
+fn e2e_create_edge_with_properties() {
+    let mut db = Database::open_memory().unwrap();
+    {
+        let tx = db.begin_write().unwrap();
+        tx.query("CREATE (a:File {name: 'main.py'})-[:IMPORTS {line_number: 1, alias: 'os'}]->(b:Module {name: 'os'})")
+            .unwrap();
+        tx.commit().unwrap();
+    }
+    let tx = db.begin_read().unwrap();
+    let results = tx
+        .query("MATCH (a:File)-[r:IMPORTS]->(b:Module) RETURN r.line_number, r.alias")
+        .unwrap();
+    assert_eq!(results.len(), 1);
+    assert_eq!(results[0].get("r.line_number").unwrap(), &Value::I64(1));
+    assert_eq!(
+        results[0].get("r.alias").unwrap(),
+        &Value::String("os".to_string())
+    );
+    tx.commit().unwrap();
+}
+
+// ── Issue 2: SET on relationship properties ───────────────────────────
+
+#[test]
+fn e2e_set_relationship_property() {
+    let mut db = Database::open_memory().unwrap();
+    {
+        let tx = db.begin_write().unwrap();
+        tx.query("CREATE (a:File {name: 'main.py'})-[:IMPORTS {line_number: 1}]->(b:Module {name: 'os'})")
+            .unwrap();
+        tx.commit().unwrap();
+    }
+    {
+        let tx = db.begin_write().unwrap();
+        tx.query("MATCH (a:File)-[r:IMPORTS]->(b:Module) SET r.line_number = 5")
+            .unwrap();
+        tx.commit().unwrap();
+    }
+    let tx = db.begin_read().unwrap();
+    let results = tx
+        .query("MATCH (a:File)-[r:IMPORTS]->(b:Module) RETURN r.line_number")
+        .unwrap();
+    assert_eq!(results[0].get("r.line_number").unwrap(), &Value::I64(5));
+    tx.commit().unwrap();
+}
+
+// ── Issue 3: RETURN relationship properties ───────────────────────────
+
+#[test]
+fn e2e_return_relationship_properties() {
+    let mut db = Database::open_memory().unwrap();
+    {
+        let tx = db.begin_write().unwrap();
+        tx.query("CREATE (a:Person {name: 'Alice'})").unwrap();
+        tx.query("CREATE (b:Person {name: 'Bob'})").unwrap();
+        tx.commit().unwrap();
+    }
+    {
+        let tx = db.begin_write().unwrap();
+        tx.create_edge(
+            NodeId(1),
+            NodeId(2),
+            "KNOWS",
+            [("since".to_string(), Value::I64(2020))]
+                .into_iter()
+                .collect(),
+        )
+        .unwrap();
+        tx.commit().unwrap();
+    }
+    let tx = db.begin_read().unwrap();
+    let results = tx
+        .query("MATCH (a:Person)-[r:KNOWS]->(b:Person) RETURN a.name, r.since, b.name")
+        .unwrap();
+    assert_eq!(results.len(), 1);
+    assert_eq!(results[0].get("r.since").unwrap(), &Value::I64(2020));
+    tx.commit().unwrap();
+}
+
+// ── Issue 4: MATCH...MERGE ────────────────────────────────────────────
+
+#[test]
+fn e2e_match_merge_creates_edge() {
+    let mut db = Database::open_memory().unwrap();
+    {
+        let tx = db.begin_write().unwrap();
+        tx.query("CREATE (a:File {key: 'main.py'})").unwrap();
+        tx.query("CREATE (b:Module {key: 'os'})").unwrap();
+        tx.commit().unwrap();
+    }
+    {
+        let tx = db.begin_write().unwrap();
+        tx.query("MATCH (a:File {key: 'main.py'}), (b:Module {key: 'os'}) MERGE (a)-[:IMPORTS]->(b)")
+            .unwrap();
+        tx.commit().unwrap();
+    }
+    let tx = db.begin_read().unwrap();
+    let results = tx
+        .query("MATCH (a:File)-[:IMPORTS]->(b:Module) RETURN a.key, b.key")
+        .unwrap();
+    assert_eq!(results.len(), 1);
+    tx.commit().unwrap();
+}
+
+#[test]
+fn e2e_match_merge_idempotent_edge() {
+    let mut db = Database::open_memory().unwrap();
+    {
+        let tx = db.begin_write().unwrap();
+        tx.query("CREATE (a:File {key: 'main.py'})").unwrap();
+        tx.query("CREATE (b:Module {key: 'os'})").unwrap();
+        tx.commit().unwrap();
+    }
+    // Run MERGE twice — should create the edge only once.
+    for _ in 0..2 {
+        let tx = db.begin_write().unwrap();
+        tx.query("MATCH (a:File {key: 'main.py'}), (b:Module {key: 'os'}) MERGE (a)-[:IMPORTS]->(b)")
+            .unwrap();
+        tx.commit().unwrap();
+    }
+    let tx = db.begin_read().unwrap();
+    let results = tx
+        .query("MATCH (a:File)-[:IMPORTS]->(b:Module) RETURN a.key")
+        .unwrap();
+    assert_eq!(results.len(), 1);
+    tx.commit().unwrap();
+}
+
+// ── Issue 5: DELETE after OPTIONAL MATCH ──────────────────────────────
+
+#[test]
+fn e2e_delete_after_optional_match_with_edge() {
+    let mut db = Database::open_memory().unwrap();
+    {
+        let tx = db.begin_write().unwrap();
+        tx.query("CREATE (a:File {key: 'main.py'})-[:IMPORTS {line: 1}]->(b:Module {key: 'os'})")
+            .unwrap();
+        tx.commit().unwrap();
+    }
+    {
+        let tx = db.begin_write().unwrap();
+        tx.query("MATCH (a:File {key: 'main.py'}) OPTIONAL MATCH (a)-[r:IMPORTS]->(b) DELETE r")
+            .unwrap();
+        tx.commit().unwrap();
+    }
+    let tx = db.begin_read().unwrap();
+    let results = tx
+        .query("MATCH (a:File)-[:IMPORTS]->(b:Module) RETURN a.key")
+        .unwrap();
+    assert_eq!(results.len(), 0);
+    // Nodes should still exist.
+    let nodes = tx.query("MATCH (n) RETURN n").unwrap();
+    assert_eq!(nodes.len(), 2);
+    tx.commit().unwrap();
+}
+
+#[test]
+fn e2e_delete_after_optional_match_no_edge() {
+    let mut db = Database::open_memory().unwrap();
+    {
+        let tx = db.begin_write().unwrap();
+        tx.query("CREATE (a:File {key: 'main.py'})").unwrap();
+        tx.commit().unwrap();
+    }
+    // OPTIONAL MATCH finds nothing — DELETE should be a no-op.
+    {
+        let tx = db.begin_write().unwrap();
+        tx.query("MATCH (a:File {key: 'main.py'}) OPTIONAL MATCH (a)-[r:IMPORTS]->(b) DELETE r")
+            .unwrap();
+        tx.commit().unwrap();
+    }
+    let tx = db.begin_read().unwrap();
+    let nodes = tx.query("MATCH (n:File) RETURN n.key").unwrap();
+    assert_eq!(nodes.len(), 1);
+    tx.commit().unwrap();
+}

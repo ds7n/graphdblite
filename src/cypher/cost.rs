@@ -110,7 +110,8 @@ fn estimate_rows(conn: &Connection, plan: &LogicalOp) -> f64 {
         | LogicalOp::MatchCreate { .. }
         | LogicalOp::Delete { .. }
         | LogicalOp::SetProperty { .. }
-        | LogicalOp::Merge { .. } => 1.0,
+        | LogicalOp::Merge { .. }
+        | LogicalOp::MatchMerge { .. } => 1.0,
 
         LogicalOp::Union { inputs, .. } => inputs.iter().map(|i| estimate_rows(conn, i)).sum(),
     }
@@ -219,6 +220,7 @@ fn format_plan_tree(conn: &Connection, plan: &LogicalOp, depth: usize, lines: &m
         }
         LogicalOp::SetProperty { .. } => "SetProperty".to_string(),
         LogicalOp::Merge { .. } => "Merge".to_string(),
+        LogicalOp::MatchMerge { .. } => "MatchMerge".to_string(),
         LogicalOp::Union { inputs, all } => {
             let kind = if *all { "UNION ALL" } else { "UNION" };
             format!("{kind} ({} branches)", inputs.len())
@@ -239,6 +241,7 @@ fn format_plan_tree(conn: &Connection, plan: &LogicalOp, depth: usize, lines: &m
         | LogicalOp::Limit { input, .. }
         | LogicalOp::ShortestPath { input, .. }
         | LogicalOp::MatchCreate { input, .. }
+        | LogicalOp::MatchMerge { input, .. }
         | LogicalOp::Delete { input, .. }
         | LogicalOp::SetProperty { input, .. }
         | LogicalOp::Unwind { input, .. } => {

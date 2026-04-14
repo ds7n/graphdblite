@@ -14,6 +14,7 @@ pub fn plan(conn: &Connection, stmt: &Statement) -> crate::types::Result<Logical
         Statement::Delete(d) => plan_delete(conn, d),
         Statement::Set(s) => plan_set(conn, s),
         Statement::Merge(m) => plan_merge(m),
+        Statement::MatchMerge(mm) => plan_match_merge(conn, mm),
         Statement::Unwind(u) => plan_unwind(conn, u),
         Statement::Explain(inner) => plan(conn, inner),
         Statement::Union { statements, all } => {
@@ -175,6 +176,15 @@ fn plan_match_create(
 fn plan_delete(conn: &Connection, stmt: &DeleteStatement) -> crate::types::Result<LogicalOp> {
     let mut op = plan_patterns(conn, &stmt.patterns)?;
 
+    for opt_patterns in &stmt.optional_patterns {
+        let (right, new_aliases) = plan_optional_patterns(conn, opt_patterns)?;
+        op = LogicalOp::LeftOuterJoin {
+            input: Box::new(op),
+            right: Box::new(right),
+            optional_aliases: new_aliases,
+        };
+    }
+
     if let Some(ref predicate) = stmt.where_clause {
         op = LogicalOp::Filter {
             input: Box::new(op),
@@ -300,6 +310,27 @@ fn plan_merge(stmt: &MergeStatement) -> crate::types::Result<LogicalOp> {
     }
     Ok(LogicalOp::Merge {
         pattern: stmt.pattern.clone(),
+        on_create: stmt.on_create.clone(),
+        on_match: stmt.on_match.clone(),
+    })
+}
+
+fn plan_match_merge(
+    conn: &Connection,
+    stmt: &MatchMergeStatement,
+) -> crate::types::Result<LogicalOp> {
+    let mut op = plan_patterns(conn, &stmt.patterns)?;
+
+    if let Some(ref predicate) = stmt.where_clause {
+        op = LogicalOp::Filter {
+            input: Box::new(op),
+            predicate: predicate.clone(),
+        };
+    }
+
+    Ok(LogicalOp::MatchMerge {
+        input: Box::new(op),
+        merge_pattern: stmt.merge_pattern.clone(),
         on_create: stmt.on_create.clone(),
         on_match: stmt.on_match.clone(),
     })
@@ -576,6 +607,7 @@ fn plan_single_pattern(conn: &Connection, pattern: &Pattern) -> crate::types::Re
                     input: Box::new(op.unwrap()),
                     src_alias,
                     dst_alias,
+                    rel_alias: rel.variable.clone(),
                     edge_types: rel.rel_types.clone(),
                     direction,
                     min_hops,
@@ -728,7 +760,7 @@ fn plan_create_pattern(pattern: &Pattern) -> crate::types::Result<Vec<LogicalOp>
                     src_alias: src,
                     dst_alias: dst,
                     edge_type: rel.rel_types.first().cloned().unwrap_or_default(),
-                    properties: std::collections::HashMap::new(),
+                    properties: rel.properties.clone(),
                 });
 
                 last_alias = dst_alias;
@@ -926,6 +958,7 @@ fn try_replace_scan(
             input,
             src_alias,
             dst_alias,
+            rel_alias,
             edge_types,
             direction,
             min_hops,
@@ -934,6 +967,7 @@ fn try_replace_scan(
             input: Box::new(new_input),
             src_alias: src_alias.clone(),
             dst_alias: dst_alias.clone(),
+            rel_alias: rel_alias.clone(),
             edge_types: edge_types.clone(),
             direction: *direction,
             min_hops: *min_hops,

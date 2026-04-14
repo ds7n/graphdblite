@@ -82,7 +82,8 @@ fn is_read_only(plan: &LogicalOp) -> bool {
         | LogicalOp::MatchCreate { .. }
         | LogicalOp::Delete { .. }
         | LogicalOp::SetProperty { .. }
-        | LogicalOp::Merge { .. } => false,
+        | LogicalOp::Merge { .. }
+        | LogicalOp::MatchMerge { .. } => false,
     }
 }
 
@@ -111,12 +112,22 @@ fn exec(conn: &Connection, plan: &LogicalOp, ctx: &ExecContext) -> Result<Vec<Re
             input,
             src_alias,
             dst_alias,
+            rel_alias,
             edge_types,
             direction,
             min_hops,
             max_hops,
         } => exec_expand(
-            conn, input, src_alias, dst_alias, edge_types, *direction, *min_hops, *max_hops, ctx,
+            conn,
+            input,
+            src_alias,
+            dst_alias,
+            rel_alias.as_deref(),
+            edge_types,
+            *direction,
+            *min_hops,
+            *max_hops,
+            ctx,
         ),
 
         LogicalOp::CrossProduct { left, right } => exec_cross_product(conn, left, right, ctx),
@@ -173,6 +184,13 @@ fn exec(conn: &Connection, plan: &LogicalOp, ctx: &ExecContext) -> Result<Vec<Re
             on_create,
             on_match,
         } => exec_merge(conn, pattern, on_create, on_match),
+
+        LogicalOp::MatchMerge {
+            input,
+            merge_pattern,
+            on_create,
+            on_match,
+        } => exec_match_merge(conn, input, merge_pattern, on_create, on_match, ctx),
 
         LogicalOp::Unwind { input, expr, alias } => exec_unwind(conn, input, expr, alias, ctx),
 
@@ -275,6 +293,7 @@ fn exec_expand(
     input: &LogicalOp,
     src_alias: &str,
     dst_alias: &str,
+    rel_alias: Option<&str>,
     edge_types: &[String],
     direction: Direction,
     min_hops: u32,
@@ -312,6 +331,21 @@ fn exec_expand(
                         Value::String(dst_node.label.clone()),
                     );
                     new_rec.set(format!("{dst_alias}.__id"), Value::I64(dst_id.0 as i64));
+                    // Bind relationship properties and identity when a rel variable is present.
+                    if let Some(r_alias) = rel_alias {
+                        let (edge_src, edge_dst) = match direction {
+                            Direction::Incoming => (dst_id, src_id),
+                            _ => (src_id, dst_id),
+                        };
+                        new_rec.set(format!("{r_alias}.__src"), Value::I64(edge_src.0 as i64));
+                        new_rec.set(format!("{r_alias}.__dst"), Value::I64(edge_dst.0 as i64));
+                        new_rec.set(format!("{r_alias}.__type"), Value::String(label.to_string()));
+                        if let Ok(props) = edge::get_edge_properties(conn, edge_src, edge_dst, label) {
+                            for (key, val) in &props {
+                                new_rec.set(format!("{r_alias}.{key}"), val.clone());
+                            }
+                        }
+                    }
                     results.push(new_rec);
                 }
             } else {
@@ -861,13 +895,29 @@ fn exec_delete(
     let records = exec(conn, input, ctx)?;
     for rec in &records {
         for var in variables {
-            if let Some(Value::I64(id)) = rec.get(var) {
+            // Check if this is a relationship variable (has edge identity metadata).
+            let edge_src_key = format!("{var}.__src");
+            let edge_dst_key = format!("{var}.__dst");
+            let edge_type_key = format!("{var}.__type");
+            if let (Some(Value::I64(src)), Some(Value::I64(dst)), Some(Value::String(label))) = (
+                rec.get(&edge_src_key),
+                rec.get(&edge_dst_key),
+                rec.get(&edge_type_key),
+            ) {
+                edge::delete_edge(
+                    conn,
+                    NodeId(*src as u64),
+                    NodeId(*dst as u64),
+                    label,
+                )?;
+            } else if let Some(Value::I64(id)) = rec.get(var) {
                 let node_id = NodeId(*id as u64);
                 if !detach && node::node_has_edges(conn, node_id)? {
                     return Err(GraphError::HasEdges(node_id));
                 }
                 node::delete_node(conn, node_id)?;
             }
+            // Skip if value is Null (from OPTIONAL MATCH with no match).
         }
     }
     Ok(vec![])
@@ -882,7 +932,26 @@ fn exec_set_property(
     let records = exec(conn, input, ctx)?;
     for rec in &records {
         for assignment in assignments {
-            if let Some(Value::I64(id)) = rec.get(&assignment.variable) {
+            let var = &assignment.variable;
+            // Check if this is a relationship variable (has edge identity metadata).
+            let edge_src_key = format!("{var}.__src");
+            let edge_dst_key = format!("{var}.__dst");
+            let edge_type_key = format!("{var}.__type");
+            if let (Some(Value::I64(src)), Some(Value::I64(dst)), Some(Value::String(label))) = (
+                rec.get(&edge_src_key),
+                rec.get(&edge_dst_key),
+                rec.get(&edge_type_key),
+            ) {
+                let val = eval_expr(&assignment.value, rec, conn)?;
+                edge::set_edge_property(
+                    conn,
+                    NodeId(*src as u64),
+                    NodeId(*dst as u64),
+                    label,
+                    &assignment.property,
+                    val,
+                )?;
+            } else if let Some(Value::I64(id)) = rec.get(var) {
                 let node_id = NodeId(*id as u64);
                 let old = node::get_node(conn, node_id)?;
                 let val = eval_expr(&assignment.value, rec, conn)?;
@@ -979,6 +1048,123 @@ fn exec_merge(
             Ok(vec![rec])
         }
     }
+}
+
+fn exec_match_merge(
+    conn: &Connection,
+    input: &LogicalOp,
+    merge_pattern: &crate::cypher::ast::Pattern,
+    on_create: &[crate::cypher::ast::Assignment],
+    on_match: &[crate::cypher::ast::Assignment],
+    ctx: &ExecContext,
+) -> Result<Vec<Record>> {
+    let records = exec(conn, input, ctx)?;
+
+    // Extract the merge pattern structure: (src_node)-[:TYPE]->(dst_node) or single node.
+    let elements = &merge_pattern.elements;
+
+    if elements.len() == 1 {
+        // Single node MERGE — delegate to existing logic per record.
+        // For each matched record, try to find or create the node.
+        for rec in &records {
+            let node_pat = match &elements[0] {
+                PatternElement::Node(n) => n,
+                _ => unreachable!(),
+            };
+            let label = node_pat.labels.first().map(|s| s.as_str()).unwrap_or("");
+            let mut props = Properties::new();
+            for (key, expr) in &node_pat.properties {
+                let val = eval_expr(expr, rec, conn)?;
+                props.insert(key.clone(), val);
+            }
+            let matched = find_merge_match(conn, label, &node_pat.properties)?;
+            if matched.is_none() {
+                let id = node::create_node(conn, label, props.clone())?;
+                index::update_indexes_for_node(conn, id, label, None, &props)?;
+                let alias = node_pat.variable.as_deref().unwrap_or("_merge");
+                for assignment in on_create {
+                    let mut a_rec = Record::new();
+                    a_rec.set(alias.to_string(), Value::I64(id.0 as i64));
+                    let val = eval_expr(&assignment.value, &a_rec, conn)?;
+                    node::set_node_property(conn, id, &assignment.property, val)?;
+                }
+            }
+        }
+        return Ok(vec![]);
+    }
+
+    // Relationship merge: (src)-[:TYPE {props}]->(dst)
+    if elements.len() != 3 {
+        return Err(GraphError::ParseError(
+            "MERGE pattern must be a single node or (node)-[rel]->(node)".to_string(),
+        ));
+    }
+
+    let src_node = match &elements[0] {
+        PatternElement::Node(n) => n,
+        _ => return Err(GraphError::ParseError("expected node pattern".to_string())),
+    };
+    let rel = match &elements[1] {
+        PatternElement::Relationship(r) => r,
+        _ => return Err(GraphError::ParseError("expected relationship pattern".to_string())),
+    };
+    let dst_node = match &elements[2] {
+        PatternElement::Node(n) => n,
+        _ => return Err(GraphError::ParseError("expected node pattern".to_string())),
+    };
+
+    let src_var = src_node.variable.as_deref().ok_or_else(|| {
+        GraphError::ParseError("MERGE relationship source must have a variable".to_string())
+    })?;
+    let dst_var = dst_node.variable.as_deref().ok_or_else(|| {
+        GraphError::ParseError("MERGE relationship target must have a variable".to_string())
+    })?;
+    let edge_type = rel.rel_types.first().cloned().unwrap_or_default();
+
+    for rec in &records {
+        let src_id = match rec.get(src_var) {
+            Some(Value::I64(id)) => NodeId(*id as u64),
+            _ => continue,
+        };
+        let dst_id = match rec.get(dst_var) {
+            Some(Value::I64(id)) => NodeId(*id as u64),
+            _ => continue,
+        };
+
+        if !edge::edge_exists(conn, src_id, dst_id, &edge_type)? {
+            let mut props = Properties::new();
+            for (key, expr) in &rel.properties {
+                let val = eval_expr(expr, rec, conn)?;
+                props.insert(key.clone(), val);
+            }
+            edge::create_edge(conn, src_id, dst_id, &edge_type, props)?;
+            for assignment in on_create {
+                let val = eval_expr(&assignment.value, rec, conn)?;
+                edge::set_edge_property(
+                    conn,
+                    src_id,
+                    dst_id,
+                    &edge_type,
+                    &assignment.property,
+                    val,
+                )?;
+            }
+        } else {
+            for assignment in on_match {
+                let val = eval_expr(&assignment.value, rec, conn)?;
+                edge::set_edge_property(
+                    conn,
+                    src_id,
+                    dst_id,
+                    &edge_type,
+                    &assignment.property,
+                    val,
+                )?;
+            }
+        }
+    }
+
+    Ok(vec![])
 }
 
 fn exec_unwind(
@@ -1120,6 +1306,7 @@ fn exec_correlated(
             input,
             src_alias,
             dst_alias,
+            rel_alias,
             edge_types,
             direction,
             min_hops,
@@ -1153,6 +1340,20 @@ fn exec_correlated(
                         Value::String(dst_node.label.clone()),
                     );
                     new_rec.set(format!("{dst_alias}.__id"), Value::I64(dst_id.0 as i64));
+                    if let Some(r_alias) = rel_alias {
+                        let (edge_src, edge_dst) = match direction {
+                            Direction::Incoming => (dst_id, src_id),
+                            _ => (src_id, dst_id),
+                        };
+                        new_rec.set(format!("{r_alias}.__src"), Value::I64(edge_src.0 as i64));
+                        new_rec.set(format!("{r_alias}.__dst"), Value::I64(edge_dst.0 as i64));
+                        new_rec.set(format!("{r_alias}.__type"), Value::String(label.to_string()));
+                        if let Ok(props) = edge::get_edge_properties(conn, edge_src, edge_dst, label) {
+                            for (key, val) in &props {
+                                new_rec.set(format!("{r_alias}.{key}"), val.clone());
+                            }
+                        }
+                    }
                     results.push(new_rec);
                 }
             }
@@ -1404,6 +1605,7 @@ pub fn execute_first_match(
             direction,
             min_hops,
             max_hops,
+            ..
         } => {
             let input_records = exec(conn, input, &ExecContext::default())?;
             let label = edge_types.first().map(|s| s.as_str()).unwrap_or("");

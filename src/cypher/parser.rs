@@ -85,6 +85,7 @@ fn parse_single_stmt(pair: pest::iterators::Pair<Rule>) -> crate::types::Result<
         Rule::match_stmt => parse_match(pair).map(Statement::Match),
         Rule::create_stmt => parse_create(pair).map(Statement::Create),
         Rule::match_create_stmt => parse_match_create(pair).map(Statement::MatchCreate),
+        Rule::match_merge_stmt => parse_match_merge(pair).map(Statement::MatchMerge),
         Rule::delete_stmt => parse_delete(pair).map(Statement::Delete),
         Rule::set_stmt => parse_set(pair).map(Statement::Set),
         Rule::merge_stmt => parse_merge(pair).map(Statement::Merge),
@@ -207,8 +208,51 @@ fn parse_match_create(
     })
 }
 
+fn parse_match_merge(
+    pair: pest::iterators::Pair<Rule>,
+) -> crate::types::Result<MatchMergeStatement> {
+    let mut patterns = Vec::new();
+    let mut where_clause = None;
+    let mut merge_pattern = None;
+    let mut on_create = Vec::new();
+    let mut on_match = Vec::new();
+
+    for inner in pair.into_inner() {
+        match inner.as_rule() {
+            Rule::pattern_list => patterns = parse_pattern_list(inner)?,
+            Rule::where_clause => where_clause = Some(parse_where(inner)?),
+            Rule::pattern => merge_pattern = Some(parse_pattern(inner)?),
+            Rule::on_create_clause => {
+                for child in inner.into_inner() {
+                    if child.as_rule() == Rule::assignment_list {
+                        on_create = parse_assignment_list(child)?;
+                    }
+                }
+            }
+            Rule::on_match_clause => {
+                for child in inner.into_inner() {
+                    if child.as_rule() == Rule::assignment_list {
+                        on_match = parse_assignment_list(child)?;
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+
+    Ok(MatchMergeStatement {
+        patterns,
+        where_clause,
+        merge_pattern: merge_pattern
+            .ok_or_else(|| GraphError::Serialization("missing MERGE pattern".to_string()))?,
+        on_create,
+        on_match,
+    })
+}
+
 fn parse_delete(pair: pest::iterators::Pair<Rule>) -> crate::types::Result<DeleteStatement> {
     let mut patterns = Vec::new();
+    let mut optional_patterns = Vec::new();
     let mut where_clause = None;
     let mut detach = false;
     let mut variables = Vec::new();
@@ -216,6 +260,13 @@ fn parse_delete(pair: pest::iterators::Pair<Rule>) -> crate::types::Result<Delet
     for inner in pair.into_inner() {
         match inner.as_rule() {
             Rule::pattern_list => patterns = parse_pattern_list(inner)?,
+            Rule::optional_match_clause => {
+                for child in inner.into_inner() {
+                    if child.as_rule() == Rule::pattern_list {
+                        optional_patterns.push(parse_pattern_list(child)?);
+                    }
+                }
+            }
             Rule::where_clause => where_clause = Some(parse_where(inner)?),
             Rule::detach_keyword => detach = true,
             Rule::ident_list => {
@@ -231,6 +282,7 @@ fn parse_delete(pair: pest::iterators::Pair<Rule>) -> crate::types::Result<Delet
 
     Ok(DeleteStatement {
         patterns,
+        optional_patterns,
         where_clause,
         detach,
         variables,
@@ -409,6 +461,7 @@ fn parse_rel_pattern(pair: pest::iterators::Pair<Rule>) -> crate::types::Result<
 
     let mut variable = None;
     let mut rel_types = Vec::new();
+    let mut properties = HashMap::new();
     let mut var_length = None;
 
     for child in inner.into_inner() {
@@ -423,6 +476,9 @@ fn parse_rel_pattern(pair: pest::iterators::Pair<Rule>) -> crate::types::Result<
                             }
                         }
                     }
+                    Rule::property_map => {
+                        properties = parse_property_map(detail)?;
+                    }
                     Rule::var_length => {
                         var_length = Some(parse_var_length(detail)?);
                     }
@@ -435,6 +491,7 @@ fn parse_rel_pattern(pair: pest::iterators::Pair<Rule>) -> crate::types::Result<
     Ok(RelPattern {
         variable,
         rel_types,
+        properties,
         direction,
         var_length,
     })

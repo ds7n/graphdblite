@@ -24,6 +24,8 @@ pub enum LogicalOp {
         input: Box<LogicalOp>,
         src_alias: String,
         dst_alias: String,
+        /// Relationship variable name (e.g. `r` in `[r:TYPE]`).
+        rel_alias: Option<String>,
         /// Edge type(s) to match. Empty = any type. Multiple = match any of them.
         edge_types: Vec<String>,
         direction: Direction,
@@ -111,6 +113,14 @@ pub enum LogicalOp {
     /// Merge: match-or-create pattern.
     Merge {
         pattern: Pattern,
+        on_create: Vec<Assignment>,
+        on_match: Vec<Assignment>,
+    },
+
+    /// MATCH ... MERGE: merge a pattern using bound variables from MATCH pipeline.
+    MatchMerge {
+        input: Box<LogicalOp>,
+        merge_pattern: Pattern,
         on_create: Vec<Assignment>,
         on_match: Vec<Assignment>,
     },

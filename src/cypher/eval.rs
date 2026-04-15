@@ -22,6 +22,9 @@ pub fn eval_expr(expr: &Expr, record: &Record, conn: &Connection) -> crate::type
             Ok(Value::List(values?))
         }
         Expr::Star => Ok(Value::Null),
+        Expr::Parameter(name) => Err(crate::types::GraphError::ParseError(format!(
+            "unresolved parameter: ${name}"
+        ))),
         Expr::BinaryOp { left, op, right } => {
             let lval = eval_expr(left, record, conn)?;
             let rval = eval_expr(right, record, conn)?;

@@ -190,7 +190,9 @@ add_expr = { mul_expr ~ (add_op ~ mul_expr)* }
 mul_expr = { atom_expr ~ (mul_op ~ atom_expr)* }
 add_op = { "+" | "-" }
 mul_op = { "*" | "/" }
-atom_expr = { case_expr | function_call | property_access | literal | list_comprehension | list_literal | star | "(" ~ add_expr ~ ")" | variable }
+atom_expr = { case_expr | function_call | property_access | literal | list_comprehension | list_literal | star | parameter | "(" ~ add_expr ~ ")" | variable }
+
+parameter = { "$" ~ ident }
 
 list_comprehension = { "[" ~ ident ~ ^"IN" ~ expr ~ list_comp_where? ~ list_comp_map? ~ "]" }
 list_comp_where = { ^"WHERE" ~ bool_expr }

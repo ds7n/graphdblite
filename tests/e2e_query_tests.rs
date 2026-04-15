@@ -2820,3 +2820,224 @@ fn e2e_id_as_property_name_still_works() {
     );
     tx.commit().unwrap();
 }
+
+// ===========================================================================
+// Standalone relationship MERGE tests
+// ===========================================================================
+
+#[test]
+fn merge_relationship_creates_nodes_and_edge() {
+    let mut db = Database::open_memory().unwrap();
+    {
+        let tx = db.begin_write().unwrap();
+        tx.query("MERGE (a:Person {name: 'Alice'})-[:KNOWS]->(b:Person {name: 'Bob'})")
+            .unwrap();
+        tx.commit().unwrap();
+    }
+    let tx = db.begin_read().unwrap();
+    // Both nodes should exist.
+    let people = tx.query("MATCH (n:Person) RETURN n.name").unwrap();
+    assert_eq!(people.len(), 2);
+    // The edge should exist.
+    let edges = tx
+        .query("MATCH (a:Person {name: 'Alice'})-[:KNOWS]->(b:Person {name: 'Bob'}) RETURN a.name, b.name")
+        .unwrap();
+    assert_eq!(edges.len(), 1);
+    tx.commit().unwrap();
+}
+
+#[test]
+fn merge_relationship_is_idempotent() {
+    let mut db = Database::open_memory().unwrap();
+    {
+        let tx = db.begin_write().unwrap();
+        tx.query("MERGE (a:Person {name: 'Alice'})-[:KNOWS]->(b:Person {name: 'Bob'})")
+            .unwrap();
+        // Run it again — should not create duplicates.
+        tx.query("MERGE (a:Person {name: 'Alice'})-[:KNOWS]->(b:Person {name: 'Bob'})")
+            .unwrap();
+        tx.commit().unwrap();
+    }
+    let tx = db.begin_read().unwrap();
+    let people = tx.query("MATCH (n:Person) RETURN n.name").unwrap();
+    assert_eq!(people.len(), 2);
+    tx.commit().unwrap();
+}
+
+#[test]
+fn merge_relationship_reuses_existing_nodes() {
+    let mut db = Database::open_memory().unwrap();
+    {
+        let tx = db.begin_write().unwrap();
+        tx.query("CREATE (a:Person {name: 'Alice'})").unwrap();
+        tx.commit().unwrap();
+    }
+    {
+        let tx = db.begin_write().unwrap();
+        // Alice already exists — should reuse her.
+        tx.query("MERGE (a:Person {name: 'Alice'})-[:KNOWS]->(b:Person {name: 'Bob'})")
+            .unwrap();
+        tx.commit().unwrap();
+    }
+    let tx = db.begin_read().unwrap();
+    let people = tx.query("MATCH (n:Person) RETURN n.name").unwrap();
+    assert_eq!(people.len(), 2); // Not 3!
+    tx.commit().unwrap();
+}
+
+#[test]
+fn merge_relationship_with_edge_properties() {
+    let mut db = Database::open_memory().unwrap();
+    {
+        let tx = db.begin_write().unwrap();
+        tx.query(
+            "MERGE (a:Person {name: 'Alice'})-[:KNOWS {since: 2020}]->(b:Person {name: 'Bob'})",
+        )
+        .unwrap();
+        tx.commit().unwrap();
+    }
+    let tx = db.begin_read().unwrap();
+    let results = tx
+        .query("MATCH (a:Person {name: 'Alice'})-[r:KNOWS]->(b) RETURN r.since")
+        .unwrap();
+    assert_eq!(results.len(), 1);
+    assert_eq!(results[0].get("r.since"), Some(&Value::I64(2020)));
+    tx.commit().unwrap();
+}
+
+// ===========================================================================
+// Parameterized query tests
+// ===========================================================================
+
+#[test]
+fn parameterized_match_with_literal() {
+    let mut db = Database::open_memory().unwrap();
+    {
+        let tx = db.begin_write().unwrap();
+        tx.query("CREATE (n:Person {name: 'Alice', age: 30})")
+            .unwrap();
+        tx.query("CREATE (n:Person {name: 'Bob', age: 25})")
+            .unwrap();
+        tx.commit().unwrap();
+    }
+    let tx = db.begin_read().unwrap();
+    let params: HashMap<String, Value> =
+        [("name".to_string(), Value::String("Alice".into()))].into();
+    let results = tx
+        .query_with_params("MATCH (n:Person {name: $name}) RETURN n.age", Some(&params))
+        .unwrap();
+    assert_eq!(results.len(), 1);
+    assert_eq!(results[0].get("n.age"), Some(&Value::I64(30)));
+    tx.commit().unwrap();
+}
+
+#[test]
+fn parameterized_create() {
+    let mut db = Database::open_memory().unwrap();
+    {
+        let tx = db.begin_write().unwrap();
+        let params: HashMap<String, Value> = [
+            ("name".to_string(), Value::String("Charlie".into())),
+            ("age".to_string(), Value::I64(40)),
+        ]
+        .into();
+        tx.query_with_params("CREATE (n:Person {name: $name, age: $age})", Some(&params))
+            .unwrap();
+        tx.commit().unwrap();
+    }
+    let tx = db.begin_read().unwrap();
+    let results = tx
+        .query("MATCH (n:Person {name: 'Charlie'}) RETURN n.age")
+        .unwrap();
+    assert_eq!(results.len(), 1);
+    assert_eq!(results[0].get("n.age"), Some(&Value::I64(40)));
+    tx.commit().unwrap();
+}
+
+#[test]
+fn parameterized_where_clause() {
+    let mut db = Database::open_memory().unwrap();
+    {
+        let tx = db.begin_write().unwrap();
+        tx.query("CREATE (n:Person {name: 'Alice', age: 30})")
+            .unwrap();
+        tx.query("CREATE (n:Person {name: 'Bob', age: 25})")
+            .unwrap();
+        tx.commit().unwrap();
+    }
+    let tx = db.begin_read().unwrap();
+    let params: HashMap<String, Value> = [("min_age".to_string(), Value::I64(28))].into();
+    let results = tx
+        .query_with_params(
+            "MATCH (n:Person) WHERE n.age > $min_age RETURN n.name",
+            Some(&params),
+        )
+        .unwrap();
+    assert_eq!(results.len(), 1);
+    assert_eq!(
+        results[0].get("n.name"),
+        Some(&Value::String("Alice".into()))
+    );
+    tx.commit().unwrap();
+}
+
+#[test]
+fn parameterized_merge() {
+    let mut db = Database::open_memory().unwrap();
+    {
+        let tx = db.begin_write().unwrap();
+        let params: HashMap<String, Value> =
+            [("key".to_string(), Value::String("fn:main".into()))].into();
+        tx.query_with_params("MERGE (n:Function {key: $key})", Some(&params))
+            .unwrap();
+        // Second call should not create a duplicate.
+        tx.query_with_params("MERGE (n:Function {key: $key})", Some(&params))
+            .unwrap();
+        tx.commit().unwrap();
+    }
+    let tx = db.begin_read().unwrap();
+    let results = tx.query("MATCH (n:Function) RETURN n.key").unwrap();
+    assert_eq!(results.len(), 1);
+    tx.commit().unwrap();
+}
+
+#[test]
+fn parameterized_missing_param_errors() {
+    let mut db = Database::open_memory().unwrap();
+    let tx = db.begin_write().unwrap();
+    let params: HashMap<String, Value> = HashMap::new();
+    let result = tx.query_with_params("MATCH (n:Person {name: $name}) RETURN n", Some(&params));
+    assert!(result.is_err());
+    let err = result.unwrap_err().to_string();
+    assert!(err.contains("missing parameter: $name"), "got: {err}");
+    tx.rollback().unwrap();
+}
+
+#[test]
+fn parameterized_with_index() {
+    let mut db = Database::open_memory().unwrap();
+    {
+        let tx = db.begin_write().unwrap();
+        tx.create_index("Function", "key").unwrap();
+        tx.query("CREATE (n:Function {key: 'fn:main', name: 'main'})")
+            .unwrap();
+        tx.query("CREATE (n:Function {key: 'fn:helper', name: 'helper'})")
+            .unwrap();
+        tx.commit().unwrap();
+    }
+    let tx = db.begin_read().unwrap();
+    let params: HashMap<String, Value> =
+        [("key".to_string(), Value::String("fn:main".into()))].into();
+    let results = tx
+        .query_with_params(
+            "MATCH (n:Function {key: $key}) RETURN n.name",
+            Some(&params),
+        )
+        .unwrap();
+    assert_eq!(results.len(), 1);
+    assert_eq!(
+        results[0].get("n.name"),
+        Some(&Value::String("main".into()))
+    );
+    tx.commit().unwrap();
+}

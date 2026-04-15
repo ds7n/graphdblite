@@ -751,7 +751,9 @@ fn exec_create_node(
         props.insert(key.clone(), val);
     }
 
-    let id = node::create_node(conn, label.unwrap_or(""), props)?;
+    let lbl = label.unwrap_or("");
+    let id = node::create_node(conn, lbl, props.clone())?;
+    index::update_indexes_for_node(conn, id, lbl, None, &props)?;
 
     let mut rec = Record::new();
     if let Some(alias) = alias {
@@ -791,7 +793,9 @@ fn exec_create_sequence(conn: &Connection, ops: &[LogicalOp]) -> Result<Vec<Reco
                     let val = eval_expr(expr, &dummy_rec, conn)?;
                     props.insert(key.clone(), val);
                 }
-                let id = node::create_node(conn, label.as_deref().unwrap_or(""), props)?;
+                let lbl = label.as_deref().unwrap_or("");
+                let id = node::create_node(conn, lbl, props.clone())?;
+                index::update_indexes_for_node(conn, id, lbl, None, &props)?;
                 if let Some(alias) = alias {
                     bindings.insert(alias.clone(), id);
                     last_record.set(alias.clone(), Value::I64(id.0 as i64));
@@ -865,7 +869,9 @@ fn exec_match_create(
                         let val = eval_expr(expr, rec, conn)?;
                         props.insert(key.clone(), val);
                     }
-                    let id = node::create_node(conn, label.as_deref().unwrap_or(""), props)?;
+                    let lbl = label.as_deref().unwrap_or("");
+                    let id = node::create_node(conn, lbl, props.clone())?;
+                    index::update_indexes_for_node(conn, id, lbl, None, &props)?;
                     if let Some(alias) = alias {
                         bindings.insert(alias.clone(), id);
                     }
@@ -984,7 +990,20 @@ fn exec_merge(
     on_create: &[crate::cypher::ast::Assignment],
     on_match: &[crate::cypher::ast::Assignment],
 ) -> Result<Vec<Record>> {
-    // Safety: MERGE pattern is validated at plan time to be a single node.
+    if pattern.elements.len() == 1 {
+        return exec_merge_node(conn, pattern, on_create, on_match);
+    }
+    // 3-element relationship MERGE: (a:L {p})-[:TYPE]->(b:L {p})
+    exec_merge_relationship(conn, pattern, on_create, on_match)
+}
+
+/// Single-node MERGE: find-or-create a node matching the pattern.
+fn exec_merge_node(
+    conn: &Connection,
+    pattern: &crate::cypher::ast::Pattern,
+    on_create: &[crate::cypher::ast::Assignment],
+    on_match: &[crate::cypher::ast::Assignment],
+) -> Result<Vec<Record>> {
     let node_pat = match pattern.elements.first() {
         Some(PatternElement::Node(n)) => n,
         _ => unreachable!("MERGE pattern validated at plan time"),
@@ -993,13 +1012,10 @@ fn exec_merge(
     let label = node_pat.labels.first().map(|s| s.as_str()).unwrap_or("");
     let alias = node_pat.variable.as_deref().unwrap_or("_merge");
 
-    // Try to find an existing node — use index lookup if one exists for a
-    // literal property in the MERGE pattern, otherwise fall back to label scan.
     let matched = find_merge_match(conn, label, &node_pat.properties)?;
 
     match matched {
         Some(n) => {
-            // ON MATCH SET — update indexes alongside properties.
             for assignment in on_match {
                 let old = node::get_node(conn, n.id)?;
                 let mut rec = Record::new();
@@ -1021,7 +1037,6 @@ fn exec_merge(
             Ok(vec![rec])
         }
         None => {
-            // Create the node.
             let mut props = Properties::new();
             let dummy_rec = Record::new();
             for (key, expr) in &node_pat.properties {
@@ -1029,10 +1044,8 @@ fn exec_merge(
                 props.insert(key.clone(), val);
             }
             let id = node::create_node(conn, label, props.clone())?;
-            // Backfill indexes for the newly created node.
             index::update_indexes_for_node(conn, id, label, None, &props)?;
 
-            // ON CREATE SET — update indexes alongside properties.
             for assignment in on_create {
                 let old = node::get_node(conn, id)?;
                 let mut rec = Record::new();
@@ -1053,6 +1066,101 @@ fn exec_merge(
             let mut rec = Record::new();
             rec.set(alias.to_string(), Value::I64(id.0 as i64));
             Ok(vec![rec])
+        }
+    }
+}
+
+/// Relationship MERGE: find-or-create nodes and the edge between them.
+fn exec_merge_relationship(
+    conn: &Connection,
+    pattern: &crate::cypher::ast::Pattern,
+    on_create: &[crate::cypher::ast::Assignment],
+    on_match: &[crate::cypher::ast::Assignment],
+) -> Result<Vec<Record>> {
+    let src_pat = match &pattern.elements[0] {
+        PatternElement::Node(n) => n,
+        _ => unreachable!(),
+    };
+    let rel = match &pattern.elements[1] {
+        PatternElement::Relationship(r) => r,
+        _ => unreachable!(),
+    };
+    let dst_pat = match &pattern.elements[2] {
+        PatternElement::Node(n) => n,
+        _ => unreachable!(),
+    };
+
+    let src_label = src_pat.labels.first().map(|s| s.as_str()).unwrap_or("");
+    let dst_label = dst_pat.labels.first().map(|s| s.as_str()).unwrap_or("");
+    let edge_type = rel.rel_types.first().cloned().unwrap_or_default();
+
+    // Find or create source and destination nodes.
+    let src_id = find_or_create_merge_node(conn, src_label, &src_pat.properties)?;
+    let dst_id = find_or_create_merge_node(conn, dst_label, &dst_pat.properties)?;
+
+    // Find or create the edge.
+    if !edge::edge_exists(conn, src_id, dst_id, &edge_type)? {
+        let mut props = Properties::new();
+        let dummy_rec = Record::new();
+        for (key, expr) in &rel.properties {
+            let val = eval_expr(expr, &dummy_rec, conn)?;
+            props.insert(key.clone(), val);
+        }
+        edge::create_edge(conn, src_id, dst_id, &edge_type, props)?;
+        for assignment in on_create {
+            let mut rec = Record::new();
+            if let Some(ref v) = src_pat.variable {
+                rec.set(v.clone(), Value::I64(src_id.0 as i64));
+            }
+            if let Some(ref v) = dst_pat.variable {
+                rec.set(v.clone(), Value::I64(dst_id.0 as i64));
+            }
+            let val = eval_expr(&assignment.value, &rec, conn)?;
+            edge::set_edge_property(conn, src_id, dst_id, &edge_type, &assignment.property, val)?;
+        }
+    } else {
+        for assignment in on_match {
+            let mut rec = Record::new();
+            if let Some(ref v) = src_pat.variable {
+                rec.set(v.clone(), Value::I64(src_id.0 as i64));
+            }
+            if let Some(ref v) = dst_pat.variable {
+                rec.set(v.clone(), Value::I64(dst_id.0 as i64));
+            }
+            let val = eval_expr(&assignment.value, &rec, conn)?;
+            edge::set_edge_property(conn, src_id, dst_id, &edge_type, &assignment.property, val)?;
+        }
+    }
+
+    let mut rec = Record::new();
+    if let Some(ref v) = src_pat.variable {
+        rec.set(v.clone(), Value::I64(src_id.0 as i64));
+    }
+    if let Some(ref v) = dst_pat.variable {
+        rec.set(v.clone(), Value::I64(dst_id.0 as i64));
+    }
+    Ok(vec![rec])
+}
+
+/// Find a node matching the MERGE pattern properties, or create it if not found.
+fn find_or_create_merge_node(
+    conn: &Connection,
+    label: &str,
+    properties: &HashMap<String, Expr>,
+) -> Result<NodeId> {
+    let matched = find_merge_match(conn, label, properties)?;
+    match matched {
+        Some(n) => Ok(n.id),
+        None => {
+            let mut props = Properties::new();
+            let dummy_rec = Record::new();
+            for (key, expr) in properties {
+                let val = eval_expr(expr, &dummy_rec, conn)?;
+                props.insert(key.clone(), val);
+            }
+            let id = node::create_node(conn, label, props.clone())?;
+            index::update_indexes_for_node(conn, id, label, None, &props)?;
+            Ok(id)
         }
     }
 }

@@ -1,12 +1,12 @@
 pub mod cypher;
 mod db;
-mod edge;
+pub mod edge;
 mod id;
-mod index;
-mod node;
+pub mod index;
+pub mod node;
 mod schema;
 pub(crate) mod stats;
-pub(crate) mod storage;
+pub mod storage;
 mod transaction;
 pub mod types;
 

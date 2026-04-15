@@ -1084,6 +1084,10 @@ fn parse_atom_expr(pair: pest::iterators::Pair<Rule>) -> crate::types::Result<Ex
             Ok(Expr::List(items?))
         }
         Rule::star => Ok(Expr::Star),
+        Rule::parameter => {
+            let name = pair.into_inner().next().unwrap().as_str().to_string();
+            Ok(Expr::Parameter(name))
+        }
         Rule::variable => Ok(Expr::Variable(
             pair.into_inner().next().unwrap().as_str().to_string(),
         )),
@@ -1254,4 +1258,353 @@ fn humanize_rule_name(rule: &str) -> &str {
 fn humanize_pest_error(err: pest::error::Error<Rule>) -> String {
     let renamed = err.renamed_rules(|rule| humanize_rule_name(&format!("{rule:?}")).to_string());
     format!("{renamed}")
+}
+
+// ---------------------------------------------------------------------------
+// Parameter resolution: substitute $name with literal values before planning.
+// ---------------------------------------------------------------------------
+
+use crate::types::Value;
+
+fn value_to_literal(val: &Value) -> crate::types::Result<LiteralValue> {
+    match val {
+        Value::Null => Ok(LiteralValue::Null),
+        Value::Bool(b) => Ok(LiteralValue::Bool(*b)),
+        Value::I64(n) => Ok(LiteralValue::I64(*n)),
+        Value::F64(n) => Ok(LiteralValue::F64(*n)),
+        Value::String(s) => Ok(LiteralValue::String(s.clone())),
+        _ => Err(GraphError::ParseError(
+            "unsupported parameter type (only scalar values allowed)".to_string(),
+        )),
+    }
+}
+
+fn resolve_expr(expr: &Expr, params: &HashMap<String, Value>) -> crate::types::Result<Expr> {
+    match expr {
+        Expr::Parameter(name) => {
+            let val = params
+                .get(name)
+                .ok_or_else(|| GraphError::ParseError(format!("missing parameter: ${name}")))?;
+            Ok(Expr::Literal(value_to_literal(val)?))
+        }
+        Expr::BinaryOp { left, op, right } => Ok(Expr::BinaryOp {
+            left: Box::new(resolve_expr(left, params)?),
+            op: *op,
+            right: Box::new(resolve_expr(right, params)?),
+        }),
+        Expr::Not(inner) => Ok(Expr::Not(Box::new(resolve_expr(inner, params)?))),
+        Expr::IsNull(inner) => Ok(Expr::IsNull(Box::new(resolve_expr(inner, params)?))),
+        Expr::IsNotNull(inner) => Ok(Expr::IsNotNull(Box::new(resolve_expr(inner, params)?))),
+        Expr::FunctionCall { name, args } => {
+            let resolved: crate::types::Result<Vec<Expr>> =
+                args.iter().map(|a| resolve_expr(a, params)).collect();
+            Ok(Expr::FunctionCall {
+                name: name.clone(),
+                args: resolved?,
+            })
+        }
+        Expr::Case {
+            alternatives,
+            default,
+        } => {
+            let mut resolved_alts = Vec::new();
+            for (cond, result) in alternatives {
+                resolved_alts.push((
+                    Box::new(resolve_expr(cond, params)?),
+                    Box::new(resolve_expr(result, params)?),
+                ));
+            }
+            let resolved_default = default
+                .as_ref()
+                .map(|d| resolve_expr(d, params).map(Box::new))
+                .transpose()?;
+            Ok(Expr::Case {
+                alternatives: resolved_alts,
+                default: resolved_default,
+            })
+        }
+        Expr::List(items) => {
+            let resolved: crate::types::Result<Vec<Expr>> =
+                items.iter().map(|e| resolve_expr(e, params)).collect();
+            Ok(Expr::List(resolved?))
+        }
+        Expr::ListComprehension {
+            variable,
+            list_expr,
+            filter,
+            map_expr,
+        } => Ok(Expr::ListComprehension {
+            variable: variable.clone(),
+            list_expr: Box::new(resolve_expr(list_expr, params)?),
+            filter: filter
+                .as_ref()
+                .map(|f| resolve_expr(f, params).map(Box::new))
+                .transpose()?,
+            map_expr: map_expr
+                .as_ref()
+                .map(|m| resolve_expr(m, params).map(Box::new))
+                .transpose()?,
+        }),
+        Expr::Exists {
+            patterns,
+            where_clause,
+        } => Ok(Expr::Exists {
+            patterns: resolve_patterns(patterns, params)?,
+            where_clause: where_clause
+                .as_ref()
+                .map(|w| resolve_expr(w, params).map(Box::new))
+                .transpose()?,
+        }),
+        // Leaf nodes that contain no sub-expressions.
+        Expr::Literal(_) | Expr::Property(_, _) | Expr::Variable(_) | Expr::Star => {
+            Ok(expr.clone())
+        }
+    }
+}
+
+fn resolve_props(
+    properties: &HashMap<String, Expr>,
+    params: &HashMap<String, Value>,
+) -> crate::types::Result<HashMap<String, Expr>> {
+    properties
+        .iter()
+        .map(|(k, v)| Ok((k.clone(), resolve_expr(v, params)?)))
+        .collect()
+}
+
+fn resolve_pattern(
+    pattern: &Pattern,
+    params: &HashMap<String, Value>,
+) -> crate::types::Result<Pattern> {
+    let elements: crate::types::Result<Vec<PatternElement>> = pattern
+        .elements
+        .iter()
+        .map(|el| match el {
+            PatternElement::Node(n) => Ok(PatternElement::Node(NodePattern {
+                variable: n.variable.clone(),
+                labels: n.labels.clone(),
+                properties: resolve_props(&n.properties, params)?,
+            })),
+            PatternElement::Relationship(r) => Ok(PatternElement::Relationship(RelPattern {
+                variable: r.variable.clone(),
+                rel_types: r.rel_types.clone(),
+                properties: resolve_props(&r.properties, params)?,
+                direction: r.direction,
+                var_length: r.var_length,
+            })),
+        })
+        .collect();
+    Ok(Pattern {
+        elements: elements?,
+        path_variable: pattern.path_variable.clone(),
+        shortest_path_mode: pattern.shortest_path_mode,
+    })
+}
+
+fn resolve_patterns(
+    patterns: &[Pattern],
+    params: &HashMap<String, Value>,
+) -> crate::types::Result<Vec<Pattern>> {
+    patterns
+        .iter()
+        .map(|p| resolve_pattern(p, params))
+        .collect()
+}
+
+fn resolve_assignments(
+    assignments: &[Assignment],
+    params: &HashMap<String, Value>,
+) -> crate::types::Result<Vec<Assignment>> {
+    assignments
+        .iter()
+        .map(|a| {
+            Ok(Assignment {
+                variable: a.variable.clone(),
+                property: a.property.clone(),
+                value: resolve_expr(&a.value, params)?,
+            })
+        })
+        .collect()
+}
+
+fn resolve_return_items(
+    items: &[ReturnItem],
+    params: &HashMap<String, Value>,
+) -> crate::types::Result<Vec<ReturnItem>> {
+    items
+        .iter()
+        .map(|item| {
+            Ok(ReturnItem {
+                expr: resolve_expr(&item.expr, params)?,
+                alias: item.alias.clone(),
+            })
+        })
+        .collect()
+}
+
+fn resolve_sort_items(
+    items: &[SortItem],
+    params: &HashMap<String, Value>,
+) -> crate::types::Result<Vec<SortItem>> {
+    items
+        .iter()
+        .map(|item| {
+            Ok(SortItem {
+                expr: resolve_expr(&item.expr, params)?,
+                descending: item.descending,
+            })
+        })
+        .collect()
+}
+
+fn resolve_intermediate_clauses(
+    clauses: &[IntermediateClause],
+    params: &HashMap<String, Value>,
+) -> crate::types::Result<Vec<IntermediateClause>> {
+    clauses
+        .iter()
+        .map(|c| match c {
+            IntermediateClause::With(w) => Ok(IntermediateClause::With(WithClause {
+                items: resolve_return_items(&w.items, params)?,
+                where_clause: w
+                    .where_clause
+                    .as_ref()
+                    .map(|e| resolve_expr(e, params))
+                    .transpose()?,
+            })),
+            IntermediateClause::Unwind(u) => Ok(IntermediateClause::Unwind(UnwindClause {
+                expr: resolve_expr(&u.expr, params)?,
+                alias: u.alias.clone(),
+            })),
+        })
+        .collect()
+}
+
+/// Substitute all `$name` parameters in a parsed statement with literal values.
+///
+/// This must be called before planning so the planner can use literal values
+/// for index selection decisions.
+pub fn resolve_params(
+    stmt: &Statement,
+    params: &HashMap<String, Value>,
+) -> crate::types::Result<Statement> {
+    match stmt {
+        Statement::Match(m) => Ok(Statement::Match(MatchStatement {
+            patterns: resolve_patterns(&m.patterns, params)?,
+            optional_patterns: m
+                .optional_patterns
+                .iter()
+                .map(|ps| resolve_patterns(ps, params))
+                .collect::<crate::types::Result<Vec<_>>>()?,
+            where_clause: m
+                .where_clause
+                .as_ref()
+                .map(|e| resolve_expr(e, params))
+                .transpose()?,
+            intermediate_clauses: resolve_intermediate_clauses(&m.intermediate_clauses, params)?,
+            return_clause: ReturnClause {
+                items: resolve_return_items(&m.return_clause.items, params)?,
+                distinct: m.return_clause.distinct,
+            },
+            order_by: resolve_sort_items(&m.order_by, params)?,
+            skip: m.skip,
+            limit: m.limit,
+        })),
+        Statement::Create(c) => Ok(Statement::Create(CreateStatement {
+            patterns: resolve_patterns(&c.patterns, params)?,
+        })),
+        Statement::MatchCreate(mc) => Ok(Statement::MatchCreate(MatchCreateStatement {
+            patterns: resolve_patterns(&mc.patterns, params)?,
+            where_clause: mc
+                .where_clause
+                .as_ref()
+                .map(|e| resolve_expr(e, params))
+                .transpose()?,
+            create_patterns: resolve_patterns(&mc.create_patterns, params)?,
+        })),
+        Statement::MatchMerge(mm) => Ok(Statement::MatchMerge(MatchMergeStatement {
+            patterns: resolve_patterns(&mm.patterns, params)?,
+            where_clause: mm
+                .where_clause
+                .as_ref()
+                .map(|e| resolve_expr(e, params))
+                .transpose()?,
+            merge_pattern: resolve_pattern(&mm.merge_pattern, params)?,
+            on_create: resolve_assignments(&mm.on_create, params)?,
+            on_match: resolve_assignments(&mm.on_match, params)?,
+        })),
+        Statement::Delete(d) => Ok(Statement::Delete(DeleteStatement {
+            patterns: resolve_patterns(&d.patterns, params)?,
+            optional_patterns: d
+                .optional_patterns
+                .iter()
+                .map(|ps| resolve_patterns(ps, params))
+                .collect::<crate::types::Result<Vec<_>>>()?,
+            where_clause: d
+                .where_clause
+                .as_ref()
+                .map(|e| resolve_expr(e, params))
+                .transpose()?,
+            detach: d.detach,
+            variables: d.variables.clone(),
+        })),
+        Statement::Set(s) => Ok(Statement::Set(SetStatement {
+            patterns: resolve_patterns(&s.patterns, params)?,
+            where_clause: s
+                .where_clause
+                .as_ref()
+                .map(|e| resolve_expr(e, params))
+                .transpose()?,
+            assignments: resolve_assignments(&s.assignments, params)?,
+        })),
+        Statement::Merge(m) => Ok(Statement::Merge(MergeStatement {
+            pattern: resolve_pattern(&m.pattern, params)?,
+            on_create: resolve_assignments(&m.on_create, params)?,
+            on_match: resolve_assignments(&m.on_match, params)?,
+        })),
+        Statement::Unwind(u) => {
+            let body = match &u.body {
+                UnwindBody::Return {
+                    where_clause,
+                    return_clause,
+                    order_by,
+                    skip,
+                    limit,
+                } => UnwindBody::Return {
+                    where_clause: where_clause
+                        .as_ref()
+                        .map(|e| resolve_expr(e, params))
+                        .transpose()?,
+                    return_clause: ReturnClause {
+                        items: resolve_return_items(&return_clause.items, params)?,
+                        distinct: return_clause.distinct,
+                    },
+                    order_by: resolve_sort_items(order_by, params)?,
+                    skip: *skip,
+                    limit: *limit,
+                },
+                UnwindBody::Create { patterns } => UnwindBody::Create {
+                    patterns: resolve_patterns(patterns, params)?,
+                },
+            };
+            Ok(Statement::Unwind(UnwindStatement {
+                expr: resolve_expr(&u.expr, params)?,
+                alias: u.alias.clone(),
+                body,
+            }))
+        }
+        Statement::Explain(inner) => {
+            Ok(Statement::Explain(Box::new(resolve_params(inner, params)?)))
+        }
+        Statement::Union { statements, all } => {
+            let resolved: crate::types::Result<Vec<Statement>> = statements
+                .iter()
+                .map(|s| resolve_params(s, params))
+                .collect();
+            Ok(Statement::Union {
+                statements: resolved?,
+                all: *all,
+            })
+        }
+    }
 }

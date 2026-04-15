@@ -89,7 +89,19 @@ macro_rules! impl_read_ops {
 
             /// Execute a Cypher query string and return result records.
             pub fn query(&self, cypher: &str) -> Result<Vec<Record>> {
-                let stmt = parser::parse(cypher)?;
+                self.query_with_params(cypher, None)
+            }
+
+            /// Execute a Cypher query with optional parameter substitution.
+            pub fn query_with_params(
+                &self,
+                cypher: &str,
+                params: Option<&std::collections::HashMap<String, Value>>,
+            ) -> Result<Vec<Record>> {
+                let mut stmt = parser::parse(cypher)?;
+                if let Some(p) = params {
+                    stmt = parser::resolve_params(&stmt, p)?;
+                }
                 let plan = planner::plan(&self.tx, &stmt)?;
                 if matches!(stmt, Statement::Explain(_)) {
                     return Ok(cost::format_explain(&self.tx, &plan));
@@ -147,6 +159,11 @@ impl<'a> WriteTransaction<'a> {
             max_name_bytes,
             max_result_rows,
         }
+    }
+
+    /// Access the underlying SQLite connection for direct operations.
+    pub fn connection(&self) -> &rusqlite::Connection {
+        &self.tx
     }
 
     // --- Write operations ---

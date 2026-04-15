@@ -25,7 +25,7 @@ match_stmt = {
     limit_clause?
 }
 
-with_clause = { ^"WITH" ~ return_items ~ where_clause? }
+with_clause = { ^"WITH" ~ return_items ~ order_by_clause? ~ skip_clause? ~ limit_clause? ~ where_clause? }
 
 optional_match_clause = { ^"OPTIONAL" ~ ^"MATCH" ~ pattern_list }
 

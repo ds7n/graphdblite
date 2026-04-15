@@ -544,6 +544,9 @@ fn parse_where(pair: pest::iterators::Pair<Rule>) -> crate::types::Result<Expr> 
 
 fn parse_with(pair: pest::iterators::Pair<Rule>) -> crate::types::Result<WithClause> {
     let mut items = Vec::new();
+    let mut order_by = Vec::new();
+    let mut skip = None;
+    let mut limit = None;
     let mut where_clause = None;
 
     for inner in pair.into_inner() {
@@ -575,6 +578,9 @@ fn parse_with(pair: pest::iterators::Pair<Rule>) -> crate::types::Result<WithCla
                     })
                     .collect();
             }
+            Rule::order_by_clause => order_by = parse_order_by(inner)?,
+            Rule::skip_clause => skip = Some(parse_skip(inner)?),
+            Rule::limit_clause => limit = Some(parse_limit(inner)?),
             Rule::where_clause => where_clause = Some(parse_where(inner)?),
             _ => {}
         }
@@ -582,6 +588,9 @@ fn parse_with(pair: pest::iterators::Pair<Rule>) -> crate::types::Result<WithCla
 
     Ok(WithClause {
         items,
+        order_by,
+        skip,
+        limit,
         where_clause,
     })
 }
@@ -1466,6 +1475,9 @@ fn resolve_intermediate_clauses(
         .map(|c| match c {
             IntermediateClause::With(w) => Ok(IntermediateClause::With(WithClause {
                 items: resolve_return_items(&w.items, params)?,
+                order_by: w.order_by.clone(),
+                skip: w.skip,
+                limit: w.limit,
                 where_clause: w
                     .where_clause
                     .as_ref()

@@ -386,6 +386,30 @@ fn plan_with(input: LogicalOp, with: &WithClause) -> crate::types::Result<Logica
         items: with.items.clone(),
     };
 
+    // Apply ORDER BY before WHERE so that ordering is preserved through filtering.
+    if !with.order_by.is_empty() {
+        op = LogicalOp::Sort {
+            input: Box::new(op),
+            items: with.order_by.clone(),
+        };
+    }
+
+    // Apply SKIP.
+    if let Some(count) = with.skip {
+        op = LogicalOp::Skip {
+            input: Box::new(op),
+            count,
+        };
+    }
+
+    // Apply LIMIT.
+    if let Some(count) = with.limit {
+        op = LogicalOp::Limit {
+            input: Box::new(op),
+            count,
+        };
+    }
+
     // Apply WITH's WHERE filter.
     if let Some(ref predicate) = with.where_clause {
         op = LogicalOp::Filter {

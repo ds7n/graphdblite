@@ -21,7 +21,15 @@ build *args:
 publish *args:
     scripts/publish-release.sh {{args}}
 
+# Build all via Docker (reproducible)
+build-docker:
+    docker compose -f docker/docker-compose.yml up --build
+
+# Build a specific Docker target (native, zig-bins, zig-wheels, xwin)
+build-docker-target target:
+    docker compose -f docker/docker-compose.yml run --build --rm {{target}}
+
 # Remove build artifacts
 clean:
-    rm -rf dist/
+    rm -rf dist/ target/
     cargo clean

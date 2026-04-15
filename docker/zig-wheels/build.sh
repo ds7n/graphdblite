@@ -1,0 +1,35 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+echo "==> Copying source"
+cp -a /src/. /build/
+cd /build
+
+MANIFEST="crates/python/Cargo.toml"
+mkdir -p /dist/wheels
+
+# x86_64 manylinux
+echo "==> Building wheel: x86_64 manylinux_2_28"
+maturin build --release --out /dist/wheels \
+    --manifest-path "$MANIFEST" \
+    --target x86_64-unknown-linux-gnu --manylinux 2_28 --zig
+
+# x86_64 musllinux
+echo "==> Building wheel: x86_64 musllinux_1_2"
+maturin build --release --out /dist/wheels \
+    --manifest-path "$MANIFEST" \
+    --target x86_64-unknown-linux-musl --manylinux musllinux_1_2 --zig
+
+# aarch64 manylinux
+echo "==> Building wheel: aarch64 manylinux_2_28"
+maturin build --release --out /dist/wheels \
+    --manifest-path "$MANIFEST" \
+    --target aarch64-unknown-linux-gnu --manylinux 2_28 --zig
+
+# aarch64 musllinux
+echo "==> Building wheel: aarch64 musllinux_1_2"
+maturin build --release --out /dist/wheels \
+    --manifest-path "$MANIFEST" \
+    --target aarch64-unknown-linux-musl --manylinux musllinux_1_2 --zig
+
+echo "==> Done (zig-wheels)"

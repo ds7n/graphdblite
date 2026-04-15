@@ -20,6 +20,7 @@ set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 DIST_DIR="$REPO_ROOT/dist"
+BUILD_DIR="$REPO_ROOT/target"
 ENABLE_MACOS=false
 DRY_RUN=false
 TARGETS=()
@@ -53,6 +54,23 @@ sha256() {
 
 ensure_dir() {
   $DRY_RUN || mkdir -p "$1"
+}
+
+# Wipe the ephemeral build directory for a clean slate.
+fresh_build() {
+  run rm -rf "$BUILD_DIR"
+}
+
+# Run a command with CARGO_TARGET_DIR set so that cargo-xwin never
+# touches the default target/ directory. Without this, xwin poisons
+# target/.rustc_info.json with lld-link flags that break cbindgen's
+# cargo metadata calls in subsequent native builds.
+run_xwin() {
+  if $DRY_RUN; then
+    echo -e "  ${YELLOW}[dry-run]${NC} CARGO_TARGET_DIR=$BUILD_DIR $*"
+  else
+    CARGO_TARGET_DIR="$BUILD_DIR" "$@"
+  fi
 }
 
 # ── Argument parsing ─────────────────────────────────────────────────────────
@@ -99,7 +117,7 @@ check_prereqs() {
   for t in "${TARGETS[@]}"; do
     case "$t" in
       cli|ffi)   need_cross=true; need_xwin=true ;;
-      node)      need_zig=true; need_node=true ;;
+      node)      need_zig=true; need_node=true; need_xwin=true ;;
       wheels)    need_maturin=true; need_docker=true; need_zig=true ;;
       go-test)   need_go=true ;;
     esac
@@ -125,30 +143,33 @@ build_cli() {
   ensure_dir "$DIST_DIR/cli"
 
   # Linux x86_64 (native)
+  fresh_build
   log "  CLI: x86_64-unknown-linux-gnu"
-  run cargo build --release --bin graphdblite --target x86_64-unknown-linux-gnu
+  run cargo build --release --bin graphdblite --target x86_64-unknown-linux-gnu --target-dir "$BUILD_DIR"
   if ! $DRY_RUN; then
     tar czf "$DIST_DIR/cli/graphdblite-x86_64-unknown-linux-gnu.tar.gz" \
-      -C "$REPO_ROOT/target/x86_64-unknown-linux-gnu/release" graphdblite
+      -C "$BUILD_DIR/x86_64-unknown-linux-gnu/release" graphdblite
     sha256 "$DIST_DIR/cli/graphdblite-x86_64-unknown-linux-gnu.tar.gz"
   fi
   ok "graphdblite-x86_64-unknown-linux-gnu.tar.gz"
 
   # Linux aarch64 (cross via Docker)
+  fresh_build
   log "  CLI: aarch64-unknown-linux-gnu"
-  run cross build --release --bin graphdblite --target aarch64-unknown-linux-gnu
+  run cross build --release --bin graphdblite --target aarch64-unknown-linux-gnu --target-dir "$BUILD_DIR"
   if ! $DRY_RUN; then
     tar czf "$DIST_DIR/cli/graphdblite-aarch64-unknown-linux-gnu.tar.gz" \
-      -C "$REPO_ROOT/target/aarch64-unknown-linux-gnu/release" graphdblite
+      -C "$BUILD_DIR/aarch64-unknown-linux-gnu/release" graphdblite
     sha256 "$DIST_DIR/cli/graphdblite-aarch64-unknown-linux-gnu.tar.gz"
   fi
   ok "graphdblite-aarch64-unknown-linux-gnu.tar.gz"
 
   # Windows x86_64 (cargo-xwin)
+  fresh_build
   log "  CLI: x86_64-pc-windows-msvc"
-  run cargo xwin build --release --bin graphdblite --target x86_64-pc-windows-msvc
+  run_xwin cargo xwin build --release --bin graphdblite --target x86_64-pc-windows-msvc
   if ! $DRY_RUN; then
-    (cd "$REPO_ROOT/target/x86_64-pc-windows-msvc/release" && \
+    (cd "$BUILD_DIR/x86_64-pc-windows-msvc/release" && \
       zip -q "$DIST_DIR/cli/graphdblite-x86_64-pc-windows-msvc.zip" graphdblite.exe)
     sha256 "$DIST_DIR/cli/graphdblite-x86_64-pc-windows-msvc.zip"
   fi
@@ -156,11 +177,12 @@ build_cli() {
 
   # macOS aarch64 (osxcross — disabled by default)
   if $ENABLE_MACOS; then
+    fresh_build
     log "  CLI: aarch64-apple-darwin"
-    run cargo build --release --bin graphdblite --target aarch64-apple-darwin
+    run cargo build --release --bin graphdblite --target aarch64-apple-darwin --target-dir "$BUILD_DIR"
     if ! $DRY_RUN; then
       tar czf "$DIST_DIR/cli/graphdblite-aarch64-apple-darwin.tar.gz" \
-        -C "$REPO_ROOT/target/aarch64-apple-darwin/release" graphdblite
+        -C "$BUILD_DIR/aarch64-apple-darwin/release" graphdblite
       sha256 "$DIST_DIR/cli/graphdblite-aarch64-apple-darwin.tar.gz"
     fi
     ok "graphdblite-aarch64-apple-darwin.tar.gz"
@@ -177,13 +199,14 @@ build_ffi() {
   local header="$REPO_ROOT/crates/ffi/graphdblite.h"
 
   # Linux x86_64 (native)
+  fresh_build
   log "  FFI: x86_64-unknown-linux-gnu"
-  run cargo build --release -p graphdblite-ffi --target x86_64-unknown-linux-gnu
+  run cargo build --release -p graphdblite-ffi --target x86_64-unknown-linux-gnu --target-dir "$BUILD_DIR"
   if ! $DRY_RUN; then
     local staging
     staging=$(mktemp -d)
     cp "$header" "$staging/"
-    cp "$REPO_ROOT/target/x86_64-unknown-linux-gnu/release"/libgraphdblite_ffi.{a,so} "$staging/" 2>/dev/null || true
+    cp "$BUILD_DIR/x86_64-unknown-linux-gnu/release"/libgraphdblite_ffi.{a,so} "$staging/" 2>/dev/null || true
     tar czf "$DIST_DIR/ffi/graphdblite-ffi-x86_64-unknown-linux-gnu.tar.gz" -C "$staging" .
     rm -rf "$staging"
     sha256 "$DIST_DIR/ffi/graphdblite-ffi-x86_64-unknown-linux-gnu.tar.gz"
@@ -191,13 +214,14 @@ build_ffi() {
   ok "graphdblite-ffi-x86_64-unknown-linux-gnu.tar.gz"
 
   # Linux aarch64 (cross)
+  fresh_build
   log "  FFI: aarch64-unknown-linux-gnu"
-  run cross build --release -p graphdblite-ffi --target aarch64-unknown-linux-gnu
+  run cross build --release -p graphdblite-ffi --target aarch64-unknown-linux-gnu --target-dir "$BUILD_DIR"
   if ! $DRY_RUN; then
     local staging
     staging=$(mktemp -d)
     cp "$header" "$staging/"
-    cp "$REPO_ROOT/target/aarch64-unknown-linux-gnu/release"/libgraphdblite_ffi.{a,so} "$staging/" 2>/dev/null || true
+    cp "$BUILD_DIR/aarch64-unknown-linux-gnu/release"/libgraphdblite_ffi.{a,so} "$staging/" 2>/dev/null || true
     tar czf "$DIST_DIR/ffi/graphdblite-ffi-aarch64-unknown-linux-gnu.tar.gz" -C "$staging" .
     rm -rf "$staging"
     sha256 "$DIST_DIR/ffi/graphdblite-ffi-aarch64-unknown-linux-gnu.tar.gz"
@@ -205,13 +229,14 @@ build_ffi() {
   ok "graphdblite-ffi-aarch64-unknown-linux-gnu.tar.gz"
 
   # Windows x86_64 (cargo-xwin)
+  fresh_build
   log "  FFI: x86_64-pc-windows-msvc"
-  run cargo xwin build --release -p graphdblite-ffi --target x86_64-pc-windows-msvc
+  run_xwin cargo xwin build --release -p graphdblite-ffi --target x86_64-pc-windows-msvc
   if ! $DRY_RUN; then
     local staging
     staging=$(mktemp -d)
     cp "$header" "$staging/"
-    cp "$REPO_ROOT/target/x86_64-pc-windows-msvc/release"/graphdblite_ffi.{dll,dll.lib,lib} "$staging/" 2>/dev/null || true
+    cp "$BUILD_DIR/x86_64-pc-windows-msvc/release"/graphdblite_ffi.{dll,dll.lib,lib} "$staging/" 2>/dev/null || true
     (cd "$staging" && zip -q "$DIST_DIR/ffi/graphdblite-ffi-x86_64-pc-windows-msvc.zip" ./*)
     rm -rf "$staging"
     sha256 "$DIST_DIR/ffi/graphdblite-ffi-x86_64-pc-windows-msvc.zip"
@@ -220,13 +245,14 @@ build_ffi() {
 
   # macOS aarch64 (osxcross — disabled by default)
   if $ENABLE_MACOS; then
+    fresh_build
     log "  FFI: aarch64-apple-darwin"
-    run cargo build --release -p graphdblite-ffi --target aarch64-apple-darwin
+    run cargo build --release -p graphdblite-ffi --target aarch64-apple-darwin --target-dir "$BUILD_DIR"
     if ! $DRY_RUN; then
       local staging
       staging=$(mktemp -d)
       cp "$header" "$staging/"
-      cp "$REPO_ROOT/target/aarch64-apple-darwin/release"/libgraphdblite_ffi.{a,dylib} "$staging/" 2>/dev/null || true
+      cp "$BUILD_DIR/aarch64-apple-darwin/release"/libgraphdblite_ffi.{a,dylib} "$staging/" 2>/dev/null || true
       tar czf "$DIST_DIR/ffi/graphdblite-ffi-aarch64-apple-darwin.tar.gz" -C "$staging" .
       rm -rf "$staging"
       sha256 "$DIST_DIR/ffi/graphdblite-ffi-aarch64-apple-darwin.tar.gz"
@@ -247,47 +273,50 @@ build_node() {
   # Install npm deps if needed.
   if [[ ! -d "$node_dir/node_modules" ]]; then
     log "  Installing npm dependencies"
-    run npm --prefix "$node_dir" install
+    (cd "$node_dir" && run npm install)
   fi
 
   # Linux x86_64 (native)
+  fresh_build
   log "  Node: x86_64-unknown-linux-gnu"
-  run npx --prefix "$node_dir" napi build --platform --release --target x86_64-unknown-linux-gnu "$node_dir"
+  (cd "$node_dir" && run npx napi build --platform --release --target x86_64-unknown-linux-gnu)
   if ! $DRY_RUN; then
     cp "$node_dir"/*.linux-x64-gnu.node "$DIST_DIR/node/" 2>/dev/null || true
   fi
   ok "linux-x64-gnu.node"
 
   # Linux aarch64 (zig cross-compilation)
+  fresh_build
   log "  Node: aarch64-unknown-linux-gnu (zig)"
-  run npx --prefix "$node_dir" napi build --platform --release --target aarch64-unknown-linux-gnu --zig "$node_dir"
+  (cd "$node_dir" && run npx napi build --platform --release --target aarch64-unknown-linux-gnu --zig)
   if ! $DRY_RUN; then
     cp "$node_dir"/*.linux-arm64-gnu.node "$DIST_DIR/node/" 2>/dev/null || true
   fi
   ok "linux-arm64-gnu.node"
 
   # Windows x86_64 (cargo-xwin + manual rename)
-  # napi-rs can't cross-compile directly, but we can build the cdylib with
-  # cargo-xwin and rename the .dll to the napi naming convention.
+  fresh_build
   log "  Node: x86_64-pc-windows-msvc (xwin)"
-  run cargo xwin build --release -p graphdblite-node --target x86_64-pc-windows-msvc
+  run_xwin cargo xwin build --release -p graphdblite-node --target x86_64-pc-windows-msvc
   if ! $DRY_RUN; then
-    cp "$REPO_ROOT/target/x86_64-pc-windows-msvc/release/graphdblite_node.dll" \
+    cp "$BUILD_DIR/x86_64-pc-windows-msvc/release/graphdblite_node.dll" \
       "$DIST_DIR/node/graphdblite.win32-x64-msvc.node"
   fi
   ok "win32-x64-msvc.node"
 
   # macOS (osxcross — disabled by default)
   if $ENABLE_MACOS; then
+    fresh_build
     log "  Node: aarch64-apple-darwin"
-    run npx --prefix "$node_dir" napi build --platform --release --target aarch64-apple-darwin "$node_dir"
+    (cd "$node_dir" && run npx napi build --platform --release --target aarch64-apple-darwin)
     if ! $DRY_RUN; then
       cp "$node_dir"/*.darwin-arm64.node "$DIST_DIR/node/" 2>/dev/null || true
     fi
     ok "darwin-arm64.node"
 
+    fresh_build
     log "  Node: x86_64-apple-darwin"
-    run npx --prefix "$node_dir" napi build --platform --release --target x86_64-apple-darwin "$node_dir"
+    (cd "$node_dir" && run npx napi build --platform --release --target x86_64-apple-darwin)
     if ! $DRY_RUN; then
       cp "$node_dir"/*.darwin-x64.node "$DIST_DIR/node/" 2>/dev/null || true
     fi
@@ -304,21 +333,24 @@ build_wheels() {
 
   local manifest="$REPO_ROOT/crates/python/Cargo.toml"
 
-  # Linux x86_64 — manylinux (Docker)
+  # Linux x86_64 — manylinux (zig for glibc compat)
+  fresh_build
   log "  Wheels: x86_64 manylinux_2_28"
   run maturin build --release --out "$DIST_DIR/wheels" \
     --manifest-path "$manifest" \
-    --target x86_64-unknown-linux-gnu --manylinux 2_28
+    --target x86_64-unknown-linux-gnu --manylinux 2_28 --zig
   ok "manylinux_2_28 x86_64"
 
-  # Linux x86_64 — musllinux (Docker)
+  # Linux x86_64 — musllinux (zig for musl target)
+  fresh_build
   log "  Wheels: x86_64 musllinux_1_2"
   run maturin build --release --out "$DIST_DIR/wheels" \
     --manifest-path "$manifest" \
-    --target x86_64-unknown-linux-gnu --manylinux musllinux_1_2
+    --target x86_64-unknown-linux-musl --manylinux musllinux_1_2 --zig
   ok "musllinux_1_2 x86_64"
 
   # Linux aarch64 — manylinux (zig cross)
+  fresh_build
   log "  Wheels: aarch64 manylinux_2_28 (zig)"
   run maturin build --release --out "$DIST_DIR/wheels" \
     --manifest-path "$manifest" \
@@ -326,13 +358,15 @@ build_wheels() {
   ok "manylinux_2_28 aarch64"
 
   # Linux aarch64 — musllinux (zig cross)
+  fresh_build
   log "  Wheels: aarch64 musllinux_1_2 (zig)"
   run maturin build --release --out "$DIST_DIR/wheels" \
     --manifest-path "$manifest" \
-    --target aarch64-unknown-linux-gnu --manylinux musllinux_1_2 --zig
+    --target aarch64-unknown-linux-musl --manylinux musllinux_1_2 --zig
   ok "musllinux_1_2 aarch64"
 
   # Windows x86_64 (xwin)
+  fresh_build
   log "  Wheels: x86_64 windows"
   run maturin build --release --out "$DIST_DIR/wheels" \
     --manifest-path "$manifest" \
@@ -341,12 +375,14 @@ build_wheels() {
 
   # macOS (osxcross — disabled by default)
   if $ENABLE_MACOS; then
+    fresh_build
     log "  Wheels: aarch64 macOS"
     run maturin build --release --out "$DIST_DIR/wheels" \
       --manifest-path "$manifest" \
       --target aarch64-apple-darwin
     ok "macOS aarch64"
 
+    fresh_build
     log "  Wheels: x86_64 macOS"
     run maturin build --release --out "$DIST_DIR/wheels" \
       --manifest-path "$manifest" \
@@ -404,6 +440,10 @@ main() {
   done
 
   combine_checksums
+
+  # Final cleanup — artifacts are in dist/, build dir is disposable.
+  fresh_build
+
   print_summary
 }
 

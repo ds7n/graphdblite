@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+
 use rusqlite::Connection;
 
 use crate::storage::encoding::{
@@ -59,6 +61,72 @@ pub fn create_edge(
         let data =
             rmp_serde::to_vec(&properties).map_err(|e| GraphError::Serialization(e.to_string()))?;
         kv::put(conn, kv::TABLE_EDGE_PROPS, &props_key, &data)?;
+    }
+
+    Ok(())
+}
+
+/// Create multiple edges in batch, coalescing adjacency blob updates.
+///
+/// All edges share the same label. Each edge is (src, dst, properties).
+/// Adjacency blobs are grouped by node so each blob is read and written once,
+/// regardless of how many edges touch the same node.
+pub fn batch_create_edges(
+    conn: &Connection,
+    label: &str,
+    edges: &[(NodeId, NodeId, Properties)],
+) -> Result<()> {
+    validate_name(label)?;
+    for (_, _, properties) in edges {
+        for key in properties.keys() {
+            validate_name(key)?;
+        }
+    }
+
+    // Group outgoing: src → [dst, dst, ...]
+    let mut out_groups: HashMap<u64, Vec<u64>> = HashMap::new();
+    // Group incoming: dst → [src, src, ...]
+    let mut in_groups: HashMap<u64, Vec<u64>> = HashMap::new();
+
+    for (src, dst, _) in edges {
+        out_groups.entry(src.0).or_default().push(dst.0);
+        in_groups.entry(dst.0).or_default().push(src.0);
+    }
+
+    // Coalesced outgoing adjacency updates.
+    for (src_raw, new_dsts) in &out_groups {
+        let out_key = adj_key(NodeId(*src_raw), label);
+        let mut ids = match kv::get(conn, kv::TABLE_ADJ_OUT, &out_key)? {
+            Some(data) => decode_id_list(&data),
+            None => Vec::new(),
+        };
+        for &dst in new_dsts {
+            insert_into_sorted(&mut ids, dst);
+        }
+        kv::put(conn, kv::TABLE_ADJ_OUT, &out_key, &encode_id_list(&ids))?;
+    }
+
+    // Coalesced incoming adjacency updates.
+    for (dst_raw, new_srcs) in &in_groups {
+        let in_key = adj_key(NodeId(*dst_raw), label);
+        let mut ids = match kv::get(conn, kv::TABLE_ADJ_IN, &in_key)? {
+            Some(data) => decode_id_list(&data),
+            None => Vec::new(),
+        };
+        for &src in new_srcs {
+            insert_into_sorted(&mut ids, src);
+        }
+        kv::put(conn, kv::TABLE_ADJ_IN, &in_key, &encode_id_list(&ids))?;
+    }
+
+    // Write edge properties (non-empty only).
+    for (src, dst, properties) in edges {
+        if !properties.is_empty() {
+            let props_key = edge_props_key(*src, *dst, label);
+            let data = rmp_serde::to_vec(properties)
+                .map_err(|e| GraphError::Serialization(e.to_string()))?;
+            kv::put(conn, kv::TABLE_EDGE_PROPS, &props_key, &data)?;
+        }
     }
 
     Ok(())

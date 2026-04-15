@@ -299,12 +299,40 @@ fn plan_unwind(_conn: &Connection, stmt: &UnwindStatement) -> crate::types::Resu
 }
 
 fn plan_merge(stmt: &MergeStatement) -> crate::types::Result<LogicalOp> {
-    // Validate: MERGE only supports single node patterns.
-    match stmt.pattern.elements.first() {
-        Some(crate::cypher::ast::PatternElement::Node(_)) if stmt.pattern.elements.len() == 1 => {}
+    let len = stmt.pattern.elements.len();
+    match len {
+        // Single node MERGE: MERGE (n:Label {props})
+        1 => match stmt.pattern.elements.first() {
+            Some(crate::cypher::ast::PatternElement::Node(_)) => {}
+            _ => {
+                return Err(crate::types::GraphError::ParseError(
+                    "MERGE pattern must start with a node".to_string(),
+                ));
+            }
+        },
+        // Relationship MERGE: MERGE (a:L {p})-[:TYPE]->(b:L {p})
+        3 => {
+            use crate::cypher::ast::PatternElement;
+            match (
+                &stmt.pattern.elements[0],
+                &stmt.pattern.elements[1],
+                &stmt.pattern.elements[2],
+            ) {
+                (
+                    PatternElement::Node(_),
+                    PatternElement::Relationship(_),
+                    PatternElement::Node(_),
+                ) => {}
+                _ => {
+                    return Err(crate::types::GraphError::ParseError(
+                        "MERGE relationship pattern must be (node)-[rel]->(node)".to_string(),
+                    ));
+                }
+            }
+        }
         _ => {
             return Err(crate::types::GraphError::ParseError(
-                "MERGE only supports single node patterns".to_string(),
+                "MERGE only supports single node or (node)-[rel]->(node) patterns".to_string(),
             ));
         }
     }

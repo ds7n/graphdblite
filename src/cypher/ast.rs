@@ -209,6 +209,8 @@ pub enum Expr {
     Property(String, String),
     /// Variable reference.
     Variable(String),
+    /// Parameter reference: $name
+    Parameter(String),
     /// Binary operation: left op right
     BinaryOp {
         left: Box<Expr>,

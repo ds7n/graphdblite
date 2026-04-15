@@ -3041,3 +3041,87 @@ fn parameterized_with_index() {
     );
     tx.commit().unwrap();
 }
+
+#[test]
+fn e2e_with_order_by() {
+    let mut db = Database::open_memory().unwrap();
+    {
+        let tx = db.begin_write().unwrap();
+        tx.query("CREATE (:Function {name: 'foo', path: 'a.py'})")
+            .unwrap();
+        tx.query("CREATE (:Function {name: 'bar', path: 'a.py'})")
+            .unwrap();
+        tx.query("CREATE (:Function {name: 'baz', path: 'b.py'})")
+            .unwrap();
+        // foo->bar, baz->bar (bar has 2 callers)
+        tx.query(
+            "MATCH (a:Function {name: 'foo'}), (b:Function {name: 'bar'}) CREATE (a)-[:CALLS]->(b)",
+        )
+        .unwrap();
+        tx.query(
+            "MATCH (a:Function {name: 'baz'}), (b:Function {name: 'bar'}) CREATE (a)-[:CALLS]->(b)",
+        )
+        .unwrap();
+        // baz->foo (foo has 1 caller)
+        tx.query(
+            "MATCH (a:Function {name: 'baz'}), (b:Function {name: 'foo'}) CREATE (a)-[:CALLS]->(b)",
+        )
+        .unwrap();
+        // foo->baz (baz has 1 caller)
+        tx.query(
+            "MATCH (a:Function {name: 'foo'}), (b:Function {name: 'baz'}) CREATE (a)-[:CALLS]->(b)",
+        )
+        .unwrap();
+        tx.commit().unwrap();
+    }
+    let tx = db.begin_read().unwrap();
+    let results = tx
+        .query(
+            "MATCH (a:Function)-[:CALLS]->(b:Function) \
+             WITH b.path AS path, b.name AS name, count(*) AS caller_count \
+             ORDER BY path, caller_count DESC \
+             RETURN path, COLLECT(name) AS top",
+        )
+        .unwrap();
+    assert_eq!(results.len(), 2);
+    assert_eq!(
+        results[0].get("path"),
+        Some(&Value::String("a.py".into()))
+    );
+    // bar has 2 callers, foo has 1 — bar should sort first
+    assert_eq!(
+        results[0].get("top"),
+        Some(&Value::List(vec![
+            Value::String("bar".into()),
+            Value::String("foo".into()),
+        ]))
+    );
+    assert_eq!(
+        results[1].get("path"),
+        Some(&Value::String("b.py".into()))
+    );
+    tx.commit().unwrap();
+}
+
+#[test]
+fn e2e_with_order_by_and_limit() {
+    let mut db = setup_social_graph();
+    let tx = db.begin_read().unwrap();
+    // ORDER BY + LIMIT on WITH: keep only the youngest person
+    let results = tx
+        .query(
+            "MATCH (n:Person) \
+             WITH n.name AS name, n.age AS age \
+             ORDER BY age ASC \
+             LIMIT 1 \
+             RETURN name, age",
+        )
+        .unwrap();
+    assert_eq!(results.len(), 1);
+    assert_eq!(
+        results[0].get("name"),
+        Some(&Value::String("Bob".into()))
+    );
+    assert_eq!(results[0].get("age"), Some(&Value::I64(25)));
+    tx.commit().unwrap();
+}

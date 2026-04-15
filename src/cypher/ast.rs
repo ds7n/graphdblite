@@ -37,6 +37,9 @@ pub struct MatchStatement {
 #[derive(Debug, Clone, PartialEq)]
 pub struct WithClause {
     pub items: Vec<ReturnItem>,
+    pub order_by: Vec<SortItem>,
+    pub skip: Option<u64>,
+    pub limit: Option<u64>,
     pub where_clause: Option<Expr>,
 }
 

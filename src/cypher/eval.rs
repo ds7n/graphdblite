@@ -87,6 +87,18 @@ pub fn eval_predicate(
     Ok(matches!(val, Value::Bool(true)))
 }
 
+/// Evaluate the first argument of a function call.
+fn eval_single_arg(
+    args: &[Expr],
+    record: &Record,
+    conn: &Connection,
+) -> crate::types::Result<Value> {
+    args.first()
+        .map(|a| eval_expr(a, record, conn))
+        .transpose()
+        .map(|v| v.unwrap_or(Value::Null))
+}
+
 /// Evaluate a function call.
 ///
 /// Aggregate functions (count, sum, avg, etc.) are handled by the Aggregate
@@ -119,6 +131,226 @@ fn eval_function_call(
                 Some(Value::Path(node_ids)) => {
                     let list = node_ids.iter().map(|id| Value::I64(id.0 as i64)).collect();
                     Ok(Value::List(list))
+                }
+                _ => Ok(Value::Null),
+            }
+        }
+        "tolower" => {
+            let arg = eval_single_arg(args, record, conn)?;
+            match arg {
+                Value::String(s) => Ok(Value::String(s.to_lowercase())),
+                Value::Null => Ok(Value::Null),
+                _ => Ok(Value::Null),
+            }
+        }
+        "toupper" => {
+            let arg = eval_single_arg(args, record, conn)?;
+            match arg {
+                Value::String(s) => Ok(Value::String(s.to_uppercase())),
+                Value::Null => Ok(Value::Null),
+                _ => Ok(Value::Null),
+            }
+        }
+        "tostring" => {
+            let arg = eval_single_arg(args, record, conn)?;
+            match arg {
+                Value::Null => Ok(Value::Null),
+                Value::String(s) => Ok(Value::String(s)),
+                other => Ok(Value::String(other.to_string())),
+            }
+        }
+        "tointeger" => {
+            let arg = eval_single_arg(args, record, conn)?;
+            match arg {
+                Value::I64(_) => Ok(arg),
+                Value::F64(f) => Ok(Value::I64(f as i64)),
+                Value::String(s) => Ok(s.parse::<i64>().map(Value::I64).unwrap_or(Value::Null)),
+                Value::Bool(b) => Ok(Value::I64(if b { 1 } else { 0 })),
+                _ => Ok(Value::Null),
+            }
+        }
+        "tofloat" => {
+            let arg = eval_single_arg(args, record, conn)?;
+            match arg {
+                Value::F64(_) => Ok(arg),
+                Value::I64(n) => Ok(Value::F64(n as f64)),
+                Value::String(s) => Ok(s.parse::<f64>().map(Value::F64).unwrap_or(Value::Null)),
+                _ => Ok(Value::Null),
+            }
+        }
+        "keys" => {
+            let arg = eval_single_arg(args, record, conn)?;
+            match arg {
+                Value::I64(id) => {
+                    // keys(node_id) — return property keys for the node.
+                    let node = crate::node::get_node(conn, crate::types::NodeId(id as u64))?;
+                    let mut keys: Vec<String> = node.properties.keys().cloned().collect();
+                    keys.sort();
+                    Ok(Value::List(keys.into_iter().map(Value::String).collect()))
+                }
+                _ => Ok(Value::Null),
+            }
+        }
+        "id" => {
+            // id(n) — extract the __id field from the record binding.
+            let arg = eval_single_arg(args, record, conn)?;
+            match arg {
+                Value::I64(_) => Ok(arg),
+                _ => Ok(Value::Null),
+            }
+        }
+        "type" => {
+            // type(r) — extract the relationship type from a binding.
+            let arg = eval_single_arg(args, record, conn)?;
+            match arg {
+                Value::String(_) => Ok(arg),
+                _ => Ok(Value::Null),
+            }
+        }
+        "coalesce" => {
+            // coalesce(a, b, c, ...) — return first non-null value.
+            for a in args {
+                let val = eval_expr(a, record, conn)?;
+                if val != Value::Null {
+                    return Ok(val);
+                }
+            }
+            Ok(Value::Null)
+        }
+        "head" => {
+            let arg = eval_single_arg(args, record, conn)?;
+            match arg {
+                Value::List(items) => Ok(items.into_iter().next().unwrap_or(Value::Null)),
+                _ => Ok(Value::Null),
+            }
+        }
+        "last" => {
+            let arg = eval_single_arg(args, record, conn)?;
+            match arg {
+                Value::List(items) => Ok(items.into_iter().last().unwrap_or(Value::Null)),
+                _ => Ok(Value::Null),
+            }
+        }
+        "tail" => {
+            let arg = eval_single_arg(args, record, conn)?;
+            match arg {
+                Value::List(mut items) => {
+                    if items.is_empty() {
+                        Ok(Value::List(vec![]))
+                    } else {
+                        items.remove(0);
+                        Ok(Value::List(items))
+                    }
+                }
+                _ => Ok(Value::Null),
+            }
+        }
+        "size" => {
+            let arg = eval_single_arg(args, record, conn)?;
+            match arg {
+                Value::List(items) => Ok(Value::I64(items.len() as i64)),
+                Value::String(s) => Ok(Value::I64(s.len() as i64)),
+                _ => Ok(Value::Null),
+            }
+        }
+        "abs" => {
+            let arg = eval_single_arg(args, record, conn)?;
+            match arg {
+                Value::I64(n) => Ok(Value::I64(n.abs())),
+                Value::F64(n) => Ok(Value::F64(n.abs())),
+                _ => Ok(Value::Null),
+            }
+        }
+        "substring" => {
+            // substring(s, start [, length])
+            let s = eval_single_arg(args, record, conn)?;
+            let start = args.get(1).map(|a| eval_expr(a, record, conn)).transpose()?;
+            let len = args.get(2).map(|a| eval_expr(a, record, conn)).transpose()?;
+            match (s, start) {
+                (Value::String(s), Some(Value::I64(start))) => {
+                    let start = start.max(0) as usize;
+                    if start >= s.len() {
+                        return Ok(Value::String(String::new()));
+                    }
+                    match len {
+                        Some(Value::I64(l)) => {
+                            let end = (start + l.max(0) as usize).min(s.len());
+                            Ok(Value::String(s[start..end].to_string()))
+                        }
+                        _ => Ok(Value::String(s[start..].to_string())),
+                    }
+                }
+                _ => Ok(Value::Null),
+            }
+        }
+        "replace" => {
+            // replace(s, search, replacement)
+            let s = eval_single_arg(args, record, conn)?;
+            let search = args.get(1).map(|a| eval_expr(a, record, conn)).transpose()?;
+            let replacement = args.get(2).map(|a| eval_expr(a, record, conn)).transpose()?;
+            match (s, search, replacement) {
+                (Value::String(s), Some(Value::String(search)), Some(Value::String(repl))) => {
+                    Ok(Value::String(s.replace(&search, &repl)))
+                }
+                _ => Ok(Value::Null),
+            }
+        }
+        "split" => {
+            // split(s, delimiter)
+            let s = eval_single_arg(args, record, conn)?;
+            let delim = args.get(1).map(|a| eval_expr(a, record, conn)).transpose()?;
+            match (s, delim) {
+                (Value::String(s), Some(Value::String(d))) => {
+                    let parts: Vec<Value> = s.split(&d).map(|p| Value::String(p.to_string())).collect();
+                    Ok(Value::List(parts))
+                }
+                _ => Ok(Value::Null),
+            }
+        }
+        "trim" => {
+            let arg = eval_single_arg(args, record, conn)?;
+            match arg {
+                Value::String(s) => Ok(Value::String(s.trim().to_string())),
+                Value::Null => Ok(Value::Null),
+                _ => Ok(Value::Null),
+            }
+        }
+        "reverse" => {
+            let arg = eval_single_arg(args, record, conn)?;
+            match arg {
+                Value::String(s) => Ok(Value::String(s.chars().rev().collect())),
+                Value::List(mut items) => {
+                    items.reverse();
+                    Ok(Value::List(items))
+                }
+                _ => Ok(Value::Null),
+            }
+        }
+        "range" => {
+            // range(start, end [, step])
+            let start = eval_single_arg(args, record, conn)?;
+            let end = args.get(1).map(|a| eval_expr(a, record, conn)).transpose()?;
+            let step = args.get(2).map(|a| eval_expr(a, record, conn)).transpose()?;
+            match (start, end) {
+                (Value::I64(s), Some(Value::I64(e))) => {
+                    let step = match step {
+                        Some(Value::I64(st)) if st != 0 => st,
+                        _ => 1,
+                    };
+                    let mut result = Vec::new();
+                    let mut i = s;
+                    if step > 0 {
+                        while i <= e {
+                            result.push(Value::I64(i));
+                            i += step;
+                        }
+                    } else {
+                        while i >= e {
+                            result.push(Value::I64(i));
+                            i += step;
+                        }
+                    }
+                    Ok(Value::List(result))
                 }
                 _ => Ok(Value::Null),
             }

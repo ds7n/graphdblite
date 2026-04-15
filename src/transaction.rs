@@ -73,6 +73,20 @@ macro_rules! impl_read_ops {
                 edge::traverse(&self.tx, start, label, direction, min_hops, max_hops)
             }
 
+            /// Variable-length path traversal (BFS) with depth tracking.
+            ///
+            /// Returns `(node_id, depth)` pairs ordered by depth (closest first).
+            pub fn traverse_with_depth(
+                &self,
+                start: NodeId,
+                label: &str,
+                direction: Direction,
+                min_hops: u32,
+                max_hops: u32,
+            ) -> Result<Vec<(NodeId, u32)>> {
+                edge::traverse_with_depth(&self.tx, start, label, direction, min_hops, max_hops)
+            }
+
             /// Execute a Cypher query string and return result records.
             pub fn query(&self, cypher: &str) -> Result<Vec<Record>> {
                 let stmt = parser::parse(cypher)?;

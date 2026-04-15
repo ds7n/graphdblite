@@ -3084,10 +3084,7 @@ fn e2e_with_order_by() {
         )
         .unwrap();
     assert_eq!(results.len(), 2);
-    assert_eq!(
-        results[0].get("path"),
-        Some(&Value::String("a.py".into()))
-    );
+    assert_eq!(results[0].get("path"), Some(&Value::String("a.py".into())));
     // bar has 2 callers, foo has 1 — bar should sort first
     assert_eq!(
         results[0].get("top"),
@@ -3096,10 +3093,7 @@ fn e2e_with_order_by() {
             Value::String("foo".into()),
         ]))
     );
-    assert_eq!(
-        results[1].get("path"),
-        Some(&Value::String("b.py".into()))
-    );
+    assert_eq!(results[1].get("path"), Some(&Value::String("b.py".into())));
     tx.commit().unwrap();
 }
 
@@ -3118,10 +3112,7 @@ fn e2e_with_order_by_and_limit() {
         )
         .unwrap();
     assert_eq!(results.len(), 1);
-    assert_eq!(
-        results[0].get("name"),
-        Some(&Value::String("Bob".into()))
-    );
+    assert_eq!(results[0].get("name"), Some(&Value::String("Bob".into())));
     assert_eq!(results[0].get("age"), Some(&Value::I64(25)));
     tx.commit().unwrap();
 }

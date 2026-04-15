@@ -4,6 +4,7 @@ set -euo pipefail
 echo "==> Copying source"
 cp -a /src/. /build/
 cd /build
+git config --global --add safe.directory /build
 
 TARGET="x86_64-unknown-linux-gnu"
 mkdir -p /dist/cli /dist/ffi /dist/node

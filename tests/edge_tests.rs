@@ -223,3 +223,62 @@ fn traverse_with_cycle() {
 
     tx.commit().unwrap();
 }
+
+#[test]
+fn traverse_with_depth_returns_depth() {
+    // Build a chain: a -> b -> c -> d
+    let mut db = Database::open_memory().unwrap();
+    let tx = db.begin_write().unwrap();
+
+    let a = tx.create_node("N", HashMap::new()).unwrap();
+    let b = tx.create_node("N", HashMap::new()).unwrap();
+    let c = tx.create_node("N", HashMap::new()).unwrap();
+    let d = tx.create_node("N", HashMap::new()).unwrap();
+
+    tx.create_edge(a, b, "NEXT", HashMap::new()).unwrap();
+    tx.create_edge(b, c, "NEXT", HashMap::new()).unwrap();
+    tx.create_edge(c, d, "NEXT", HashMap::new()).unwrap();
+
+    // 1..3 hops from a: [(b,1), (c,2), (d,3)]
+    let r = tx
+        .traverse_with_depth(a, "NEXT", Direction::Outgoing, 1, 3)
+        .unwrap();
+    assert_eq!(r.len(), 3);
+    assert!(r.contains(&(b, 1)));
+    assert!(r.contains(&(c, 2)));
+    assert!(r.contains(&(d, 3)));
+
+    // 2..3 hops: [(c,2), (d,3)] — skip depth 1
+    let r = tx
+        .traverse_with_depth(a, "NEXT", Direction::Outgoing, 2, 3)
+        .unwrap();
+    assert_eq!(r.len(), 2);
+    assert!(r.contains(&(c, 2)));
+    assert!(r.contains(&(d, 3)));
+
+    tx.commit().unwrap();
+}
+
+#[test]
+fn traverse_with_depth_handles_cycle() {
+    // a -> b -> c -> a (cycle)
+    let mut db = Database::open_memory().unwrap();
+    let tx = db.begin_write().unwrap();
+
+    let a = tx.create_node("N", HashMap::new()).unwrap();
+    let b = tx.create_node("N", HashMap::new()).unwrap();
+    let c = tx.create_node("N", HashMap::new()).unwrap();
+
+    tx.create_edge(a, b, "E", HashMap::new()).unwrap();
+    tx.create_edge(b, c, "E", HashMap::new()).unwrap();
+    tx.create_edge(c, a, "E", HashMap::new()).unwrap();
+
+    let r = tx
+        .traverse_with_depth(a, "E", Direction::Outgoing, 1, 10)
+        .unwrap();
+    assert_eq!(r.len(), 2);
+    assert!(r.contains(&(b, 1)));
+    assert!(r.contains(&(c, 2)));
+
+    tx.commit().unwrap();
+}

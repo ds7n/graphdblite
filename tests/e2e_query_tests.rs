@@ -2615,3 +2615,213 @@ fn regression_open_ended_variable_length_path() {
     assert!(names.contains(&"Base"), "should find Base ancestor");
     tx.commit().unwrap();
 }
+
+// --- Scalar function tests ---
+
+#[test]
+fn e2e_tolower_toupper() {
+    let mut db = setup_social_graph();
+    let tx = db.begin_read().unwrap();
+    let results = tx
+        .query("MATCH (n:Person) WHERE toLower(n.name) = 'alice' RETURN toUpper(n.name) AS upper")
+        .unwrap();
+    assert_eq!(results.len(), 1);
+    assert_eq!(results[0].get("upper"), Some(&Value::String("ALICE".into())));
+    tx.commit().unwrap();
+}
+
+#[test]
+fn e2e_tostring_tointeger_tofloat() {
+    let mut db = setup_social_graph();
+    let tx = db.begin_read().unwrap();
+    let results = tx
+        .query("MATCH (n:Person {name: 'Alice'}) RETURN toString(n.age) AS s, toFloat(n.age) AS f")
+        .unwrap();
+    assert_eq!(results.len(), 1);
+    assert_eq!(results[0].get("s"), Some(&Value::String("30".into())));
+    assert_eq!(results[0].get("f"), Some(&Value::F64(30.0)));
+    tx.commit().unwrap();
+}
+
+#[test]
+fn e2e_coalesce() {
+    let mut db = setup_social_graph();
+    let tx = db.begin_read().unwrap();
+    let results = tx
+        .query("MATCH (n:Person {name: 'Alice'}) RETURN coalesce(n.missing, n.name) AS val")
+        .unwrap();
+    assert_eq!(results.len(), 1);
+    assert_eq!(
+        results[0].get("val"),
+        Some(&Value::String("Alice".into()))
+    );
+    tx.commit().unwrap();
+}
+
+#[test]
+fn e2e_substring() {
+    let mut db = setup_social_graph();
+    let tx = db.begin_read().unwrap();
+    let results = tx
+        .query("MATCH (n:Person {name: 'Charlie'}) RETURN substring(n.name, 0, 4) AS sub")
+        .unwrap();
+    assert_eq!(results.len(), 1);
+    assert_eq!(
+        results[0].get("sub"),
+        Some(&Value::String("Char".into()))
+    );
+    tx.commit().unwrap();
+}
+
+#[test]
+fn e2e_replace_function() {
+    let mut db = setup_social_graph();
+    let tx = db.begin_read().unwrap();
+    let results = tx
+        .query("MATCH (n:Person {name: 'Alice'}) RETURN replace(n.name, 'ice', 'an') AS r")
+        .unwrap();
+    assert_eq!(results.len(), 1);
+    assert_eq!(results[0].get("r"), Some(&Value::String("Alan".into())));
+    tx.commit().unwrap();
+}
+
+#[test]
+fn e2e_split_function() {
+    let mut db = Database::open_memory().unwrap();
+    {
+        let tx = db.begin_write().unwrap();
+        tx.query("CREATE (n:Data {path: 'src/foo/bar.rs'})").unwrap();
+        tx.commit().unwrap();
+    }
+    let tx = db.begin_read().unwrap();
+    let results = tx
+        .query("MATCH (n:Data) RETURN split(n.path, '/') AS parts")
+        .unwrap();
+    assert_eq!(results.len(), 1);
+    assert_eq!(
+        results[0].get("parts"),
+        Some(&Value::List(vec![
+            Value::String("src".into()),
+            Value::String("foo".into()),
+            Value::String("bar.rs".into()),
+        ]))
+    );
+    tx.commit().unwrap();
+}
+
+#[test]
+fn e2e_trim_function() {
+    let mut db = Database::open_memory().unwrap();
+    {
+        let tx = db.begin_write().unwrap();
+        tx.query("CREATE (n:Data {val: '  hello  '})").unwrap();
+        tx.commit().unwrap();
+    }
+    let tx = db.begin_read().unwrap();
+    let results = tx
+        .query("MATCH (n:Data) RETURN trim(n.val) AS t")
+        .unwrap();
+    assert_eq!(results.len(), 1);
+    assert_eq!(results[0].get("t"), Some(&Value::String("hello".into())));
+    tx.commit().unwrap();
+}
+
+#[test]
+fn e2e_reverse_function() {
+    let mut db = setup_social_graph();
+    let tx = db.begin_read().unwrap();
+    let results = tx
+        .query("MATCH (n:Person {name: 'Bob'}) RETURN reverse(n.name) AS r")
+        .unwrap();
+    assert_eq!(results.len(), 1);
+    assert_eq!(results[0].get("r"), Some(&Value::String("boB".into())));
+    tx.commit().unwrap();
+}
+
+#[test]
+fn e2e_size_function() {
+    let mut db = setup_social_graph();
+    let tx = db.begin_read().unwrap();
+    let results = tx
+        .query("MATCH (n:Person {name: 'Alice'}) RETURN size(n.name) AS s")
+        .unwrap();
+    assert_eq!(results.len(), 1);
+    assert_eq!(results[0].get("s"), Some(&Value::I64(5)));
+    tx.commit().unwrap();
+}
+
+#[test]
+fn e2e_abs_function() {
+    let mut db = Database::open_memory().unwrap();
+    {
+        let tx = db.begin_write().unwrap();
+        tx.query("CREATE (n:Data {val: -42})").unwrap();
+        tx.commit().unwrap();
+    }
+    let tx = db.begin_read().unwrap();
+    let results = tx
+        .query("MATCH (n:Data) RETURN abs(n.val) AS a")
+        .unwrap();
+    assert_eq!(results.len(), 1);
+    assert_eq!(results[0].get("a"), Some(&Value::I64(42)));
+    tx.commit().unwrap();
+}
+
+#[test]
+fn e2e_range_function() {
+    let mut db = Database::open_memory().unwrap();
+    let tx = db.begin_read().unwrap();
+    let results = tx
+        .query("UNWIND range(1, 5) AS i RETURN collect(i) AS nums")
+        .unwrap();
+    assert_eq!(results.len(), 1);
+    assert_eq!(
+        results[0].get("nums"),
+        Some(&Value::List(vec![
+            Value::I64(1),
+            Value::I64(2),
+            Value::I64(3),
+            Value::I64(4),
+            Value::I64(5),
+        ]))
+    );
+    tx.commit().unwrap();
+}
+
+#[test]
+fn e2e_head_tail_last() {
+    let mut db = Database::open_memory().unwrap();
+    let tx = db.begin_read().unwrap();
+    let results = tx
+        .query("UNWIND [[1, 2, 3]] AS list RETURN head(list) AS h, last(list) AS l, tail(list) AS t")
+        .unwrap();
+    assert_eq!(results.len(), 1);
+    assert_eq!(results[0].get("h"), Some(&Value::I64(1)));
+    assert_eq!(results[0].get("l"), Some(&Value::I64(3)));
+    assert_eq!(
+        results[0].get("t"),
+        Some(&Value::List(vec![Value::I64(2), Value::I64(3)]))
+    );
+    tx.commit().unwrap();
+}
+
+#[test]
+fn e2e_id_as_property_name_still_works() {
+    // Regression: adding id() as a function must not break {id: X} property maps.
+    let mut db = Database::open_memory().unwrap();
+    {
+        let tx = db.begin_write().unwrap();
+        tx.query("CREATE (n:Item {id: 42, name: 'widget'})").unwrap();
+        tx.commit().unwrap();
+    }
+    let tx = db.begin_read().unwrap();
+    let results = tx
+        .query("MATCH (n:Item {id: 42}) RETURN n.name")
+        .unwrap();
+    assert_eq!(results.len(), 1);
+    assert_eq!(
+        results[0].get("n.name"),
+        Some(&Value::String("widget".into()))
+    );
+    tx.commit().unwrap();
+}

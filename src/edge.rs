@@ -237,6 +237,53 @@ pub fn traverse(
     Ok(result)
 }
 
+/// Variable-length path traversal using BFS, with depth tracking.
+///
+/// Returns `(node_id, depth)` pairs for all distinct nodes reachable from `start`
+/// by following edges with the given `label` and `direction`, between `min_hops`
+/// and `max_hops` inclusive. Results are ordered by depth (closest first).
+/// The start node is never included in the result.
+pub fn traverse_with_depth(
+    conn: &Connection,
+    start: NodeId,
+    label: &str,
+    direction: Direction,
+    min_hops: u32,
+    max_hops: u32,
+) -> Result<Vec<(NodeId, u32)>> {
+    use std::collections::{HashSet, VecDeque};
+
+    let mut visited: HashSet<u64> = HashSet::new();
+    let mut result: Vec<(NodeId, u32)> = Vec::new();
+
+    let mut queue: VecDeque<(NodeId, u32)> = VecDeque::new();
+    queue.push_back((start, 0));
+    visited.insert(start.0);
+
+    while let Some((current, depth)) = queue.pop_front() {
+        if depth >= max_hops {
+            continue;
+        }
+
+        let neighbors = get_neighbors(conn, current, label, direction)?;
+        let next_depth = depth + 1;
+
+        for neighbor in neighbors {
+            if next_depth >= min_hops && neighbor != start {
+                if !result.iter().any(|(id, _)| *id == neighbor) {
+                    result.push((neighbor, next_depth));
+                }
+            }
+
+            if visited.insert(neighbor.0) {
+                queue.push_back((neighbor, next_depth));
+            }
+        }
+    }
+
+    Ok(result)
+}
+
 /// Find the shortest path between two nodes using BFS.
 ///
 /// Returns the path as an ordered list of node IDs (including start and end),

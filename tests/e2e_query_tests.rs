@@ -2626,7 +2626,10 @@ fn e2e_tolower_toupper() {
         .query("MATCH (n:Person) WHERE toLower(n.name) = 'alice' RETURN toUpper(n.name) AS upper")
         .unwrap();
     assert_eq!(results.len(), 1);
-    assert_eq!(results[0].get("upper"), Some(&Value::String("ALICE".into())));
+    assert_eq!(
+        results[0].get("upper"),
+        Some(&Value::String("ALICE".into()))
+    );
     tx.commit().unwrap();
 }
 
@@ -2651,10 +2654,7 @@ fn e2e_coalesce() {
         .query("MATCH (n:Person {name: 'Alice'}) RETURN coalesce(n.missing, n.name) AS val")
         .unwrap();
     assert_eq!(results.len(), 1);
-    assert_eq!(
-        results[0].get("val"),
-        Some(&Value::String("Alice".into()))
-    );
+    assert_eq!(results[0].get("val"), Some(&Value::String("Alice".into())));
     tx.commit().unwrap();
 }
 
@@ -2666,10 +2666,7 @@ fn e2e_substring() {
         .query("MATCH (n:Person {name: 'Charlie'}) RETURN substring(n.name, 0, 4) AS sub")
         .unwrap();
     assert_eq!(results.len(), 1);
-    assert_eq!(
-        results[0].get("sub"),
-        Some(&Value::String("Char".into()))
-    );
+    assert_eq!(results[0].get("sub"), Some(&Value::String("Char".into())));
     tx.commit().unwrap();
 }
 
@@ -2690,7 +2687,8 @@ fn e2e_split_function() {
     let mut db = Database::open_memory().unwrap();
     {
         let tx = db.begin_write().unwrap();
-        tx.query("CREATE (n:Data {path: 'src/foo/bar.rs'})").unwrap();
+        tx.query("CREATE (n:Data {path: 'src/foo/bar.rs'})")
+            .unwrap();
         tx.commit().unwrap();
     }
     let tx = db.begin_read().unwrap();
@@ -2718,9 +2716,7 @@ fn e2e_trim_function() {
         tx.commit().unwrap();
     }
     let tx = db.begin_read().unwrap();
-    let results = tx
-        .query("MATCH (n:Data) RETURN trim(n.val) AS t")
-        .unwrap();
+    let results = tx.query("MATCH (n:Data) RETURN trim(n.val) AS t").unwrap();
     assert_eq!(results.len(), 1);
     assert_eq!(results[0].get("t"), Some(&Value::String("hello".into())));
     tx.commit().unwrap();
@@ -2759,9 +2755,7 @@ fn e2e_abs_function() {
         tx.commit().unwrap();
     }
     let tx = db.begin_read().unwrap();
-    let results = tx
-        .query("MATCH (n:Data) RETURN abs(n.val) AS a")
-        .unwrap();
+    let results = tx.query("MATCH (n:Data) RETURN abs(n.val) AS a").unwrap();
     assert_eq!(results.len(), 1);
     assert_eq!(results[0].get("a"), Some(&Value::I64(42)));
     tx.commit().unwrap();
@@ -2793,7 +2787,9 @@ fn e2e_head_tail_last() {
     let mut db = Database::open_memory().unwrap();
     let tx = db.begin_read().unwrap();
     let results = tx
-        .query("UNWIND [[1, 2, 3]] AS list RETURN head(list) AS h, last(list) AS l, tail(list) AS t")
+        .query(
+            "UNWIND [[1, 2, 3]] AS list RETURN head(list) AS h, last(list) AS l, tail(list) AS t",
+        )
         .unwrap();
     assert_eq!(results.len(), 1);
     assert_eq!(results[0].get("h"), Some(&Value::I64(1)));
@@ -2811,13 +2807,12 @@ fn e2e_id_as_property_name_still_works() {
     let mut db = Database::open_memory().unwrap();
     {
         let tx = db.begin_write().unwrap();
-        tx.query("CREATE (n:Item {id: 42, name: 'widget'})").unwrap();
+        tx.query("CREATE (n:Item {id: 42, name: 'widget'})")
+            .unwrap();
         tx.commit().unwrap();
     }
     let tx = db.begin_read().unwrap();
-    let results = tx
-        .query("MATCH (n:Item {id: 42}) RETURN n.name")
-        .unwrap();
+    let results = tx.query("MATCH (n:Item {id: 42}) RETURN n.name").unwrap();
     assert_eq!(results.len(), 1);
     assert_eq!(
         results[0].get("n.name"),

@@ -264,8 +264,14 @@ fn eval_function_call(
         "substring" => {
             // substring(s, start [, length])
             let s = eval_single_arg(args, record, conn)?;
-            let start = args.get(1).map(|a| eval_expr(a, record, conn)).transpose()?;
-            let len = args.get(2).map(|a| eval_expr(a, record, conn)).transpose()?;
+            let start = args
+                .get(1)
+                .map(|a| eval_expr(a, record, conn))
+                .transpose()?;
+            let len = args
+                .get(2)
+                .map(|a| eval_expr(a, record, conn))
+                .transpose()?;
             match (s, start) {
                 (Value::String(s), Some(Value::I64(start))) => {
                     let start = start.max(0) as usize;
@@ -286,8 +292,14 @@ fn eval_function_call(
         "replace" => {
             // replace(s, search, replacement)
             let s = eval_single_arg(args, record, conn)?;
-            let search = args.get(1).map(|a| eval_expr(a, record, conn)).transpose()?;
-            let replacement = args.get(2).map(|a| eval_expr(a, record, conn)).transpose()?;
+            let search = args
+                .get(1)
+                .map(|a| eval_expr(a, record, conn))
+                .transpose()?;
+            let replacement = args
+                .get(2)
+                .map(|a| eval_expr(a, record, conn))
+                .transpose()?;
             match (s, search, replacement) {
                 (Value::String(s), Some(Value::String(search)), Some(Value::String(repl))) => {
                     Ok(Value::String(s.replace(&search, &repl)))
@@ -298,10 +310,14 @@ fn eval_function_call(
         "split" => {
             // split(s, delimiter)
             let s = eval_single_arg(args, record, conn)?;
-            let delim = args.get(1).map(|a| eval_expr(a, record, conn)).transpose()?;
+            let delim = args
+                .get(1)
+                .map(|a| eval_expr(a, record, conn))
+                .transpose()?;
             match (s, delim) {
                 (Value::String(s), Some(Value::String(d))) => {
-                    let parts: Vec<Value> = s.split(&d).map(|p| Value::String(p.to_string())).collect();
+                    let parts: Vec<Value> =
+                        s.split(&d).map(|p| Value::String(p.to_string())).collect();
                     Ok(Value::List(parts))
                 }
                 _ => Ok(Value::Null),
@@ -329,8 +345,14 @@ fn eval_function_call(
         "range" => {
             // range(start, end [, step])
             let start = eval_single_arg(args, record, conn)?;
-            let end = args.get(1).map(|a| eval_expr(a, record, conn)).transpose()?;
-            let step = args.get(2).map(|a| eval_expr(a, record, conn)).transpose()?;
+            let end = args
+                .get(1)
+                .map(|a| eval_expr(a, record, conn))
+                .transpose()?;
+            let step = args
+                .get(2)
+                .map(|a| eval_expr(a, record, conn))
+                .transpose()?;
             match (start, end) {
                 (Value::I64(s), Some(Value::I64(e))) => {
                     let step = match step {

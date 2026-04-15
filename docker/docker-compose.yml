@@ -1,3 +1,5 @@
+name: graphdblite-build
+
 services:
   native:
     build: native

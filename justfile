@@ -1,35 +1,53 @@
 # graphdblite development tasks
 # Run `just --list` to see all available recipes.
+# Logs are written to logs/<recipe>-<timestamp>.log
+
+log_dir := "logs"
+
+# helper: ensure log dir exists and build a timestamped log path
+_log recipe:
+    @mkdir -p {{log_dir}}
+    @echo "{{log_dir}}/{{recipe}}-$(date +%Y%m%d-%H%M%S).log"
+
+# helper: run a command in a pty so it sees a real terminal, tee to log
+_run recipe +cmd:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    logfile=$(just _log {{recipe}})
+    script -qfec "{{cmd}}" "$logfile"
 
 # Run lint + test checks (same as pre-push hook)
 check:
-    scripts/check.sh
+    just _run check "scripts/check.sh"
 
 # Run cargo test
 test *args:
-    cargo test --workspace {{args}}
+    just _run test "cargo test --workspace {{args}}"
 
 # Run cargo fmt
 fmt:
-    cargo fmt --all
+    just _run fmt "cargo fmt --all"
 
 # Build cross-compiled release artifacts
 build *args:
-    scripts/build-release.sh {{args}}
+    just _run build "scripts/build-release.sh {{args}}"
 
 # Publish artifacts to GitHub release
 publish *args:
-    scripts/publish-release.sh {{args}}
+    just _run publish "scripts/publish-release.sh {{args}}"
 
 # Build all via Docker (reproducible)
 build-docker:
-    docker compose -f docker/docker-compose.yml up --build
+    just _run build-docker "docker compose -f docker/docker-compose.yml up --build"
 
 # Build a specific Docker target (native, zig-bins, zig-wheels, xwin)
 build-docker-target target:
-    docker compose -f docker/docker-compose.yml run --build --rm {{target}}
+    just _run build-docker-target "docker compose -f docker/docker-compose.yml run --build --rm {{target}}"
 
 # Remove build artifacts
 clean:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    logfile=$(just _log clean)
     rm -rf dist/ target/
-    cargo clean
+    script -qfec "cargo clean" "$logfile"

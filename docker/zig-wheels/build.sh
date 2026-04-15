@@ -16,6 +16,7 @@ maturin build --release --out /dist/wheels \
 
 # x86_64 musllinux
 echo "==> Building wheel: x86_64 musllinux_1_2"
+CC_x86_64_unknown_linux_musl="zig cc -target x86_64-linux-musl" \
 maturin build --release --out /dist/wheels \
     --manifest-path "$MANIFEST" \
     --target x86_64-unknown-linux-musl --manylinux musllinux_1_2 --zig
@@ -28,6 +29,7 @@ maturin build --release --out /dist/wheels \
 
 # aarch64 musllinux
 echo "==> Building wheel: aarch64 musllinux_1_2"
+CC_aarch64_unknown_linux_musl="zig cc -target aarch64-linux-musl" \
 maturin build --release --out /dist/wheels \
     --manifest-path "$MANIFEST" \
     --target aarch64-unknown-linux-musl --manylinux musllinux_1_2 --zig

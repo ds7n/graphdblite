@@ -269,10 +269,11 @@ pub fn traverse_with_depth(
         let next_depth = depth + 1;
 
         for neighbor in neighbors {
-            if next_depth >= min_hops && neighbor != start {
-                if !result.iter().any(|(id, _)| *id == neighbor) {
-                    result.push((neighbor, next_depth));
-                }
+            if next_depth >= min_hops
+                && neighbor != start
+                && !result.iter().any(|(id, _)| *id == neighbor)
+            {
+                result.push((neighbor, next_depth));
             }
 
             if visited.insert(neighbor.0) {

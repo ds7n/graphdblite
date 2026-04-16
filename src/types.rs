@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::fmt;
 use std::hash::{Hash, Hasher};
 
@@ -37,6 +37,9 @@ pub enum Value {
     String(String),
     List(Vec<Value>),
     Path(Vec<NodeId>),
+    /// Ordered string-keyed map (BTreeMap gives deterministic iteration and
+    /// hashing regardless of insertion order).
+    Map(BTreeMap<String, Value>),
 }
 
 /// NaN-safe equality: two NaN values are considered equal (bit-equal comparison).
@@ -51,6 +54,7 @@ impl PartialEq for Value {
             (Value::String(a), Value::String(b)) => a == b,
             (Value::List(a), Value::List(b)) => a == b,
             (Value::Path(a), Value::Path(b)) => a == b,
+            (Value::Map(a), Value::Map(b)) => a == b,
             _ => false,
         }
     }
@@ -69,6 +73,13 @@ impl Hash for Value {
             Value::String(s) => s.hash(state),
             Value::List(items) => items.hash(state),
             Value::Path(nodes) => nodes.hash(state),
+            Value::Map(map) => {
+                // BTreeMap already iterates in key order — stable hash.
+                for (k, v) in map {
+                    k.hash(state);
+                    v.hash(state);
+                }
+            }
         }
     }
 }
@@ -100,6 +111,16 @@ impl fmt::Display for Value {
                     write!(f, "({})", id.0)?;
                 }
                 write!(f, ">")
+            }
+            Value::Map(map) => {
+                write!(f, "{{")?;
+                for (i, (k, v)) in map.iter().enumerate() {
+                    if i > 0 {
+                        write!(f, ", ")?;
+                    }
+                    write!(f, "{k}: {v}")?;
+                }
+                write!(f, "}}")
             }
         }
     }
@@ -210,6 +231,7 @@ fn value_byte_size(val: &Value) -> usize {
         Value::String(s) => s.len(),
         Value::List(items) => items.iter().map(value_byte_size).sum(),
         Value::Path(nodes) => nodes.len() * 8,
+        Value::Map(map) => map.iter().map(|(k, v)| k.len() + value_byte_size(v)).sum(),
     }
 }
 

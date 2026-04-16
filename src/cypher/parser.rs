@@ -1092,6 +1092,19 @@ fn parse_atom_expr(pair: pest::iterators::Pair<Rule>) -> crate::types::Result<Ex
                 .collect();
             Ok(Expr::List(items?))
         }
+        Rule::map_literal => {
+            let mut pairs = Vec::new();
+            for p in pair.into_inner() {
+                if p.as_rule() == Rule::map_pair {
+                    let mut parts = p.into_inner();
+                    let key = parts.next().unwrap().as_str().to_string();
+                    let value_pair = parts.next().unwrap();
+                    let value = parse_expr(value_pair)?;
+                    pairs.push((key, value));
+                }
+            }
+            Ok(Expr::MapLiteral(pairs))
+        }
         Rule::star => Ok(Expr::Star),
         Rule::parameter => {
             let name = pair.into_inner().next().unwrap().as_str().to_string();
@@ -1364,6 +1377,13 @@ fn resolve_expr(expr: &Expr, params: &HashMap<String, Value>) -> crate::types::R
                 .map(|w| resolve_expr(w, params).map(Box::new))
                 .transpose()?,
         }),
+        Expr::MapLiteral(pairs) => {
+            let resolved: crate::types::Result<Vec<(String, Expr)>> = pairs
+                .iter()
+                .map(|(k, v)| resolve_expr(v, params).map(|r| (k.clone(), r)))
+                .collect();
+            Ok(Expr::MapLiteral(resolved?))
+        }
         // Leaf nodes that contain no sub-expressions.
         Expr::Literal(_) | Expr::Property(_, _) | Expr::Variable(_) | Expr::Star => {
             Ok(expr.clone())

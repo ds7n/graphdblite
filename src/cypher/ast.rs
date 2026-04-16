@@ -247,6 +247,10 @@ pub enum Expr {
         patterns: Vec<Pattern>,
         where_clause: Option<Box<Expr>>,
     },
+    /// Map literal: {key: expr, key2: expr2, ...}. Keys are preserved in
+    /// source order for error messages; evaluation sorts them into a
+    /// BTreeMap.
+    MapLiteral(Vec<(String, Expr)>),
     /// Wildcard * (used in count(*) and RETURN *)
     Star,
 }

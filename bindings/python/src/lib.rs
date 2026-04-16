@@ -44,6 +44,13 @@ fn value_to_py(py: Python, val: &Value) -> PyObject {
             let ids: Vec<PyObject> = nodes.iter().map(|id| id.0.to_object(py)).collect();
             ids.to_object(py)
         }
+        Value::Map(map) => {
+            let dict = PyDict::new_bound(py);
+            for (k, v) in map {
+                dict.set_item(k, value_to_py(py, v)).unwrap();
+            }
+            dict.to_object(py)
+        }
     }
 }
 
@@ -78,6 +85,14 @@ fn py_to_value(obj: &Bound<'_, pyo3::types::PyAny>) -> PyResult<Value> {
     } else if let Ok(list) = obj.downcast::<PyList>() {
         let items: PyResult<Vec<Value>> = list.iter().map(|item| py_to_value(&item)).collect();
         Ok(Value::List(items?))
+    } else if let Ok(dict) = obj.downcast::<PyDict>() {
+        let mut map = std::collections::BTreeMap::new();
+        for (key, value) in dict.iter() {
+            let k: String = key.extract()?;
+            let v = py_to_value(&value)?;
+            map.insert(k, v);
+        }
+        Ok(Value::Map(map))
     } else {
         Err(PyValueError::new_err(format!(
             "unsupported property type: {}",

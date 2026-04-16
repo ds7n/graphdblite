@@ -9,12 +9,12 @@ _log recipe:
     @mkdir -p {{log_dir}}
     @echo "{{log_dir}}/{{recipe}}-$(date +%Y%m%d-%H%M%S).log"
 
-# helper: run a command in a pty so it sees a real terminal, tee to log
+# helper: run a command, tee plain text to log, colorize terminal via tailspin
 _run recipe +cmd:
     #!/usr/bin/env bash
     set -euo pipefail
     logfile=$(just _log {{recipe}})
-    script -qfec "{{cmd}}" "$logfile"
+    {{cmd}} 2>&1 | tee "$logfile" | tspin
 
 # Run lint + test checks (same as pre-push hook)
 check:
@@ -46,8 +46,5 @@ build-docker-target target:
 
 # Remove build artifacts
 clean:
-    #!/usr/bin/env bash
-    set -euo pipefail
-    logfile=$(just _log clean)
     rm -rf dist/ target/
-    script -qfec "cargo clean" "$logfile"
+    just _run clean "cargo clean"

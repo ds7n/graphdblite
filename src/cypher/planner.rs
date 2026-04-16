@@ -1,3 +1,5 @@
+use std::collections::HashSet;
+
 use rusqlite::Connection;
 
 use crate::cypher::ast::*;
@@ -32,14 +34,21 @@ fn plan_match(conn: &Connection, stmt: &MatchStatement) -> crate::types::Result<
     // Build scan + expand chain from patterns.
     let mut op = plan_patterns(conn, &stmt.patterns)?;
 
+    // Collect variables bound by the required MATCH so OPTIONAL MATCH can
+    // distinguish shared vs. new aliases (instead of assuming first = shared).
+    let mut bound_vars = collect_pattern_variables(&stmt.patterns);
+
     // Apply OPTIONAL MATCH clauses as LeftOuterJoins.
     for opt_patterns in &stmt.optional_patterns {
-        let (right, new_aliases) = plan_optional_patterns(conn, opt_patterns)?;
+        let (right, new_aliases) = plan_optional_patterns(conn, opt_patterns, &bound_vars)?;
         op = LogicalOp::LeftOuterJoin {
             input: Box::new(op),
             right: Box::new(right),
-            optional_aliases: new_aliases,
+            optional_aliases: new_aliases.clone(),
         };
+        // Each OPTIONAL MATCH introduces new variables that become bound for
+        // subsequent OPTIONAL MATCH clauses.
+        bound_vars.extend(new_aliases);
     }
 
     // Apply WHERE filter with predicate pushdown.
@@ -176,13 +185,15 @@ fn plan_match_create(
 fn plan_delete(conn: &Connection, stmt: &DeleteStatement) -> crate::types::Result<LogicalOp> {
     let mut op = plan_patterns(conn, &stmt.patterns)?;
 
+    let mut bound_vars = collect_pattern_variables(&stmt.patterns);
     for opt_patterns in &stmt.optional_patterns {
-        let (right, new_aliases) = plan_optional_patterns(conn, opt_patterns)?;
+        let (right, new_aliases) = plan_optional_patterns(conn, opt_patterns, &bound_vars)?;
         op = LogicalOp::LeftOuterJoin {
             input: Box::new(op),
             right: Box::new(right),
-            optional_aliases: new_aliases,
+            optional_aliases: new_aliases.clone(),
         };
+        bound_vars.extend(new_aliases);
     }
 
     if let Some(ref predicate) = stmt.where_clause {
@@ -573,34 +584,52 @@ fn plan_shortest_path_pattern(
     })
 }
 
+/// Collect all variable names (nodes and relationships) from a set of patterns.
+fn collect_pattern_variables(patterns: &[Pattern]) -> HashSet<String> {
+    let mut vars = HashSet::new();
+    for pattern in patterns {
+        for elem in &pattern.elements {
+            match elem {
+                PatternElement::Node(n) => {
+                    if let Some(ref var) = n.variable {
+                        vars.insert(var.clone());
+                    }
+                }
+                PatternElement::Relationship(r) => {
+                    if let Some(ref var) = r.variable {
+                        vars.insert(var.clone());
+                    }
+                }
+            }
+        }
+    }
+    vars
+}
+
 /// Plan OPTIONAL MATCH patterns. Returns (plan, new_aliases) where the plan is
 /// an expansion chain and new_aliases lists variables introduced by the optional
 /// patterns (not shared with the required MATCH).
 ///
-/// The plan expects to be executed per-input-record inside a LeftOuterJoin:
-/// - Shared aliases (already bound) become the starting point for expands
-/// - New aliases are the ones that get NULL-filled on no match
+/// `bound_vars` contains variables already established by prior MATCH / OPTIONAL
+/// MATCH clauses. Any node variable NOT in `bound_vars` is new and will be
+/// NULL-filled on no match.
 fn plan_optional_patterns(
     conn: &Connection,
     patterns: &[Pattern],
+    bound_vars: &HashSet<String>,
 ) -> crate::types::Result<(LogicalOp, Vec<String>)> {
     let mut new_aliases = Vec::new();
     let op = plan_patterns(conn, patterns)?;
 
-    // Walk the patterns to collect aliases.
-    // The first node in each pattern is assumed shared with the required MATCH.
-    // Subsequent nodes (destinations of relationships) are new.
     for pattern in patterns {
-        let mut first = true;
         for elem in &pattern.elements {
-            if let PatternElement::Node(n) = elem {
-                if let Some(ref var) = n.variable {
-                    if first {
-                        first = false;
-                        // First node is shared — skip.
-                    } else if !new_aliases.contains(var) {
-                        new_aliases.push(var.clone());
-                    }
+            let var = match elem {
+                PatternElement::Node(n) => n.variable.as_ref(),
+                PatternElement::Relationship(r) => r.variable.as_ref(),
+            };
+            if let Some(var) = var {
+                if !bound_vars.contains(var) && !new_aliases.contains(var) {
+                    new_aliases.push(var.clone());
                 }
             }
         }

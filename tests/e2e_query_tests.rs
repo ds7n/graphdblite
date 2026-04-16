@@ -1398,6 +1398,170 @@ fn e2e_optional_match_with_aggregation() {
     tx.commit().unwrap();
 }
 
+/// Regression: OPTIONAL MATCH where shared variable is the *destination* (not
+/// source) of the optional pattern. Previously inflated count() because the
+/// correlated expand didn't filter by the already-bound destination.
+#[test]
+fn e2e_optional_match_shared_destination_count() {
+    let mut db = Database::open_memory().unwrap();
+    let tx = db.begin_write().unwrap();
+    // Three functions; two callers.
+    tx.query("CREATE (fn1:Function {name: 'main'})").unwrap();
+    tx.query("CREATE (fn2:Function {name: 'helper'})").unwrap();
+    tx.query("CREATE (fn3:Function {name: 'unused'})").unwrap();
+    tx.commit().unwrap();
+
+    let tx = db.begin_write().unwrap();
+    // main is called by helper and unused; helper is called by main; unused is called by nobody.
+    tx.create_edge(NodeId(2), NodeId(1), "CALLS", HashMap::new())
+        .unwrap(); // helper -> main
+    tx.create_edge(NodeId(3), NodeId(1), "CALLS", HashMap::new())
+        .unwrap(); // unused -> main
+    tx.create_edge(NodeId(1), NodeId(2), "CALLS", HashMap::new())
+        .unwrap(); // main -> helper
+    tx.commit().unwrap();
+
+    let tx = db.begin_read().unwrap();
+    let rows = tx
+        .query(
+            "MATCH (fn:Function) \
+             OPTIONAL MATCH (caller:Function)-[:CALLS]->(fn) \
+             RETURN fn.name, count(caller) AS caller_count \
+             ORDER BY fn.name",
+        )
+        .unwrap();
+    assert_eq!(rows.len(), 3);
+    // helper: called by main → 1
+    assert_eq!(
+        rows[0].get("fn.name").unwrap(),
+        &Value::String("helper".into())
+    );
+    assert_eq!(rows[0].get("caller_count").unwrap(), &Value::I64(1));
+    // main: called by helper and unused → 2
+    assert_eq!(
+        rows[1].get("fn.name").unwrap(),
+        &Value::String("main".into())
+    );
+    assert_eq!(rows[1].get("caller_count").unwrap(), &Value::I64(2));
+    // unused: called by nobody → 0
+    assert_eq!(
+        rows[2].get("fn.name").unwrap(),
+        &Value::String("unused".into())
+    );
+    assert_eq!(rows[2].get("caller_count").unwrap(), &Value::I64(0));
+    tx.commit().unwrap();
+}
+
+/// Regression: dead-code detection pattern via OPTIONAL MATCH + WITH + WHERE.
+#[test]
+fn e2e_optional_match_dead_code_detection() {
+    let mut db = Database::open_memory().unwrap();
+    let tx = db.begin_write().unwrap();
+    tx.query("CREATE (fn1:Function {name: 'used'})").unwrap();
+    tx.query("CREATE (fn2:Function {name: 'dead'})").unwrap();
+    tx.commit().unwrap();
+
+    let tx = db.begin_write().unwrap();
+    tx.create_edge(NodeId(1), NodeId(1), "CALLS", HashMap::new())
+        .unwrap(); // used calls itself (recursive)
+    tx.commit().unwrap();
+
+    let tx = db.begin_read().unwrap();
+    let rows = tx
+        .query(
+            "MATCH (fn:Function) \
+             OPTIONAL MATCH (caller:Function)-[:CALLS]->(fn) \
+             WITH fn.name AS name, count(caller) AS c \
+             WHERE c = 0 \
+             RETURN name ORDER BY name",
+        )
+        .unwrap();
+    // Only 'dead' has zero callers.
+    assert_eq!(rows.len(), 1);
+    assert_eq!(
+        rows[0].get("name").unwrap(),
+        &Value::String("dead".into())
+    );
+    tx.commit().unwrap();
+}
+
+/// Regression: WITH that projects a node reference should still allow
+/// `node.prop` access in downstream clauses. Previously Aggregate threw
+/// away the flattened `n.*` keys, leaving `n.name` returning Null.
+#[test]
+fn e2e_with_node_reference_preserves_properties() {
+    let mut db = Database::open_memory().unwrap();
+    let tx = db.begin_write().unwrap();
+    tx.query("CREATE (a:Person {name: 'Alice', age: 30})").unwrap();
+    tx.query("CREATE (b:Person {name: 'Bob', age: 25})").unwrap();
+    tx.commit().unwrap();
+
+    let tx = db.begin_write().unwrap();
+    tx.create_edge(NodeId(1), NodeId(2), "KNOWS", HashMap::new())
+        .unwrap();
+    tx.create_edge(NodeId(1), NodeId(1), "KNOWS", HashMap::new())
+        .unwrap(); // Alice self-loop so she has 2 KNOWS
+    tx.commit().unwrap();
+
+    let tx = db.begin_read().unwrap();
+    // WITH a node reference + aggregate, then access .name on the node.
+    let rows = tx
+        .query(
+            "MATCH (a:Person)-[:KNOWS]->(b:Person) \
+             WITH a, count(b) AS c \
+             RETURN a.name, c ORDER BY a.name",
+        )
+        .unwrap();
+    assert_eq!(rows.len(), 1);
+    assert_eq!(
+        rows[0].get("a.name").unwrap(),
+        &Value::String("Alice".into())
+    );
+    assert_eq!(rows[0].get("c").unwrap(), &Value::I64(2));
+    tx.commit().unwrap();
+}
+
+/// Regression: OPTIONAL MATCH with multiple edge types `[r:A|B]` should
+/// match edges of any listed type in correlated execution, not just the
+/// first type.
+#[test]
+fn e2e_optional_match_multiple_edge_types() {
+    let mut db = Database::open_memory().unwrap();
+    let tx = db.begin_write().unwrap();
+    tx.query("CREATE (a:Person {name: 'Alice'})").unwrap();
+    tx.query("CREATE (b:Person {name: 'Bob'})").unwrap();
+    tx.query("CREATE (c:Person {name: 'Charlie'})").unwrap();
+    tx.commit().unwrap();
+
+    let tx = db.begin_write().unwrap();
+    // Alice KNOWS Bob; Alice FOLLOWS Charlie. No outgoing edges for Bob/Charlie.
+    tx.create_edge(NodeId(1), NodeId(2), "KNOWS", HashMap::new())
+        .unwrap();
+    tx.create_edge(NodeId(1), NodeId(3), "FOLLOWS", HashMap::new())
+        .unwrap();
+    tx.commit().unwrap();
+
+    let tx = db.begin_read().unwrap();
+    let rows = tx
+        .query(
+            "MATCH (a:Person) \
+             OPTIONAL MATCH (a)-[:KNOWS|FOLLOWS]->(b) \
+             RETURN a.name, count(b) AS c ORDER BY a.name",
+        )
+        .unwrap();
+    assert_eq!(rows.len(), 3);
+    // Alice: 2 outgoing edges across KNOWS + FOLLOWS.
+    assert_eq!(
+        rows[0].get("a.name").unwrap(),
+        &Value::String("Alice".into())
+    );
+    assert_eq!(rows[0].get("c").unwrap(), &Value::I64(2));
+    // Bob, Charlie: 0 outgoing.
+    assert_eq!(rows[1].get("c").unwrap(), &Value::I64(0));
+    assert_eq!(rows[2].get("c").unwrap(), &Value::I64(0));
+    tx.commit().unwrap();
+}
+
 #[test]
 fn e2e_variable_length_path_with_where() {
     let mut db = setup_social_graph();

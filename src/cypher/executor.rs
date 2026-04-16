@@ -558,7 +558,21 @@ fn exec_aggregate(
         let mut rec = Record::new();
         for (i, key_expr) in group_keys.iter().enumerate() {
             let col_name = expr_to_column_name(key_expr);
-            rec.set(col_name, key_vals[i].clone());
+            rec.set(col_name.clone(), key_vals[i].clone());
+            // If the group key is a bare variable referring to a node/relationship,
+            // propagate its flattened property keys (e.g. `n.name`, `n.__id`) from
+            // a representative record so that downstream clauses like
+            // `RETURN n.name` continue to work after WITH/aggregation.
+            if let Expr::Variable(var) = key_expr {
+                let prefix = format!("{var}.");
+                if let Some(first) = group_records.first() {
+                    for (key, val) in &first.fields {
+                        if key.starts_with(&prefix) {
+                            rec.set(key.clone(), val.clone());
+                        }
+                    }
+                }
+            }
         }
         for agg in aggregates {
             let col_name = agg
@@ -1432,7 +1446,13 @@ fn exec_correlated(
             max_hops,
         } => {
             let input_records = exec_correlated(conn, input, outer, ctx)?;
-            let label = edge_types.first().map(|s| s.as_str()).unwrap_or("");
+            // Iterate each edge type so OPTIONAL MATCH (a)-[:T1|T2]->(b)
+            // returns matches for any listed type (matches exec_expand behavior).
+            let labels: Vec<&str> = if edge_types.is_empty() {
+                vec![""]
+            } else {
+                edge_types.iter().map(|s| s.as_str()).collect()
+            };
             let mut results = Vec::new();
 
             for rec in &input_records {
@@ -1441,44 +1461,61 @@ fn exec_correlated(
                     _ => continue,
                 };
 
-                let dst_ids = if *min_hops == 1 && *max_hops == 1 {
-                    edge::get_neighbors(conn, src_id, label, *direction)?
-                } else {
-                    edge::traverse(conn, src_id, label, *direction, *min_hops, *max_hops)?
-                };
+                // If the destination alias is already bound in the outer record
+                // (e.g. OPTIONAL MATCH (caller)-[:CALLS]->(fn) where fn comes
+                // from the required MATCH), filter to only the matching ID.
+                let bound_dst = outer.get(dst_alias).and_then(|v| match v {
+                    Value::I64(id) => Some(NodeId(*id as u64)),
+                    _ => None,
+                });
 
-                for dst_id in dst_ids {
-                    let dst_node = node::get_node(conn, dst_id)?;
-                    let mut new_rec = rec.clone();
-                    new_rec.set(dst_alias.to_string(), Value::I64(dst_id.0 as i64));
-                    for (key, val) in &dst_node.properties {
-                        new_rec.set(format!("{dst_alias}.{key}"), val.clone());
-                    }
-                    new_rec.set(
-                        format!("{dst_alias}.__label"),
-                        Value::String(dst_node.label.clone()),
-                    );
-                    new_rec.set(format!("{dst_alias}.__id"), Value::I64(dst_id.0 as i64));
-                    if let Some(r_alias) = rel_alias {
-                        let (edge_src, edge_dst) = match direction {
-                            Direction::Incoming => (dst_id, src_id),
-                            _ => (src_id, dst_id),
-                        };
-                        new_rec.set(format!("{r_alias}.__src"), Value::I64(edge_src.0 as i64));
-                        new_rec.set(format!("{r_alias}.__dst"), Value::I64(edge_dst.0 as i64));
-                        new_rec.set(
-                            format!("{r_alias}.__type"),
-                            Value::String(label.to_string()),
-                        );
-                        if let Ok(props) =
-                            edge::get_edge_properties(conn, edge_src, edge_dst, label)
-                        {
-                            for (key, val) in &props {
-                                new_rec.set(format!("{r_alias}.{key}"), val.clone());
+                for &label in &labels {
+                    let dst_ids = if *min_hops == 1 && *max_hops == 1 {
+                        edge::get_neighbors(conn, src_id, label, *direction)?
+                    } else {
+                        edge::traverse(conn, src_id, label, *direction, *min_hops, *max_hops)?
+                    };
+
+                    for dst_id in dst_ids {
+                        if let Some(expected) = bound_dst {
+                            if dst_id != expected {
+                                continue;
                             }
                         }
+                        let dst_node = node::get_node(conn, dst_id)?;
+                        let mut new_rec = rec.clone();
+                        new_rec.set(dst_alias.to_string(), Value::I64(dst_id.0 as i64));
+                        for (key, val) in &dst_node.properties {
+                            new_rec.set(format!("{dst_alias}.{key}"), val.clone());
+                        }
+                        new_rec.set(
+                            format!("{dst_alias}.__label"),
+                            Value::String(dst_node.label.clone()),
+                        );
+                        new_rec.set(format!("{dst_alias}.__id"), Value::I64(dst_id.0 as i64));
+                        if let Some(r_alias) = rel_alias {
+                            let (edge_src, edge_dst) = match direction {
+                                Direction::Incoming => (dst_id, src_id),
+                                _ => (src_id, dst_id),
+                            };
+                            new_rec
+                                .set(format!("{r_alias}.__src"), Value::I64(edge_src.0 as i64));
+                            new_rec
+                                .set(format!("{r_alias}.__dst"), Value::I64(edge_dst.0 as i64));
+                            new_rec.set(
+                                format!("{r_alias}.__type"),
+                                Value::String(label.to_string()),
+                            );
+                            if let Ok(props) =
+                                edge::get_edge_properties(conn, edge_src, edge_dst, label)
+                            {
+                                for (key, val) in &props {
+                                    new_rec.set(format!("{r_alias}.{key}"), val.clone());
+                                }
+                            }
+                        }
+                        results.push(new_rec);
                     }
-                    results.push(new_rec);
                 }
             }
 

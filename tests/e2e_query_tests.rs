@@ -1478,10 +1478,7 @@ fn e2e_optional_match_dead_code_detection() {
         .unwrap();
     // Only 'dead' has zero callers.
     assert_eq!(rows.len(), 1);
-    assert_eq!(
-        rows[0].get("name").unwrap(),
-        &Value::String("dead".into())
-    );
+    assert_eq!(rows[0].get("name").unwrap(), &Value::String("dead".into()));
     tx.commit().unwrap();
 }
 
@@ -1492,8 +1489,10 @@ fn e2e_optional_match_dead_code_detection() {
 fn e2e_with_node_reference_preserves_properties() {
     let mut db = Database::open_memory().unwrap();
     let tx = db.begin_write().unwrap();
-    tx.query("CREATE (a:Person {name: 'Alice', age: 30})").unwrap();
-    tx.query("CREATE (b:Person {name: 'Bob', age: 25})").unwrap();
+    tx.query("CREATE (a:Person {name: 'Alice', age: 30})")
+        .unwrap();
+    tx.query("CREATE (b:Person {name: 'Bob', age: 25})")
+        .unwrap();
     tx.commit().unwrap();
 
     let tx = db.begin_write().unwrap();

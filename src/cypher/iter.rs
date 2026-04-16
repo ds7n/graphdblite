@@ -137,10 +137,16 @@ impl<'a> RecordIter for LimitIter<'a> {
     }
 }
 
-/// Projects each input record through the RETURN clause.
+/// Projects each input record through a RETURN / WITH clause.
+///
+/// `emit_compound` matches the semantics of `LogicalOp::Project`: the terminal
+/// RETURN yields compound `Value::Node` / `Value::Edge` values for bare
+/// variable references, while intermediate WITH clauses preserve the flat
+/// binding shape.
 pub struct ProjectIter<'a> {
     input: Box<dyn RecordIter + 'a>,
     items: Vec<ReturnItem>,
+    emit_compound: bool,
     conn: &'a Connection,
 }
 
@@ -155,35 +161,65 @@ impl<'a> RecordIter for ProjectIter<'a> {
         for item in &self.items {
             match &item.expr {
                 Expr::Star => {
-                    for (key, val) in &rec.fields {
-                        if is_user_visible_field(key) {
+                    if self.emit_compound {
+                        let bound_vars = crate::cypher::executor::compound_binding_vars(&rec);
+                        for var in &bound_vars {
+                            if let Some(compound) =
+                                crate::cypher::executor::build_compound_binding(&rec, var)
+                            {
+                                projected.set(var.clone(), compound);
+                            }
+                        }
+                        for (key, val) in &rec.fields {
+                            if !is_user_visible_field(key) {
+                                continue;
+                            }
+                            let owner = key.split_once('.').map(|(v, _)| v);
+                            if let Some(owner) = owner {
+                                if bound_vars.iter().any(|v| v == owner) {
+                                    continue;
+                                }
+                            }
+                            projected.set(key.clone(), val.clone());
+                        }
+                    } else {
+                        for (key, val) in &rec.fields {
                             projected.set(key.clone(), val.clone());
                         }
                     }
                 }
                 Expr::Variable(var) => {
-                    let prefix = format!("{var}.");
-                    let mut found_props = false;
-                    for (key, val) in &rec.fields {
-                        if let Some(prop) = key.strip_prefix(&prefix) {
-                            if !prop.starts_with("__") {
-                                if let Some(alias) = &item.alias {
-                                    projected.set(format!("{alias}.{prop}"), val.clone());
-                                } else {
-                                    projected.set(key.clone(), val.clone());
-                                }
-                                found_props = true;
+                    let col_name = item.alias.clone().unwrap_or_else(|| var.clone());
+                    if self.emit_compound {
+                        if let Some(compound) =
+                            crate::cypher::executor::build_compound_binding(&rec, var)
+                        {
+                            projected.set(col_name, compound);
+                        } else if let Some(existing) = rec.get(&col_name) {
+                            projected.set(col_name, existing.clone());
+                        } else {
+                            let val = eval_expr(&item.expr, &rec, self.conn)?;
+                            projected.set(col_name, val);
+                        }
+                    } else {
+                        // Preserve flat shape for downstream consumers.
+                        let src_prefix = format!("{var}.");
+                        let dst_prefix = format!("{col_name}.");
+                        let mut propagated_any = false;
+                        for (key, val) in &rec.fields {
+                            if let Some(rest) = key.strip_prefix(&src_prefix) {
+                                projected.set(format!("{dst_prefix}{rest}"), val.clone());
+                                propagated_any = true;
                             }
                         }
-                    }
-                    if !found_props {
-                        let col_name = item.alias.clone().unwrap_or_else(|| var.clone());
-                        let val = if let Some(existing) = rec.get(&col_name) {
-                            existing.clone()
-                        } else {
-                            eval_expr(&item.expr, &rec, self.conn)?
-                        };
-                        projected.set(col_name, val);
+                        if let Some(existing) = rec.get(var) {
+                            projected.set(col_name.clone(), existing.clone());
+                            propagated_any = true;
+                        }
+                        if !propagated_any {
+                            let val = eval_expr(&item.expr, &rec, self.conn)?;
+                            projected.set(col_name, val);
+                        }
                     }
                 }
                 _ => {
@@ -363,11 +399,16 @@ pub fn build_iter<'a>(
             }))
         }
 
-        LogicalOp::Project { input, items } => {
+        LogicalOp::Project {
+            input,
+            items,
+            emit_compound,
+        } => {
             let input_iter = build_iter(conn, input)?;
             Ok(Box::new(ProjectIter {
                 input: input_iter,
                 items: items.clone(),
+                emit_compound: *emit_compound,
                 conn,
             }))
         }

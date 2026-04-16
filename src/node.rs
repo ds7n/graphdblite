@@ -9,8 +9,12 @@ use crate::types::{
 };
 
 /// Create a new node with the given label and properties.
+///
+/// An empty `label` creates an unlabeled node (valid in openCypher).
 pub fn create_node(conn: &Connection, label: &str, properties: Properties) -> Result<NodeId> {
-    validate_name(label)?;
+    if !label.is_empty() {
+        validate_name(label)?;
+    }
     for key in properties.keys() {
         validate_name(key)?;
     }

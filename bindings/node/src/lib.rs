@@ -30,12 +30,31 @@ fn value_to_napi(env: &Env, val: &Value) -> Result<napi::JsUnknown> {
             }
             array_to_unknown(env, &arr)
         }
-        Value::Path(nodes) => {
-            let mut arr = env.create_array_with_length(nodes.len())?;
-            for (i, id) in nodes.iter().enumerate() {
-                arr.set_element(i as u32, env.create_int64(id.0 as i64)?)?;
+        Value::Path(p) => {
+            let mut arr = env.create_array_with_length(p.nodes.len())?;
+            for (i, n) in p.nodes.iter().enumerate() {
+                arr.set_element(i as u32, env.create_int64(n.id.0 as i64)?)?;
             }
             array_to_unknown(env, &arr)
+        }
+        Value::Node(n) => {
+            let mut obj = env.create_object()?;
+            obj.set("__id", env.create_int64(n.id.0 as i64)?)?;
+            obj.set("__label", env.create_string(&n.label)?)?;
+            for (k, v) in &n.properties {
+                obj.set(k.as_str(), value_to_napi(env, v)?)?;
+            }
+            Ok(obj.into_unknown())
+        }
+        Value::Edge(e) => {
+            let mut obj = env.create_object()?;
+            obj.set("__src", env.create_int64(e.src.0 as i64)?)?;
+            obj.set("__dst", env.create_int64(e.dst.0 as i64)?)?;
+            obj.set("__label", env.create_string(&e.label)?)?;
+            for (k, v) in &e.properties {
+                obj.set(k.as_str(), value_to_napi(env, v)?)?;
+            }
+            Ok(obj.into_unknown())
         }
         Value::Map(map) => {
             let mut obj = env.create_object()?;

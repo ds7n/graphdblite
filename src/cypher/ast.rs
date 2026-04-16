@@ -11,6 +11,8 @@ pub enum Statement {
     Set(SetStatement),
     Merge(MergeStatement),
     Unwind(UnwindStatement),
+    /// Standalone RETURN (no preceding MATCH / CREATE).
+    Return(ReturnStatement),
     Explain(Box<Statement>),
     /// UNION [ALL] of multiple statements.
     Union {
@@ -18,6 +20,15 @@ pub enum Statement {
         /// true = UNION ALL (keep duplicates), false = UNION (deduplicate).
         all: bool,
     },
+}
+
+/// Standalone `RETURN expr [AS alias], ... [ORDER BY ...] [SKIP n] [LIMIT n]`
+#[derive(Debug, Clone, PartialEq)]
+pub struct ReturnStatement {
+    pub return_clause: ReturnClause,
+    pub order_by: Vec<SortItem>,
+    pub skip: Option<u64>,
+    pub limit: Option<u64>,
 }
 
 /// MATCH ... WHERE ... WITH ... RETURN ... ORDER BY ... LIMIT

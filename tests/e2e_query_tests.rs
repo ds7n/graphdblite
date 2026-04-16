@@ -2,6 +2,41 @@ use std::collections::HashMap;
 
 use graphdblite::{Database, NodeId, Value};
 
+/// Extract the sequence of node IDs from a `Value::Path` for assertion convenience.
+fn path_ids(val: &Value) -> Vec<u64> {
+    match val {
+        Value::Path(p) => p.nodes.iter().map(|n| n.id.0).collect(),
+        _ => panic!("expected Value::Path, got {val:?}"),
+    }
+}
+
+/// Extract the id of a single `Value::Node`.
+fn node_id(val: &Value) -> u64 {
+    match val {
+        Value::Node(n) => n.id.0,
+        _ => panic!("expected Value::Node, got {val:?}"),
+    }
+}
+
+/// Extract a property from a `Value::Node` for assertion convenience.
+fn node_prop<'a>(val: &'a Value, key: &str) -> &'a Value {
+    match val {
+        Value::Node(n) => n
+            .properties
+            .get(key)
+            .unwrap_or_else(|| panic!("node missing property '{key}': {val:?}")),
+        _ => panic!("expected Value::Node, got {val:?}"),
+    }
+}
+
+/// Extract the label of a `Value::Node`.
+fn node_label(val: &Value) -> &str {
+    match val {
+        Value::Node(n) => &n.label,
+        _ => panic!("expected Value::Node, got {val:?}"),
+    }
+}
+
 /// Helper: set up a small social graph for testing.
 fn setup_social_graph() -> Database {
     let mut db = Database::open_memory().unwrap();
@@ -280,17 +315,15 @@ fn e2e_return_star() {
         .query("MATCH (n:Person) WHERE n.name = 'Alice' RETURN *")
         .unwrap();
     assert_eq!(results.len(), 1);
-    // Should include user properties via alias.prop keys.
-    assert_eq!(
-        results[0].get("n.name"),
-        Some(&Value::String("Alice".into()))
-    );
-    assert_eq!(results[0].get("n.age"), Some(&Value::I64(30)));
-    // Internal fields must NOT appear.
+    // `RETURN *` yields one compound column per bound variable.
+    let n = results[0].get("n").expect("expected bound variable 'n'");
+    assert_eq!(node_label(n), "Person");
+    assert_eq!(node_prop(n, "name"), &Value::String("Alice".into()));
+    assert_eq!(node_prop(n, "age"), &Value::I64(30));
+    // Flat variants must NOT appear at the output layer.
+    assert!(results[0].get("n.name").is_none());
     assert!(results[0].get("n.__id").is_none());
     assert!(results[0].get("n.__label").is_none());
-    // Bare alias (raw node ID) must NOT appear.
-    assert!(results[0].get("n").is_none());
     tx.commit().unwrap();
 }
 
@@ -302,12 +335,41 @@ fn e2e_return_bare_variable() {
         .query("MATCH (n:Person) WHERE n.name = 'Bob' RETURN n")
         .unwrap();
     assert_eq!(results.len(), 1);
-    // Bare variable should expand to n.prop fields.
-    assert_eq!(results[0].get("n.name"), Some(&Value::String("Bob".into())));
-    assert_eq!(results[0].get("n.age"), Some(&Value::I64(25)));
-    // No internal fields.
+    // `RETURN n` yields a single compound Value::Node column.
+    let n = results[0].get("n").expect("expected column 'n'");
+    assert_eq!(node_label(n), "Person");
+    assert_eq!(node_prop(n, "name"), &Value::String("Bob".into()));
+    assert_eq!(node_prop(n, "age"), &Value::I64(25));
+    // Flat aliases must NOT appear at the output layer.
+    assert!(results[0].get("n.name").is_none());
     assert!(results[0].get("n.__id").is_none());
     assert!(results[0].get("n.__label").is_none());
+    tx.commit().unwrap();
+}
+
+/// Phase 1 acceptance: `RETURN n` produces a single compound `Value::Node`
+/// column carrying the node's id, label, and full property map.
+#[test]
+fn e2e_return_node_is_compound_value() {
+    let mut db = setup_social_graph();
+    let tx = db.begin_read().unwrap();
+    let results = tx
+        .query("MATCH (n:Person) WHERE n.name = 'Alice' RETURN n")
+        .unwrap();
+    assert_eq!(results.len(), 1);
+    let n = results[0].get("n").expect("expected column 'n'");
+    match n {
+        Value::Node(node) => {
+            assert_eq!(node.label, "Person");
+            assert_eq!(
+                node.properties.get("name"),
+                Some(&Value::String("Alice".into()))
+            );
+            assert_eq!(node.properties.get("age"), Some(&Value::I64(30)));
+            assert!(node.id.0 > 0);
+        }
+        other => panic!("expected Value::Node, got {other:?}"),
+    }
     tx.commit().unwrap();
 }
 
@@ -339,13 +401,13 @@ fn e2e_return_star_with_relationship() {
         .query("MATCH (a:Person {name: 'Alice'})-[:KNOWS]->(b:Person) RETURN *")
         .unwrap();
     assert_eq!(results.len(), 1); // Alice->Bob
-                                  // Both aliases should have their properties expanded.
-    assert_eq!(
-        results[0].get("a.name"),
-        Some(&Value::String("Alice".into()))
-    );
-    assert_eq!(results[0].get("b.name"), Some(&Value::String("Bob".into())));
-    // No internal fields.
+                                  // Both variables should appear as compound columns.
+    let a = results[0].get("a").expect("expected column 'a'");
+    let b = results[0].get("b").expect("expected column 'b'");
+    assert_eq!(node_prop(a, "name"), &Value::String("Alice".into()));
+    assert_eq!(node_prop(b, "name"), &Value::String("Bob".into()));
+    // No flat aliases at output layer.
+    assert!(results[0].get("a.name").is_none());
     assert!(results[0].get("a.__id").is_none());
     assert!(results[0].get("b.__label").is_none());
     tx.commit().unwrap();
@@ -2321,7 +2383,7 @@ fn e2e_shortest_path_direct() {
     assert_eq!(results.len(), 1);
     let path = results[0].get("p").unwrap();
     // Direct path: A(1) -> D(4)
-    assert_eq!(path, &Value::Path(vec![NodeId(1), NodeId(4)]));
+    assert_eq!(path_ids(path), vec![1, 4]);
     tx.commit().unwrap();
 }
 
@@ -2338,10 +2400,7 @@ fn e2e_shortest_path_multi_hop() {
         )
         .unwrap();
     assert_eq!(results.len(), 1);
-    assert_eq!(
-        results[0].get("p").unwrap(),
-        &Value::Path(vec![NodeId(1), NodeId(2)])
-    );
+    assert_eq!(path_ids(results[0].get("p").unwrap()), vec![1, 2]);
     assert_eq!(results[0].get("len").unwrap(), &Value::I64(1));
     tx.commit().unwrap();
 }
@@ -2377,10 +2436,13 @@ fn e2e_shortest_path_length_function() {
         .unwrap();
     assert_eq!(results.len(), 1);
     assert_eq!(results[0].get("len").unwrap(), &Value::I64(1));
-    assert_eq!(
-        results[0].get("node_ids").unwrap(),
-        &Value::List(vec![Value::I64(1), Value::I64(3)])
-    );
+    // nodes(p) returns a list of full node values; verify their IDs.
+    let node_ids_val = results[0].get("node_ids").unwrap();
+    let ids: Vec<u64> = match node_ids_val {
+        Value::List(items) => items.iter().map(node_id).collect(),
+        _ => panic!("expected list, got {node_ids_val:?}"),
+    };
+    assert_eq!(ids, vec![1, 3]);
     tx.commit().unwrap();
 }
 
@@ -2401,10 +2463,7 @@ fn e2e_all_shortest_paths() {
         .unwrap();
     // Only 1 shortest path: A->C (length 1).
     assert_eq!(results.len(), 1);
-    assert_eq!(
-        results[0].get("p").unwrap(),
-        &Value::Path(vec![NodeId(1), NodeId(3)])
-    );
+    assert_eq!(path_ids(results[0].get("p").unwrap()), vec![1, 3]);
     tx.commit().unwrap();
 }
 
@@ -2442,16 +2501,13 @@ fn e2e_all_shortest_paths_multiple() {
         .unwrap();
     // Two shortest paths of length 2: A->B->D and A->C->D.
     assert_eq!(results.len(), 2);
-    let mut paths: Vec<&Value> = results.iter().map(|r| r.get("p").unwrap()).collect();
-    paths.sort_by_key(|p| format!("{p}"));
-    assert_eq!(
-        paths[0],
-        &Value::Path(vec![NodeId(1), NodeId(2), NodeId(4)])
-    );
-    assert_eq!(
-        paths[1],
-        &Value::Path(vec![NodeId(1), NodeId(3), NodeId(4)])
-    );
+    let mut id_paths: Vec<Vec<u64>> = results
+        .iter()
+        .map(|r| path_ids(r.get("p").unwrap()))
+        .collect();
+    id_paths.sort();
+    assert_eq!(id_paths[0], vec![1, 2, 4]);
+    assert_eq!(id_paths[1], vec![1, 3, 4]);
     tx.commit().unwrap();
 }
 
@@ -2485,7 +2541,7 @@ fn e2e_shortest_path_same_node() {
         )
         .unwrap();
     assert_eq!(results.len(), 1);
-    assert_eq!(results[0].get("p").unwrap(), &Value::Path(vec![NodeId(1)]));
+    assert_eq!(path_ids(results[0].get("p").unwrap()), vec![1]);
     assert_eq!(results[0].get("len").unwrap(), &Value::I64(0));
     tx.commit().unwrap();
 }

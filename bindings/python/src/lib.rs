@@ -21,7 +21,10 @@ create_exception!(_graphdblite, NodeNotFoundError, GraphDBError);
 /// Map a GraphError to the appropriate Python exception.
 fn to_py_err(e: GraphError) -> PyErr {
     match &e {
-        GraphError::ParseError(_) => ParseError::new_err(e.to_string()),
+        // Syntax/semantic/etc. query errors all flow to ParseError for now —
+        // preserving the existing coarse surface area. Future refinement could
+        // introduce per-kind exception classes.
+        GraphError::Query(_) => ParseError::new_err(e.to_string()),
         GraphError::Storage(_) => StorageError::new_err(e.to_string()),
         GraphError::NodeNotFound(_) => NodeNotFoundError::new_err(e.to_string()),
         _ => GraphDBError::new_err(e.to_string()),
@@ -40,9 +43,28 @@ fn value_to_py(py: Python, val: &Value) -> PyObject {
             let py_items: Vec<PyObject> = items.iter().map(|v| value_to_py(py, v)).collect();
             py_items.to_object(py)
         }
-        Value::Path(nodes) => {
-            let ids: Vec<PyObject> = nodes.iter().map(|id| id.0.to_object(py)).collect();
+        Value::Path(p) => {
+            let ids: Vec<PyObject> = p.nodes.iter().map(|n| n.id.0.to_object(py)).collect();
             ids.to_object(py)
+        }
+        Value::Node(n) => {
+            let dict = PyDict::new_bound(py);
+            dict.set_item("__id", n.id.0).unwrap();
+            dict.set_item("__label", &n.label).unwrap();
+            for (k, v) in &n.properties {
+                dict.set_item(k, value_to_py(py, v)).unwrap();
+            }
+            dict.to_object(py)
+        }
+        Value::Edge(e) => {
+            let dict = PyDict::new_bound(py);
+            dict.set_item("__src", e.src.0).unwrap();
+            dict.set_item("__dst", e.dst.0).unwrap();
+            dict.set_item("__label", &e.label).unwrap();
+            for (k, v) in &e.properties {
+                dict.set_item(k, value_to_py(py, v)).unwrap();
+            }
+            dict.to_object(py)
         }
         Value::Map(map) => {
             let dict = PyDict::new_bound(py);

@@ -22,9 +22,10 @@ pub fn eval_expr(expr: &Expr, record: &Record, conn: &Connection) -> crate::type
             Ok(Value::List(values?))
         }
         Expr::Star => Ok(Value::Null),
-        Expr::Parameter(name) => Err(crate::types::GraphError::ParseError(format!(
-            "unresolved parameter: ${name}"
-        ))),
+        Expr::Parameter(name) => Err(crate::types::GraphError::argument(
+            crate::types::QueryPhase::Runtime,
+            format!("unresolved parameter: ${name}"),
+        )),
         Expr::BinaryOp { left, op, right } => {
             let lval = eval_expr(left, record, conn)?;
             let rval = eval_expr(right, record, conn)?;
@@ -127,7 +128,7 @@ fn eval_function_call(
                 .map(|a| eval_expr(a, record, conn))
                 .transpose()?;
             match arg {
-                Some(Value::Path(nodes)) => Ok(Value::I64(nodes.len().saturating_sub(1) as i64)),
+                Some(Value::Path(p)) => Ok(Value::I64(p.len() as i64)),
                 Some(Value::String(s)) => Ok(Value::I64(s.len() as i64)),
                 Some(Value::List(items)) => Ok(Value::I64(items.len() as i64)),
                 _ => Ok(Value::Null),
@@ -139,8 +140,8 @@ fn eval_function_call(
                 .map(|a| eval_expr(a, record, conn))
                 .transpose()?;
             match arg {
-                Some(Value::Path(node_ids)) => {
-                    let list = node_ids.iter().map(|id| Value::I64(id.0 as i64)).collect();
+                Some(Value::Path(p)) => {
+                    let list = p.nodes.into_iter().map(Value::Node).collect();
                     Ok(Value::List(list))
                 }
                 _ => Ok(Value::Null),

@@ -21,7 +21,7 @@ pub struct ExecContext {
 /// Check that a result set hasn't exceeded the row cap.
 fn check_row_limit(results: &[Record], ctx: &ExecContext) -> Result<()> {
     if ctx.max_result_rows > 0 && results.len() > ctx.max_result_rows {
-        return Err(GraphError::Transaction(format!(
+        return Err(GraphError::constraint(format!(
             "result set exceeded maximum of {} rows",
             ctx.max_result_rows
         )));
@@ -54,7 +54,10 @@ pub fn execute_with_ctx(
 /// Check whether a plan tree contains only read-only operators.
 fn is_read_only(plan: &LogicalOp) -> bool {
     match plan {
-        LogicalOp::Scan { .. } | LogicalOp::IndexLookup { .. } | LogicalOp::EmptyRow => true,
+        LogicalOp::Scan { .. }
+        | LogicalOp::IndexLookup { .. }
+        | LogicalOp::EmptyRow
+        | LogicalOp::SingleRow => true,
 
         LogicalOp::Filter { input, .. }
         | LogicalOp::Project { input, .. }
@@ -89,6 +92,8 @@ fn is_read_only(plan: &LogicalOp) -> bool {
 
 fn exec(conn: &Connection, plan: &LogicalOp, ctx: &ExecContext) -> Result<Vec<Record>> {
     match plan {
+        LogicalOp::SingleRow => Ok(vec![Record::new()]),
+
         LogicalOp::EmptyRow => Ok(vec![Record::new()]),
 
         LogicalOp::Scan { label, alias } => exec_scan(conn, label, alias, ctx),
@@ -134,7 +139,11 @@ fn exec(conn: &Connection, plan: &LogicalOp, ctx: &ExecContext) -> Result<Vec<Re
 
         LogicalOp::Filter { input, predicate } => exec_filter(conn, input, predicate, ctx),
 
-        LogicalOp::Project { input, items } => exec_project(conn, input, items, ctx),
+        LogicalOp::Project {
+            input,
+            items,
+            emit_compound,
+        } => exec_project(conn, input, items, *emit_compound, ctx),
 
         LogicalOp::Aggregate {
             input,
@@ -398,7 +407,7 @@ fn exec_cross_product(
             }
             results.push(combined);
             if ctx.max_result_rows > 0 && results.len() > ctx.max_result_rows {
-                return Err(GraphError::Transaction(format!(
+                return Err(GraphError::constraint(format!(
                     "cross product exceeded maximum of {} rows",
                     ctx.max_result_rows
                 )));
@@ -424,10 +433,86 @@ fn exec_filter(
     Ok(results)
 }
 
+/// Reconstruct a compound `Value::Node` or `Value::Edge` from a variable's
+/// flat bindings in a record. Returns `None` if the variable has no node/edge
+/// metadata (i.e. it's an expression/aggregate result, not a pattern binding).
+///
+/// Records flow through the pipeline with a flattened shape (`n.name`,
+/// `n.__id`, etc.); this helper materializes the compound at projection time
+/// so query results look the way openCypher specifies.
+pub(crate) fn build_compound_binding(rec: &Record, var: &str) -> Option<Value> {
+    use crate::types::{Edge, Node, Properties};
+
+    let prefix = format!("{var}.");
+
+    // Edge binding: has __src / __dst / __type metadata.
+    let src_key = format!("{var}.__src");
+    let dst_key = format!("{var}.__dst");
+    let type_key = format!("{var}.__type");
+    if let (Some(Value::I64(src)), Some(Value::I64(dst)), Some(Value::String(label))) =
+        (rec.get(&src_key), rec.get(&dst_key), rec.get(&type_key))
+    {
+        let mut properties = Properties::new();
+        for (key, val) in &rec.fields {
+            if let Some(prop) = key.strip_prefix(&prefix) {
+                if !prop.starts_with("__") {
+                    properties.insert(prop.to_string(), val.clone());
+                }
+            }
+        }
+        return Some(Value::Edge(Edge {
+            src: NodeId(*src as u64),
+            dst: NodeId(*dst as u64),
+            label: label.clone(),
+            properties,
+        }));
+    }
+
+    // Node binding: has __id / __label metadata.
+    let id_key = format!("{var}.__id");
+    let label_key = format!("{var}.__label");
+    if let (Some(Value::I64(id)), Some(Value::String(label))) =
+        (rec.get(&id_key), rec.get(&label_key))
+    {
+        let mut properties = Properties::new();
+        for (key, val) in &rec.fields {
+            if let Some(prop) = key.strip_prefix(&prefix) {
+                if !prop.starts_with("__") {
+                    properties.insert(prop.to_string(), val.clone());
+                }
+            }
+        }
+        return Some(Value::Node(Node {
+            id: NodeId(*id as u64),
+            label: label.clone(),
+            properties,
+        }));
+    }
+
+    None
+}
+
+/// Collect the set of variable names in a record that are bound as compound
+/// entities (nodes or edges). Used by `RETURN *` to know which prefixes to
+/// fold into compound columns rather than emitting as flat properties.
+pub(crate) fn compound_binding_vars(rec: &Record) -> Vec<String> {
+    use std::collections::BTreeSet;
+    let mut vars: BTreeSet<String> = BTreeSet::new();
+    for key in rec.fields.keys() {
+        if let Some((var, prop)) = key.split_once('.') {
+            if prop == "__id" || prop == "__src" {
+                vars.insert(var.to_string());
+            }
+        }
+    }
+    vars.into_iter().collect()
+}
+
 fn exec_project(
     conn: &Connection,
     input: &LogicalOp,
     items: &[crate::cypher::ast::ReturnItem],
+    emit_compound: bool,
     ctx: &ExecContext,
 ) -> Result<Vec<Record>> {
     let records = exec(conn, input, ctx)?;
@@ -438,38 +523,70 @@ fn exec_project(
         for item in items {
             match &item.expr {
                 Expr::Star => {
-                    // RETURN * — copy all user-visible fields (skip internal __ and bare aliases).
-                    for (key, val) in &rec.fields {
-                        if is_user_visible_field(key) {
+                    if emit_compound {
+                        // Final RETURN * — emit one compound column per bound
+                        // variable (plus any non-binding user-visible scalars).
+                        let bound_vars = compound_binding_vars(rec);
+                        for var in &bound_vars {
+                            if let Some(compound) = build_compound_binding(rec, var) {
+                                projected.set(var.clone(), compound);
+                            }
+                        }
+                        for (key, val) in &rec.fields {
+                            if !is_user_visible_field(key) {
+                                continue;
+                            }
+                            let owner = key.split_once('.').map(|(v, _)| v);
+                            if let Some(owner) = owner {
+                                if bound_vars.iter().any(|v| v == owner) {
+                                    continue;
+                                }
+                            }
+                            projected.set(key.clone(), val.clone());
+                        }
+                    } else {
+                        // Intermediate WITH * — preserve flat shape so
+                        // downstream pattern-matching / joins / ORDER BY keep
+                        // working against `var.__id` / `var.prop` fields.
+                        for (key, val) in &rec.fields {
                             projected.set(key.clone(), val.clone());
                         }
                     }
                 }
                 Expr::Variable(var) => {
-                    // RETURN n — expand to all n.prop fields (skip __ props).
-                    let prefix = format!("{var}.");
-                    let mut found_props = false;
-                    for (key, val) in &rec.fields {
-                        if let Some(prop) = key.strip_prefix(&prefix) {
-                            if !prop.starts_with("__") {
-                                if let Some(alias) = &item.alias {
-                                    projected.set(format!("{alias}.{prop}"), val.clone());
-                                } else {
-                                    projected.set(key.clone(), val.clone());
-                                }
-                                found_props = true;
+                    let col_name = item.alias.clone().unwrap_or_else(|| var.clone());
+                    if emit_compound {
+                        if let Some(compound) = build_compound_binding(rec, var) {
+                            projected.set(col_name, compound);
+                        } else if let Some(existing) = rec.get(&col_name) {
+                            projected.set(col_name, existing.clone());
+                        } else {
+                            let val = eval_expr(&item.expr, rec, conn)?;
+                            projected.set(col_name, val);
+                        }
+                    } else {
+                        // Intermediate: carry forward the flat binding shape so
+                        // downstream operators can still access `var.prop` and
+                        // `var.__id`. Rename prefixes when an alias was given.
+                        let src_prefix = format!("{var}.");
+                        let dst_prefix = format!("{col_name}.");
+                        let mut propagated_any = false;
+                        for (key, val) in &rec.fields {
+                            if let Some(rest) = key.strip_prefix(&src_prefix) {
+                                projected.set(format!("{dst_prefix}{rest}"), val.clone());
+                                propagated_any = true;
                             }
                         }
-                    }
-                    if !found_props {
-                        // Fall back to raw value (e.g., aggregate result already in record).
-                        let col_name = item.alias.clone().unwrap_or_else(|| var.clone());
-                        let val = if let Some(existing) = rec.get(&col_name) {
-                            existing.clone()
-                        } else {
-                            eval_expr(&item.expr, rec, conn)?
-                        };
-                        projected.set(col_name, val);
+                        // Also propagate the bare variable column if present
+                        // (used by some operators as a compact id reference).
+                        if let Some(existing) = rec.get(var) {
+                            projected.set(col_name.clone(), existing.clone());
+                            propagated_any = true;
+                        }
+                        if !propagated_any {
+                            let val = eval_expr(&item.expr, rec, conn)?;
+                            projected.set(col_name, val);
+                        }
                     }
                 }
                 _ => {
@@ -823,10 +940,10 @@ fn exec_create_sequence(conn: &Connection, ops: &[LogicalOp]) -> Result<Vec<Reco
                 properties,
             } => {
                 let src = bindings.get(src_alias).ok_or_else(|| {
-                    GraphError::Transaction(format!("unbound variable: {src_alias}"))
+                    GraphError::semantic(format!("unbound variable: {src_alias}"))
                 })?;
                 let dst = bindings.get(dst_alias).ok_or_else(|| {
-                    GraphError::Transaction(format!("unbound variable: {dst_alias}"))
+                    GraphError::semantic(format!("unbound variable: {dst_alias}"))
                 })?;
                 let mut props = Properties::new();
                 let dummy_rec = Record::new();
@@ -897,10 +1014,10 @@ fn exec_match_create(
                     properties,
                 } => {
                     let src = bindings.get(src_alias).ok_or_else(|| {
-                        GraphError::Transaction(format!("unbound variable: {src_alias}"))
+                        GraphError::semantic(format!("unbound variable: {src_alias}"))
                     })?;
                     let dst = bindings.get(dst_alias).ok_or_else(|| {
-                        GraphError::Transaction(format!("unbound variable: {dst_alias}"))
+                        GraphError::semantic(format!("unbound variable: {dst_alias}"))
                     })?;
                     let mut props = Properties::new();
                     for (key, expr) in properties {
@@ -1224,34 +1341,32 @@ fn exec_match_merge(
 
     // Relationship merge: (src)-[:TYPE {props}]->(dst)
     if elements.len() != 3 {
-        return Err(GraphError::ParseError(
-            "MERGE pattern must be a single node or (node)-[rel]->(node)".to_string(),
+        return Err(GraphError::semantic(
+            "MERGE pattern must be a single node or (node)-[rel]->(node)",
         ));
     }
 
     let src_node = match &elements[0] {
         PatternElement::Node(n) => n,
-        _ => return Err(GraphError::ParseError("expected node pattern".to_string())),
+        _ => return Err(GraphError::semantic("expected node pattern")),
     };
     let rel = match &elements[1] {
         PatternElement::Relationship(r) => r,
-        _ => {
-            return Err(GraphError::ParseError(
-                "expected relationship pattern".to_string(),
-            ))
-        }
+        _ => return Err(GraphError::semantic("expected relationship pattern")),
     };
     let dst_node = match &elements[2] {
         PatternElement::Node(n) => n,
-        _ => return Err(GraphError::ParseError("expected node pattern".to_string())),
+        _ => return Err(GraphError::semantic("expected node pattern")),
     };
 
-    let src_var = src_node.variable.as_deref().ok_or_else(|| {
-        GraphError::ParseError("MERGE relationship source must have a variable".to_string())
-    })?;
-    let dst_var = dst_node.variable.as_deref().ok_or_else(|| {
-        GraphError::ParseError("MERGE relationship target must have a variable".to_string())
-    })?;
+    let src_var = src_node
+        .variable
+        .as_deref()
+        .ok_or_else(|| GraphError::semantic("MERGE relationship source must have a variable"))?;
+    let dst_var = dst_node
+        .variable
+        .as_deref()
+        .ok_or_else(|| GraphError::semantic("MERGE relationship target must have a variable"))?;
     let edge_type = rel.rel_types.first().cloned().unwrap_or_default();
 
     for rec in &records {
@@ -1553,6 +1668,51 @@ fn exec_correlated(
     }
 }
 
+/// Materialize a `PathValue` by resolving each node and each hop's edge.
+///
+/// `label` is the edge type the path was traversed on. Edge direction for each
+/// hop is resolved by checking both orientations — required for
+/// `Direction::Both` traversals where any given hop may run forward or backward.
+fn build_path_value(
+    conn: &Connection,
+    node_ids: Vec<NodeId>,
+    label: &str,
+) -> Result<crate::types::PathValue> {
+    use crate::types::{Edge, PathValue};
+
+    if node_ids.is_empty() {
+        return Ok(PathValue {
+            nodes: Vec::new(),
+            edges: Vec::new(),
+        });
+    }
+
+    let mut nodes = Vec::with_capacity(node_ids.len());
+    for id in &node_ids {
+        nodes.push(crate::node::get_node(conn, *id)?);
+    }
+
+    let mut edges = Vec::with_capacity(node_ids.len().saturating_sub(1));
+    for pair in node_ids.windows(2) {
+        let (a, b) = (pair[0], pair[1]);
+        // Try forward first; fall back to reverse for Direction::Both traversals.
+        let (src, dst) = if edge::edge_exists(conn, a, b, label)? {
+            (a, b)
+        } else {
+            (b, a)
+        };
+        let properties = edge::get_edge_properties(conn, src, dst, label)?;
+        edges.push(Edge {
+            src,
+            dst,
+            label: label.to_string(),
+            properties,
+        });
+    }
+
+    Ok(PathValue { nodes, edges })
+}
+
 #[allow(clippy::too_many_arguments)]
 fn exec_shortest_path(
     conn: &Connection,
@@ -1589,8 +1749,9 @@ fn exec_shortest_path(
                 results.push(new_rec);
             } else {
                 for path in paths {
+                    let path_value = build_path_value(conn, path, label)?;
                     let mut new_rec = rec.clone();
-                    new_rec.set(path_alias.to_string(), Value::Path(path));
+                    new_rec.set(path_alias.to_string(), Value::Path(path_value));
                     results.push(new_rec);
                 }
             }
@@ -1598,7 +1759,10 @@ fn exec_shortest_path(
             let path = edge::shortest_path(conn, src_id, dst_id, label, direction, max_hops)?;
             let mut new_rec = rec.clone();
             match path {
-                Some(p) => new_rec.set(path_alias.to_string(), Value::Path(p)),
+                Some(p) => {
+                    let path_value = build_path_value(conn, p, label)?;
+                    new_rec.set(path_alias.to_string(), Value::Path(path_value));
+                }
                 None => new_rec.set(path_alias.to_string(), Value::Null),
             }
             results.push(new_rec);

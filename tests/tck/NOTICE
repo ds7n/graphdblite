@@ -1,0 +1,12 @@
+The .feature files in tests/tck/features/ are vendored from the openCypher
+project (https://github.com/opencypher/openCypher) and are licensed under
+the Apache License, Version 2.0:
+
+  https://www.apache.org/licenses/LICENSE-2.0
+
+Copyright (c) "Neo4j"
+Neo4j Sweden AB [https://neo4j.com]
+
+These files are reproduced here for conformance testing purposes only and
+are not modified from their upstream form. See VERSION for the pinned
+upstream commit.

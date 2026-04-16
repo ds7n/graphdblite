@@ -479,6 +479,8 @@ pub unsafe extern "C" fn graphdb_result_value_type(
         Some(Value::List(_)) => 5,
         Some(Value::Path(_)) => 6,
         Some(Value::Map(_)) => 7,
+        Some(Value::Node(_)) => 8,
+        Some(Value::Edge(_)) => 9,
     }
 }
 
@@ -588,10 +590,12 @@ fn format_value(val: &Value) -> String {
             let parts: Vec<String> = items.iter().map(format_value).collect();
             format!("[{}]", parts.join(", "))
         }
-        Value::Path(nodes) => {
-            let parts: Vec<String> = nodes.iter().map(|id| id.0.to_string()).collect();
+        Value::Path(p) => {
+            let parts: Vec<String> = p.nodes.iter().map(|n| n.id.0.to_string()).collect();
             format!("[{}]", parts.join(", "))
         }
+        Value::Node(n) => format!("(:{} #{})", n.label, n.id.0),
+        Value::Edge(e) => format!("[:{} {}->{}]", e.label, e.src.0, e.dst.0),
         Value::Map(map) => {
             let parts: Vec<String> = map
                 .iter()
@@ -645,15 +649,47 @@ fn value_to_json(out: &mut String, val: &Value) {
             }
             out.push(']');
         }
-        Value::Path(nodes) => {
+        Value::Path(p) => {
             out.push('[');
-            for (i, id) in nodes.iter().enumerate() {
+            for (i, n) in p.nodes.iter().enumerate() {
                 if i > 0 {
                     out.push_str(", ");
                 }
-                out.push_str(&id.0.to_string());
+                out.push_str(&n.id.0.to_string());
             }
             out.push(']');
+        }
+        Value::Node(n) => {
+            out.push('{');
+            out.push_str("\"__id\": ");
+            out.push_str(&n.id.0.to_string());
+            out.push_str(", \"__label\": \"");
+            json_escape_into(out, &n.label);
+            out.push('"');
+            for (k, v) in &n.properties {
+                out.push_str(", \"");
+                json_escape_into(out, k);
+                out.push_str("\": ");
+                value_to_json(out, v);
+            }
+            out.push('}');
+        }
+        Value::Edge(e) => {
+            out.push('{');
+            out.push_str("\"__src\": ");
+            out.push_str(&e.src.0.to_string());
+            out.push_str(", \"__dst\": ");
+            out.push_str(&e.dst.0.to_string());
+            out.push_str(", \"__label\": \"");
+            json_escape_into(out, &e.label);
+            out.push('"');
+            for (k, v) in &e.properties {
+                out.push_str(", \"");
+                json_escape_into(out, k);
+                out.push_str("\": ");
+                value_to_json(out, v);
+            }
+            out.push('}');
         }
         Value::Map(map) => {
             out.push('{');

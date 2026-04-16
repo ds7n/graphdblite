@@ -31,6 +31,7 @@ pub fn estimate(conn: &Connection, plan: &LogicalOp) -> CostEstimate {
 /// Recursively estimate the number of output rows for a plan operator.
 fn estimate_rows(conn: &Connection, plan: &LogicalOp) -> f64 {
     match plan {
+        LogicalOp::SingleRow => 1.0,
         LogicalOp::EmptyRow => 1.0,
 
         LogicalOp::Scan { label, .. } => {
@@ -194,6 +195,7 @@ fn format_plan_tree(conn: &Connection, plan: &LogicalOp, depth: usize, lines: &m
         }
         LogicalOp::LeftOuterJoin { .. } => "LeftOuterJoin".to_string(),
         LogicalOp::Unwind { alias, .. } => format!("Unwind AS {alias}"),
+        LogicalOp::SingleRow => "SingleRow".to_string(),
         LogicalOp::EmptyRow => "EmptyRow".to_string(),
         LogicalOp::CreateNode { label, alias, .. } => {
             format!(

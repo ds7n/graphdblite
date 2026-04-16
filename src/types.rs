@@ -28,6 +28,11 @@ impl NodeId {
 }
 
 /// Dynamic property value stored on nodes and edges.
+///
+/// The `Node`, `Edge`, and `Path` variants are runtime-only — they appear in
+/// query result records but must never be written into stored properties
+/// (openCypher forbids it and storage paths rely on the property-value subset
+/// being scalar-or-collection).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum Value {
     Null,
@@ -36,7 +41,12 @@ pub enum Value {
     F64(f64),
     String(String),
     List(Vec<Value>),
-    Path(Vec<NodeId>),
+    /// A full node value (id + label + properties). Runtime-only.
+    Node(Node),
+    /// A full edge value (src + dst + label + properties). Runtime-only.
+    Edge(Edge),
+    /// A path with full node and edge contents. Runtime-only.
+    Path(PathValue),
     /// Ordered string-keyed map (BTreeMap gives deterministic iteration and
     /// hashing regardless of insertion order).
     Map(BTreeMap<String, Value>),
@@ -53,6 +63,8 @@ impl PartialEq for Value {
             (Value::F64(a), Value::F64(b)) => a.to_bits() == b.to_bits(),
             (Value::String(a), Value::String(b)) => a == b,
             (Value::List(a), Value::List(b)) => a == b,
+            (Value::Node(a), Value::Node(b)) => a == b,
+            (Value::Edge(a), Value::Edge(b)) => a == b,
             (Value::Path(a), Value::Path(b)) => a == b,
             (Value::Map(a), Value::Map(b)) => a == b,
             _ => false,
@@ -61,6 +73,30 @@ impl PartialEq for Value {
 }
 
 impl Eq for Value {}
+
+/// Hash a `Properties` (HashMap) deterministically by sorting keys.
+fn hash_properties<H: Hasher>(props: &Properties, state: &mut H) {
+    let mut entries: Vec<(&String, &Value)> = props.iter().collect();
+    entries.sort_by(|a, b| a.0.cmp(b.0));
+    entries.len().hash(state);
+    for (k, v) in entries {
+        k.hash(state);
+        v.hash(state);
+    }
+}
+
+fn hash_node<H: Hasher>(n: &Node, state: &mut H) {
+    n.id.hash(state);
+    n.label.hash(state);
+    hash_properties(&n.properties, state);
+}
+
+fn hash_edge<H: Hasher>(e: &Edge, state: &mut H) {
+    e.src.hash(state);
+    e.dst.hash(state);
+    e.label.hash(state);
+    hash_properties(&e.properties, state);
+}
 
 impl Hash for Value {
     fn hash<H: Hasher>(&self, state: &mut H) {
@@ -72,7 +108,18 @@ impl Hash for Value {
             Value::F64(f) => f.to_bits().hash(state),
             Value::String(s) => s.hash(state),
             Value::List(items) => items.hash(state),
-            Value::Path(nodes) => nodes.hash(state),
+            Value::Node(n) => hash_node(n, state),
+            Value::Edge(e) => hash_edge(e, state),
+            Value::Path(p) => {
+                p.nodes.len().hash(state);
+                for n in &p.nodes {
+                    hash_node(n, state);
+                }
+                p.edges.len().hash(state);
+                for e in &p.edges {
+                    hash_edge(e, state);
+                }
+            }
             Value::Map(map) => {
                 // BTreeMap already iterates in key order — stable hash.
                 for (k, v) in map {
@@ -82,6 +129,19 @@ impl Hash for Value {
             }
         }
     }
+}
+
+/// Format a `Properties` map deterministically (keys sorted) into a `Display` sink.
+fn fmt_properties(props: &Properties, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+    let mut entries: Vec<(&String, &Value)> = props.iter().collect();
+    entries.sort_by(|a, b| a.0.cmp(b.0));
+    for (i, (k, v)) in entries.into_iter().enumerate() {
+        if i > 0 {
+            write!(f, ", ")?;
+        }
+        write!(f, "{k}: {v}")?;
+    }
+    Ok(())
 }
 
 impl fmt::Display for Value {
@@ -102,13 +162,23 @@ impl fmt::Display for Value {
                 }
                 write!(f, "]")
             }
-            Value::Path(nodes) => {
+            Value::Node(n) => {
+                write!(f, "(:{} {{", n.label)?;
+                fmt_properties(&n.properties, f)?;
+                write!(f, "}})")
+            }
+            Value::Edge(e) => {
+                write!(f, "[:{} {{", e.label)?;
+                fmt_properties(&e.properties, f)?;
+                write!(f, "}}]")
+            }
+            Value::Path(p) => {
                 write!(f, "<")?;
-                for (i, id) in nodes.iter().enumerate() {
-                    if i > 0 {
-                        write!(f, "--")?;
-                    }
-                    write!(f, "({})", id.0)?;
+                if let Some(first) = p.nodes.first() {
+                    write!(f, "(:{})", first.label)?;
+                }
+                for (edge, node) in p.edges.iter().zip(p.nodes.iter().skip(1)) {
+                    write!(f, "-[:{}]->(:{})", edge.label, node.label)?;
                 }
                 write!(f, ">")
             }
@@ -130,7 +200,7 @@ impl fmt::Display for Value {
 pub type Properties = HashMap<String, Value>;
 
 /// A node in the graph.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Node {
     pub id: NodeId,
     pub label: String,
@@ -138,12 +208,43 @@ pub struct Node {
 }
 
 /// An edge in the graph.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Edge {
     pub src: NodeId,
     pub dst: NodeId,
     pub label: String,
     pub properties: Properties,
+}
+
+/// A path through the graph: a sequence of nodes linked by edges.
+///
+/// Invariant: `nodes.len() == edges.len() + 1`. An edge at index `i` connects
+/// the node at index `i` to the node at index `i + 1`. A path with a single
+/// node (and zero edges) represents a length-zero path.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct PathValue {
+    pub nodes: Vec<Node>,
+    pub edges: Vec<Edge>,
+}
+
+impl PathValue {
+    /// Construct a zero-length path (single node, no edges).
+    pub fn single(node: Node) -> Self {
+        Self {
+            nodes: vec![node],
+            edges: Vec::new(),
+        }
+    }
+
+    /// Number of edges in the path.
+    pub fn len(&self) -> usize {
+        self.edges.len()
+    }
+
+    /// A zero-length path (single node only).
+    pub fn is_empty(&self) -> bool {
+        self.edges.is_empty()
+    }
 }
 
 /// Direction for edge traversal.
@@ -161,6 +262,88 @@ pub(crate) struct NodeRecord {
     pub properties: Properties,
 }
 
+/// Phase of query processing at which an error was raised.
+///
+/// Aligns with openCypher's error model so TCK scenarios that assert
+/// "an error should be raised at <phase>" can match precisely.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum QueryPhase {
+    /// Lexing / parsing the Cypher source text.
+    Parse,
+    /// After parsing, before execution: variable binding, pattern validation,
+    /// type inference, parameter substitution.
+    SemanticAnalysis,
+    /// During plan execution.
+    Runtime,
+}
+
+impl fmt::Display for QueryPhase {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            QueryPhase::Parse => write!(f, "parse"),
+            QueryPhase::SemanticAnalysis => write!(f, "semantic analysis"),
+            QueryPhase::Runtime => write!(f, "runtime"),
+        }
+    }
+}
+
+/// Errors raised while processing a Cypher query.
+///
+/// Categorized along the openCypher error taxonomy (SyntaxError, TypeError,
+/// SemanticError, etc.) so that TCK conformance scenarios can distinguish
+/// error kinds without resorting to string matching.
+#[derive(Debug, Error)]
+pub enum QueryError {
+    #[error("syntax error at {phase}: {message}")]
+    SyntaxError { phase: QueryPhase, message: String },
+
+    #[error("type error at {phase}: {message}")]
+    TypeError { phase: QueryPhase, message: String },
+
+    #[error("semantic error at {phase}: {message}")]
+    SemanticError { phase: QueryPhase, message: String },
+
+    #[error("entity not found at {phase}: {message}")]
+    EntityNotFound { phase: QueryPhase, message: String },
+
+    #[error("argument error at {phase}: {message}")]
+    ArgumentError { phase: QueryPhase, message: String },
+
+    #[error("arithmetic error at {phase}: {message}")]
+    ArithmeticError { phase: QueryPhase, message: String },
+
+    #[error("constraint violation at {phase}: {message}")]
+    ConstraintViolation { phase: QueryPhase, message: String },
+}
+
+impl QueryError {
+    /// The phase at which this error was raised.
+    pub fn phase(&self) -> QueryPhase {
+        match self {
+            QueryError::SyntaxError { phase, .. }
+            | QueryError::TypeError { phase, .. }
+            | QueryError::SemanticError { phase, .. }
+            | QueryError::EntityNotFound { phase, .. }
+            | QueryError::ArgumentError { phase, .. }
+            | QueryError::ArithmeticError { phase, .. }
+            | QueryError::ConstraintViolation { phase, .. } => *phase,
+        }
+    }
+
+    /// Short tag identifying the error kind (matches openCypher category names).
+    pub fn kind(&self) -> &'static str {
+        match self {
+            QueryError::SyntaxError { .. } => "SyntaxError",
+            QueryError::TypeError { .. } => "TypeError",
+            QueryError::SemanticError { .. } => "SemanticError",
+            QueryError::EntityNotFound { .. } => "EntityNotFound",
+            QueryError::ArgumentError { .. } => "ArgumentError",
+            QueryError::ArithmeticError { .. } => "ArithmeticError",
+            QueryError::ConstraintViolation { .. } => "ConstraintViolation",
+        }
+    }
+}
+
 /// All errors returned by graphdblite.
 #[derive(Debug, Error)]
 pub enum GraphError {
@@ -170,8 +353,9 @@ pub enum GraphError {
     #[error("serialization error: {0}")]
     Serialization(String),
 
+    /// Cypher query processing error (parse/semantic/runtime).
     #[error("{0}")]
-    ParseError(String),
+    Query(#[from] QueryError),
 
     #[error("node not found")]
     NodeNotFound(NodeId),
@@ -184,6 +368,7 @@ pub enum GraphError {
     )]
     HasEdges(NodeId),
 
+    /// Internal transaction/concurrency errors (not Cypher query errors).
     #[error("transaction error: {0}")]
     Transaction(String),
 
@@ -201,6 +386,40 @@ pub enum GraphError {
 
     #[error("schema version mismatch: database is v{0}, this library supports up to v{1}")]
     SchemaMismatch(u64, u64),
+}
+
+impl GraphError {
+    /// Convenience constructor for syntax errors at the parse phase.
+    pub fn syntax(message: impl Into<String>) -> Self {
+        GraphError::Query(QueryError::SyntaxError {
+            phase: QueryPhase::Parse,
+            message: message.into(),
+        })
+    }
+
+    /// Convenience constructor for semantic errors at the analysis phase.
+    pub fn semantic(message: impl Into<String>) -> Self {
+        GraphError::Query(QueryError::SemanticError {
+            phase: QueryPhase::SemanticAnalysis,
+            message: message.into(),
+        })
+    }
+
+    /// Convenience constructor for runtime constraint violations.
+    pub fn constraint(message: impl Into<String>) -> Self {
+        GraphError::Query(QueryError::ConstraintViolation {
+            phase: QueryPhase::Runtime,
+            message: message.into(),
+        })
+    }
+
+    /// Convenience constructor for argument errors (e.g. missing parameters).
+    pub fn argument(phase: QueryPhase, message: impl Into<String>) -> Self {
+        GraphError::Query(QueryError::ArgumentError {
+            phase,
+            message: message.into(),
+        })
+    }
 }
 
 pub type Result<T> = std::result::Result<T, GraphError>;
@@ -225,14 +444,39 @@ pub fn validate_name_length(name: &str, max_bytes: usize) -> Result<()> {
 }
 
 /// Estimate the byte size of a property value.
+///
+/// Note: `Node`, `Edge`, and `Path` are runtime-only variants and should never
+/// appear in stored properties, but we compute a sensible size for them
+/// anyway so this helper stays total.
 fn value_byte_size(val: &Value) -> usize {
     match val {
         Value::Null | Value::Bool(_) | Value::I64(_) | Value::F64(_) => 8,
         Value::String(s) => s.len(),
         Value::List(items) => items.iter().map(value_byte_size).sum(),
-        Value::Path(nodes) => nodes.len() * 8,
+        Value::Node(n) => node_byte_size(n),
+        Value::Edge(e) => edge_byte_size(e),
+        Value::Path(p) => {
+            p.nodes.iter().map(node_byte_size).sum::<usize>()
+                + p.edges.iter().map(edge_byte_size).sum::<usize>()
+        }
         Value::Map(map) => map.iter().map(|(k, v)| k.len() + value_byte_size(v)).sum(),
     }
+}
+
+fn node_byte_size(n: &Node) -> usize {
+    8 + n.label.len()
+        + n.properties
+            .iter()
+            .map(|(k, v)| k.len() + value_byte_size(v))
+            .sum::<usize>()
+}
+
+fn edge_byte_size(e: &Edge) -> usize {
+    16 + e.label.len()
+        + e.properties
+            .iter()
+            .map(|(k, v)| k.len() + value_byte_size(v))
+            .sum::<usize>()
 }
 
 /// Validate that all property values are within size limits.

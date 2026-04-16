@@ -255,5 +255,7 @@ fn format_value(val: Option<&Value>) -> String {
         Some(Value::List(items)) => format!("{}", Value::List(items.clone())),
         Some(p @ Value::Path(_)) => format!("{p}"),
         Some(m @ Value::Map(_)) => format!("{m}"),
+        Some(n @ Value::Node(_)) => format!("{n}"),
+        Some(e @ Value::Edge(_)) => format!("{e}"),
     }
 }

@@ -18,6 +18,7 @@ pub fn plan(conn: &Connection, stmt: &Statement) -> crate::types::Result<Logical
         Statement::Merge(m) => plan_merge(m),
         Statement::MatchMerge(mm) => plan_match_merge(conn, mm),
         Statement::Unwind(u) => plan_unwind(conn, u),
+        Statement::Return(r) => plan_return(r),
         Statement::Explain(inner) => plan(conn, inner),
         Statement::Union { statements, all } => {
             let inputs: crate::types::Result<Vec<LogicalOp>> =
@@ -31,6 +32,9 @@ pub fn plan(conn: &Connection, stmt: &Statement) -> crate::types::Result<Logical
 }
 
 fn plan_match(conn: &Connection, stmt: &MatchStatement) -> crate::types::Result<LogicalOp> {
+    // Validate variable-type consistency across patterns before planning.
+    validate_variable_types(&stmt.patterns)?;
+
     // Build scan + expand chain from patterns.
     let mut op = plan_patterns(conn, &stmt.patterns)?;
 
@@ -107,6 +111,7 @@ fn plan_match(conn: &Connection, stmt: &MatchStatement) -> crate::types::Result<
     op = LogicalOp::Project {
         input: Box::new(op),
         items: stmt.return_clause.items.clone(),
+        emit_compound: true,
     };
 
     // DISTINCT.
@@ -133,6 +138,61 @@ fn plan_match(conn: &Connection, stmt: &MatchStatement) -> crate::types::Result<
     }
 
     // LIMIT.
+    if let Some(count) = stmt.limit {
+        op = LogicalOp::Limit {
+            input: Box::new(op),
+            count,
+        };
+    }
+
+    Ok(op)
+}
+
+/// Plan a standalone `RETURN` statement (no preceding MATCH).
+fn plan_return(stmt: &ReturnStatement) -> crate::types::Result<LogicalOp> {
+    let mut op: LogicalOp = LogicalOp::SingleRow;
+
+    let has_aggregates = stmt
+        .return_clause
+        .items
+        .iter()
+        .any(|item| is_aggregate_fn(&item.expr));
+
+    if has_aggregates {
+        let (group_keys, aggregates) = split_aggregates(&stmt.return_clause.items)?;
+        op = LogicalOp::Aggregate {
+            input: Box::new(op),
+            group_keys,
+            aggregates,
+        };
+    }
+
+    op = LogicalOp::Project {
+        input: Box::new(op),
+        items: stmt.return_clause.items.clone(),
+        emit_compound: true,
+    };
+
+    if stmt.return_clause.distinct {
+        op = LogicalOp::Distinct {
+            input: Box::new(op),
+        };
+    }
+
+    if !stmt.order_by.is_empty() {
+        op = LogicalOp::Sort {
+            input: Box::new(op),
+            items: stmt.order_by.clone(),
+        };
+    }
+
+    if let Some(count) = stmt.skip {
+        op = LogicalOp::Skip {
+            input: Box::new(op),
+            count,
+        };
+    }
+
     if let Some(count) = stmt.limit {
         op = LogicalOp::Limit {
             input: Box::new(op),
@@ -265,6 +325,7 @@ fn plan_unwind(_conn: &Connection, stmt: &UnwindStatement) -> crate::types::Resu
             op = LogicalOp::Project {
                 input: Box::new(op),
                 items: return_clause.items.clone(),
+                emit_compound: true,
             };
 
             if return_clause.distinct {
@@ -316,8 +377,8 @@ fn plan_merge(stmt: &MergeStatement) -> crate::types::Result<LogicalOp> {
         1 => match stmt.pattern.elements.first() {
             Some(crate::cypher::ast::PatternElement::Node(_)) => {}
             _ => {
-                return Err(crate::types::GraphError::ParseError(
-                    "MERGE pattern must start with a node".to_string(),
+                return Err(crate::types::GraphError::semantic(
+                    "MERGE pattern must start with a node",
                 ));
             }
         },
@@ -335,15 +396,15 @@ fn plan_merge(stmt: &MergeStatement) -> crate::types::Result<LogicalOp> {
                     PatternElement::Node(_),
                 ) => {}
                 _ => {
-                    return Err(crate::types::GraphError::ParseError(
-                        "MERGE relationship pattern must be (node)-[rel]->(node)".to_string(),
+                    return Err(crate::types::GraphError::semantic(
+                        "MERGE relationship pattern must be (node)-[rel]->(node)",
                     ));
                 }
             }
         }
         _ => {
-            return Err(crate::types::GraphError::ParseError(
-                "MERGE only supports single node or (node)-[rel]->(node) patterns".to_string(),
+            return Err(crate::types::GraphError::semantic(
+                "MERGE only supports single node or (node)-[rel]->(node) patterns",
             ));
         }
     }
@@ -391,10 +452,12 @@ fn plan_with(input: LogicalOp, with: &WithClause) -> crate::types::Result<Logica
         };
     }
 
-    // Project the WITH items.
+    // Project the WITH items. Keep flat shape — downstream operators rely on
+    // `var.__id` / `var.prop` flat fields.
     op = LogicalOp::Project {
         input: Box::new(op),
         items: with.items.clone(),
+        emit_compound: false,
     };
 
     // Apply ORDER BY before WHERE so that ordering is preserved through filtering.
@@ -604,6 +667,83 @@ fn collect_pattern_variables(patterns: &[Pattern]) -> HashSet<String> {
         }
     }
     vars
+}
+
+/// Validate that no variable is used as more than one type (node, relationship,
+/// path) within the same MATCH statement's patterns. Raises `SyntaxError` on
+/// conflicts — e.g. `MATCH ()-[r]-(r)` uses `r` as both relationship and node.
+fn validate_variable_types(patterns: &[Pattern]) -> crate::types::Result<()> {
+    use std::collections::HashMap;
+
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    enum VarKind {
+        Node,
+        Relationship,
+        Path,
+    }
+
+    let mut types: HashMap<String, VarKind> = HashMap::new();
+
+    for pattern in patterns {
+        // Path variable binding: `r = (...)-[...]->(...)`
+        if let Some(ref path_var) = pattern.path_variable {
+            if let Some(&existing) = types.get(path_var) {
+                if existing != VarKind::Path {
+                    return Err(GraphError::Query(crate::types::QueryError::SyntaxError {
+                        phase: crate::types::QueryPhase::SemanticAnalysis,
+                        message: format!(
+                            "variable '{path_var}' already defined with a different type"
+                        ),
+                    }));
+                }
+            } else {
+                types.insert(path_var.clone(), VarKind::Path);
+            }
+        }
+
+        for elem in &pattern.elements {
+            match elem {
+                PatternElement::Node(n) => {
+                    if let Some(ref var) = n.variable {
+                        if let Some(&existing) = types.get(var) {
+                            if existing != VarKind::Node {
+                                return Err(GraphError::Query(
+                                    crate::types::QueryError::SyntaxError {
+                                        phase: crate::types::QueryPhase::SemanticAnalysis,
+                                        message: format!(
+                                            "variable '{var}' already defined with a different type"
+                                        ),
+                                    },
+                                ));
+                            }
+                        } else {
+                            types.insert(var.clone(), VarKind::Node);
+                        }
+                    }
+                }
+                PatternElement::Relationship(r) => {
+                    if let Some(ref var) = r.variable {
+                        if let Some(&existing) = types.get(var) {
+                            if existing != VarKind::Relationship {
+                                return Err(GraphError::Query(
+                                    crate::types::QueryError::SyntaxError {
+                                        phase: crate::types::QueryPhase::SemanticAnalysis,
+                                        message: format!(
+                                            "variable '{var}' already defined with a different type"
+                                        ),
+                                    },
+                                ));
+                            }
+                        } else {
+                            types.insert(var.clone(), VarKind::Relationship);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    Ok(())
 }
 
 /// Plan OPTIONAL MATCH patterns. Returns (plan, new_aliases) where the plan is

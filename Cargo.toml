@@ -23,7 +23,16 @@ pest_derive = "2"
 
 [dev-dependencies]
 tempfile = "3"
+cucumber = "0.21"
+anyhow = "1"
+pollster = "0.3"
 
 [[bin]]
 name = "graphdblite"
 path = "src/bin/cli.rs"
+
+# openCypher TCK conformance harness — see tests/tck.rs.
+# Uses a custom main (not libtest) because cucumber-rs drives its own runner.
+[[test]]
+name = "tck"
+harness = false

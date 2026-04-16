@@ -38,7 +38,7 @@ fn unescape_string(raw: &str) -> String {
 /// Parse a Cypher query string into a Statement AST.
 pub fn parse(input: &str) -> crate::types::Result<Statement> {
     let pairs = CypherParser::parse(Rule::statement, input)
-        .map_err(|e| GraphError::ParseError(humanize_pest_error(e)))?;
+        .map_err(|e| GraphError::syntax(humanize_pest_error(e)))?;
 
     let union_pair = pairs
         .into_iter()
@@ -90,6 +90,7 @@ fn parse_single_stmt(pair: pest::iterators::Pair<Rule>) -> crate::types::Result<
         Rule::set_stmt => parse_set(pair).map(Statement::Set),
         Rule::merge_stmt => parse_merge(pair).map(Statement::Merge),
         Rule::unwind_stmt => parse_unwind(pair).map(Statement::Unwind),
+        Rule::return_stmt => parse_return_stmt(pair).map(Statement::Return),
         _ => Err(GraphError::Serialization(format!(
             "unexpected rule: {:?}",
             pair.as_rule()
@@ -157,6 +158,31 @@ fn parse_match(pair: pest::iterators::Pair<Rule>) -> crate::types::Result<MatchS
         optional_patterns,
         where_clause,
         intermediate_clauses,
+        return_clause: return_clause
+            .ok_or_else(|| GraphError::Serialization("missing RETURN clause".to_string()))?,
+        order_by,
+        skip,
+        limit,
+    })
+}
+
+fn parse_return_stmt(pair: pest::iterators::Pair<Rule>) -> crate::types::Result<ReturnStatement> {
+    let mut return_clause = None;
+    let mut order_by = Vec::new();
+    let mut skip = None;
+    let mut limit = None;
+
+    for inner in pair.into_inner() {
+        match inner.as_rule() {
+            Rule::return_clause => return_clause = Some(parse_return(inner)?),
+            Rule::order_by_clause => order_by = parse_order_by(inner)?,
+            Rule::skip_clause => skip = Some(parse_skip(inner)?),
+            Rule::limit_clause => limit = Some(parse_limit(inner)?),
+            _ => {}
+        }
+    }
+
+    Ok(ReturnStatement {
         return_clause: return_clause
             .ok_or_else(|| GraphError::Serialization("missing RETURN clause".to_string()))?,
         order_by,
@@ -1295,8 +1321,9 @@ fn value_to_literal(val: &Value) -> crate::types::Result<LiteralValue> {
         Value::I64(n) => Ok(LiteralValue::I64(*n)),
         Value::F64(n) => Ok(LiteralValue::F64(*n)),
         Value::String(s) => Ok(LiteralValue::String(s.clone())),
-        _ => Err(GraphError::ParseError(
-            "unsupported parameter type (only scalar values allowed)".to_string(),
+        _ => Err(GraphError::argument(
+            crate::types::QueryPhase::SemanticAnalysis,
+            "unsupported parameter type (only scalar values allowed)",
         )),
     }
 }
@@ -1304,9 +1331,12 @@ fn value_to_literal(val: &Value) -> crate::types::Result<LiteralValue> {
 fn resolve_expr(expr: &Expr, params: &HashMap<String, Value>) -> crate::types::Result<Expr> {
     match expr {
         Expr::Parameter(name) => {
-            let val = params
-                .get(name)
-                .ok_or_else(|| GraphError::ParseError(format!("missing parameter: ${name}")))?;
+            let val = params.get(name).ok_or_else(|| {
+                GraphError::argument(
+                    crate::types::QueryPhase::SemanticAnalysis,
+                    format!("missing parameter: ${name}"),
+                )
+            })?;
             Ok(Expr::Literal(value_to_literal(val)?))
         }
         Expr::BinaryOp { left, op, right } => Ok(Expr::BinaryOp {
@@ -1625,6 +1655,15 @@ pub fn resolve_params(
                 body,
             }))
         }
+        Statement::Return(r) => Ok(Statement::Return(ReturnStatement {
+            return_clause: ReturnClause {
+                items: resolve_return_items(&r.return_clause.items, params)?,
+                distinct: r.return_clause.distinct,
+            },
+            order_by: resolve_sort_items(&r.order_by, params)?,
+            skip: r.skip,
+            limit: r.limit,
+        })),
         Statement::Explain(inner) => {
             Ok(Statement::Explain(Box::new(resolve_params(inner, params)?)))
         }

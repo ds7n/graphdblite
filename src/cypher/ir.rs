@@ -6,6 +6,9 @@ use crate::types::Direction;
 /// Logical query plan operator. Language-agnostic IR that the executor consumes.
 #[derive(Debug, Clone, PartialEq)]
 pub enum LogicalOp {
+    /// Emit a single empty row (input for standalone `RETURN` expressions).
+    SingleRow,
+
     /// Scan all nodes with a label.
     Scan { label: String, alias: String },
 
@@ -45,10 +48,17 @@ pub enum LogicalOp {
         predicate: Expr,
     },
 
-    /// Project (RETURN) columns from the record stream.
+    /// Project (RETURN / WITH) columns from the record stream.
+    ///
+    /// `emit_compound` is `true` for the terminal RETURN so bare-variable
+    /// projections yield `Value::Node` / `Value::Edge` values. Intermediate
+    /// projections (WITH clauses) leave `emit_compound = false` so downstream
+    /// operators continue to see the flat `var.prop` / `var.__id` shape they
+    /// rely on for joins, ORDER BY, further pattern matching, etc.
     Project {
         input: Box<LogicalOp>,
         items: Vec<ReturnItem>,
+        emit_compound: bool,
     },
 
     /// Aggregate records.

@@ -1,5 +1,21 @@
 use graphdblite::cypher::ast::*;
 use graphdblite::cypher::parser::parse;
+use graphdblite::{GraphError, QueryError, QueryPhase};
+
+/// Phase 2 acceptance: a malformed query raises a structured
+/// `QueryError::SyntaxError` at the `Parse` phase — not a stringly-typed
+/// `GraphError::ParseError(String)`.
+#[test]
+fn parse_error_is_structured_syntax_error_at_parse_phase() {
+    let err = parse("MATCH (n) RETURN n.").expect_err("expected parse error");
+    match err {
+        GraphError::Query(QueryError::SyntaxError { phase, message }) => {
+            assert_eq!(phase, QueryPhase::Parse);
+            assert!(!message.is_empty());
+        }
+        other => panic!("expected QueryError::SyntaxError at Parse phase, got {other:?}"),
+    }
+}
 
 #[test]
 fn parse_simple_match() {

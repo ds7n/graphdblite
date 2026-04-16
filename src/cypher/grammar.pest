@@ -8,9 +8,18 @@ COMMENT = _{ ("--" | "//") ~ (!"\n" ~ ANY)* }
 statement = { SOI ~ union_stmt ~ ";"? ~ EOI }
 union_stmt = { single_stmt ~ (union_op ~ single_stmt)* }
 union_op = { ^"UNION" ~ ^"ALL"? }
-single_stmt = { explain_stmt | match_create_stmt | match_merge_stmt | match_stmt | unwind_stmt | create_stmt | delete_stmt | set_stmt | merge_stmt }
+single_stmt = { explain_stmt | match_create_stmt | match_merge_stmt | match_stmt | unwind_stmt | create_stmt | delete_stmt | set_stmt | merge_stmt | return_stmt }
 
 explain_stmt = { ^"EXPLAIN" ~ (match_create_stmt | match_stmt | unwind_stmt) }
+
+// === Standalone RETURN (no preceding MATCH) ===
+
+return_stmt = {
+    return_clause ~
+    order_by_clause? ~
+    skip_clause? ~
+    limit_clause?
+}
 
 // === MATCH statement ===
 

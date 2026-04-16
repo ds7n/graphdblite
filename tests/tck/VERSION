@@ -1,0 +1,4 @@
+Upstream: https://github.com/opencypher/openCypher
+Commit:   677cbafabb8c3c5eed458fd3b1ec0daec8d67d23
+Date:     2026-04-16
+Files:    Literals1.feature, Literals2.feature, Return1.feature, Match1.feature, With1.feature

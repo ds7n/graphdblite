@@ -14,7 +14,7 @@ fn plan_simple_scan() {
     let op = plan_query("MATCH (n:Person) RETURN n");
     // Should be: Limit? -> Sort? -> Project -> Scan
     match op {
-        LogicalOp::Project { input, items } => {
+        LogicalOp::Project { input, items, .. } => {
             assert_eq!(items.len(), 1);
             match *input {
                 LogicalOp::Scan {

@@ -1498,10 +1498,8 @@ fn exec_correlated(
                                 Direction::Incoming => (dst_id, src_id),
                                 _ => (src_id, dst_id),
                             };
-                            new_rec
-                                .set(format!("{r_alias}.__src"), Value::I64(edge_src.0 as i64));
-                            new_rec
-                                .set(format!("{r_alias}.__dst"), Value::I64(edge_dst.0 as i64));
+                            new_rec.set(format!("{r_alias}.__src"), Value::I64(edge_src.0 as i64));
+                            new_rec.set(format!("{r_alias}.__dst"), Value::I64(edge_dst.0 as i64));
                             new_rec.set(
                                 format!("{r_alias}.__type"),
                                 Value::String(label.to_string()),

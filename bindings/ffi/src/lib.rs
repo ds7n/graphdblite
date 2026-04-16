@@ -478,6 +478,7 @@ pub unsafe extern "C" fn graphdb_result_value_type(
         Some(Value::String(_)) => 4,
         Some(Value::List(_)) => 5,
         Some(Value::Path(_)) => 6,
+        Some(Value::Map(_)) => 7,
     }
 }
 
@@ -591,6 +592,13 @@ fn format_value(val: &Value) -> String {
             let parts: Vec<String> = nodes.iter().map(|id| id.0.to_string()).collect();
             format!("[{}]", parts.join(", "))
         }
+        Value::Map(map) => {
+            let parts: Vec<String> = map
+                .iter()
+                .map(|(k, v)| format!("{k}: {}", format_value(v)))
+                .collect();
+            format!("{{{}}}", parts.join(", "))
+        }
     }
 }
 
@@ -646,6 +654,19 @@ fn value_to_json(out: &mut String, val: &Value) {
                 out.push_str(&id.0.to_string());
             }
             out.push(']');
+        }
+        Value::Map(map) => {
+            out.push('{');
+            for (i, (k, v)) in map.iter().enumerate() {
+                if i > 0 {
+                    out.push_str(", ");
+                }
+                out.push('"');
+                json_escape_into(out, k);
+                out.push_str("\": ");
+                value_to_json(out, v);
+            }
+            out.push('}');
         }
     }
 }

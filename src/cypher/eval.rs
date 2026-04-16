@@ -76,6 +76,14 @@ pub fn eval_expr(expr: &Expr, record: &Record, conn: &Connection) -> crate::type
             patterns,
             where_clause,
         } => eval_exists(patterns, where_clause.as_deref(), record, conn),
+        Expr::MapLiteral(pairs) => {
+            let mut map = std::collections::BTreeMap::new();
+            for (k, expr) in pairs {
+                let val = eval_expr(expr, record, conn)?;
+                map.insert(k.clone(), val);
+            }
+            Ok(Value::Map(map))
+        }
         Expr::FunctionCall { name, args } => eval_function_call(name, args, record, conn),
     }
 }
@@ -627,6 +635,7 @@ fn values_equal(a: &Value, b: &Value) -> Value {
         (Value::F64(a), Value::I64(b)) => *a == (*b as f64),
         (Value::String(a), Value::String(b)) => a == b,
         (Value::List(a), Value::List(b)) => a == b,
+        (Value::Map(a), Value::Map(b)) => a == b,
         _ => false,
     };
     Value::Bool(eq)

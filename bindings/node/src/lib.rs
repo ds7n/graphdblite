@@ -37,6 +37,13 @@ fn value_to_napi(env: &Env, val: &Value) -> Result<napi::JsUnknown> {
             }
             array_to_unknown(env, &arr)
         }
+        Value::Map(map) => {
+            let mut obj = env.create_object()?;
+            for (k, v) in map {
+                obj.set(k.as_str(), value_to_napi(env, v)?)?;
+            }
+            Ok(obj.into_unknown())
+        }
     }
 }
 

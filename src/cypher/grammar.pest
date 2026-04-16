@@ -190,7 +190,7 @@ add_expr = { mul_expr ~ (add_op ~ mul_expr)* }
 mul_expr = { atom_expr ~ (mul_op ~ atom_expr)* }
 add_op = { "+" | "-" }
 mul_op = { "*" | "/" }
-atom_expr = { case_expr | function_call | property_access | literal | list_comprehension | list_literal | star | parameter | "(" ~ add_expr ~ ")" | variable }
+atom_expr = { case_expr | function_call | property_access | literal | list_comprehension | list_literal | map_literal | star | parameter | "(" ~ add_expr ~ ")" | variable }
 
 parameter = { "$" ~ ident }
 
@@ -199,6 +199,12 @@ list_comp_where = { ^"WHERE" ~ bool_expr }
 list_comp_map = { "|" ~ expr }
 
 list_literal = { "[" ~ (expr ~ ("," ~ expr)*)? ~ "]" }
+
+// Map literal in expression context: {k: expr, k2: expr2, ...}. Uses distinct
+// rule names from `property_map` (which is used in node/edge patterns with
+// slightly different semantics and requires at least one pair).
+map_literal = { "{" ~ (map_pair ~ ("," ~ map_pair)*)? ~ "}" }
+map_pair = { ident ~ ":" ~ expr }
 
 property_access = { ident ~ "." ~ ident }
 variable = { ident }

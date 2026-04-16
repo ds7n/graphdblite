@@ -827,6 +827,179 @@ fn e2e_with_passthrough_variable() {
     tx.commit().unwrap();
 }
 
+/// Chained WITH: arithmetic on prior aggregate result.
+#[test]
+fn e2e_chained_with_arithmetic_on_aggregate() {
+    let mut db = Database::open_memory().unwrap();
+    let tx = db.begin_write().unwrap();
+    tx.query("CREATE (:Person {name: 'Alice', dept: 'eng'})")
+        .unwrap();
+    tx.query("CREATE (:Person {name: 'Bob', dept: 'eng'})")
+        .unwrap();
+    tx.query("CREATE (:Person {name: 'Charlie', dept: 'eng'})")
+        .unwrap();
+    tx.query("CREATE (:Person {name: 'Diana', dept: 'sales'})")
+        .unwrap();
+    tx.commit().unwrap();
+
+    let tx = db.begin_read().unwrap();
+    let results = tx
+        .query(
+            "MATCH (n:Person) \
+             WITH n.dept AS dept, count(*) AS c \
+             WITH dept, c, c * 2 AS doubled \
+             WHERE doubled > 2 \
+             RETURN dept, doubled ORDER BY dept",
+        )
+        .unwrap();
+    // eng: count=3, doubled=6 > 2 ✓ ; sales: count=1, doubled=2, NOT > 2 ✗
+    assert_eq!(results.len(), 1);
+    assert_eq!(results[0].get("dept"), Some(&Value::String("eng".into())));
+    assert_eq!(results[0].get("doubled"), Some(&Value::I64(6)));
+    tx.commit().unwrap();
+}
+
+/// Map literal in RETURN — basic structured row.
+#[test]
+fn e2e_map_literal_basic() {
+    let mut db = setup_social_graph();
+    let tx = db.begin_read().unwrap();
+    let rows = tx
+        .query("MATCH (a:Person {name: 'Alice'}) RETURN {name: a.name, age: a.age} AS info")
+        .unwrap();
+    assert_eq!(rows.len(), 1);
+    let info = rows[0].get("info").unwrap();
+    match info {
+        Value::Map(m) => {
+            assert_eq!(m.get("name"), Some(&Value::String("Alice".into())));
+            assert_eq!(m.get("age"), Some(&Value::I64(30)));
+        }
+        other => panic!("expected Map, got {other:?}"),
+    }
+    tx.commit().unwrap();
+}
+
+/// collect() with a map literal — structured grouped results, the main symtext use case.
+#[test]
+fn e2e_collect_map_literal() {
+    let mut db = setup_social_graph();
+    let tx = db.begin_read().unwrap();
+    // Alice KNOWS Bob, Bob KNOWS Charlie from setup_social_graph.
+    let rows = tx
+        .query(
+            "MATCH (a:Person)-[:KNOWS]->(b:Person) \
+             RETURN a.name, collect({name: b.name, age: b.age}) AS friends \
+             ORDER BY a.name",
+        )
+        .unwrap();
+    assert_eq!(rows.len(), 2);
+    // Alice's friends: Bob (one KNOWS edge in setup).
+    assert_eq!(
+        rows[0].get("a.name").unwrap(),
+        &Value::String("Alice".into())
+    );
+    let alice_friends = rows[0].get("friends").unwrap();
+    match alice_friends {
+        Value::List(items) => {
+            assert_eq!(items.len(), 1);
+            match &items[0] {
+                Value::Map(m) => {
+                    assert_eq!(m.get("name"), Some(&Value::String("Bob".into())));
+                    assert_eq!(m.get("age"), Some(&Value::I64(25)));
+                }
+                other => panic!("expected Map in list, got {other:?}"),
+            }
+        }
+        other => panic!("expected List, got {other:?}"),
+    }
+    tx.commit().unwrap();
+}
+
+/// Nested maps: {outer: {inner: value}}.
+#[test]
+fn e2e_map_literal_nested() {
+    let mut db = setup_social_graph();
+    let tx = db.begin_read().unwrap();
+    let rows = tx
+        .query(
+            "MATCH (a:Person {name: 'Alice'}) \
+             RETURN {person: {name: a.name, age: a.age}} AS wrapped",
+        )
+        .unwrap();
+    assert_eq!(rows.len(), 1);
+    let wrapped = rows[0].get("wrapped").unwrap();
+    match wrapped {
+        Value::Map(outer) => match outer.get("person").unwrap() {
+            Value::Map(inner) => {
+                assert_eq!(inner.get("name"), Some(&Value::String("Alice".into())));
+                assert_eq!(inner.get("age"), Some(&Value::I64(30)));
+            }
+            other => panic!("expected nested Map, got {other:?}"),
+        },
+        other => panic!("expected Map, got {other:?}"),
+    }
+    tx.commit().unwrap();
+}
+
+/// Empty map literal.
+#[test]
+fn e2e_map_literal_empty() {
+    let mut db = setup_social_graph();
+    let tx = db.begin_read().unwrap();
+    let rows = tx
+        .query("MATCH (a:Person {name: 'Alice'}) RETURN {} AS m")
+        .unwrap();
+    assert_eq!(rows.len(), 1);
+    match rows[0].get("m").unwrap() {
+        Value::Map(m) => assert!(m.is_empty()),
+        other => panic!("expected Map, got {other:?}"),
+    }
+    tx.commit().unwrap();
+}
+
+/// Map equality in WHERE.
+#[test]
+fn e2e_map_literal_equality() {
+    let mut db = setup_social_graph();
+    let tx = db.begin_read().unwrap();
+    let rows = tx
+        .query(
+            "MATCH (a:Person {name: 'Alice'}) \
+             WHERE {x: 1, y: 2} = {y: 2, x: 1} \
+             RETURN a.name",
+        )
+        .unwrap();
+    // BTreeMap-based equality is key-order-independent.
+    assert_eq!(rows.len(), 1);
+    tx.commit().unwrap();
+}
+
+/// Chained WITH: aggregate on top of aggregate (count the groups).
+#[test]
+fn e2e_chained_with_aggregate_of_aggregate() {
+    let mut db = Database::open_memory().unwrap();
+    let tx = db.begin_write().unwrap();
+    tx.query("CREATE (:Person {dept: 'eng'})").unwrap();
+    tx.query("CREATE (:Person {dept: 'eng'})").unwrap();
+    tx.query("CREATE (:Person {dept: 'sales'})").unwrap();
+    tx.query("CREATE (:Person {dept: 'ops'})").unwrap();
+    tx.commit().unwrap();
+
+    let tx = db.begin_read().unwrap();
+    let results = tx
+        .query(
+            "MATCH (n:Person) \
+             WITH n.dept AS dept, count(*) AS c \
+             WITH count(*) AS group_count \
+             RETURN group_count",
+        )
+        .unwrap();
+    // 3 distinct departments.
+    assert_eq!(results.len(), 1);
+    assert_eq!(results[0].get("group_count"), Some(&Value::I64(3)));
+    tx.commit().unwrap();
+}
+
 // === CASE expression tests ===
 
 #[test]

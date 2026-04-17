@@ -17,7 +17,7 @@ fn create_and_get_node() {
         .create_node("Person", props(&[("name", Value::String("Alice".into()))]))
         .unwrap();
     let node = tx.get_node(id).unwrap();
-    assert_eq!(node.label, "Person");
+    assert_eq!(node.labels, vec!["Person".to_string()]);
     assert_eq!(
         node.properties.get("name"),
         Some(&Value::String("Alice".into()))

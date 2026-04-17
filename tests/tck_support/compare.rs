@@ -121,10 +121,24 @@ fn rows_equal(got: &[Value], want: &[Value]) -> bool {
 fn value_equal(a: &Value, b: &Value) -> bool {
     match (a, b) {
         (Value::Node(na), Value::Node(nb)) => {
-            na.label == nb.label && properties_equal(&na.properties, &nb.properties)
+            na.labels == nb.labels && properties_equal(&na.properties, &nb.properties)
         }
         (Value::Edge(ea), Value::Edge(eb)) => {
             ea.label == eb.label && properties_equal(&ea.properties, &eb.properties)
+        }
+        (Value::Path(pa), Value::Path(pb)) => {
+            pa.nodes.len() == pb.nodes.len()
+                && pa.edges.len() == pb.edges.len()
+                && pa
+                    .nodes
+                    .iter()
+                    .zip(pb.nodes.iter())
+                    .all(|(a, b)| value_equal(&Value::Node(a.clone()), &Value::Node(b.clone())))
+                && pa
+                    .edges
+                    .iter()
+                    .zip(pb.edges.iter())
+                    .all(|(a, b)| value_equal(&Value::Edge(a.clone()), &Value::Edge(b.clone())))
         }
         (Value::List(la), Value::List(lb)) => {
             la.len() == lb.len() && la.iter().zip(lb.iter()).all(|(x, y)| value_equal(x, y))
@@ -232,6 +246,7 @@ impl<'a> Parser<'a> {
             }
             Some('{') => self.parse_map(),
             Some('(') => self.parse_node(),
+            Some('<') => self.parse_path(),
             Some(c) if c == '-' || c.is_ascii_digit() => self.parse_number(),
             Some(c) => Err(anyhow!(
                 "unexpected character {c:?} at position {}",
@@ -385,7 +400,7 @@ impl<'a> Parser<'a> {
         Ok(self.src[start..self.pos].to_string())
     }
 
-    /// Parse a node pattern `(:Label {k: v})` or `(:Label)`.
+    /// Parse a node pattern `(:Label {k: v})` or `(:Label)` or `(:A:B)`.
     fn parse_node(&mut self) -> Result<Value> {
         use graphdblite::{Node, NodeId};
 
@@ -399,11 +414,12 @@ impl<'a> Parser<'a> {
             self.advance(c.len_utf8());
         }
 
-        let mut label = String::new();
-        if self.consume(":") {
-            label = self.parse_ident()?;
+        let mut labels = Vec::new();
+        while self.consume(":") {
+            labels.push(self.parse_ident()?);
             self.skip_ws();
         }
+        labels.sort();
 
         let mut properties = HashMap::new();
         if self.peek() == Some('{') {
@@ -418,7 +434,7 @@ impl<'a> Parser<'a> {
 
         Ok(Value::Node(Node {
             id: NodeId(0), // ID is ignored by structural equality.
-            label,
+            labels,
             properties,
         }))
     }
@@ -460,11 +476,65 @@ impl<'a> Parser<'a> {
             properties,
         }))
     }
+
+    /// Parse a path literal `<(n1)-[:TYPE]->(n2)>`.
+    fn parse_path(&mut self) -> Result<Value> {
+        use graphdblite::PathValue;
+
+        self.expect("<")?;
+        let mut nodes = Vec::new();
+        let mut edges = Vec::new();
+
+        self.skip_ws();
+        // Parse first node.
+        if self.peek() == Some('(') {
+            if let Value::Node(n) = self.parse_node()? {
+                nodes.push(n);
+            }
+        }
+
+        // Parse subsequent -[:TYPE]->(node) segments.
+        loop {
+            self.skip_ws();
+            if self.peek() == Some('>') && !self.rest().starts_with(">-") {
+                // End of path.
+                break;
+            }
+            if self.at_end() {
+                break;
+            }
+            // Expect a relationship pattern like -[:TYPE]-> or <-[:TYPE]-
+            if self.consume("-") {
+                // Forward: -[:TYPE]-> or -[]->(
+                if let Value::Edge(e) = self.parse_edge()? {
+                    edges.push(e);
+                }
+                self.expect("->")?;
+            } else if self.consume("<-") {
+                if let Value::Edge(e) = self.parse_edge()? {
+                    edges.push(e);
+                }
+                self.expect("-")?;
+            } else {
+                break;
+            }
+            self.skip_ws();
+            if self.peek() == Some('(') {
+                if let Value::Node(n) = self.parse_node()? {
+                    nodes.push(n);
+                }
+            }
+        }
+
+        self.expect(">")?;
+        Ok(Value::Path(PathValue { nodes, edges }))
+    }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{parse_expected, Value};
+    #[allow(unused_imports)]
+    use super::parse_expected;
 
     #[test]
     fn scalars() {
@@ -499,13 +569,37 @@ mod tests {
     fn node_pattern() {
         let n = parse_expected("(:Person {name: 'Alice', age: 30})").unwrap();
         if let Value::Node(node) = n {
-            assert_eq!(node.label, "Person");
+            assert_eq!(node.labels, vec!["Person".to_string()]);
             assert_eq!(
                 node.properties.get("name"),
                 Some(&Value::String("Alice".into()))
             );
         } else {
             panic!("expected node");
+        }
+    }
+
+    #[test]
+    fn multi_label_node() {
+        let n = parse_expected("(:A:B)").unwrap();
+        if let Value::Node(node) = n {
+            assert_eq!(node.labels, vec!["A".to_string(), "B".to_string()]);
+        } else {
+            panic!("expected node");
+        }
+    }
+
+    #[test]
+    fn path_literal() {
+        let p = parse_expected("<(:A)-[:R]->(:B)>").unwrap();
+        if let Value::Path(path) = p {
+            assert_eq!(path.nodes.len(), 2);
+            assert_eq!(path.edges.len(), 1);
+            assert_eq!(path.nodes[0].labels, vec!["A".to_string()]);
+            assert_eq!(path.nodes[1].labels, vec!["B".to_string()]);
+            assert_eq!(path.edges[0].label, "R");
+        } else {
+            panic!("expected path");
         }
     }
 }

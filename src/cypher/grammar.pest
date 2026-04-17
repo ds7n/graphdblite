@@ -1,7 +1,7 @@
 // graphdblite Cypher subset grammar (PEG)
 
 WHITESPACE = _{ " " | "\t" | "\r" | "\n" }
-COMMENT = _{ ("--" | "//") ~ (!"\n" ~ ANY)* }
+COMMENT = _{ "//" ~ (!"\n" ~ ANY)* }
 
 // === Top-level ===
 
@@ -24,14 +24,17 @@ return_stmt = {
 // === MATCH statement ===
 
 match_stmt = {
-    ^"MATCH" ~ pattern_list ~
-    optional_match_clause* ~
-    where_clause? ~
-    (with_clause | unwind_clause)* ~
+    match_part ~
+    ((with_clause ~ match_part?) | unwind_clause)* ~
     return_clause ~
     order_by_clause? ~
     skip_clause? ~
     limit_clause?
+}
+
+match_part = {
+    (^"MATCH" ~ pattern_list ~ optional_match_clause* ~ where_clause?) |
+    (optional_match_clause+ ~ where_clause?)
 }
 
 with_clause = { ^"WITH" ~ return_items ~ order_by_clause? ~ skip_clause? ~ limit_clause? ~ where_clause? }
@@ -124,7 +127,7 @@ on_match_clause = { ^"ON" ~ ^"MATCH" ~ ^"SET" ~ assignment_list }
 
 pattern_list = { pattern_item ~ ("," ~ pattern_item)* }
 pattern_item = { path_pattern | pattern }
-path_pattern = { ident ~ "=" ~ (shortest_path_fn | all_shortest_paths_fn) }
+path_pattern = { ident ~ "=" ~ (shortest_path_fn | all_shortest_paths_fn | pattern) }
 shortest_path_fn = { ^"shortestPath" ~ "(" ~ pattern ~ ")" }
 all_shortest_paths_fn = { ^"allShortestPaths" ~ "(" ~ pattern ~ ")" }
 pattern = { node_pattern ~ (rel_pattern ~ node_pattern)* }
@@ -132,10 +135,13 @@ pattern = { node_pattern ~ (rel_pattern ~ node_pattern)* }
 node_pattern = { "(" ~ ident? ~ label_spec? ~ property_map? ~ ")" }
 label_spec = { (":" ~ ident)+ }
 
-rel_pattern = { rel_right | rel_left | rel_undirected }
+rel_pattern = { rel_right | rel_left | rel_undirected | rel_right_bare | rel_left_bare | rel_undirected_bare }
 rel_right = { "-[" ~ rel_detail ~ "]->" }
 rel_left = { "<-[" ~ rel_detail ~ "]-" }
 rel_undirected = { "-[" ~ rel_detail ~ "]-" }
+rel_right_bare = { "-->" }
+rel_left_bare = { "<--" }
+rel_undirected_bare = { "--" }
 
 rel_detail = { ident? ~ rel_type_spec? ~ property_map? ~ var_length? }
 rel_type_spec = { ":" ~ ident ~ ("|" ~ ident)* }

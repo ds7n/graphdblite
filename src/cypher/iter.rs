@@ -298,7 +298,17 @@ impl<'a> RecordIter for ExpandIter<'a> {
                 }
                 new_rec.set(
                     format!("{}.__label", self.dst_alias),
-                    Value::String(dst_node.label.clone()),
+                    Value::String(dst_node.labels.join(":")),
+                );
+                new_rec.set(
+                    format!("{}.__labels", self.dst_alias),
+                    Value::List(
+                        dst_node
+                            .labels
+                            .iter()
+                            .map(|l| Value::String(l.clone()))
+                            .collect(),
+                    ),
                 );
                 new_rec.set(
                     format!("{}.__id", self.dst_alias),

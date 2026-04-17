@@ -9,7 +9,7 @@ use crate::cypher::record::Record;
 use crate::edge;
 use crate::index;
 use crate::node;
-use crate::types::{Direction, GraphError, NodeId, Properties, Result, Value};
+use crate::types::{Direction, GraphError, NodeId, PathValue, Properties, Result, Value};
 
 /// Execution context carrying runtime limits.
 #[derive(Default)]
@@ -67,11 +67,15 @@ fn is_read_only(plan: &LogicalOp) -> bool {
         | LogicalOp::Limit { input, .. }
         | LogicalOp::Unwind { input, .. }
         | LogicalOp::Aggregate { input, .. }
-        | LogicalOp::ShortestPath { input, .. } => is_read_only(input),
+        | LogicalOp::ShortestPath { input, .. }
+        | LogicalOp::MaterializePath { input, .. } => is_read_only(input),
 
         LogicalOp::Expand { input, .. } => is_read_only(input),
 
         LogicalOp::CrossProduct { left, right }
+        | LogicalOp::CorrelatedJoin {
+            input: left, right, ..
+        }
         | LogicalOp::LeftOuterJoin {
             input: left, right, ..
         } => is_read_only(left) && is_read_only(right),
@@ -160,10 +164,10 @@ fn exec(conn: &Connection, plan: &LogicalOp, ctx: &ExecContext) -> Result<Vec<Re
         LogicalOp::Limit { input, count } => exec_limit(conn, input, *count, ctx),
 
         LogicalOp::CreateNode {
-            label,
+            labels,
             alias,
             properties,
-        } => exec_create_node(conn, label.as_deref(), alias.as_deref(), properties),
+        } => exec_create_node(conn, labels, alias.as_deref(), properties),
 
         LogicalOp::CreateEdge {
             src_alias,
@@ -202,6 +206,15 @@ fn exec(conn: &Connection, plan: &LogicalOp, ctx: &ExecContext) -> Result<Vec<Re
         } => exec_match_merge(conn, input, merge_pattern, on_create, on_match, ctx),
 
         LogicalOp::Unwind { input, expr, alias } => exec_unwind(conn, input, expr, alias, ctx),
+
+        LogicalOp::MaterializePath {
+            input,
+            path_alias,
+            node_aliases,
+            rel_aliases,
+        } => exec_materialize_path(conn, input, path_alias, node_aliases, rel_aliases, ctx),
+
+        LogicalOp::CorrelatedJoin { input, right } => exec_correlated_join(conn, input, right, ctx),
 
         LogicalOp::LeftOuterJoin {
             input,
@@ -311,17 +324,21 @@ fn exec_expand(
 ) -> Result<Vec<Record>> {
     let input_records = exec(conn, input, ctx)?;
     let mut results = Vec::new();
-    // If no types specified, match any edge type (empty string = wildcard).
-    let labels: Vec<&str> = if edge_types.is_empty() {
-        vec![""]
-    } else {
-        edge_types.iter().map(|s| s.as_str()).collect()
-    };
 
     for rec in &input_records {
         let src_id = match rec.get(src_alias) {
             Some(Value::I64(id)) => NodeId(*id as u64),
             _ => continue,
+        };
+
+        // If no types specified, discover all edge types for this node.
+        let _owned_labels: Vec<String>;
+        let labels: Vec<&str> = if edge_types.is_empty() {
+            let all = edge::get_all_edge_labels(conn, src_id, direction)?;
+            _owned_labels = all.into_iter().map(|(l, _)| l).collect();
+            _owned_labels.iter().map(|s| s.as_str()).collect()
+        } else {
+            edge_types.iter().map(|s| s.as_str()).collect()
         };
 
         for &label in &labels {
@@ -337,7 +354,17 @@ fn exec_expand(
                     }
                     new_rec.set(
                         format!("{dst_alias}.__label"),
-                        Value::String(dst_node.label.clone()),
+                        Value::String(dst_node.labels.join(":")),
+                    );
+                    new_rec.set(
+                        format!("{dst_alias}.__labels"),
+                        Value::List(
+                            dst_node
+                                .labels
+                                .iter()
+                                .map(|l| Value::String(l.clone()))
+                                .collect(),
+                        ),
                     );
                     new_rec.set(format!("{dst_alias}.__id"), Value::I64(dst_id.0 as i64));
                     // Bind relationship properties and identity when a rel variable is present.
@@ -374,7 +401,17 @@ fn exec_expand(
                     }
                     new_rec.set(
                         format!("{dst_alias}.__label"),
-                        Value::String(dst_node.label.clone()),
+                        Value::String(dst_node.labels.join(":")),
+                    );
+                    new_rec.set(
+                        format!("{dst_alias}.__labels"),
+                        Value::List(
+                            dst_node
+                                .labels
+                                .iter()
+                                .map(|l| Value::String(l.clone()))
+                                .collect(),
+                        ),
                     );
                     new_rec.set(format!("{dst_alias}.__id"), Value::I64(dst_id.0 as i64));
                     results.push(new_rec);
@@ -471,7 +508,7 @@ pub(crate) fn build_compound_binding(rec: &Record, var: &str) -> Option<Value> {
     // Node binding: has __id / __label metadata.
     let id_key = format!("{var}.__id");
     let label_key = format!("{var}.__label");
-    if let (Some(Value::I64(id)), Some(Value::String(label))) =
+    if let (Some(Value::I64(id)), Some(Value::String(label_str))) =
         (rec.get(&id_key), rec.get(&label_key))
     {
         let mut properties = Properties::new();
@@ -482,9 +519,15 @@ pub(crate) fn build_compound_binding(rec: &Record, var: &str) -> Option<Value> {
                 }
             }
         }
+        // Reconstruct labels from the colon-joined __label string.
+        let labels: Vec<String> = if label_str.is_empty() {
+            Vec::new()
+        } else {
+            label_str.split(':').map(|s| s.to_string()).collect()
+        };
         return Some(Value::Node(Node {
             id: NodeId(*id as u64),
-            label: label.clone(),
+            labels,
             properties,
         }));
     }
@@ -871,7 +914,7 @@ fn exec_limit(
 
 fn exec_create_node(
     conn: &Connection,
-    label: Option<&str>,
+    labels: &[String],
     alias: Option<&str>,
     properties: &HashMap<String, Expr>,
 ) -> Result<Vec<Record>> {
@@ -882,9 +925,9 @@ fn exec_create_node(
         props.insert(key.clone(), val);
     }
 
-    let lbl = label.unwrap_or("");
-    let id = node::create_node(conn, lbl, props.clone())?;
-    index::update_indexes_for_node(conn, id, lbl, None, &props)?;
+    let id = node::create_node(conn, labels, props.clone())?;
+    let primary_label = labels.first().map(|s| s.as_str()).unwrap_or("");
+    index::update_indexes_for_node(conn, id, primary_label, None, &props)?;
 
     let mut rec = Record::new();
     if let Some(alias) = alias {
@@ -914,7 +957,7 @@ fn exec_create_sequence(conn: &Connection, ops: &[LogicalOp]) -> Result<Vec<Reco
     for op in ops {
         match op {
             LogicalOp::CreateNode {
-                label,
+                labels,
                 alias,
                 properties,
             } => {
@@ -924,9 +967,9 @@ fn exec_create_sequence(conn: &Connection, ops: &[LogicalOp]) -> Result<Vec<Reco
                     let val = eval_expr(expr, &dummy_rec, conn)?;
                     props.insert(key.clone(), val);
                 }
-                let lbl = label.as_deref().unwrap_or("");
-                let id = node::create_node(conn, lbl, props.clone())?;
-                index::update_indexes_for_node(conn, id, lbl, None, &props)?;
+                let id = node::create_node(conn, labels, props.clone())?;
+                let primary_label = labels.first().map(|s| s.as_str()).unwrap_or("");
+                index::update_indexes_for_node(conn, id, primary_label, None, &props)?;
                 if let Some(alias) = alias {
                     bindings.insert(alias.clone(), id);
                     last_record.set(alias.clone(), Value::I64(id.0 as i64));
@@ -985,7 +1028,7 @@ fn exec_match_create(
         for op in create_ops {
             match op {
                 LogicalOp::CreateNode {
-                    label,
+                    labels,
                     alias,
                     properties,
                 } => {
@@ -1000,9 +1043,9 @@ fn exec_match_create(
                         let val = eval_expr(expr, rec, conn)?;
                         props.insert(key.clone(), val);
                     }
-                    let lbl = label.as_deref().unwrap_or("");
-                    let id = node::create_node(conn, lbl, props.clone())?;
-                    index::update_indexes_for_node(conn, id, lbl, None, &props)?;
+                    let id = node::create_node(conn, labels, props.clone())?;
+                    let primary_label = labels.first().map(|s| s.as_str()).unwrap_or("");
+                    index::update_indexes_for_node(conn, id, primary_label, None, &props)?;
                     if let Some(alias) = alias {
                         bindings.insert(alias.clone(), id);
                     }
@@ -1105,7 +1148,7 @@ fn exec_set_property(
                 index::update_indexes_for_node(
                     conn,
                     node_id,
-                    &old.label,
+                    old.labels.first().map(|s| s.as_str()).unwrap_or(""),
                     Some(&old.properties),
                     &new_props,
                 )?;
@@ -1158,7 +1201,7 @@ fn exec_merge_node(
                 index::update_indexes_for_node(
                     conn,
                     n.id,
-                    &old.label,
+                    old.labels.first().map(|s| s.as_str()).unwrap_or(""),
                     Some(&old.properties),
                     &new_props,
                 )?;
@@ -1174,7 +1217,12 @@ fn exec_merge_node(
                 let val = eval_expr(expr, &dummy_rec, conn)?;
                 props.insert(key.clone(), val);
             }
-            let id = node::create_node(conn, label, props.clone())?;
+            let labels: Vec<String> = if label.is_empty() {
+                vec![]
+            } else {
+                vec![label.to_string()]
+            };
+            let id = node::create_node(conn, &labels, props.clone())?;
             index::update_indexes_for_node(conn, id, label, None, &props)?;
 
             for assignment in on_create {
@@ -1188,7 +1236,7 @@ fn exec_merge_node(
                 index::update_indexes_for_node(
                     conn,
                     id,
-                    &old.label,
+                    old.labels.first().map(|s| s.as_str()).unwrap_or(""),
                     Some(&old.properties),
                     &new_props,
                 )?;
@@ -1289,7 +1337,12 @@ fn find_or_create_merge_node(
                 let val = eval_expr(expr, &dummy_rec, conn)?;
                 props.insert(key.clone(), val);
             }
-            let id = node::create_node(conn, label, props.clone())?;
+            let labels: Vec<String> = if label.is_empty() {
+                vec![]
+            } else {
+                vec![label.to_string()]
+            };
+            let id = node::create_node(conn, &labels, props.clone())?;
             index::update_indexes_for_node(conn, id, label, None, &props)?;
             Ok(id)
         }
@@ -1325,7 +1378,12 @@ fn exec_match_merge(
             }
             let matched = find_merge_match(conn, label, &node_pat.properties)?;
             if matched.is_none() {
-                let id = node::create_node(conn, label, props.clone())?;
+                let labels: Vec<String> = if label.is_empty() {
+                    vec![]
+                } else {
+                    vec![label.to_string()]
+                };
+                let id = node::create_node(conn, &labels, props.clone())?;
                 index::update_indexes_for_node(conn, id, label, None, &props)?;
                 let alias = node_pat.variable.as_deref().unwrap_or("_merge");
                 for assignment in on_create {
@@ -1449,6 +1507,73 @@ fn exec_unwind(
     Ok(results)
 }
 
+/// Build a Path value from node and edge bindings in each record.
+fn exec_materialize_path(
+    conn: &Connection,
+    input: &LogicalOp,
+    path_alias: &str,
+    node_aliases: &[String],
+    rel_aliases: &[String],
+    ctx: &ExecContext,
+) -> Result<Vec<Record>> {
+    let records = exec(conn, input, ctx)?;
+    let mut results = Vec::new();
+
+    for rec in records {
+        let mut nodes = Vec::new();
+        for alias in node_aliases {
+            if let Some(Value::I64(id)) = rec.get(&format!("{alias}.__id")) {
+                match node::get_node(conn, NodeId(*id as u64)) {
+                    Ok(n) => nodes.push(n),
+                    Err(_) => break,
+                }
+            }
+        }
+        let edges = Vec::new(); // TODO: populate from rel_aliases for multi-hop paths
+        let _ = rel_aliases; // suppress warning
+
+        let mut new_rec = rec;
+        if !nodes.is_empty() {
+            new_rec.set(
+                path_alias.to_string(),
+                Value::Path(PathValue { nodes, edges }),
+            );
+        }
+        results.push(new_rec);
+    }
+
+    Ok(results)
+}
+
+/// Correlated inner join: for each left record, execute the right side with
+/// correlated bindings. Only emit combined rows; drop left rows with no match.
+fn exec_correlated_join(
+    conn: &Connection,
+    input: &LogicalOp,
+    right: &LogicalOp,
+    ctx: &ExecContext,
+) -> Result<Vec<Record>> {
+    let left_records = exec(conn, input, ctx)?;
+    let mut results = Vec::new();
+
+    for l_rec in &left_records {
+        let right_records = exec_correlated(conn, right, l_rec, ctx)?;
+        // Inner join: only emit if right produced results.
+        for r_rec in &right_records {
+            let mut combined = l_rec.clone();
+            for (key, val) in &r_rec.fields {
+                if !combined.fields.contains_key(key) {
+                    combined.set(key.clone(), val.clone());
+                }
+            }
+            results.push(combined);
+        }
+        // If right_records is empty, left row is dropped (inner join semantics).
+    }
+
+    Ok(results)
+}
+
 fn exec_left_outer_join(
     conn: &Connection,
     input: &LogicalOp,
@@ -1504,7 +1629,7 @@ fn exec_correlated(
             if let Some(Value::I64(id)) = outer.get(alias) {
                 let node = node::get_node(conn, NodeId(*id as u64))?;
                 // Verify label matches if the scan has a label filter.
-                if !label.is_empty() && node.label != *label {
+                if !label.is_empty() && !node.labels.contains(label) {
                     return Ok(vec![]);
                 }
                 Ok(vec![node_to_record(&node, alias)])
@@ -1522,7 +1647,7 @@ fn exec_correlated(
         } => {
             if let Some(Value::I64(id)) = outer.get(alias) {
                 let node = node::get_node(conn, NodeId(*id as u64))?;
-                if !label.is_empty() && node.label != *label {
+                if !label.is_empty() && !node.labels.contains(label) {
                     return Ok(vec![]);
                 }
                 let rec = node_to_record(&node, alias);
@@ -1561,19 +1686,22 @@ fn exec_correlated(
             max_hops,
         } => {
             let input_records = exec_correlated(conn, input, outer, ctx)?;
-            // Iterate each edge type so OPTIONAL MATCH (a)-[:T1|T2]->(b)
-            // returns matches for any listed type (matches exec_expand behavior).
-            let labels: Vec<&str> = if edge_types.is_empty() {
-                vec![""]
-            } else {
-                edge_types.iter().map(|s| s.as_str()).collect()
-            };
             let mut results = Vec::new();
 
             for rec in &input_records {
                 let src_id = match rec.get(src_alias) {
                     Some(Value::I64(id)) => NodeId(*id as u64),
                     _ => continue,
+                };
+
+                // If no types specified, discover all edge types for this node.
+                let _owned_labels: Vec<String>;
+                let labels: Vec<&str> = if edge_types.is_empty() {
+                    let all = edge::get_all_edge_labels(conn, src_id, *direction)?;
+                    _owned_labels = all.into_iter().map(|(l, _)| l).collect();
+                    _owned_labels.iter().map(|s| s.as_str()).collect()
+                } else {
+                    edge_types.iter().map(|s| s.as_str()).collect()
                 };
 
                 // If the destination alias is already bound in the outer record
@@ -1583,6 +1711,66 @@ fn exec_correlated(
                     Value::I64(id) => Some(NodeId(*id as u64)),
                     _ => None,
                 });
+
+                // If the relationship alias is already bound (forwarded through WITH),
+                // constrain the expansion to only that specific edge.
+                let bound_rel = rel_alias.as_ref().and_then(|ra| {
+                    let src = outer.get(&format!("{ra}.__src")).and_then(|v| match v {
+                        Value::I64(id) => Some(NodeId(*id as u64)),
+                        _ => None,
+                    })?;
+                    let dst = outer.get(&format!("{ra}.__dst")).and_then(|v| match v {
+                        Value::I64(id) => Some(NodeId(*id as u64)),
+                        _ => None,
+                    })?;
+                    let rtype = outer.get(&format!("{ra}.__type")).and_then(|v| match v {
+                        Value::String(s) => Some(s.clone()),
+                        _ => None,
+                    })?;
+                    Some((src, dst, rtype))
+                });
+
+                // If the relationship is already bound, skip the scan and use
+                // the bound edge directly.
+                if let Some((rel_src, rel_dst, ref rel_type)) = bound_rel {
+                    // Check that this source node matches the edge's source.
+                    let (expected_src, expected_dst) = match direction {
+                        Direction::Incoming => (rel_dst, rel_src),
+                        _ => (rel_src, rel_dst),
+                    };
+                    if src_id != expected_src {
+                        continue;
+                    }
+                    let dst_id = expected_dst;
+                    let dst_node = node::get_node(conn, dst_id)?;
+                    let mut new_rec = rec.clone();
+                    new_rec.set(dst_alias.to_string(), Value::I64(dst_id.0 as i64));
+                    for (key, val) in &dst_node.properties {
+                        new_rec.set(format!("{dst_alias}.{key}"), val.clone());
+                    }
+                    new_rec.set(
+                        format!("{dst_alias}.__label"),
+                        Value::String(dst_node.labels.join(":")),
+                    );
+                    new_rec.set(
+                        format!("{dst_alias}.__labels"),
+                        Value::List(
+                            dst_node
+                                .labels
+                                .iter()
+                                .map(|l| Value::String(l.clone()))
+                                .collect(),
+                        ),
+                    );
+                    new_rec.set(format!("{dst_alias}.__id"), Value::I64(dst_id.0 as i64));
+                    if let Some(r_alias) = rel_alias {
+                        new_rec.set(format!("{r_alias}.__src"), Value::I64(rel_src.0 as i64));
+                        new_rec.set(format!("{r_alias}.__dst"), Value::I64(rel_dst.0 as i64));
+                        new_rec.set(format!("{r_alias}.__type"), Value::String(rel_type.clone()));
+                    }
+                    results.push(new_rec);
+                    continue;
+                }
 
                 for &label in &labels {
                     let dst_ids = if *min_hops == 1 && *max_hops == 1 {
@@ -1605,7 +1793,17 @@ fn exec_correlated(
                         }
                         new_rec.set(
                             format!("{dst_alias}.__label"),
-                            Value::String(dst_node.label.clone()),
+                            Value::String(dst_node.labels.join(":")),
+                        );
+                        new_rec.set(
+                            format!("{dst_alias}.__labels"),
+                            Value::List(
+                                dst_node
+                                    .labels
+                                    .iter()
+                                    .map(|l| Value::String(l.clone()))
+                                    .collect(),
+                            ),
                         );
                         new_rec.set(format!("{dst_alias}.__id"), Value::I64(dst_id.0 as i64));
                         if let Some(r_alias) = rel_alias {
@@ -1656,6 +1854,24 @@ fn exec_correlated(
                     let mut combined = l.clone();
                     for (key, val) in &r.fields {
                         combined.set(key.clone(), val.clone());
+                    }
+                    results.push(combined);
+                }
+            }
+            Ok(results)
+        }
+
+        LogicalOp::CorrelatedJoin { input, right } => {
+            let left_records = exec_correlated(conn, input, outer, ctx)?;
+            let mut results = Vec::new();
+            for l in &left_records {
+                let right_records = exec_correlated(conn, right, l, ctx)?;
+                for r in &right_records {
+                    let mut combined = l.clone();
+                    for (key, val) in &r.fields {
+                        if !combined.fields.contains_key(key) {
+                            combined.set(key.clone(), val.clone());
+                        }
                     }
                     results.push(combined);
                 }
@@ -1951,7 +2167,17 @@ pub fn execute_first_match(
                     }
                     new_rec.set(
                         format!("{dst_alias}.__label"),
-                        Value::String(dst_node.label.clone()),
+                        Value::String(dst_node.labels.join(":")),
+                    );
+                    new_rec.set(
+                        format!("{dst_alias}.__labels"),
+                        Value::List(
+                            dst_node
+                                .labels
+                                .iter()
+                                .map(|l| Value::String(l.clone()))
+                                .collect(),
+                        ),
                     );
                     new_rec.set(format!("{dst_alias}.__id"), Value::I64(dst_id.0 as i64));
                     if record_matches_bindings(&new_rec, correlated_bindings) {
@@ -1987,7 +2213,16 @@ pub(crate) fn node_to_record(n: &crate::types::Node, alias: &str) -> Record {
     for (key, val) in &n.properties {
         rec.set(format!("{alias}.{key}"), val.clone());
     }
-    rec.set(format!("{alias}.__label"), Value::String(n.label.clone()));
+    // Store the colon-joined labels for label matching in filters.
+    rec.set(
+        format!("{alias}.__label"),
+        Value::String(n.labels.join(":")),
+    );
+    // Store individual labels as a list for multi-label filtering.
+    rec.set(
+        format!("{alias}.__labels"),
+        Value::List(n.labels.iter().map(|l| Value::String(l.clone())).collect()),
+    );
     rec.set(format!("{alias}.__id"), Value::I64(n.id.0 as i64));
     rec
 }

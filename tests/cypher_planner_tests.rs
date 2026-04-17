@@ -127,11 +127,11 @@ fn plan_create_node() {
     let op = plan_query("CREATE (n:Person {name: 'Alice'})");
     match op {
         LogicalOp::CreateNode {
-            label,
+            labels,
             alias,
             properties,
         } => {
-            assert_eq!(label.as_deref(), Some("Person"));
+            assert_eq!(labels, vec!["Person".to_string()]);
             assert_eq!(alias.as_deref(), Some("n"));
             assert_eq!(properties.len(), 1);
         }

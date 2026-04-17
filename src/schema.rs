@@ -114,7 +114,7 @@ fn migrate_v1_to_v2(conn: &Connection) -> Result<()> {
         conn.prepare("INSERT INTO nodes_v2 (key, label, value) VALUES (?1, ?2, ?3)")?;
     for (key, data) in &rows {
         let label = match rmp_serde::from_slice::<NodeRecord>(data) {
-            Ok(record) => record.label,
+            Ok(record) => record.labels.join(":"),
             Err(_) => String::new(),
         };
         insert_stmt.execute(rusqlite::params![key, label, data])?;

@@ -50,9 +50,12 @@ fn estimate_rows(conn: &Connection, plan: &LogicalOp) -> f64 {
 
         LogicalOp::Expand { input, .. } => estimate_rows(conn, input) * DEFAULT_EXPAND_FAN_OUT,
 
-        LogicalOp::CrossProduct { left, right } => {
-            estimate_rows(conn, left) * estimate_rows(conn, right)
-        }
+        LogicalOp::CrossProduct { left, right }
+        | LogicalOp::CorrelatedJoin {
+            input: left, right, ..
+        } => estimate_rows(conn, left) * estimate_rows(conn, right),
+
+        LogicalOp::MaterializePath { input, .. } => estimate_rows(conn, input),
 
         LogicalOp::Filter { input, .. } => estimate_rows(conn, input) * DEFAULT_FILTER_SELECTIVITY,
 
@@ -162,6 +165,8 @@ fn format_plan_tree(conn: &Connection, plan: &LogicalOp, depth: usize, lines: &m
             format!("Expand ({src_alias})-[:{et}*{min_hops}..{max_hops}]->({dst_alias})")
         }
         LogicalOp::CrossProduct { .. } => "CrossProduct".to_string(),
+        LogicalOp::CorrelatedJoin { .. } => "CorrelatedJoin".to_string(),
+        LogicalOp::MaterializePath { .. } => "MaterializePath".to_string(),
         LogicalOp::Filter { .. } => "Filter".to_string(),
         LogicalOp::Project { .. } => "Project".to_string(),
         LogicalOp::Aggregate {
@@ -197,10 +202,10 @@ fn format_plan_tree(conn: &Connection, plan: &LogicalOp, depth: usize, lines: &m
         LogicalOp::Unwind { alias, .. } => format!("Unwind AS {alias}"),
         LogicalOp::SingleRow => "SingleRow".to_string(),
         LogicalOp::EmptyRow => "EmptyRow".to_string(),
-        LogicalOp::CreateNode { label, alias, .. } => {
+        LogicalOp::CreateNode { labels, alias, .. } => {
             format!(
                 "CreateNode :{} AS {}",
-                label.as_deref().unwrap_or(""),
+                labels.join(":"),
                 alias.as_deref().unwrap_or("_")
             )
         }
@@ -246,10 +251,14 @@ fn format_plan_tree(conn: &Connection, plan: &LogicalOp, depth: usize, lines: &m
         | LogicalOp::MatchMerge { input, .. }
         | LogicalOp::Delete { input, .. }
         | LogicalOp::SetProperty { input, .. }
-        | LogicalOp::Unwind { input, .. } => {
+        | LogicalOp::Unwind { input, .. }
+        | LogicalOp::MaterializePath { input, .. } => {
             format_plan_tree(conn, input, depth + 1, lines);
         }
         LogicalOp::CrossProduct { left, right }
+        | LogicalOp::CorrelatedJoin {
+            input: left, right, ..
+        }
         | LogicalOp::LeftOuterJoin {
             input: left, right, ..
         } => {

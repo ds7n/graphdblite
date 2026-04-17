@@ -292,47 +292,6 @@ List3 - List Equality::[6] Equality between different nested lists with null sho
 List3 - List Equality::[7] Equality between almost equal nested lists with null should return null
 List4 - List Concatenation::[1] Concatenating lists of same type
 List4 - List Concatenation::[2] Concatenating a list with a scalar of same type
-List5 - List Membership Validation - IN Operator::[10] IN should return true when types of LHS and RHS match - list
-List5 - List Membership Validation - IN Operator::[11] IN should return false when order of elements in LHS list and RHS list don't match
-List5 - List Membership Validation - IN Operator::[12] IN with different length lists should return false
-List5 - List Membership Validation - IN Operator::[13] IN should return false when matching a list with a nested list with same elements
-List5 - List Membership Validation - IN Operator::[14] IN should return true when both LHS and RHS contain nested lists
-List5 - List Membership Validation - IN Operator::[15] IN should return true when both LHS and RHS contain a nested list alongside a scalar element
-List5 - List Membership Validation - IN Operator::[16] IN should return true when LHS and RHS contain a nested list - singleton version
-List5 - List Membership Validation - IN Operator::[17] IN should return true when LHS and RHS contain a nested list
-List5 - List Membership Validation - IN Operator::[18] IN should return false when LHS contains a nested list and type mismatch on RHS - singleton version
-List5 - List Membership Validation - IN Operator::[19] IN should return false when LHS contains a nested list and type mismatch on RHS
-List5 - List Membership Validation - IN Operator::[1] IN should work with nested list subscripting
-List5 - List Membership Validation - IN Operator::[20] IN should return null if LHS and RHS are null
-List5 - List Membership Validation - IN Operator::[21] IN should return null if LHS and RHS are null - list version
-List5 - List Membership Validation - IN Operator::[22] IN should return null when LHS and RHS both ultimately contain null, even if LHS and RHS are of different types (nested list and flat list)
-List5 - List Membership Validation - IN Operator::[23] IN with different length lists should return false despite nulls
-List5 - List Membership Validation - IN Operator::[24] IN should return true if match despite nulls
-List5 - List Membership Validation - IN Operator::[25] IN should return null if comparison with null is required
-List5 - List Membership Validation - IN Operator::[26] IN should return true if correct list found despite other lists having nulls
-List5 - List Membership Validation - IN Operator::[27] IN should return true if correct list found despite null being another element within containing list
-List5 - List Membership Validation - IN Operator::[28] IN should return false if no match can be found, despite nulls
-List5 - List Membership Validation - IN Operator::[29] IN should return null if comparison with null is required, list version
-List5 - List Membership Validation - IN Operator::[2] IN should work with nested literal list subscripting
-List5 - List Membership Validation - IN Operator::[30] IN should return false if different length lists compared, even if the extra element is null
-List5 - List Membership Validation - IN Operator::[31] IN should return null when comparing two so-called identical lists where one element is null
-List5 - List Membership Validation - IN Operator::[32] IN should return true with previous null match, list version
-List5 - List Membership Validation - IN Operator::[33] IN should return false if different length lists with nested elements compared, even if the extra element is null
-List5 - List Membership Validation - IN Operator::[34] IN should return null if comparison with null is required, list version 2
-List5 - List Membership Validation - IN Operator::[35] IN should work with an empty list
-List5 - List Membership Validation - IN Operator::[36] IN should return false for the empty list if the LHS and RHS types differ
-List5 - List Membership Validation - IN Operator::[37] IN should work with an empty list in the presence of other list elements: matching
-List5 - List Membership Validation - IN Operator::[38] IN should work with an empty list in the presence of other list elements: not matching
-List5 - List Membership Validation - IN Operator::[39] IN should work with an empty list when comparing nested lists
-List5 - List Membership Validation - IN Operator::[3] IN should work with list slices
-List5 - List Membership Validation - IN Operator::[40] IN should return null if comparison with null is required for empty list
-List5 - List Membership Validation - IN Operator::[41] IN should return true when LHS and RHS contain nested list with multiple empty lists
-List5 - List Membership Validation - IN Operator::[4] IN should work with literal list slices
-List5 - List Membership Validation - IN Operator::[5] IN should return false when matching a number with a string
-List5 - List Membership Validation - IN Operator::[6] IN should return false when matching a number with a string - list version
-List5 - List Membership Validation - IN Operator::[7] IN should return false when types of LHS and RHS don't match - singleton list
-List5 - List Membership Validation - IN Operator::[8] IN should return false when types of LHS and RHS don't match - list
-List5 - List Membership Validation - IN Operator::[9] IN should return true when types of LHS and RHS match - singleton list
 List6 - List size::[10] Get node degree via size of pattern comprehension that specifies multiple relationship types
 List6 - List size::[2] Setting and returning the size of a list property
 List6 - List size::[3] Concatenating and returning the size of literal lists
@@ -1198,3 +1157,10 @@ WithWhere6 - Filter on aggregates::[1] Filter a single aggregate
 WithWhere7 - Variable visibility under aliasing::[1] WHERE sees a variable bound before but not after WITH
 WithWhere7 - Variable visibility under aliasing::[2] WHERE sees a variable bound after but not before WITH
 WithWhere7 - Variable visibility under aliasing::[3] WHERE sees both, variable bound before but not after WITH and variable bound after but not before WITH
+List5 - List Membership Validation - IN Operator::[1] IN should work with nested list subscripting
+List5 - List Membership Validation - IN Operator::[3] IN should work with list slices
+List5 - List Membership Validation - IN Operator::[21] IN should return null if LHS and RHS are null - list version
+List5 - List Membership Validation - IN Operator::[29] IN should return null if comparison with null is required, list version
+List5 - List Membership Validation - IN Operator::[31] IN should return null when comparing two so-called identical lists where one element is null
+List5 - List Membership Validation - IN Operator::[34] IN should return null if comparison with null is required, list version 2
+List5 - List Membership Validation - IN Operator::[42] Failing when using IN on a non-list literal

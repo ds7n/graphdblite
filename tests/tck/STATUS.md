@@ -10,10 +10,10 @@ Full openCypher TCK vendored (220 feature files, commit `677cbaf`).
 191 features parsed (1 parse error: Match5.feature)
 3868 total scenario instances (incl. outline expansions)
 1630 unique Feature::Scenario pairs
-  439 passed
- 1191 skiplisted (known failures)
+  473 passed
+ 1157 skiplisted (known failures)
  ────
-  439/1630 unique scenarios passing (26.9%)
+  473/1630 unique scenarios passing (29.0%)
 ```
 
 ## Pass rate by area
@@ -26,6 +26,7 @@ Regenerate with: `cargo test --test tck 2>&1 > /tmp/tck_output.txt && uv run tes
 | String | 4 | 32 | 88% | |
 | ReturnSkipLimit | 7 | 31 | 77% | Pagination |
 | Literals | 32 | 131 | 76% | Hex/octal landed |
+| List | 67 | 108 | 38% | IN operator in expr context landed |
 | Union | 4 | 12 | 67% | |
 | ReturnOrderBy | 14 | 35 | 60% | |
 | With | 14 | 29 | 52% | |
@@ -48,7 +49,6 @@ Regenerate with: `cargo test --test tck 2>&1 > /tmp/tck_output.txt && uv run tes
 | Merge | 66 | 75 | 12% | |
 | Boolean | 32 | 36 | 11% | |
 | WithOrderBy | 102 | 111 | 8% | Sorting |
-| List | 101 | 108 | 6% | Indexing/slicing landed |
 | Set | 50 | 53 | 6% | |
 | Quantifier | 96 | 100 | 4% | ALL/ANY/NONE predicates |
 | Aggregation | 26 | 27 | 4% | |
@@ -71,16 +71,16 @@ scenarios unblocked when combined with at most one other fix.
 | Sole | Impact | Construct | Notes |
 |-----:|-------:|-----------|-------|
 | 151 | 321 | Write-clause RETURN (CREATE/MERGE ... RETURN) | #1 lever — parser/planner |
-| 44 | 56 | `IN [list]` expression | WHERE x IN [...] |
 | 36 | 55 | Temporal types | datetime(), date(), duration(), etc. |
 | 33 | 53 | Quantifier predicates | single(), none(), any(), all() |
 | 29 | 44 | CREATE (no RETURN, result handling) | Writes return empty vs rows |
 | 10 | 34 | IS NULL / IS NOT NULL | |
+| 10 | 21 | `IN [list]` expression | Remaining: standalone WITH, null semantics |
 | 9 | 16 | Parameter `$param` support | |
 | 8 | 24 | ORDER BY | |
 | 8 | 14 | NOT prefix | bool_expr in expr context |
 | 8 | 11 | XOR operator | Implemented; blocked by expr/bool_expr split |
-| 8 | 9 | List slicing `[a..b]` | Implemented; blocked by standalone WITH |
+| 8 | 8 | List slicing `[a..b]` | Implemented; blocked by standalone WITH |
 | 7 | 20 | List functions | range(), reverse(), tail(), head(), etc. |
 | 7 | 19 | String functions | toString(), toInteger(), replace(), etc. |
 | 6 | 35 | Aggregation (sum/avg/min/max/collect) | Beyond count() |
@@ -90,24 +90,12 @@ scenarios unblocked when combined with at most one other fix.
 | — | 23 | Variable-length relationships `[*]` | |
 | — | 19 | DELETE / DETACH DELETE | |
 
-123 skiplisted scenarios have no detected missing construct — these are
+124 skiplisted scenarios have no detected missing construct — these are
 likely harness comparison bugs or subtle execution-order issues.
-
-## Failure modes (2964 failing steps)
-
-| Count | Root cause |
-|------:|------------|
-| 2451 | Parser rejects valid Cypher (87% of failures) |
-| 167 | Wrong result values (execution logic) |
-| 121 | Parse error (missing grammar production) |
-| 115 | Expected error not raised (missing validation) |
-| 21 | Write clause returns rows instead of empty |
-| 19 | Named graph loading (multi-statement CREATE) |
-| 3 | Harness compare parser can't parse expected value |
 
 ## Skiplist
 
-`skiplist.txt` lists 1191 known-failing `Feature::Scenario` pairs.
+`skiplist.txt` lists 1157 known-failing `Feature::Scenario` pairs.
 The harness filters these out and exits non-zero only if a *non-skiplisted*
 scenario fails — making the TCK a regression gate.
 

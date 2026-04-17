@@ -958,7 +958,6 @@ fn parse_bool_factor(pair: pest::iterators::Pair<Rule>) -> crate::types::Result<
 }
 
 fn parse_bool_primary(pair: pest::iterators::Pair<Rule>) -> crate::types::Result<Expr> {
-    // bool_primary = { is_null_check | comparison | "(" ~ bool_expr ~ ")" }
     let inner = pair.into_inner().next().unwrap();
     match inner.as_rule() {
         Rule::case_expr => parse_case_expr(inner),
@@ -977,8 +976,8 @@ fn parse_bool_primary(pair: pest::iterators::Pair<Rule>) -> crate::types::Result
 
 fn parse_in_check(pair: pest::iterators::Pair<Rule>) -> crate::types::Result<Expr> {
     let mut children = pair.into_inner();
-    let left = parse_expr(children.next().unwrap())?;
-    let right = parse_expr(children.next().unwrap())?;
+    let left = parse_add_expr(children.next().unwrap())?;
+    let right = parse_add_expr(children.next().unwrap())?;
     Ok(Expr::BinaryOp {
         left: Box::new(left),
         op: BinOp::In,
@@ -1092,13 +1091,27 @@ fn parse_comp_op(pair: pest::iterators::Pair<Rule>) -> crate::types::Result<BinO
 }
 
 fn parse_expr(pair: pest::iterators::Pair<Rule>) -> crate::types::Result<Expr> {
-    // expr = { add_expr }
     let inner = pair.into_inner().next().unwrap();
     match inner.as_rule() {
+        Rule::in_expr => parse_in_expr(inner),
         Rule::add_expr => parse_add_expr(inner),
-        // Fallback for cases where expr directly contains an atom.
         _ => parse_atom_expr(inner),
     }
+}
+
+fn parse_in_expr(pair: pest::iterators::Pair<Rule>) -> crate::types::Result<Expr> {
+    let mut children: Vec<_> = pair.into_inner().collect();
+    if children.len() == 1 {
+        return parse_add_expr(children.remove(0));
+    }
+    // in_expr = { add_expr ~ (IN ~ add_expr)? }
+    let left = parse_add_expr(children.remove(0))?;
+    let right = parse_add_expr(children.remove(0))?;
+    Ok(Expr::BinaryOp {
+        left: Box::new(left),
+        op: BinOp::In,
+        right: Box::new(right),
+    })
 }
 
 fn parse_add_expr(pair: pest::iterators::Pair<Rule>) -> crate::types::Result<Expr> {
@@ -1211,6 +1224,8 @@ fn parse_atom_expr(pair: pest::iterators::Pair<Rule>) -> crate::types::Result<Ex
         Rule::variable => Ok(Expr::Variable(
             pair.into_inner().next().unwrap().as_str().to_string(),
         )),
+        Rule::expr => parse_expr(pair),
+        Rule::in_expr => parse_in_expr(pair),
         Rule::add_expr => parse_add_expr(pair),
         Rule::mul_expr => parse_mul_expr(pair),
         _ => Err(GraphError::Serialization(format!(

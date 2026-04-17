@@ -169,7 +169,8 @@ limit_clause = { ^"LIMIT" ~ integer }
 
 // === Expressions ===
 
-bool_expr = { bool_term ~ (or_op ~ bool_term)* }
+bool_expr = { xor_term ~ (or_op ~ xor_term)* }
+xor_term = { bool_term ~ (xor_op ~ bool_term)* }
 bool_term = { bool_factor ~ (and_op ~ bool_factor)* }
 bool_factor = { not_op? ~ bool_primary }
 bool_primary = { case_expr | exists_subquery | is_not_null_check | is_null_check | in_check | comparison | "(" ~ bool_expr ~ ")" }
@@ -192,6 +193,7 @@ is_not_null_check = { expr ~ ^"IS" ~ ^"NOT" ~ ^"NULL" }
 comparison = { expr ~ comp_op ~ expr }
 
 or_op = { ^"OR" }
+xor_op = { ^"XOR" }
 and_op = { ^"AND" }
 not_op = { ^"NOT" }
 
@@ -205,7 +207,13 @@ add_expr = { mul_expr ~ (add_op ~ mul_expr)* }
 mul_expr = { atom_expr ~ (mul_op ~ atom_expr)* }
 add_op = { "+" | "-" }
 mul_op = { "*" | "/" }
-atom_expr = { case_expr | function_call | property_access | literal | list_comprehension | list_literal | map_literal | star | parameter | "(" ~ add_expr ~ ")" | variable }
+atom_expr = { atom_primary ~ subscript* }
+atom_primary = _{ case_expr | function_call | property_access | literal | list_comprehension | list_literal | map_literal | star | parameter | "(" ~ add_expr ~ ")" | variable }
+subscript = { "[" ~ subscript_inner ~ "]" }
+subscript_inner = { slice_full | slice_from | slice_to | expr }
+slice_full = { expr ~ ".." ~ expr }
+slice_from = { expr ~ ".." }
+slice_to = { ".." ~ expr }
 
 parameter = { "$" ~ ident }
 
@@ -246,7 +254,7 @@ keyword = {
      ^"MERGE" | ^"ORDER" | ^"BY" | ^"SKIP" | ^"LIMIT" | ^"AND" | ^"OR" | ^"NOT" |
      ^"AS" | ^"IS" | ^"ON" | ^"ASC" | ^"DESC" | ^"STARTS" | ^"ENDS" | ^"WITH" | ^"CONTAINS" |
      ^"OPTIONAL" | ^"UNWIND" | ^"TRUE" | ^"FALSE" | ^"NULL" |
-     ^"CASE" | ^"WHEN" | ^"THEN" | ^"ELSE" | ^"END" | ^"EXISTS" | ^"IN" | ^"DISTINCT" | ^"UNION" | ^"ALL" |
+     ^"CASE" | ^"WHEN" | ^"THEN" | ^"ELSE" | ^"END" | ^"EXISTS" | ^"IN" | ^"DISTINCT" | ^"UNION" | ^"ALL" | ^"XOR" |
      ^"shortestPath" | ^"allShortestPaths" | ^"EXPLAIN" |
      ^"count" | ^"sum" | ^"avg" | ^"min" | ^"max" | ^"collect" | ^"length" | ^"nodes")
     ~ !(ASCII_ALPHANUMERIC | "_")
@@ -254,7 +262,9 @@ keyword = {
 
 literal = { float_literal | integer_literal | string_literal | bool_literal | null_literal }
 
-integer_literal = @{ "-"? ~ ASCII_DIGIT+ }
+integer_literal = @{ "-"? ~ (hex_integer | octal_integer | ASCII_DIGIT+) }
+hex_integer = { ("0x" | "0X") ~ ASCII_HEX_DIGIT+ }
+octal_integer = { ("0o" | "0O") ~ ASCII_OCT_DIGIT+ }
 float_literal = @{ "-"? ~ ASCII_DIGIT+ ~ "." ~ ASCII_DIGIT+ }
 string_literal = ${ "'" ~ string_inner ~ "'" }
 string_inner = @{ (!"'" ~ !"\\" ~ ANY | "\\" ~ ANY)* }

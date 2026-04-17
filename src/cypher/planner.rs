@@ -779,6 +779,19 @@ fn check_expr_variables(expr: &Expr, scope: &HashSet<String>) -> crate::types::R
                 check_expr_variables(v, scope)?;
             }
         }
+        Expr::Index { expr, index } => {
+            check_expr_variables(expr, scope)?;
+            check_expr_variables(index, scope)?;
+        }
+        Expr::Slice { expr, start, end } => {
+            check_expr_variables(expr, scope)?;
+            if let Some(s) = start {
+                check_expr_variables(s, scope)?;
+            }
+            if let Some(e) = end {
+                check_expr_variables(e, scope)?;
+            }
+        }
         Expr::Literal(_) | Expr::Parameter(_) | Expr::Star => {}
         Expr::ListComprehension { list_expr, .. } => {
             check_expr_variables(list_expr, scope)?;

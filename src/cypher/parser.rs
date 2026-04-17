@@ -852,25 +852,53 @@ fn parse_assignment_list(
 // === Expression parsing ===
 
 fn parse_bool_expr(pair: pest::iterators::Pair<Rule>) -> crate::types::Result<Expr> {
-    // bool_expr = { bool_term ~ (or_op ~ bool_term)* }
+    // bool_expr = { xor_term ~ (or_op ~ xor_term)* }
+    let mut children: Vec<pest::iterators::Pair<Rule>> = pair.into_inner().collect();
+
+    if children.len() == 1 {
+        return parse_xor_term(children.remove(0));
+    }
+
+    // Left-associative OR chain.
+    let mut left = parse_xor_term(children.remove(0))?;
+    let mut i = 0;
+    while i < children.len() {
+        if children[i].as_rule() == Rule::or_op {
+            i += 1;
+            let right = parse_xor_term(children.remove(i))?;
+            children.remove(i - 1); // remove or_op
+            i -= 1;
+            left = Expr::BinaryOp {
+                left: Box::new(left),
+                op: BinOp::Or,
+                right: Box::new(right),
+            };
+        } else {
+            i += 1;
+        }
+    }
+    Ok(left)
+}
+
+fn parse_xor_term(pair: pest::iterators::Pair<Rule>) -> crate::types::Result<Expr> {
+    // xor_term = { bool_term ~ (xor_op ~ bool_term)* }
     let mut children: Vec<pest::iterators::Pair<Rule>> = pair.into_inner().collect();
 
     if children.len() == 1 {
         return parse_bool_term(children.remove(0));
     }
 
-    // Left-associative OR chain.
     let mut left = parse_bool_term(children.remove(0))?;
     let mut i = 0;
     while i < children.len() {
-        if children[i].as_rule() == Rule::or_op {
+        if children[i].as_rule() == Rule::xor_op {
             i += 1;
             let right = parse_bool_term(children.remove(i))?;
-            children.remove(i - 1); // remove or_op
+            children.remove(i - 1);
             i -= 1;
             left = Expr::BinaryOp {
                 left: Box::new(left),
-                op: BinOp::Or,
+                op: BinOp::Xor,
                 right: Box::new(right),
             };
         } else {
@@ -1133,8 +1161,16 @@ fn parse_mul_expr(pair: pest::iterators::Pair<Rule>) -> crate::types::Result<Exp
 fn parse_atom_expr(pair: pest::iterators::Pair<Rule>) -> crate::types::Result<Expr> {
     match pair.as_rule() {
         Rule::atom_expr => {
-            let inner = pair.into_inner().next().unwrap();
-            parse_atom_expr(inner)
+            let mut children = pair.into_inner();
+            let primary = children.next().unwrap();
+            let mut expr = parse_atom_expr(primary)?;
+            // Apply postfix subscript/slice operators.
+            for sub in children {
+                if sub.as_rule() == Rule::subscript {
+                    expr = parse_subscript(expr, sub)?;
+                }
+            }
+            Ok(expr)
         }
         Rule::case_expr => parse_case_expr(pair),
         Rule::function_call => parse_function_call(pair),
@@ -1184,6 +1220,58 @@ fn parse_atom_expr(pair: pest::iterators::Pair<Rule>) -> crate::types::Result<Ex
     }
 }
 
+fn parse_subscript(base: Expr, pair: pest::iterators::Pair<Rule>) -> crate::types::Result<Expr> {
+    let inner = pair
+        .into_inner()
+        .next()
+        .unwrap() // subscript_inner
+        .into_inner()
+        .next()
+        .unwrap();
+    match inner.as_rule() {
+        Rule::slice_full => {
+            let mut exprs = inner.into_inner().filter(|p| p.as_rule() == Rule::expr);
+            let start = parse_expr(exprs.next().unwrap())?;
+            let end = parse_expr(exprs.next().unwrap())?;
+            Ok(Expr::Slice {
+                expr: Box::new(base),
+                start: Some(Box::new(start)),
+                end: Some(Box::new(end)),
+            })
+        }
+        Rule::slice_from => {
+            let start_pair = inner
+                .into_inner()
+                .find(|p| p.as_rule() == Rule::expr)
+                .unwrap();
+            Ok(Expr::Slice {
+                expr: Box::new(base),
+                start: Some(Box::new(parse_expr(start_pair)?)),
+                end: None,
+            })
+        }
+        Rule::slice_to => {
+            let end_pair = inner
+                .into_inner()
+                .find(|p| p.as_rule() == Rule::expr)
+                .unwrap();
+            Ok(Expr::Slice {
+                expr: Box::new(base),
+                start: None,
+                end: Some(Box::new(parse_expr(end_pair)?)),
+            })
+        }
+        Rule::expr => Ok(Expr::Index {
+            expr: Box::new(base),
+            index: Box::new(parse_expr(inner)?),
+        }),
+        _ => Err(GraphError::Serialization(format!(
+            "unexpected subscript: {:?}",
+            inner.as_rule()
+        ))),
+    }
+}
+
 fn parse_function_call(pair: pest::iterators::Pair<Rule>) -> crate::types::Result<Expr> {
     let mut name = String::new();
     let mut args = Vec::new();
@@ -1214,14 +1302,53 @@ fn parse_function_call(pair: pest::iterators::Pair<Rule>) -> crate::types::Resul
     Ok(Expr::FunctionCall { name, args })
 }
 
+/// Parse an integer literal string, handling decimal, hex (0x), and octal (0o) formats.
+fn parse_integer_literal(s: &str) -> Result<i64, String> {
+    let (negative, digits) = if let Some(rest) = s.strip_prefix('-') {
+        (true, rest)
+    } else {
+        (false, s)
+    };
+    if let Some(hex) = digits
+        .strip_prefix("0x")
+        .or_else(|| digits.strip_prefix("0X"))
+    {
+        let abs = u64::from_str_radix(hex, 16).map_err(|e| e.to_string())?;
+        negate_unsigned(abs, negative)
+    } else if let Some(oct) = digits
+        .strip_prefix("0o")
+        .or_else(|| digits.strip_prefix("0O"))
+    {
+        let abs = u64::from_str_radix(oct, 8).map_err(|e| e.to_string())?;
+        negate_unsigned(abs, negative)
+    } else {
+        // Parse the full string (including sign) to correctly handle i64::MIN.
+        s.parse::<i64>().map_err(|e| e.to_string())
+    }
+}
+
+/// Convert unsigned value with sign to i64, handling the i64::MIN edge case.
+fn negate_unsigned(abs: u64, negative: bool) -> Result<i64, String> {
+    if negative {
+        if abs == (i64::MAX as u64) + 1 {
+            Ok(i64::MIN)
+        } else if abs <= i64::MAX as u64 {
+            Ok(-(abs as i64))
+        } else {
+            Err("integer overflow".to_string())
+        }
+    } else {
+        i64::try_from(abs).map_err(|e| e.to_string())
+    }
+}
+
 fn parse_literal(pair: pest::iterators::Pair<Rule>) -> crate::types::Result<Expr> {
     let inner = pair.into_inner().next().unwrap();
     match inner.as_rule() {
         Rule::integer_literal => {
-            let n: i64 = inner
-                .as_str()
-                .parse()
-                .map_err(|e| GraphError::syntax(format!("integer overflow: {e}")))?;
+            let s = inner.as_str();
+            let n: i64 = parse_integer_literal(s)
+                .map_err(|e| GraphError::syntax(format!("invalid integer literal: {e}")))?;
             Ok(Expr::Literal(LiteralValue::I64(n)))
         }
         Rule::float_literal => {
@@ -1297,7 +1424,7 @@ fn humanize_rule_name(rule: &str) -> &str {
         "expr" | "add_expr" | "mul_expr" | "atom_expr" => {
             "an expression (property, literal, or function call)"
         }
-        "bool_expr" | "bool_primary" | "bool_factor" | "bool_term" => "a condition",
+        "bool_expr" | "bool_primary" | "bool_factor" | "bool_term" | "xor_term" => "a condition",
         "comparison" => "a comparison (=, <>, <, >, <=, >=)",
         "ident" => "an identifier",
         "pattern" | "pattern_list" | "pattern_item" => "a graph pattern like (n:Label)",
@@ -1450,6 +1577,25 @@ fn resolve_expr(expr: &Expr, params: &HashMap<String, Value>) -> crate::types::R
                 .collect();
             Ok(Expr::MapLiteral(resolved?))
         }
+        Expr::Index { expr: e, index } => Ok(Expr::Index {
+            expr: Box::new(resolve_expr(e, params)?),
+            index: Box::new(resolve_expr(index, params)?),
+        }),
+        Expr::Slice {
+            expr: e,
+            start,
+            end,
+        } => Ok(Expr::Slice {
+            expr: Box::new(resolve_expr(e, params)?),
+            start: start
+                .as_ref()
+                .map(|s| resolve_expr(s, params).map(Box::new))
+                .transpose()?,
+            end: end
+                .as_ref()
+                .map(|e_val| resolve_expr(e_val, params).map(Box::new))
+                .transpose()?,
+        }),
         // Leaf nodes that contain no sub-expressions.
         Expr::Literal(_) | Expr::Property(_, _) | Expr::Variable(_) | Expr::Star => {
             Ok(expr.clone())

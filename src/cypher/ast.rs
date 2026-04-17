@@ -271,6 +271,14 @@ pub enum Expr {
     /// source order for error messages; evaluation sorts them into a
     /// BTreeMap.
     MapLiteral(Vec<(String, Expr)>),
+    /// List index: expr[index]
+    Index { expr: Box<Expr>, index: Box<Expr> },
+    /// List slice: expr[start..end] (either bound may be None)
+    Slice {
+        expr: Box<Expr>,
+        start: Option<Box<Expr>>,
+        end: Option<Box<Expr>>,
+    },
     /// Wildcard * (used in count(*) and RETURN *)
     Star,
 }
@@ -294,6 +302,7 @@ pub enum BinOp {
     Gte,
     And,
     Or,
+    Xor,
     StartsWith,
     EndsWith,
     Contains,

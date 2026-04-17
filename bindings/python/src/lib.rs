@@ -408,8 +408,8 @@ impl PyWriteTransaction {
         let mut ids = Vec::with_capacity(nodes.len());
         for dict in &nodes {
             let props = py_dict_to_properties(dict)?;
-            let id =
-                graphdblite::node::create_node(conn, &[label.to_string()], props.clone()).map_err(to_py_err)?;
+            let id = graphdblite::node::create_node(conn, &[label.to_string()], props.clone())
+                .map_err(to_py_err)?;
             graphdblite::index::update_indexes_for_node(conn, id, label, None, &props)
                 .map_err(to_py_err)?;
             ids.push(id.0);

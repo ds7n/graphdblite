@@ -54,18 +54,26 @@ pub struct WithClause {
     pub where_clause: Option<Expr>,
 }
 
-/// CREATE (n:Label {props})-[:TYPE]->(m:Label)
+/// CREATE (n:Label {props})-[:TYPE]->(m:Label) [RETURN ...]
 #[derive(Debug, Clone, PartialEq)]
 pub struct CreateStatement {
     pub patterns: Vec<Pattern>,
+    pub return_clause: Option<ReturnClause>,
+    pub order_by: Vec<SortItem>,
+    pub skip: Option<u64>,
+    pub limit: Option<u64>,
 }
 
-/// MATCH ... CREATE (a)-[:TYPE]->(b)
+/// MATCH ... CREATE (a)-[:TYPE]->(b) [RETURN ...]
 #[derive(Debug, Clone, PartialEq)]
 pub struct MatchCreateStatement {
     pub patterns: Vec<Pattern>,
     pub where_clause: Option<Expr>,
     pub create_patterns: Vec<Pattern>,
+    pub return_clause: Option<ReturnClause>,
+    pub order_by: Vec<SortItem>,
+    pub skip: Option<u64>,
+    pub limit: Option<u64>,
 }
 
 /// MATCH ... [DETACH] DELETE n, m
@@ -86,7 +94,7 @@ pub struct SetStatement {
     pub assignments: Vec<Assignment>,
 }
 
-/// MATCH ... MERGE pattern ON CREATE SET ... ON MATCH SET ...
+/// MATCH ... MERGE pattern ON CREATE SET ... ON MATCH SET ... [RETURN ...]
 #[derive(Debug, Clone, PartialEq)]
 pub struct MatchMergeStatement {
     pub patterns: Vec<Pattern>,
@@ -94,14 +102,22 @@ pub struct MatchMergeStatement {
     pub merge_pattern: Pattern,
     pub on_create: Vec<Assignment>,
     pub on_match: Vec<Assignment>,
+    pub return_clause: Option<ReturnClause>,
+    pub order_by: Vec<SortItem>,
+    pub skip: Option<u64>,
+    pub limit: Option<u64>,
 }
 
-/// MERGE (n:Label {props}) ON CREATE SET ... ON MATCH SET ...
+/// MERGE (n:Label {props}) ON CREATE SET ... ON MATCH SET ... [RETURN ...]
 #[derive(Debug, Clone, PartialEq)]
 pub struct MergeStatement {
     pub pattern: Pattern,
     pub on_create: Vec<Assignment>,
     pub on_match: Vec<Assignment>,
+    pub return_clause: Option<ReturnClause>,
+    pub order_by: Vec<SortItem>,
+    pub skip: Option<u64>,
+    pub limit: Option<u64>,
 }
 
 /// UNWIND expr AS alias [WHERE ...] RETURN ... / CREATE ...
@@ -124,6 +140,10 @@ pub enum UnwindBody {
     },
     Create {
         patterns: Vec<Pattern>,
+        return_clause: Option<ReturnClause>,
+        order_by: Vec<SortItem>,
+        skip: Option<u64>,
+        limit: Option<u64>,
     },
 }
 

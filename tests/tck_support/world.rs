@@ -36,14 +36,45 @@ impl GraphCounts {
                 |r| r.get(0),
             )
             .unwrap_or(0);
-        // Property count is approximated as node-count + edge-count * property-map-size,
-        // which we can't cheaply compute without deserializing every row. Leave at 0
-        // and refine when a scenario actually asserts on it.
+        // Count properties by iterating all node and edge property blobs.
+        // NodeRecord is pub(crate), so we define a local mirror for deserialization.
+        #[derive(serde::Deserialize)]
+        struct NodeBlob {
+            #[allow(dead_code)]
+            labels: Vec<String>,
+            properties: HashMap<String, graphdblite::Value>,
+        }
+        let node_props: i64 = {
+            let mut stmt = conn.prepare("SELECT value FROM nodes").unwrap();
+            let mut rows = stmt.query([]).unwrap();
+            let mut count: i64 = 0;
+            while let Some(row) = rows.next().unwrap() {
+                let data: Vec<u8> = row.get(0).unwrap();
+                if let Ok(rec) = rmp_serde::from_slice::<NodeBlob>(&data) {
+                    count += rec.properties.len() as i64;
+                }
+            }
+            count
+        };
+        let edge_property_count: i64 = {
+            let mut stmt = conn.prepare("SELECT value FROM edge_props").unwrap();
+            let mut rows = stmt.query([]).unwrap();
+            let mut count: i64 = 0;
+            while let Some(row) = rows.next().unwrap() {
+                let data: Vec<u8> = row.get(0).unwrap();
+                if let Ok(props) =
+                    rmp_serde::from_slice::<HashMap<String, graphdblite::Value>>(&data)
+                {
+                    count += props.len() as i64;
+                }
+            }
+            count
+        };
         Self {
             nodes,
             relationships,
             labels,
-            properties: 0,
+            properties: node_props + edge_property_count,
         }
     }
 
@@ -62,6 +93,14 @@ impl GraphCounts {
         );
         m.insert("+labels".into(), (after.labels - self.labels).max(0));
         m.insert("-labels".into(), (self.labels - after.labels).max(0));
+        m.insert(
+            "+properties".into(),
+            (after.properties - self.properties).max(0),
+        );
+        m.insert(
+            "-properties".into(),
+            (self.properties - after.properties).max(0),
+        );
         m
     }
 }

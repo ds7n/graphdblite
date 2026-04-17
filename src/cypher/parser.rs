@@ -226,16 +226,34 @@ fn parse_return_stmt(pair: pest::iterators::Pair<Rule>) -> crate::types::Result<
 
 fn parse_create(pair: pest::iterators::Pair<Rule>) -> crate::types::Result<CreateStatement> {
     let mut patterns = Vec::new();
+    let mut return_clause = None;
+    let mut order_by = Vec::new();
+    let mut skip = None;
+    let mut limit = None;
+
     for inner in pair.into_inner() {
-        if inner.as_rule() == Rule::create_pattern_list {
-            for pat in inner.into_inner() {
-                if pat.as_rule() == Rule::create_pattern {
-                    patterns.push(parse_pattern_inner(pat)?);
+        match inner.as_rule() {
+            Rule::create_pattern_list => {
+                for pat in inner.into_inner() {
+                    if pat.as_rule() == Rule::create_pattern {
+                        patterns.push(parse_pattern_inner(pat)?);
+                    }
                 }
             }
+            Rule::return_clause => return_clause = Some(parse_return(inner)?),
+            Rule::order_by_clause => order_by = parse_order_by(inner)?,
+            Rule::skip_clause => skip = Some(parse_skip(inner)?),
+            Rule::limit_clause => limit = Some(parse_limit(inner)?),
+            _ => {}
         }
     }
-    Ok(CreateStatement { patterns })
+    Ok(CreateStatement {
+        patterns,
+        return_clause,
+        order_by,
+        skip,
+        limit,
+    })
 }
 
 fn parse_match_create(
@@ -244,6 +262,10 @@ fn parse_match_create(
     let mut patterns = Vec::new();
     let mut where_clause = None;
     let mut create_patterns = Vec::new();
+    let mut return_clause = None;
+    let mut order_by = Vec::new();
+    let mut skip = None;
+    let mut limit = None;
 
     for inner in pair.into_inner() {
         match inner.as_rule() {
@@ -256,6 +278,10 @@ fn parse_match_create(
                     }
                 }
             }
+            Rule::return_clause => return_clause = Some(parse_return(inner)?),
+            Rule::order_by_clause => order_by = parse_order_by(inner)?,
+            Rule::skip_clause => skip = Some(parse_skip(inner)?),
+            Rule::limit_clause => limit = Some(parse_limit(inner)?),
             _ => {}
         }
     }
@@ -264,6 +290,10 @@ fn parse_match_create(
         patterns,
         where_clause,
         create_patterns,
+        return_clause,
+        order_by,
+        skip,
+        limit,
     })
 }
 
@@ -275,6 +305,10 @@ fn parse_match_merge(
     let mut merge_pattern = None;
     let mut on_create = Vec::new();
     let mut on_match = Vec::new();
+    let mut return_clause = None;
+    let mut order_by = Vec::new();
+    let mut skip = None;
+    let mut limit = None;
 
     for inner in pair.into_inner() {
         match inner.as_rule() {
@@ -295,6 +329,10 @@ fn parse_match_merge(
                     }
                 }
             }
+            Rule::return_clause => return_clause = Some(parse_return(inner)?),
+            Rule::order_by_clause => order_by = parse_order_by(inner)?,
+            Rule::skip_clause => skip = Some(parse_skip(inner)?),
+            Rule::limit_clause => limit = Some(parse_limit(inner)?),
             _ => {}
         }
     }
@@ -306,6 +344,10 @@ fn parse_match_merge(
             .ok_or_else(|| GraphError::Serialization("missing MERGE pattern".to_string()))?,
         on_create,
         on_match,
+        return_clause,
+        order_by,
+        skip,
+        limit,
     })
 }
 
@@ -373,6 +415,10 @@ fn parse_merge(pair: pest::iterators::Pair<Rule>) -> crate::types::Result<MergeS
     let mut pattern = None;
     let mut on_create = Vec::new();
     let mut on_match = Vec::new();
+    let mut return_clause = None;
+    let mut order_by = Vec::new();
+    let mut skip = None;
+    let mut limit = None;
 
     for inner in pair.into_inner() {
         match inner.as_rule() {
@@ -391,6 +437,10 @@ fn parse_merge(pair: pest::iterators::Pair<Rule>) -> crate::types::Result<MergeS
                     }
                 }
             }
+            Rule::return_clause => return_clause = Some(parse_return(inner)?),
+            Rule::order_by_clause => order_by = parse_order_by(inner)?,
+            Rule::skip_clause => skip = Some(parse_skip(inner)?),
+            Rule::limit_clause => limit = Some(parse_limit(inner)?),
             _ => {}
         }
     }
@@ -400,6 +450,10 @@ fn parse_merge(pair: pest::iterators::Pair<Rule>) -> crate::types::Result<MergeS
             .ok_or_else(|| GraphError::Serialization("missing MERGE pattern".to_string()))?,
         on_create,
         on_match,
+        return_clause,
+        order_by,
+        skip,
+        limit,
     })
 }
 
@@ -694,16 +748,33 @@ fn parse_unwind(pair: pest::iterators::Pair<Rule>) -> crate::types::Result<Unwin
             }
             Rule::unwind_create => {
                 let mut patterns = Vec::new();
+                let mut return_clause = None;
+                let mut order_by = Vec::new();
+                let mut skip = None;
+                let mut limit = None;
                 for child in inner.into_inner() {
-                    if child.as_rule() == Rule::create_pattern_list {
-                        for pat in child.into_inner() {
-                            if pat.as_rule() == Rule::create_pattern {
-                                patterns.push(parse_pattern_inner(pat)?);
+                    match child.as_rule() {
+                        Rule::create_pattern_list => {
+                            for pat in child.into_inner() {
+                                if pat.as_rule() == Rule::create_pattern {
+                                    patterns.push(parse_pattern_inner(pat)?);
+                                }
                             }
                         }
+                        Rule::return_clause => return_clause = Some(parse_return(child)?),
+                        Rule::order_by_clause => order_by = parse_order_by(child)?,
+                        Rule::skip_clause => skip = Some(parse_skip(child)?),
+                        Rule::limit_clause => limit = Some(parse_limit(child)?),
+                        _ => {}
                     }
                 }
-                body = Some(UnwindBody::Create { patterns });
+                body = Some(UnwindBody::Create {
+                    patterns,
+                    return_clause,
+                    order_by,
+                    skip,
+                    limit,
+                });
             }
             _ => {}
         }
@@ -1752,6 +1823,33 @@ fn resolve_intermediate_clauses(
         .collect()
 }
 
+type ResolvedReturn = (
+    Option<ReturnClause>,
+    Vec<SortItem>,
+    Option<u64>,
+    Option<u64>,
+);
+
+fn resolve_optional_return(
+    return_clause: &Option<ReturnClause>,
+    order_by: &[SortItem],
+    skip: Option<u64>,
+    limit: Option<u64>,
+    params: &HashMap<String, Value>,
+) -> crate::types::Result<ResolvedReturn> {
+    let rc: Option<ReturnClause> = return_clause
+        .as_ref()
+        .map(|rc| -> crate::types::Result<ReturnClause> {
+            Ok(ReturnClause {
+                items: resolve_return_items(&rc.items, params)?,
+                distinct: rc.distinct,
+            })
+        })
+        .transpose()?;
+    let ob = resolve_sort_items(order_by, params)?;
+    Ok((rc, ob, skip, limit))
+}
+
 /// Substitute all `$name` parameters in a parsed statement with literal values.
 ///
 /// This must be called before planning so the planner can use literal values
@@ -1782,29 +1880,63 @@ pub fn resolve_params(
             skip: m.skip,
             limit: m.limit,
         })),
-        Statement::Create(c) => Ok(Statement::Create(CreateStatement {
-            patterns: resolve_patterns(&c.patterns, params)?,
-        })),
-        Statement::MatchCreate(mc) => Ok(Statement::MatchCreate(MatchCreateStatement {
-            patterns: resolve_patterns(&mc.patterns, params)?,
-            where_clause: mc
-                .where_clause
-                .as_ref()
-                .map(|e| resolve_expr(e, params))
-                .transpose()?,
-            create_patterns: resolve_patterns(&mc.create_patterns, params)?,
-        })),
-        Statement::MatchMerge(mm) => Ok(Statement::MatchMerge(MatchMergeStatement {
-            patterns: resolve_patterns(&mm.patterns, params)?,
-            where_clause: mm
-                .where_clause
-                .as_ref()
-                .map(|e| resolve_expr(e, params))
-                .transpose()?,
-            merge_pattern: resolve_pattern(&mm.merge_pattern, params)?,
-            on_create: resolve_assignments(&mm.on_create, params)?,
-            on_match: resolve_assignments(&mm.on_match, params)?,
-        })),
+        Statement::Create(c) => {
+            let (return_clause, order_by, skip, limit) =
+                resolve_optional_return(&c.return_clause, &c.order_by, c.skip, c.limit, params)?;
+            Ok(Statement::Create(CreateStatement {
+                patterns: resolve_patterns(&c.patterns, params)?,
+                return_clause,
+                order_by,
+                skip,
+                limit,
+            }))
+        }
+        Statement::MatchCreate(mc) => {
+            let (return_clause, order_by, skip, limit) = resolve_optional_return(
+                &mc.return_clause,
+                &mc.order_by,
+                mc.skip,
+                mc.limit,
+                params,
+            )?;
+            Ok(Statement::MatchCreate(MatchCreateStatement {
+                patterns: resolve_patterns(&mc.patterns, params)?,
+                where_clause: mc
+                    .where_clause
+                    .as_ref()
+                    .map(|e| resolve_expr(e, params))
+                    .transpose()?,
+                create_patterns: resolve_patterns(&mc.create_patterns, params)?,
+                return_clause,
+                order_by,
+                skip,
+                limit,
+            }))
+        }
+        Statement::MatchMerge(mm) => {
+            let (return_clause, order_by, skip, limit) = resolve_optional_return(
+                &mm.return_clause,
+                &mm.order_by,
+                mm.skip,
+                mm.limit,
+                params,
+            )?;
+            Ok(Statement::MatchMerge(MatchMergeStatement {
+                patterns: resolve_patterns(&mm.patterns, params)?,
+                where_clause: mm
+                    .where_clause
+                    .as_ref()
+                    .map(|e| resolve_expr(e, params))
+                    .transpose()?,
+                merge_pattern: resolve_pattern(&mm.merge_pattern, params)?,
+                on_create: resolve_assignments(&mm.on_create, params)?,
+                on_match: resolve_assignments(&mm.on_match, params)?,
+                return_clause,
+                order_by,
+                skip,
+                limit,
+            }))
+        }
         Statement::Delete(d) => Ok(Statement::Delete(DeleteStatement {
             patterns: resolve_patterns(&d.patterns, params)?,
             optional_patterns: d
@@ -1829,11 +1961,19 @@ pub fn resolve_params(
                 .transpose()?,
             assignments: resolve_assignments(&s.assignments, params)?,
         })),
-        Statement::Merge(m) => Ok(Statement::Merge(MergeStatement {
-            pattern: resolve_pattern(&m.pattern, params)?,
-            on_create: resolve_assignments(&m.on_create, params)?,
-            on_match: resolve_assignments(&m.on_match, params)?,
-        })),
+        Statement::Merge(m) => {
+            let (return_clause, order_by, skip, limit) =
+                resolve_optional_return(&m.return_clause, &m.order_by, m.skip, m.limit, params)?;
+            Ok(Statement::Merge(MergeStatement {
+                pattern: resolve_pattern(&m.pattern, params)?,
+                on_create: resolve_assignments(&m.on_create, params)?,
+                on_match: resolve_assignments(&m.on_match, params)?,
+                return_clause,
+                order_by,
+                skip,
+                limit,
+            }))
+        }
         Statement::Unwind(u) => {
             let body = match &u.body {
                 UnwindBody::Return {
@@ -1855,9 +1995,23 @@ pub fn resolve_params(
                     skip: *skip,
                     limit: *limit,
                 },
-                UnwindBody::Create { patterns } => UnwindBody::Create {
-                    patterns: resolve_patterns(patterns, params)?,
-                },
+                UnwindBody::Create {
+                    patterns,
+                    return_clause,
+                    order_by,
+                    skip,
+                    limit,
+                } => {
+                    let (rc, ob, s, l) =
+                        resolve_optional_return(return_clause, order_by, *skip, *limit, params)?;
+                    UnwindBody::Create {
+                        patterns: resolve_patterns(patterns, params)?,
+                        return_clause: rc,
+                        order_by: ob,
+                        skip: s,
+                        limit: l,
+                    }
+                }
             };
             Ok(Statement::Unwind(UnwindStatement {
                 expr: resolve_expr(&u.expr, params)?,

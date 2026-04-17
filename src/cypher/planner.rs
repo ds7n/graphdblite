@@ -7,6 +7,64 @@ use crate::cypher::ir::*;
 use crate::index;
 use crate::types::{Direction, GraphError};
 
+/// Apply RETURN projection (+ DISTINCT, ORDER BY, SKIP, LIMIT) to a plan operator.
+fn apply_return_projection(
+    mut op: LogicalOp,
+    return_clause: &ReturnClause,
+    order_by: &[SortItem],
+    skip: Option<u64>,
+    limit: Option<u64>,
+) -> crate::types::Result<LogicalOp> {
+    let has_aggregates = return_clause
+        .items
+        .iter()
+        .any(|item| is_aggregate_fn(&item.expr));
+
+    if has_aggregates {
+        let (group_keys, aggregates) = split_aggregates(&return_clause.items)?;
+        op = LogicalOp::Aggregate {
+            input: Box::new(op),
+            group_keys,
+            aggregates,
+        };
+    }
+
+    op = LogicalOp::Project {
+        input: Box::new(op),
+        items: return_clause.items.clone(),
+        emit_compound: true,
+    };
+
+    if return_clause.distinct {
+        op = LogicalOp::Distinct {
+            input: Box::new(op),
+        };
+    }
+
+    if !order_by.is_empty() {
+        op = LogicalOp::Sort {
+            input: Box::new(op),
+            items: order_by.to_vec(),
+        };
+    }
+
+    if let Some(count) = skip {
+        op = LogicalOp::Skip {
+            input: Box::new(op),
+            count,
+        };
+    }
+
+    if let Some(count) = limit {
+        op = LogicalOp::Limit {
+            input: Box::new(op),
+            count,
+        };
+    }
+
+    Ok(op)
+}
+
 /// Compile a Cypher AST Statement into a LogicalOp plan.
 pub fn plan(conn: &Connection, stmt: &Statement) -> crate::types::Result<LogicalOp> {
     match stmt {
@@ -243,11 +301,17 @@ fn plan_create(stmt: &CreateStatement) -> crate::types::Result<LogicalOp> {
         ops.extend(pattern_ops);
     }
 
-    if ops.len() == 1 {
-        Ok(ops.remove(0))
+    let mut op = if ops.len() == 1 {
+        ops.remove(0)
     } else {
-        Ok(LogicalOp::CreateSequence { ops })
+        LogicalOp::CreateSequence { ops }
+    };
+
+    if let Some(ref rc) = stmt.return_clause {
+        op = apply_return_projection(op, rc, &stmt.order_by, stmt.skip, stmt.limit)?;
     }
+
+    Ok(op)
 }
 
 fn plan_match_create(
@@ -268,10 +332,16 @@ fn plan_match_create(
         create_ops.extend(plan_create_pattern(pattern)?);
     }
 
-    Ok(LogicalOp::MatchCreate {
+    let mut result = LogicalOp::MatchCreate {
         input: Box::new(op),
         create_ops,
-    })
+    };
+
+    if let Some(ref rc) = stmt.return_clause {
+        result = apply_return_projection(result, rc, &stmt.order_by, stmt.skip, stmt.limit)?;
+    }
+
+    Ok(result)
 }
 
 fn plan_delete(conn: &Connection, stmt: &DeleteStatement) -> crate::types::Result<LogicalOp> {
@@ -387,7 +457,13 @@ fn plan_unwind(_conn: &Connection, stmt: &UnwindStatement) -> crate::types::Resu
                 };
             }
         }
-        UnwindBody::Create { patterns } => {
+        UnwindBody::Create {
+            patterns,
+            return_clause,
+            order_by,
+            skip,
+            limit,
+        } => {
             let mut create_ops = Vec::new();
             for pattern in patterns {
                 create_ops.extend(plan_create_pattern(pattern)?);
@@ -396,6 +472,9 @@ fn plan_unwind(_conn: &Connection, stmt: &UnwindStatement) -> crate::types::Resu
                 input: Box::new(op),
                 create_ops,
             };
+            if let Some(rc) = return_clause {
+                op = apply_return_projection(op, rc, order_by, *skip, *limit)?;
+            }
         }
     }
 
@@ -440,11 +519,17 @@ fn plan_merge(stmt: &MergeStatement) -> crate::types::Result<LogicalOp> {
             ));
         }
     }
-    Ok(LogicalOp::Merge {
+    let mut op = LogicalOp::Merge {
         pattern: stmt.pattern.clone(),
         on_create: stmt.on_create.clone(),
         on_match: stmt.on_match.clone(),
-    })
+    };
+
+    if let Some(ref rc) = stmt.return_clause {
+        op = apply_return_projection(op, rc, &stmt.order_by, stmt.skip, stmt.limit)?;
+    }
+
+    Ok(op)
 }
 
 fn plan_match_merge(
@@ -460,12 +545,18 @@ fn plan_match_merge(
         };
     }
 
-    Ok(LogicalOp::MatchMerge {
+    let mut result = LogicalOp::MatchMerge {
         input: Box::new(op),
         merge_pattern: stmt.merge_pattern.clone(),
         on_create: stmt.on_create.clone(),
         on_match: stmt.on_match.clone(),
-    })
+    };
+
+    if let Some(ref rc) = stmt.return_clause {
+        result = apply_return_projection(result, rc, &stmt.order_by, stmt.skip, stmt.limit)?;
+    }
+
+    Ok(result)
 }
 
 /// Plan a WITH clause as an intermediate projection (+aggregation) and optional filter.

@@ -175,7 +175,7 @@ bool_term = { bool_factor ~ (and_op ~ bool_factor)* }
 bool_factor = { not_op? ~ bool_primary }
 bool_primary = { case_expr | exists_subquery | is_not_null_check | is_null_check | in_check | comparison | "(" ~ bool_expr ~ ")" }
 
-in_check = { expr ~ ^"IN" ~ expr }
+in_check = { add_expr ~ ^"IN" ~ add_expr }
 
 exists_subquery = { ^"EXISTS" ~ "{" ~ pattern_list ~ where_clause? ~ "}" }
 
@@ -202,13 +202,14 @@ starts_with_op = { ^"STARTS" ~ ^"WITH" }
 ends_with_op = { ^"ENDS" ~ ^"WITH" }
 contains_op = { ^"CONTAINS" }
 
-expr = { add_expr }
+expr = { in_expr }
+in_expr = { add_expr ~ (^"IN" ~ add_expr)? }
 add_expr = { mul_expr ~ (add_op ~ mul_expr)* }
 mul_expr = { atom_expr ~ (mul_op ~ atom_expr)* }
 add_op = { "+" | "-" }
 mul_op = { "*" | "/" }
 atom_expr = { atom_primary ~ subscript* }
-atom_primary = _{ case_expr | function_call | property_access | literal | list_comprehension | list_literal | map_literal | star | parameter | "(" ~ add_expr ~ ")" | variable }
+atom_primary = _{ case_expr | function_call | property_access | literal | list_comprehension | list_literal | map_literal | star | parameter | "(" ~ expr ~ ")" | variable }
 subscript = { "[" ~ subscript_inner ~ "]" }
 subscript_inner = { slice_full | slice_from | slice_to | expr }
 slice_full = { expr ~ ".." ~ expr }

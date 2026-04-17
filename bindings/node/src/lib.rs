@@ -40,7 +40,11 @@ fn value_to_napi(env: &Env, val: &Value) -> Result<napi::JsUnknown> {
         Value::Node(n) => {
             let mut obj = env.create_object()?;
             obj.set("__id", env.create_int64(n.id.0 as i64)?)?;
-            obj.set("__label", env.create_string(&n.label)?)?;
+            let mut labels_arr = env.create_array_with_length(n.labels.len())?;
+            for (i, label) in n.labels.iter().enumerate() {
+                labels_arr.set_element(i as u32, env.create_string(label)?)?;
+            }
+            obj.set("__labels", labels_arr)?;
             for (k, v) in &n.properties {
                 obj.set(k.as_str(), value_to_napi(env, v)?)?;
             }

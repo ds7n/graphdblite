@@ -594,7 +594,7 @@ fn format_value(val: &Value) -> String {
             let parts: Vec<String> = p.nodes.iter().map(|n| n.id.0.to_string()).collect();
             format!("[{}]", parts.join(", "))
         }
-        Value::Node(n) => format!("(:{} #{})", n.label, n.id.0),
+        Value::Node(n) => format!("(:{} #{})", n.labels.join(":"), n.id.0),
         Value::Edge(e) => format!("[:{} {}->{}]", e.label, e.src.0, e.dst.0),
         Value::Map(map) => {
             let parts: Vec<String> = map
@@ -663,9 +663,16 @@ fn value_to_json(out: &mut String, val: &Value) {
             out.push('{');
             out.push_str("\"__id\": ");
             out.push_str(&n.id.0.to_string());
-            out.push_str(", \"__label\": \"");
-            json_escape_into(out, &n.label);
-            out.push('"');
+            out.push_str(", \"__labels\": [");
+            for (i, label) in n.labels.iter().enumerate() {
+                if i > 0 {
+                    out.push_str(", ");
+                }
+                out.push('"');
+                json_escape_into(out, label);
+                out.push('"');
+            }
+            out.push(']');
             for (k, v) in &n.properties {
                 out.push_str(", \"");
                 json_escape_into(out, k);

@@ -50,7 +50,7 @@ fn value_to_py(py: Python, val: &Value) -> PyObject {
         Value::Node(n) => {
             let dict = PyDict::new_bound(py);
             dict.set_item("__id", n.id.0).unwrap();
-            dict.set_item("__label", &n.label).unwrap();
+            dict.set_item("__labels", &n.labels).unwrap();
             for (k, v) in &n.properties {
                 dict.set_item(k, value_to_py(py, v)).unwrap();
             }
@@ -409,7 +409,7 @@ impl PyWriteTransaction {
         for dict in &nodes {
             let props = py_dict_to_properties(dict)?;
             let id =
-                graphdblite::node::create_node(conn, label, props.clone()).map_err(to_py_err)?;
+                graphdblite::node::create_node(conn, &[label.to_string()], props.clone()).map_err(to_py_err)?;
             graphdblite::index::update_indexes_for_node(conn, id, label, None, &props)
                 .map_err(to_py_err)?;
             ids.push(id.0);

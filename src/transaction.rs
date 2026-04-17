@@ -168,23 +168,39 @@ impl<'a> WriteTransaction<'a> {
 
     // --- Write operations ---
 
-    /// Create a new node.
+    /// Create a new node with a single label.
     pub fn create_node(&self, label: &str, properties: Properties) -> Result<NodeId> {
+        let labels = if label.is_empty() {
+            vec![]
+        } else {
+            vec![label.to_string()]
+        };
+        self.create_node_with_labels(&labels, properties)
+    }
+
+    /// Create a new node with multiple labels.
+    pub fn create_node_with_labels(
+        &self,
+        labels: &[String],
+        properties: Properties,
+    ) -> Result<NodeId> {
+        let primary_label = labels.first().map(|s| s.as_str()).unwrap_or("");
         validate_properties(
-            label,
+            primary_label,
             &properties,
             self.max_name_bytes,
             self.max_property_value_bytes,
         )?;
-        let id = node::create_node(&self.tx, label, properties.clone())?;
-        index::update_indexes_for_node(&self.tx, id, label, None, &properties)?;
+        let id = node::create_node(&self.tx, labels, properties.clone())?;
+        index::update_indexes_for_node(&self.tx, id, primary_label, None, &properties)?;
         Ok(id)
     }
 
     /// Delete a node and all its edges.
     pub fn delete_node(&self, id: NodeId) -> Result<()> {
         let n = node::get_node(&self.tx, id)?;
-        index::remove_indexes_for_node(&self.tx, id, &n.label, &n.properties)?;
+        let primary_label = n.labels.first().map(|s| s.as_str()).unwrap_or("");
+        index::remove_indexes_for_node(&self.tx, id, primary_label, &n.properties)?;
         node::delete_node(&self.tx, id)
     }
 
@@ -204,7 +220,7 @@ impl<'a> WriteTransaction<'a> {
         index::update_indexes_for_node(
             &self.tx,
             id,
-            &old.label,
+            old.labels.first().map(|s| s.as_str()).unwrap_or(""),
             Some(&old.properties),
             &new_props,
         )?;
@@ -220,7 +236,7 @@ impl<'a> WriteTransaction<'a> {
         index::update_indexes_for_node(
             &self.tx,
             id,
-            &old.label,
+            old.labels.first().map(|s| s.as_str()).unwrap_or(""),
             Some(&old.properties),
             &new_props,
         )?;

@@ -127,11 +127,20 @@ pub enum UnwindBody {
     },
 }
 
-/// Intermediate clause (WITH or UNWIND) within a MATCH statement.
+/// Intermediate clause (WITH, UNWIND, or MATCH) within a MATCH statement.
 #[derive(Debug, Clone, PartialEq)]
 pub enum IntermediateClause {
     With(WithClause),
     Unwind(UnwindClause),
+    Match(IntermediateMatch),
+}
+
+/// MATCH/OPTIONAL MATCH clause appearing after a WITH.
+#[derive(Debug, Clone, PartialEq)]
+pub struct IntermediateMatch {
+    pub patterns: Vec<Pattern>,
+    pub optional_patterns: Vec<Vec<Pattern>>,
+    pub where_clause: Option<Expr>,
 }
 
 /// UNWIND clause within a MATCH statement.

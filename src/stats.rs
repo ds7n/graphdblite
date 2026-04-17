@@ -90,7 +90,12 @@ pub fn refresh_stats(conn: &Connection) -> Result<()> {
         let data = row?;
         let record: crate::types::NodeRecord = rmp_serde::from_slice(&data)
             .map_err(|e| crate::types::GraphError::Serialization(e.to_string()))?;
-        *counts.entry(record.label).or_insert(0) += 1;
+        for label in &record.labels {
+            *counts.entry(label.clone()).or_insert(0) += 1;
+        }
+        if record.labels.is_empty() {
+            *counts.entry(String::new()).or_insert(0) += 1;
+        }
     }
 
     // Write counts to metadata.

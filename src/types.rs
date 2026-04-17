@@ -87,7 +87,7 @@ fn hash_properties<H: Hasher>(props: &Properties, state: &mut H) {
 
 fn hash_node<H: Hasher>(n: &Node, state: &mut H) {
     n.id.hash(state);
-    n.label.hash(state);
+    n.labels.hash(state);
     hash_properties(&n.properties, state);
 }
 
@@ -163,9 +163,16 @@ impl fmt::Display for Value {
                 write!(f, "]")
             }
             Value::Node(n) => {
-                write!(f, "(:{} {{", n.label)?;
-                fmt_properties(&n.properties, f)?;
-                write!(f, "}})")
+                write!(f, "(")?;
+                for lbl in &n.labels {
+                    write!(f, ":{lbl}")?;
+                }
+                if !n.properties.is_empty() {
+                    write!(f, " {{")?;
+                    fmt_properties(&n.properties, f)?;
+                    write!(f, "}}")?;
+                }
+                write!(f, ")")
             }
             Value::Edge(e) => {
                 write!(f, "[:{} {{", e.label)?;
@@ -175,10 +182,18 @@ impl fmt::Display for Value {
             Value::Path(p) => {
                 write!(f, "<")?;
                 if let Some(first) = p.nodes.first() {
-                    write!(f, "(:{})", first.label)?;
+                    write!(f, "(")?;
+                    for lbl in &first.labels {
+                        write!(f, ":{lbl}")?;
+                    }
+                    write!(f, ")")?;
                 }
                 for (edge, node) in p.edges.iter().zip(p.nodes.iter().skip(1)) {
-                    write!(f, "-[:{}]->(:{})", edge.label, node.label)?;
+                    write!(f, "-[:{}]->(", edge.label)?;
+                    for lbl in &node.labels {
+                        write!(f, ":{lbl}")?;
+                    }
+                    write!(f, ")")?;
                 }
                 write!(f, ">")
             }
@@ -203,7 +218,10 @@ pub type Properties = HashMap<String, Value>;
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Node {
     pub id: NodeId,
-    pub label: String,
+    /// Node labels (sorted). Empty vec for unlabeled nodes.
+    /// Backward-compat: deserializes from either `label: String` or `labels: Vec`.
+    #[serde(default, alias = "label", deserialize_with = "deserialize_labels")]
+    pub labels: Vec<String>,
     pub properties: Properties,
 }
 
@@ -258,8 +276,57 @@ pub enum Direction {
 /// Serializable node record stored in the `nodes` table.
 #[derive(Serialize, Deserialize)]
 pub(crate) struct NodeRecord {
-    pub label: String,
+    #[serde(default, alias = "label", deserialize_with = "deserialize_labels")]
+    pub labels: Vec<String>,
     pub properties: Properties,
+}
+
+/// Deserialize labels from either a single string ("A") or a vec (["A", "B"]).
+/// This handles backward compat with the old `label: String` format.
+fn deserialize_labels<'de, D>(deserializer: D) -> std::result::Result<Vec<String>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    use serde::de;
+
+    struct LabelsVisitor;
+
+    impl<'de> de::Visitor<'de> for LabelsVisitor {
+        type Value = Vec<String>;
+
+        fn expecting(&self, f: &mut fmt::Formatter) -> fmt::Result {
+            f.write_str("a string or list of strings")
+        }
+
+        fn visit_str<E: de::Error>(self, v: &str) -> std::result::Result<Vec<String>, E> {
+            if v.is_empty() {
+                Ok(Vec::new())
+            } else {
+                Ok(vec![v.to_string()])
+            }
+        }
+
+        fn visit_string<E: de::Error>(self, v: String) -> std::result::Result<Vec<String>, E> {
+            if v.is_empty() {
+                Ok(Vec::new())
+            } else {
+                Ok(vec![v])
+            }
+        }
+
+        fn visit_seq<A: de::SeqAccess<'de>>(
+            self,
+            mut seq: A,
+        ) -> std::result::Result<Vec<String>, A::Error> {
+            let mut labels = Vec::new();
+            while let Some(s) = seq.next_element()? {
+                labels.push(s);
+            }
+            Ok(labels)
+        }
+    }
+
+    deserializer.deserialize_any(LabelsVisitor)
 }
 
 /// Phase of query processing at which an error was raised.
@@ -464,7 +531,7 @@ fn value_byte_size(val: &Value) -> usize {
 }
 
 fn node_byte_size(n: &Node) -> usize {
-    8 + n.label.len()
+    8 + n.labels.iter().map(|l| l.len()).sum::<usize>()
         + n.properties
             .iter()
             .map(|(k, v)| k.len() + value_byte_size(v))

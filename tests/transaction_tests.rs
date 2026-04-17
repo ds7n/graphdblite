@@ -82,7 +82,7 @@ fn persistent_across_reopen() {
         let mut db = Database::open(&path).unwrap();
         let tx = db.begin_read().unwrap();
         let node = tx.get_node(NodeId(1)).unwrap();
-        assert_eq!(node.label, "Person");
+        assert_eq!(node.labels, vec!["Person".to_string()]);
         assert_eq!(
             node.properties.get("name"),
             Some(&Value::String("Alice".into()))

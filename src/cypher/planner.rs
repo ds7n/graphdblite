@@ -36,7 +36,11 @@ fn plan_match(conn: &Connection, stmt: &MatchStatement) -> crate::types::Result<
     validate_variable_types(&stmt.patterns)?;
 
     // Build scan + expand chain from patterns.
-    let mut op = plan_patterns(conn, &stmt.patterns)?;
+    let mut op = if stmt.patterns.is_empty() {
+        LogicalOp::SingleRow
+    } else {
+        plan_patterns(conn, &stmt.patterns)?
+    };
 
     // Collect variables bound by the required MATCH so OPTIONAL MATCH can
     // distinguish shared vs. new aliases (instead of assuming first = shared).
@@ -77,19 +81,47 @@ fn plan_match(conn: &Connection, stmt: &MatchStatement) -> crate::types::Result<
         }
     }
 
-    // Apply intermediate clauses (WITH/UNWIND).
+    // Track scope variables for validation.
+    let mut scope_vars = bound_vars.clone();
+
+    // Apply intermediate clauses (WITH/UNWIND/MATCH).
     for clause in &stmt.intermediate_clauses {
         match clause {
-            IntermediateClause::With(with) => op = plan_with(op, with)?,
+            IntermediateClause::With(with) => {
+                op = plan_with(op, with)?;
+                // WITH resets scope to only the projected aliases.
+                scope_vars.clear();
+                for item in &with.items {
+                    if let Expr::Star = &item.expr {
+                        // WITH * keeps all prior variables in scope.
+                        scope_vars = bound_vars.clone();
+                    } else if let Some(ref alias) = item.alias {
+                        scope_vars.insert(alias.clone());
+                    } else if let Expr::Variable(var) = &item.expr {
+                        scope_vars.insert(var.clone());
+                    }
+                }
+            }
             IntermediateClause::Unwind(unwind) => {
                 op = LogicalOp::Unwind {
                     input: Box::new(op),
                     expr: unwind.expr.clone(),
                     alias: unwind.alias.clone(),
                 };
+                scope_vars.insert(unwind.alias.clone());
+            }
+            IntermediateClause::Match(im) => {
+                op = plan_intermediate_match(conn, op, im)?;
+                scope_vars.extend(collect_pattern_variables(&im.patterns));
+                for opt in &im.optional_patterns {
+                    scope_vars.extend(collect_pattern_variables(opt));
+                }
             }
         }
     }
+
+    // Validate that RETURN items only reference variables in scope.
+    validate_return_variables(&stmt.return_clause.items, &scope_vars)?;
 
     // Check if RETURN contains aggregates.
     let has_aggregates = stmt
@@ -495,6 +527,45 @@ fn plan_with(input: LogicalOp, with: &WithClause) -> crate::types::Result<Logica
     Ok(op)
 }
 
+/// Plan an intermediate MATCH clause (after WITH) using correlated join.
+fn plan_intermediate_match(
+    conn: &Connection,
+    input: LogicalOp,
+    im: &IntermediateMatch,
+) -> crate::types::Result<LogicalOp> {
+    let mut op = input;
+
+    if !im.patterns.is_empty() {
+        let right = plan_patterns(conn, &im.patterns)?;
+        op = LogicalOp::CorrelatedJoin {
+            input: Box::new(op),
+            right: Box::new(right),
+        };
+    }
+
+    // Collect variables bound so far for optional patterns.
+    let mut bound_vars = collect_pattern_variables(&im.patterns);
+
+    for opt_patterns in &im.optional_patterns {
+        let (right, new_aliases) = plan_optional_patterns(conn, opt_patterns, &bound_vars)?;
+        op = LogicalOp::LeftOuterJoin {
+            input: Box::new(op),
+            right: Box::new(right),
+            optional_aliases: new_aliases.clone(),
+        };
+        bound_vars.extend(new_aliases);
+    }
+
+    if let Some(ref predicate) = im.where_clause {
+        op = LogicalOp::Filter {
+            input: Box::new(op),
+            predicate: predicate.clone(),
+        };
+    }
+
+    Ok(op)
+}
+
 /// Plan the scan/expand chain for a list of patterns.
 ///
 /// Regular patterns are reordered by estimated cardinality (smallest first)
@@ -647,10 +718,87 @@ fn plan_shortest_path_pattern(
     })
 }
 
-/// Collect all variable names (nodes and relationships) from a set of patterns.
+/// Validate that all variables referenced in RETURN items are bound in scope.
+fn validate_return_variables(
+    items: &[ReturnItem],
+    scope_vars: &HashSet<String>,
+) -> crate::types::Result<()> {
+    for item in items {
+        if matches!(item.expr, Expr::Star) {
+            continue;
+        }
+        check_expr_variables(&item.expr, scope_vars)?;
+    }
+    Ok(())
+}
+
+/// Check that every variable reference in an expression is present in `scope`.
+fn check_expr_variables(expr: &Expr, scope: &HashSet<String>) -> crate::types::Result<()> {
+    match expr {
+        Expr::Variable(var) => {
+            if !scope.contains(var) {
+                return Err(GraphError::syntax(format!(
+                    "UndefinedVariable: {var}"
+                )));
+            }
+        }
+        Expr::Property(var, _) => {
+            if !scope.contains(var) {
+                return Err(GraphError::syntax(format!(
+                    "UndefinedVariable: {var}"
+                )));
+            }
+        }
+        Expr::BinaryOp { left, right, .. } => {
+            check_expr_variables(left, scope)?;
+            check_expr_variables(right, scope)?;
+        }
+        Expr::Not(inner) | Expr::IsNull(inner) | Expr::IsNotNull(inner) => {
+            check_expr_variables(inner, scope)?;
+        }
+        Expr::FunctionCall { args, .. } => {
+            for arg in args {
+                check_expr_variables(arg, scope)?;
+            }
+        }
+        Expr::Case {
+            alternatives,
+            default,
+        } => {
+            for (cond, result) in alternatives {
+                check_expr_variables(cond, scope)?;
+                check_expr_variables(result, scope)?;
+            }
+            if let Some(d) = default {
+                check_expr_variables(d, scope)?;
+            }
+        }
+        Expr::List(items) => {
+            for item in items {
+                check_expr_variables(item, scope)?;
+            }
+        }
+        Expr::MapLiteral(pairs) => {
+            for (_, v) in pairs {
+                check_expr_variables(v, scope)?;
+            }
+        }
+        Expr::Literal(_) | Expr::Parameter(_) | Expr::Star => {}
+        Expr::ListComprehension { list_expr, .. } => {
+            check_expr_variables(list_expr, scope)?;
+        }
+        Expr::Exists { .. } => {}
+    }
+    Ok(())
+}
+
+/// Collect all variable names (nodes, relationships, and path variables) from a set of patterns.
 fn collect_pattern_variables(patterns: &[Pattern]) -> HashSet<String> {
     let mut vars = HashSet::new();
     for pattern in patterns {
+        if let Some(ref path_var) = pattern.path_variable {
+            vars.insert(path_var.clone());
+        }
         for elem in &pattern.elements {
             match elem {
                 PatternElement::Node(n) => {
@@ -835,16 +983,18 @@ fn plan_single_pattern(conn: &Connection, pattern: &Pattern) -> crate::types::Re
                     max_hops,
                 });
 
-                // Apply destination node's label filter.
-                if let Some(dst_label) = dst_node.labels.first() {
+                // Apply destination node's label filters.
+                for dst_label in &dst_node.labels {
                     if !dst_label.is_empty() {
                         let predicate = Expr::BinaryOp {
-                            left: Box::new(Expr::Property(
+                            left: Box::new(Expr::Literal(LiteralValue::String(
+                                dst_label.clone(),
+                            ))),
+                            op: BinOp::In,
+                            right: Box::new(Expr::Property(
                                 dst_alias.clone(),
-                                "__label".to_string(),
+                                "__labels".to_string(),
                             )),
-                            op: BinOp::Eq,
-                            right: Box::new(Expr::Literal(LiteralValue::String(dst_label.clone()))),
                         };
                         op = Some(LogicalOp::Filter {
                             input: Box::new(op.unwrap()),
@@ -867,7 +1017,36 @@ fn plan_single_pattern(conn: &Connection, pattern: &Pattern) -> crate::types::Re
         }
     }
 
-    op.ok_or_else(|| GraphError::Serialization("empty pattern".to_string()))
+    let mut result =
+        op.ok_or_else(|| GraphError::Serialization("empty pattern".to_string()))?;
+
+    // If this pattern has a path variable binding, wrap with MaterializePath.
+    if let Some(ref path_var) = pattern.path_variable {
+        let mut node_aliases = Vec::new();
+        let mut rel_aliases = Vec::new();
+        for elem in &pattern.elements {
+            match elem {
+                PatternElement::Node(n) => {
+                    if let Some(ref var) = n.variable {
+                        node_aliases.push(var.clone());
+                    }
+                }
+                PatternElement::Relationship(r) => {
+                    if let Some(ref var) = r.variable {
+                        rel_aliases.push(var.clone());
+                    }
+                }
+            }
+        }
+        result = LogicalOp::MaterializePath {
+            input: Box::new(result),
+            path_alias: path_var.clone(),
+            node_aliases,
+            rel_aliases,
+        };
+    }
+
+    Ok(result)
 }
 
 /// Plan the scan for a single node pattern, using an index lookup if available.
@@ -951,6 +1130,19 @@ fn plan_node_scan(
         alias: alias.to_string(),
     };
 
+    // Add filters for additional labels (multi-label nodes).
+    for extra_label in node.labels.iter().skip(1) {
+        let predicate = Expr::BinaryOp {
+            left: Box::new(Expr::Literal(LiteralValue::String(extra_label.clone()))),
+            op: BinOp::In,
+            right: Box::new(Expr::Property(alias.to_string(), "__labels".to_string())),
+        };
+        scan = LogicalOp::Filter {
+            input: Box::new(scan),
+            predicate,
+        };
+    }
+
     if !node.properties.is_empty() {
         let predicate = properties_to_filter(alias, &node.properties);
         scan = LogicalOp::Filter {
@@ -966,14 +1158,18 @@ fn plan_node_scan(
 fn plan_create_pattern(pattern: &Pattern) -> crate::types::Result<Vec<LogicalOp>> {
     let mut ops = Vec::new();
     let mut last_alias: Option<String> = None;
+    let mut anon_counter = 0usize;
 
     let mut i = 0;
     while i < pattern.elements.len() {
         match &pattern.elements[i] {
             PatternElement::Node(node) => {
-                let alias = node.variable.clone();
+                let alias = node.variable.clone().or_else(|| {
+                    anon_counter += 1;
+                    Some(format!("__anon_{}", anon_counter))
+                });
                 ops.push(LogicalOp::CreateNode {
-                    label: node.labels.first().cloned(),
+                    labels: node.labels.clone(),
                     alias: alias.clone(),
                     properties: node.properties.clone(),
                 });
@@ -990,9 +1186,12 @@ fn plan_create_pattern(pattern: &Pattern) -> crate::types::Result<Vec<LogicalOp>
                     }
                 };
 
-                let dst_alias = dst_node.variable.clone();
+                let dst_alias = dst_node.variable.clone().or_else(|| {
+                    anon_counter += 1;
+                    Some(format!("__anon_{}", anon_counter))
+                });
                 ops.push(LogicalOp::CreateNode {
-                    label: dst_node.labels.first().cloned(),
+                    labels: dst_node.labels.clone(),
                     alias: dst_alias.clone(),
                     properties: dst_node.properties.clone(),
                 });

@@ -85,7 +85,7 @@ pub enum LogicalOp {
 
     /// Create a node.
     CreateNode {
-        label: Option<String>,
+        labels: Vec<String>,
         alias: Option<String>,
         properties: HashMap<String, Expr>,
     },
@@ -133,6 +133,24 @@ pub enum LogicalOp {
         merge_pattern: Pattern,
         on_create: Vec<Assignment>,
         on_match: Vec<Assignment>,
+    },
+
+    /// Build a Path value from the matched pattern elements and store it
+    /// in the record under the given alias. `node_aliases` and `rel_aliases`
+    /// list the variables in traversal order.
+    MaterializePath {
+        input: Box<LogicalOp>,
+        path_alias: String,
+        node_aliases: Vec<String>,
+        rel_aliases: Vec<String>,
+    },
+
+    /// Correlated inner join: for each input record, execute right side with
+    /// bindings from the left. Only emit combined rows. If right produces
+    /// nothing for a left row, that row is dropped.
+    CorrelatedJoin {
+        input: Box<LogicalOp>,
+        right: Box<LogicalOp>,
     },
 
     /// Left outer join: for each input record, attempt right side; emit NULLs if no match.

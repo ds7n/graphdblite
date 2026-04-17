@@ -8,24 +8,29 @@ use crate::types::{
     validate_name, Direction, GraphError, Node, NodeId, NodeRecord, Properties, Result, Value,
 };
 
-/// Create a new node with the given label and properties.
+/// Create a new node with the given labels and properties.
 ///
-/// An empty `label` creates an unlabeled node (valid in openCypher).
-pub fn create_node(conn: &Connection, label: &str, properties: Properties) -> Result<NodeId> {
-    if !label.is_empty() {
+/// An empty `labels` slice creates an unlabeled node (valid in openCypher).
+pub fn create_node(conn: &Connection, labels: &[String], properties: Properties) -> Result<NodeId> {
+    for label in labels {
         validate_name(label)?;
     }
     for key in properties.keys() {
         validate_name(key)?;
     }
     let id = next_node_id(conn)?;
+    let mut sorted_labels = labels.to_vec();
+    sorted_labels.sort();
     let record = NodeRecord {
-        label: label.to_string(),
+        labels: sorted_labels.clone(),
         properties,
     };
     let data = rmp_serde::to_vec(&record).map_err(|e| GraphError::Serialization(e.to_string()))?;
-    put_node(conn, &id.to_be_bytes(), label, &data)?;
-    stats::increment_label_count(conn, label)?;
+    let label_col = sorted_labels.join(":");
+    put_node(conn, &id.to_be_bytes(), &label_col, &data)?;
+    for label in &sorted_labels {
+        stats::increment_label_count(conn, label)?;
+    }
     Ok(id)
 }
 
@@ -37,7 +42,7 @@ pub fn get_node(conn: &Connection, id: NodeId) -> Result<Node> {
         rmp_serde::from_slice(&data).map_err(|e| GraphError::Serialization(e.to_string()))?;
     Ok(Node {
         id,
-        label: record.label,
+        labels: record.labels,
         properties: record.properties,
     })
 }
@@ -82,7 +87,9 @@ pub fn delete_node(conn: &Connection, id: NodeId) -> Result<()> {
 
     // Delete the node record.
     kv::delete(conn, kv::TABLE_NODES, &id.to_be_bytes())?;
-    stats::decrement_label_count(conn, &node.label)?;
+    for label in &node.labels {
+        stats::decrement_label_count(conn, label)?;
+    }
     Ok(())
 }
 
@@ -96,7 +103,8 @@ pub fn set_node_property(conn: &Connection, id: NodeId, key: &str, value: Value)
     record.properties.insert(key.to_string(), value);
     let new_data =
         rmp_serde::to_vec(&record).map_err(|e| GraphError::Serialization(e.to_string()))?;
-    put_node(conn, &id.to_be_bytes(), &record.label, &new_data)?;
+    let label_col = record.labels.join(":");
+    put_node(conn, &id.to_be_bytes(), &label_col, &new_data)?;
     Ok(())
 }
 
@@ -109,7 +117,8 @@ pub fn remove_node_property(conn: &Connection, id: NodeId, key: &str) -> Result<
     record.properties.remove(key);
     let new_data =
         rmp_serde::to_vec(&record).map_err(|e| GraphError::Serialization(e.to_string()))?;
-    put_node(conn, &id.to_be_bytes(), &record.label, &new_data)?;
+    let label_col = record.labels.join(":");
+    put_node(conn, &id.to_be_bytes(), &label_col, &new_data)?;
     Ok(())
 }
 
@@ -124,7 +133,7 @@ pub fn find_nodes_by_label(conn: &Connection, label: &str) -> Result<Vec<Node>> 
         )
     } else {
         (
-            "SELECT key, value FROM nodes WHERE label = ?1 ORDER BY key".to_string(),
+            "SELECT key, value FROM nodes WHERE label = ?1 OR ':' || label || ':' LIKE '%:' || ?1 || ':%' ORDER BY key".to_string(),
             true,
         )
     };
@@ -153,7 +162,7 @@ pub fn find_nodes_by_label(conn: &Connection, label: &str) -> Result<Vec<Node>> 
         );
         nodes.push(Node {
             id,
-            label: record.label,
+            labels: record.labels,
             properties: record.properties,
         });
     }

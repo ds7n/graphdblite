@@ -117,6 +117,32 @@ fn parse_explain(pair: pest::iterators::Pair<Rule>) -> crate::types::Result<Stat
     Ok(Statement::Explain(Box::new(stmt)))
 }
 
+/// Extract patterns, optional patterns, and WHERE from a `match_part` rule.
+fn parse_match_part(
+    pair: pest::iterators::Pair<Rule>,
+) -> crate::types::Result<(Vec<Pattern>, Vec<Vec<Pattern>>, Option<Expr>)> {
+    let mut patterns = Vec::new();
+    let mut optional_patterns = Vec::new();
+    let mut where_clause = None;
+
+    for inner in pair.into_inner() {
+        match inner.as_rule() {
+            Rule::pattern_list => patterns = parse_pattern_list(inner)?,
+            Rule::optional_match_clause => {
+                for child in inner.into_inner() {
+                    if child.as_rule() == Rule::pattern_list {
+                        optional_patterns.push(parse_pattern_list(child)?);
+                    }
+                }
+            }
+            Rule::where_clause => where_clause = Some(parse_where(inner)?),
+            _ => {}
+        }
+    }
+
+    Ok((patterns, optional_patterns, where_clause))
+}
+
 fn parse_match(pair: pest::iterators::Pair<Rule>) -> crate::types::Result<MatchStatement> {
     let mut patterns = Vec::new();
     let mut optional_patterns = Vec::new();
@@ -126,19 +152,25 @@ fn parse_match(pair: pest::iterators::Pair<Rule>) -> crate::types::Result<MatchS
     let mut order_by = Vec::new();
     let mut skip = None;
     let mut limit = None;
+    let mut first_match_part = true;
 
     for inner in pair.into_inner() {
         match inner.as_rule() {
-            Rule::pattern_list => patterns = parse_pattern_list(inner)?,
-            Rule::optional_match_clause => {
-                // Each OPTIONAL MATCH clause has its own pattern_list.
-                for child in inner.into_inner() {
-                    if child.as_rule() == Rule::pattern_list {
-                        optional_patterns.push(parse_pattern_list(child)?);
-                    }
+            Rule::match_part => {
+                let (mp_patterns, mp_optional, mp_where) = parse_match_part(inner)?;
+                if first_match_part {
+                    patterns = mp_patterns;
+                    optional_patterns = mp_optional;
+                    where_clause = mp_where;
+                    first_match_part = false;
+                } else {
+                    intermediate_clauses.push(IntermediateClause::Match(IntermediateMatch {
+                        patterns: mp_patterns,
+                        optional_patterns: mp_optional,
+                        where_clause: mp_where,
+                    }));
                 }
             }
-            Rule::where_clause => where_clause = Some(parse_where(inner)?),
             Rule::with_clause => {
                 intermediate_clauses.push(IntermediateClause::With(parse_with(inner)?))
             }
@@ -415,6 +447,9 @@ fn parse_path_pattern(pair: pest::iterators::Pair<Rule>) -> crate::types::Result
                     }
                 }
             }
+            Rule::pattern => {
+                pattern = Some(parse_pattern(inner)?);
+            }
             _ => {}
         }
     }
@@ -479,9 +514,9 @@ fn parse_node_pattern(pair: pest::iterators::Pair<Rule>) -> crate::types::Result
 fn parse_rel_pattern(pair: pest::iterators::Pair<Rule>) -> crate::types::Result<RelPattern> {
     let inner = pair.into_inner().next().unwrap();
     let direction = match inner.as_rule() {
-        Rule::rel_right => RelDirection::Outgoing,
-        Rule::rel_left => RelDirection::Incoming,
-        Rule::rel_undirected => RelDirection::Undirected,
+        Rule::rel_right | Rule::rel_right_bare => RelDirection::Outgoing,
+        Rule::rel_left | Rule::rel_left_bare => RelDirection::Incoming,
+        Rule::rel_undirected | Rule::rel_undirected_bare => RelDirection::Undirected,
         _ => unreachable!(),
     };
 
@@ -586,7 +621,7 @@ fn parse_with(pair: pest::iterators::Pair<Rule>) -> crate::types::Result<WithCla
                         let mut alias = None;
                         for child in p.into_inner() {
                             match child.as_rule() {
-                                Rule::expr => expr = Some(parse_expr(child).unwrap()),
+                                Rule::expr => expr = Some(parse_expr(child)?),
                                 Rule::alias => {
                                     for a in child.into_inner() {
                                         if a.as_rule() == Rule::ident {
@@ -597,12 +632,12 @@ fn parse_with(pair: pest::iterators::Pair<Rule>) -> crate::types::Result<WithCla
                                 _ => {}
                             }
                         }
-                        ReturnItem {
+                        Ok(ReturnItem {
                             expr: expr.unwrap(),
                             alias,
-                        }
+                        })
                     })
-                    .collect();
+                    .collect::<crate::types::Result<Vec<_>>>()?;
             }
             Rule::order_by_clause => order_by = parse_order_by(inner)?,
             Rule::skip_clause => skip = Some(parse_skip(inner)?),
@@ -720,7 +755,7 @@ fn parse_return(pair: pest::iterators::Pair<Rule>) -> crate::types::Result<Retur
             let mut alias = None;
             for inner in p.into_inner() {
                 match inner.as_rule() {
-                    Rule::expr => expr = Some(parse_expr(inner).unwrap()),
+                    Rule::expr => expr = Some(parse_expr(inner)?),
                     Rule::alias => {
                         for child in inner.into_inner() {
                             if child.as_rule() == Rule::ident {
@@ -731,12 +766,12 @@ fn parse_return(pair: pest::iterators::Pair<Rule>) -> crate::types::Result<Retur
                     _ => {}
                 }
             }
-            ReturnItem {
+            Ok(ReturnItem {
                 expr: expr.unwrap(),
                 alias,
-            }
+            })
         })
-        .collect();
+        .collect::<crate::types::Result<Vec<_>>>()?;
 
     Ok(ReturnClause { items, distinct })
 }
@@ -1185,7 +1220,7 @@ fn parse_literal(pair: pest::iterators::Pair<Rule>) -> crate::types::Result<Expr
             let n: i64 = inner
                 .as_str()
                 .parse()
-                .map_err(|e| GraphError::Serialization(format!("invalid integer: {e}")))?;
+                .map_err(|e| GraphError::syntax(format!("integer overflow: {e}")))?;
             Ok(Expr::Literal(LiteralValue::I64(n)))
         }
         Rule::float_literal => {
@@ -1537,6 +1572,19 @@ fn resolve_intermediate_clauses(
             IntermediateClause::Unwind(u) => Ok(IntermediateClause::Unwind(UnwindClause {
                 expr: resolve_expr(&u.expr, params)?,
                 alias: u.alias.clone(),
+            })),
+            IntermediateClause::Match(m) => Ok(IntermediateClause::Match(IntermediateMatch {
+                patterns: resolve_patterns(&m.patterns, params)?,
+                optional_patterns: m
+                    .optional_patterns
+                    .iter()
+                    .map(|ps| resolve_patterns(ps, params))
+                    .collect::<crate::types::Result<Vec<_>>>()?,
+                where_clause: m
+                    .where_clause
+                    .as_ref()
+                    .map(|e| resolve_expr(e, params))
+                    .transpose()?,
             })),
         })
         .collect()

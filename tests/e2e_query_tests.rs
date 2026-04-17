@@ -32,7 +32,7 @@ fn node_prop<'a>(val: &'a Value, key: &str) -> &'a Value {
 /// Extract the label of a `Value::Node`.
 fn node_label(val: &Value) -> &str {
     match val {
-        Value::Node(n) => &n.label,
+        Value::Node(n) => n.labels.first().map(|s| s.as_str()).unwrap_or(""),
         _ => panic!("expected Value::Node, got {val:?}"),
     }
 }
@@ -360,7 +360,7 @@ fn e2e_return_node_is_compound_value() {
     let n = results[0].get("n").expect("expected column 'n'");
     match n {
         Value::Node(node) => {
-            assert_eq!(node.label, "Person");
+            assert_eq!(node.labels, vec!["Person".to_string()]);
             assert_eq!(
                 node.properties.get("name"),
                 Some(&Value::String("Alice".into()))

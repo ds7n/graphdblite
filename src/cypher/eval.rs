@@ -14,7 +14,23 @@ pub fn eval_expr(expr: &Expr, record: &Record, conn: &Connection) -> crate::type
         Expr::Property(var, prop) => {
             // Look up "var.prop" as a flattened key in the record.
             let key = format!("{var}.{prop}");
-            Ok(record.get(&key).cloned().unwrap_or(Value::Null))
+            if let Some(val) = record.get(&key) {
+                return Ok(val.clone());
+            }
+            // Fallback: if the record has var.__id (e.g. from CREATE/MERGE),
+            // look up the property from the database.
+            let id_key = format!("{var}.__id");
+            if let Some(Value::I64(id)) = record.get(&id_key) {
+                if let Ok(node) = crate::node::get_node(conn, crate::types::NodeId(*id as u64)) {
+                    if prop == "labels" {
+                        return Ok(Value::List(
+                            node.labels.into_iter().map(Value::String).collect(),
+                        ));
+                    }
+                    return Ok(node.properties.get(prop).cloned().unwrap_or(Value::Null));
+                }
+            }
+            Ok(Value::Null)
         }
         Expr::List(items) => {
             let values: crate::types::Result<Vec<Value>> =

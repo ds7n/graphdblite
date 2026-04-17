@@ -38,8 +38,31 @@ pub fn execute(conn: &Connection, plan: &LogicalOp) -> Result<Vec<Record>> {
         let mut iter = crate::cypher::iter::build_iter(conn, plan)?;
         crate::cypher::iter::collect_all(&mut *iter)
     } else {
-        exec(conn, plan, &ExecContext::default())
+        let result = exec(conn, plan, &ExecContext::default())?;
+        // Write-only queries (no RETURN clause) should return empty results.
+        // When a RETURN is present, the planner wraps the write op in a Project,
+        // so the top-level op will be Project/Sort/Skip/Limit/etc., not a bare write.
+        if is_bare_write(plan) {
+            Ok(vec![])
+        } else {
+            Ok(result)
+        }
     }
+}
+
+/// Check if the top-level plan is a bare write op (no RETURN projection).
+fn is_bare_write(plan: &LogicalOp) -> bool {
+    matches!(
+        plan,
+        LogicalOp::CreateNode { .. }
+            | LogicalOp::CreateEdge { .. }
+            | LogicalOp::CreateSequence { .. }
+            | LogicalOp::MatchCreate { .. }
+            | LogicalOp::Delete { .. }
+            | LogicalOp::SetProperty { .. }
+            | LogicalOp::Merge { .. }
+            | LogicalOp::MatchMerge { .. }
+    )
 }
 
 /// Execute with an explicit context carrying runtime limits.
@@ -48,7 +71,12 @@ pub fn execute_with_ctx(
     plan: &LogicalOp,
     ctx: &ExecContext,
 ) -> Result<Vec<Record>> {
-    exec(conn, plan, ctx)
+    let result = exec(conn, plan, ctx)?;
+    if is_bare_write(plan) {
+        Ok(vec![])
+    } else {
+        Ok(result)
+    }
 }
 
 /// Check whether a plan tree contains only read-only operators.
@@ -1012,6 +1040,7 @@ fn exec_match_create(
     ctx: &ExecContext,
 ) -> Result<Vec<Record>> {
     let records = exec(conn, input, ctx)?;
+    let mut result = Vec::with_capacity(records.len());
 
     for rec in &records {
         // Seed bindings from MATCH-bound variables (var → NodeId).
@@ -1023,6 +1052,9 @@ fn exec_match_create(
                 }
             }
         }
+
+        // Start with a copy of the input record so MATCH-bound vars are available.
+        let mut out_rec = rec.clone();
 
         // Execute each CREATE op using the bindings.
         for op in create_ops {
@@ -1048,6 +1080,8 @@ fn exec_match_create(
                     index::update_indexes_for_node(conn, id, primary_label, None, &props)?;
                     if let Some(alias) = alias {
                         bindings.insert(alias.clone(), id);
+                        out_rec.set(alias.clone(), Value::I64(id.0 as i64));
+                        out_rec.set(format!("{alias}.__id"), Value::I64(id.0 as i64));
                     }
                 }
                 LogicalOp::CreateEdge {
@@ -1072,9 +1106,11 @@ fn exec_match_create(
                 _ => {}
             }
         }
+
+        result.push(out_rec);
     }
 
-    Ok(vec![])
+    Ok(result)
 }
 
 fn exec_delete(
@@ -1208,6 +1244,7 @@ fn exec_merge_node(
             }
             let mut rec = Record::new();
             rec.set(alias.to_string(), Value::I64(n.id.0 as i64));
+            rec.set(format!("{alias}.__id"), Value::I64(n.id.0 as i64));
             Ok(vec![rec])
         }
         None => {
@@ -1244,6 +1281,7 @@ fn exec_merge_node(
 
             let mut rec = Record::new();
             rec.set(alias.to_string(), Value::I64(id.0 as i64));
+            rec.set(format!("{alias}.__id"), Value::I64(id.0 as i64));
             Ok(vec![rec])
         }
     }
@@ -1358,13 +1396,13 @@ fn exec_match_merge(
     ctx: &ExecContext,
 ) -> Result<Vec<Record>> {
     let records = exec(conn, input, ctx)?;
+    let mut result = Vec::with_capacity(records.len());
 
     // Extract the merge pattern structure: (src_node)-[:TYPE]->(dst_node) or single node.
     let elements = &merge_pattern.elements;
 
     if elements.len() == 1 {
         // Single node MERGE — delegate to existing logic per record.
-        // For each matched record, try to find or create the node.
         for rec in &records {
             let node_pat = match &elements[0] {
                 PatternElement::Node(n) => n,
@@ -1377,7 +1415,19 @@ fn exec_match_merge(
                 props.insert(key.clone(), val);
             }
             let matched = find_merge_match(conn, label, &node_pat.properties)?;
-            if matched.is_none() {
+            let alias = node_pat.variable.as_deref().unwrap_or("_merge");
+            let mut out_rec = rec.clone();
+
+            if let Some(n) = matched {
+                for assignment in on_match {
+                    let mut a_rec = Record::new();
+                    a_rec.set(alias.to_string(), Value::I64(n.id.0 as i64));
+                    let val = eval_expr(&assignment.value, &a_rec, conn)?;
+                    node::set_node_property(conn, n.id, &assignment.property, val)?;
+                }
+                out_rec.set(alias.to_string(), Value::I64(n.id.0 as i64));
+                out_rec.set(format!("{alias}.__id"), Value::I64(n.id.0 as i64));
+            } else {
                 let labels: Vec<String> = if label.is_empty() {
                     vec![]
                 } else {
@@ -1385,16 +1435,19 @@ fn exec_match_merge(
                 };
                 let id = node::create_node(conn, &labels, props.clone())?;
                 index::update_indexes_for_node(conn, id, label, None, &props)?;
-                let alias = node_pat.variable.as_deref().unwrap_or("_merge");
                 for assignment in on_create {
                     let mut a_rec = Record::new();
                     a_rec.set(alias.to_string(), Value::I64(id.0 as i64));
                     let val = eval_expr(&assignment.value, &a_rec, conn)?;
                     node::set_node_property(conn, id, &assignment.property, val)?;
                 }
+                out_rec.set(alias.to_string(), Value::I64(id.0 as i64));
+                out_rec.set(format!("{alias}.__id"), Value::I64(id.0 as i64));
             }
+
+            result.push(out_rec);
         }
-        return Ok(vec![]);
+        return Ok(result);
     }
 
     // Relationship merge: (src)-[:TYPE {props}]->(dst)
@@ -1437,6 +1490,8 @@ fn exec_match_merge(
             _ => continue,
         };
 
+        let out_rec = rec.clone();
+
         if !edge::edge_exists(conn, src_id, dst_id, &edge_type)? {
             let mut props = Properties::new();
             for (key, expr) in &rel.properties {
@@ -1468,9 +1523,11 @@ fn exec_match_merge(
                 )?;
             }
         }
+
+        result.push(out_rec);
     }
 
-    Ok(vec![])
+    Ok(result)
 }
 
 fn exec_unwind(

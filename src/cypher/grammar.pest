@@ -48,7 +48,7 @@ unwind_stmt = {
     (unwind_create | unwind_return)
 }
 
-unwind_create = { ^"CREATE" ~ create_pattern_list }
+unwind_create = { ^"CREATE" ~ create_pattern_list ~ (return_clause ~ order_by_clause? ~ skip_clause? ~ limit_clause?)? }
 
 unwind_return = {
     where_clause? ~
@@ -65,7 +65,8 @@ unwind_clause = { ^"UNWIND" ~ expr ~ ^"AS" ~ ident }
 // === CREATE statement ===
 
 create_stmt = {
-    ^"CREATE" ~ create_pattern_list
+    ^"CREATE" ~ create_pattern_list ~
+    (return_clause ~ order_by_clause? ~ skip_clause? ~ limit_clause?)?
 }
 
 create_pattern_list = { create_pattern ~ ("," ~ create_pattern)* }
@@ -77,7 +78,8 @@ create_pattern = { node_pattern ~ (rel_pattern ~ node_pattern)* }
 match_create_stmt = {
     ^"MATCH" ~ pattern_list ~
     where_clause? ~
-    ^"CREATE" ~ create_pattern_list
+    ^"CREATE" ~ create_pattern_list ~
+    (return_clause ~ order_by_clause? ~ skip_clause? ~ limit_clause?)?
 }
 
 // === MATCH ... MERGE statement ===
@@ -87,7 +89,8 @@ match_merge_stmt = {
     where_clause? ~
     ^"MERGE" ~ pattern ~
     on_create_clause? ~
-    on_match_clause?
+    on_match_clause? ~
+    (return_clause ~ order_by_clause? ~ skip_clause? ~ limit_clause?)?
 }
 
 // === DELETE statement ===
@@ -117,7 +120,8 @@ assignment = { property_access ~ "=" ~ expr }
 merge_stmt = {
     ^"MERGE" ~ pattern ~
     on_create_clause? ~
-    on_match_clause?
+    on_match_clause? ~
+    (return_clause ~ order_by_clause? ~ skip_clause? ~ limit_clause?)?
 }
 
 on_create_clause = { ^"ON" ~ ^"CREATE" ~ ^"SET" ~ assignment_list }

@@ -37,13 +37,13 @@ fn main() {
     let skiplist = load_skiplist(&base.join("skiplist.txt"));
     let skip_count = skiplist.len();
 
-    let writer = pollster::block_on(
-        <World as cucumber::World>::cucumber()
-            .filter_run(&features_dir, move |feat, _rule, scenario| {
-                let key = format!("{}::{}", feat.name, scenario.name);
-                !skiplist.contains(key.as_str())
-            }),
-    );
+    let writer = pollster::block_on(<World as cucumber::World>::cucumber().filter_run(
+        &features_dir,
+        move |feat, _rule, scenario| {
+            let key = format!("{}::{}", feat.name, scenario.name);
+            !skiplist.contains(key.as_str())
+        },
+    ));
 
     if skip_count > 0 {
         eprintln!("TCK: {skip_count} scenarios skipped via skiplist");

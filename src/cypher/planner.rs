@@ -737,16 +737,12 @@ fn check_expr_variables(expr: &Expr, scope: &HashSet<String>) -> crate::types::R
     match expr {
         Expr::Variable(var) => {
             if !scope.contains(var) {
-                return Err(GraphError::syntax(format!(
-                    "UndefinedVariable: {var}"
-                )));
+                return Err(GraphError::syntax(format!("UndefinedVariable: {var}")));
             }
         }
         Expr::Property(var, _) => {
             if !scope.contains(var) {
-                return Err(GraphError::syntax(format!(
-                    "UndefinedVariable: {var}"
-                )));
+                return Err(GraphError::syntax(format!("UndefinedVariable: {var}")));
             }
         }
         Expr::BinaryOp { left, right, .. } => {
@@ -987,9 +983,7 @@ fn plan_single_pattern(conn: &Connection, pattern: &Pattern) -> crate::types::Re
                 for dst_label in &dst_node.labels {
                     if !dst_label.is_empty() {
                         let predicate = Expr::BinaryOp {
-                            left: Box::new(Expr::Literal(LiteralValue::String(
-                                dst_label.clone(),
-                            ))),
+                            left: Box::new(Expr::Literal(LiteralValue::String(dst_label.clone()))),
                             op: BinOp::In,
                             right: Box::new(Expr::Property(
                                 dst_alias.clone(),
@@ -1017,8 +1011,7 @@ fn plan_single_pattern(conn: &Connection, pattern: &Pattern) -> crate::types::Re
         }
     }
 
-    let mut result =
-        op.ok_or_else(|| GraphError::Serialization("empty pattern".to_string()))?;
+    let mut result = op.ok_or_else(|| GraphError::Serialization("empty pattern".to_string()))?;
 
     // If this pattern has a path variable binding, wrap with MaterializePath.
     if let Some(ref path_var) = pattern.path_variable {

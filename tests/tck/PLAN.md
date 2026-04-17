@@ -1,111 +1,71 @@
 # TCK Conformance Improvement Plan
 
-## Context
+## Status: Phases 1-5 complete (2026-04-17)
 
-494/1630 scenarios passing (30.3%). Two harness bugs and one grammar limitation account for the bulk of the remaining failures. This plan targets low-risk, high-impact fixes first.
-
-## Phase 1: Harness Bug Fixes (quick wins)
-
-### 1A — Fix label counting in `GraphCounts::snapshot()`
-
-**File:** `tests/tck_support/world.rs:31-38`
-
-**Bug:** SQL queries `WHERE key LIKE '%_label_cnt'` but engine stores keys as `stats:label_count:<label>` (`src/stats.rs:8`). Labels always count as 0.
-
-**Fix:** Change to `SELECT COUNT(*) FROM metadata WHERE key LIKE 'stats:label_count:%'`. No substr needed — each label is one row.
-
-### 1B — Fix relationship counting in `GraphCounts::snapshot()`
-
-**File:** `tests/tck_support/world.rs:28-29`
-
-**Bug:** Counts `SELECT COUNT(*) FROM edge_props`, but `src/edge.rs:58-64` only inserts into `edge_props` when properties are non-empty. Edges without properties (e.g., `CREATE ()-[:R]->()`) are invisible.
-
-**Fix:** In `src/edge.rs:58`, remove the `if !properties.is_empty()` guard — always store an `edge_props` row. Same for `batch_create_edges`. Empty-map msgpack is 1 byte, negligible cost.
-
-### 1C — Unskip passing IS NULL scenarios
-
-After 1A, remove Null1::[4] (`RETURN null IS NULL AS value`) and Null2::[4] from skiplist — these are pure RETURN + IS NULL, already fully implemented in parser/eval.
-
-**Verify:** `cargo test --test tck` after each sub-phase.
+785 scenarios passing, 1096 skiplisted, 0 failures.
 
 ---
 
-## Phase 2: Unify expression grammar (biggest single unlock)
+## Completed Phases
 
-**Files:** `src/cypher/grammar.pest`, `src/cypher/parser.rs`
+### Phase 1: Harness Bug Fixes ✓
 
-**Problem:** `expr = { in_expr }` — no boolean ops, comparisons, IS NULL, or NOT available in RETURN/WITH/UNWIND/CASE/list contexts. `bool_expr` has the full tower but is only used in WHERE.
+- **1A** — Fixed label counting SQL in `world.rs` (`'%_label_cnt'` → `'stats:label_count:%'`)
+- **1B** — Always store `edge_props` rows in `edge.rs` (property-less edges were invisible to count)
+- **1C** — IS NULL scenarios already unskipped in prior work
 
-**Fix:** Merge `bool_expr` into `expr`:
-```
-expr = { xor_term ~ (or_op ~ xor_term)* }
-xor_term = { bool_term ~ (xor_op ~ bool_term)* }
-bool_term = { bool_factor ~ (and_op ~ bool_factor)* }
-bool_factor = { not_op? ~ bool_primary }
-bool_primary = { case_expr | exists_subquery | is_not_null_check | is_null_check | in_check | comparison | "(" ~ expr ~ ")" | in_expr }
-```
+### Phase 2: Unified expression grammar ✓
 
-Remove the separate `bool_expr` rule (or alias it to `expr`). Parser: wire `parse_expr()` through the bool chain instead of going straight to `parse_in_expr()`.
+Merged `bool_expr` into `expr` so AND/OR/XOR/NOT/comparisons/IS NULL/IN work in all expression contexts (RETURN, WITH, CASE, UNWIND, list literals, etc.).
 
-**Unlocks:** ~80-120 scenarios across Boolean (32), Precedence (28), Null (8), Comparison (20+), and many scattered scenarios that use boolean expressions in RETURN.
+Key implementation details:
+- Restructured `bool_primary` as `cmp_or_value` to avoid PEG exponential backtracking
+- Added `@` atomic word-boundary rules (`or_op`, `and_op`, `is_kw`, `in_kw`, etc.) to prevent keyword prefix matching (e.g. "OR" in "ORDER")
+- `bool_expr` became thin wrapper `{ expr }` for backward compat with `where_clause`
+- ~108 scenarios moved to skiplist (expect compile-time type checking we don't do)
+- ~25 scenarios unlocked (boolean ops in RETURN context)
 
----
+### Phase 3: Modulo operator ✓
 
-## Phase 3: Modulo operator
+Added `%` to `mul_op`, `BinOp::Mod`, eval with null propagation and div-by-zero → Null.
 
-**Files:** `grammar.pest`, `ast.rs`, `parser.rs`, `eval.rs`
+### Phase 4: Float literal improvements ✓
 
-Add `%` to `mul_op`, `BinOp::Mod` variant, eval with null propagation and div-by-zero → Null.
+Extended `float_literal` grammar: leading dot (`.5`), exponents (`1e9`, `1.0E-5`), overflow detection (`1.34E999` → SyntaxError). ~19 Literals5 scenarios unlocked.
 
-**Unlocks:** ~5-15 scenarios (Mathematical, some Return2).
+### Phase 5: Batch unskip ✓
 
----
-
-## Phase 4: Float literal improvements
-
-**File:** `grammar.pest`
-
-Current rule requires digits on both sides of `.` and no exponent. Add: `.5`, `1e9`, `1.0e5`, uppercase `E`, signed exponents.
-
-**Unlocks:** ~10-18 Literals5 scenarios.
+Systematically removed skiplist entries for Boolean, Null, Comparison, Precedence, Literals5, and Mathematical scenarios. Re-added those that still fail due to deeper issues (null propagation, map/NaN comparisons, UNWIND interaction).
 
 ---
 
-## Phase 5: Batch unskip and triage
+## Next priorities (by impact)
 
-After Phases 1-4, systematically:
-1. Remove all IS NULL/IS NOT NULL scenarios from skiplist (those not blocked by OPTIONAL MATCH/maps)
-2. Remove zero-blocker scenarios in batches of ~20, run tests, identify patterns
-3. Update `skiplist.txt` and `STATUS.md`
+Regenerate with: `uv run tests/tck/analyze_blockers.py`
 
----
+| Sole | Impact | Construct | Notes |
+|-----:|-------:|-----------|-------|
+| 151 | 313 | Write-clause RETURN side effects | Side-effect delta tracking |
+| 36 | 55 | Temporal types | datetime(), date(), duration() |
+| 33 | 53 | Quantifier predicates | single(), none(), any(), all() |
+| 23 | 37 | CREATE (no RETURN) side effects | Side-effect assertion gaps |
+| 10 | 21 | IN [list] | Remaining: null semantics |
+| 9 | 31 | IS NULL / IS NOT NULL | Property access on missing props |
+| 9 | 16 | Parameter $param | |
+| 8 | 24 | ORDER BY | WITH...ORDER BY interaction |
+| 7 | 19 | String functions | toString(), replace(), etc. |
+| 6 | 35 | Aggregation (non-count) | sum/avg/min/max/collect |
+| 6 | 19 | List functions | range(), reverse(), tail(), etc. |
+| 5 | 34 | MERGE | |
+| 5 | 10 | NOT prefix | Null propagation in NOT |
 
-## Execution order & risk
+### Recommended next phase
 
-| # | Phase | Risk | Files Changed | Est. Unlocked |
-|---|-------|------|---------------|---------------|
-| 1 | 1A: Label count fix | None | world.rs | 4-10 |
-| 2 | 1B: Relationship count fix | Low | edge.rs, world.rs | 5-15 |
-| 3 | 1C: Unskip IS NULL trivial | None | skiplist.txt | 2-4 |
-| 4 | 2: Grammar unification | Medium | grammar.pest, parser.rs | 80-120 |
-| 5 | 3: Modulo operator | Low | grammar/ast/parser/eval | 5-15 |
-| 6 | 4: Float literals | Low | grammar.pest | 10-18 |
-| 7 | 5: Batch unskip | None | skiplist.txt | 10-30 |
+**Side-effect delta tracking** (151 sole-blocker scenarios): The `GraphCounts::delta()` method and step assertions need to accurately track `+nodes`, `-nodes`, `+labels`, `+properties`, `+relationships`, `-relationships`. This is the single biggest unlock.
 
-**Estimated total:** 116-212 more scenarios → ~37-43% pass rate.
+**Quantifier functions** (33 sole-blocker, 53 impact): Adding `all()`, `any()`, `none()`, `single()` as list predicate functions.
 
-## Verification
-
-After each phase:
-```bash
-cargo test --test tck 2>&1 | tail -20
-```
-
-After all phases:
-```bash
-cargo test --test tck 2>&1 > /tmp/tck_output.txt && uv run tests/tck/analyze.py /tmp/tck_output.txt
-uv run tests/tck/analyze_blockers.py
-```
+**Aggregation functions** (6 sole-blocker, 35 impact): Extending beyond `count()` to `sum`, `avg`, `min`, `max`, `collect`.
 
 ## Critical files
 - `tests/tck_support/world.rs` — harness counts
@@ -115,5 +75,4 @@ uv run tests/tck/analyze_blockers.py
 - `src/cypher/ast.rs` — AST types
 - `src/cypher/eval.rs` — expression evaluator
 - `src/edge.rs` — edge storage
-- `src/stats.rs` — label statistics
 - `tests/tck/skiplist.txt` — known failures

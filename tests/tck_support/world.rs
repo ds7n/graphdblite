@@ -30,8 +30,7 @@ impl GraphCounts {
             .unwrap_or(0);
         let labels: i64 = conn
             .query_row(
-                "SELECT COUNT(DISTINCT substr(key, 1, length(key) - 9)) FROM metadata \
-                 WHERE key LIKE '%_label_cnt'",
+                "SELECT COUNT(*) FROM metadata WHERE key LIKE 'stats:label_count:%'",
                 [],
                 |r| r.get(0),
             )

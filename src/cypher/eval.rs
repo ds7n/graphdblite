@@ -667,6 +667,41 @@ fn eval_binop(left: &Value, op: BinOp, right: &Value) -> crate::types::Result<Va
                 _ => Ok(Value::Null),
             }
         }
+        BinOp::Mod => {
+            // Modulo with null propagation and div-by-zero → Null.
+            match (left, right) {
+                (Value::Null, _) | (_, Value::Null) => Ok(Value::Null),
+                (Value::I64(a), Value::I64(b)) => {
+                    if *b == 0 {
+                        Ok(Value::Null)
+                    } else {
+                        Ok(Value::I64(a % b))
+                    }
+                }
+                (Value::F64(a), Value::F64(b)) => {
+                    if *b == 0.0 {
+                        Ok(Value::Null)
+                    } else {
+                        Ok(Value::F64(a % b))
+                    }
+                }
+                (Value::I64(a), Value::F64(b)) => {
+                    if *b == 0.0 {
+                        Ok(Value::Null)
+                    } else {
+                        Ok(Value::F64(*a as f64 % b))
+                    }
+                }
+                (Value::F64(a), Value::I64(b)) => {
+                    if *b == 0 {
+                        Ok(Value::Null)
+                    } else {
+                        Ok(Value::F64(a % *b as f64))
+                    }
+                }
+                _ => Ok(Value::Null),
+            }
+        }
     }
 }
 

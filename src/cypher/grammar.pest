@@ -173,13 +173,24 @@ limit_clause = { ^"LIMIT" ~ integer }
 
 // === Expressions ===
 
-bool_expr = { xor_term ~ (or_op ~ xor_term)* }
+bool_expr = { expr }
 xor_term = { bool_term ~ (xor_op ~ bool_term)* }
 bool_term = { bool_factor ~ (and_op ~ bool_factor)* }
 bool_factor = { not_op? ~ bool_primary }
-bool_primary = { case_expr | exists_subquery | is_not_null_check | is_null_check | in_check | comparison | "(" ~ bool_expr ~ ")" }
+bool_primary = { case_expr | exists_subquery | "(" ~ expr ~ ")" | cmp_or_value }
 
-in_check = { add_expr ~ ^"IN" ~ add_expr }
+// Parse add_expr once, then optionally check for a comparison/IS NULL/IN suffix.
+// This avoids PEG exponential backtracking from re-parsing add_expr in each alternative.
+cmp_or_value = { add_expr ~ (is_not_null_suffix | is_null_suffix | in_suffix | comp_suffix)? }
+is_not_null_suffix = { is_kw ~ not_kw ~ null_kw }
+is_null_suffix = { is_kw ~ null_kw }
+in_suffix = { in_kw ~ add_expr }
+
+is_kw = @{ ^"IS" ~ !(ASCII_ALPHANUMERIC | "_") }
+in_kw = @{ ^"IN" ~ !(ASCII_ALPHANUMERIC | "_") }
+null_kw = @{ ^"NULL" ~ !(ASCII_ALPHANUMERIC | "_") }
+not_kw = @{ ^"NOT" ~ !(ASCII_ALPHANUMERIC | "_") }
+comp_suffix = { comp_op ~ add_expr }
 
 exists_subquery = { ^"EXISTS" ~ "{" ~ pattern_list ~ where_clause? ~ "}" }
 
@@ -189,29 +200,25 @@ case_expr = {
     ~ case_else_clause?
     ~ ^"END"
 }
-case_when_clause = { ^"WHEN" ~ bool_expr ~ ^"THEN" ~ expr }
+case_when_clause = { ^"WHEN" ~ expr ~ ^"THEN" ~ expr }
 case_else_clause = { ^"ELSE" ~ expr }
 
-is_null_check = { expr ~ ^"IS" ~ ^"NULL" }
-is_not_null_check = { expr ~ ^"IS" ~ ^"NOT" ~ ^"NULL" }
-comparison = { expr ~ comp_op ~ expr }
-
-or_op = { ^"OR" }
-xor_op = { ^"XOR" }
-and_op = { ^"AND" }
-not_op = { ^"NOT" }
+or_op = @{ ^"OR" ~ !(ASCII_ALPHANUMERIC | "_") }
+xor_op = @{ ^"XOR" ~ !(ASCII_ALPHANUMERIC | "_") }
+and_op = @{ ^"AND" ~ !(ASCII_ALPHANUMERIC | "_") }
+not_op = @{ ^"NOT" ~ !(ASCII_ALPHANUMERIC | "_") }
 
 comp_op = { "<>" | "<=" | ">=" | "<" | ">" | "=" | starts_with_op | ends_with_op | contains_op }
 starts_with_op = { ^"STARTS" ~ ^"WITH" }
 ends_with_op = { ^"ENDS" ~ ^"WITH" }
 contains_op = { ^"CONTAINS" }
 
-expr = { in_expr }
+expr = { xor_term ~ (or_op ~ xor_term)* }
 in_expr = { add_expr ~ (^"IN" ~ add_expr)? }
 add_expr = { mul_expr ~ (add_op ~ mul_expr)* }
 mul_expr = { atom_expr ~ (mul_op ~ atom_expr)* }
 add_op = { "+" | "-" }
-mul_op = { "*" | "/" }
+mul_op = { "*" | "/" | "%" }
 atom_expr = { atom_primary ~ subscript* }
 atom_primary = _{ case_expr | function_call | property_access | literal | list_comprehension | list_literal | map_literal | star | parameter | "(" ~ expr ~ ")" | variable }
 subscript = { "[" ~ subscript_inner ~ "]" }
@@ -270,7 +277,14 @@ literal = { float_literal | integer_literal | string_literal | bool_literal | nu
 integer_literal = @{ "-"? ~ (hex_integer | octal_integer | ASCII_DIGIT+) }
 hex_integer = { ("0x" | "0X") ~ ASCII_HEX_DIGIT+ }
 octal_integer = { ("0o" | "0O") ~ ASCII_OCT_DIGIT+ }
-float_literal = @{ "-"? ~ ASCII_DIGIT+ ~ "." ~ ASCII_DIGIT+ }
+float_literal = @{
+    "-"? ~ (
+        ASCII_DIGIT+ ~ "." ~ ASCII_DIGIT+ ~ exponent? |
+        "." ~ ASCII_DIGIT+ ~ exponent? |
+        ASCII_DIGIT+ ~ exponent
+    )
+}
+exponent = { ("e" | "E") ~ ("+" | "-")? ~ ASCII_DIGIT+ }
 string_literal = ${ "'" ~ string_inner ~ "'" }
 string_inner = @{ (!"'" ~ !"\\" ~ ANY | "\\" ~ ANY)* }
 bool_literal = { ^"TRUE" | ^"FALSE" }

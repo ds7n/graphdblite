@@ -1219,7 +1219,10 @@ fn e2e_parse_error_missing_return_expression() {
     assert!(!msg.contains("serialization error"), "got: {msg}");
     // Should mention expression-related expectation.
     assert!(
-        msg.contains("expression") || msg.contains("CASE") || msg.contains("function"),
+        msg.contains("expression")
+            || msg.contains("CASE")
+            || msg.contains("function")
+            || msg.contains("condition"),
         "got: {msg}"
     );
     tx.commit().unwrap();

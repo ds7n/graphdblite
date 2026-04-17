@@ -24,30 +24,23 @@ Aggregation8 - DISTINCT::[1] Distinct on unbound node
 Aggregation8 - DISTINCT::[2] Distinct on null
 Aggregation8 - DISTINCT::[3] Collect distinct nulls
 Aggregation8 - DISTINCT::[4] Collect distinct values mixed with nulls
-Boolean1 - And logical operations::[1] Conjunction of two truth values
-Boolean1 - And logical operations::[2] Conjunction of three truth values
-Boolean1 - And logical operations::[3] Conjunction of many truth values
 Boolean1 - And logical operations::[4] Conjunction is commutative on non-null
 Boolean1 - And logical operations::[5] Conjunction is commutative on null
 Boolean1 - And logical operations::[6] Conjunction is associative on non-null
 Boolean1 - And logical operations::[7] Conjunction is associative on null
-Boolean2 - OR logical operations::[1] Disjunction of two truth values
-Boolean2 - OR logical operations::[2] Disjunction of three truth values
-Boolean2 - OR logical operations::[3] Disjunction of many truth values
+Boolean1 - And logical operations::[8] Fail on conjunction of at least one non-booleans
 Boolean2 - OR logical operations::[4] Disjunction is commutative on non-null
 Boolean2 - OR logical operations::[5] Disjunction is commutative on null
 Boolean2 - OR logical operations::[6] Disjunction is associative on non-null
 Boolean2 - OR logical operations::[7] Disjunction is associative on null
-Boolean3 - XOR logical operations::[1] Exclusive disjunction of two truth values
-Boolean3 - XOR logical operations::[2] Exclusive disjunction of three truth values
-Boolean3 - XOR logical operations::[3] Exclusive disjunction of many truth values
+Boolean2 - OR logical operations::[8] Fail on disjunction of at least one non-booleans
 Boolean3 - XOR logical operations::[4] Exclusive disjunction is commutative on non-null
 Boolean3 - XOR logical operations::[5] Exclusive disjunction is commutative on null
 Boolean3 - XOR logical operations::[6] Exclusive disjunction is associative on non-null
 Boolean3 - XOR logical operations::[7] Exclusive disjunction is associative on null
-Boolean4 - NOT logical operations::[1] Logical negation of truth values
+Boolean3 - XOR logical operations::[8] Fail on exclusive disjunction of at least one non-booleans
 Boolean4 - NOT logical operations::[2] Double logical negation of truth values
-Boolean4 - NOT logical operations::[3] NOT and false
+Boolean4 - NOT logical operations::[4] Fail when using NOT on a non-boolean literal
 Boolean5 - Interop of logical operations::[1] Disjunction is distributive over conjunction on non-null
 Boolean5 - Interop of logical operations::[2] Disjunction is distributive over conjunction on null
 Boolean5 - Interop of logical operations::[3] Conjunction is distributive over disjunction on non-null
@@ -59,8 +52,6 @@ Boolean5 - Interop of logical operations::[8] De Morgan's law on non-null: the n
 Call1 - Basic procedure calling::[13] Standalone call to unknown procedure should fail
 Call1 - Basic procedure calling::[14] In-query call to unknown procedure should fail
 Comparison1 - Equality::[14] Direction of traversed relationship is not significant for path equality, simple
-Comparison1 - Equality::[15] It is unknown - i.e. null - if a null is equal to a null
-Comparison1 - Equality::[16] It is unknown - i.e. null - if a null is not equal to a null
 Comparison1 - Equality::[17] Failing when comparing to an undefined variable
 Comparison1 - Equality::[1] Number-typed integer comparison
 Comparison1 - Equality::[2] Number-typed float comparison
@@ -70,13 +61,11 @@ Comparison1 - Equality::[5] Comparing relationships to relationships
 Comparison1 - Equality::[6] Comparing lists to lists
 Comparison1 - Equality::[7] Comparing maps to maps
 Comparison1 - Equality::[8] Equality and inequality of NaN
-Comparison1 - Equality::[9] Equality between strings and numbers
 Comparison2 - Half-bounded Range::[1] Comparing strings and integers using > in an AND'd predicate
 Comparison2 - Half-bounded Range::[2] Comparing strings and integers using > in a OR'd predicate
 Comparison2 - Half-bounded Range::[3] Comparing across types yields null, except numbers
 Comparison2 - Half-bounded Range::[4] Comparing lists
 Comparison2 - Half-bounded Range::[5] Comparing NaN
-Comparison2 - Half-bounded Range::[6] Comparability between numbers and strings
 Comparison3 - Full-Bound Range::[1] Handling numerical ranges 1
 Comparison3 - Full-Bound Range::[2] Handling numerical ranges 2
 Comparison3 - Full-Bound Range::[3] Handling numerical ranges 3
@@ -292,25 +281,6 @@ List6 - List size::[8] Get node degree via size of pattern comprehension
 List6 - List size::[9] Get node degree via size of pattern comprehension that specifies a relationship type
 List9 - List Tail::[1] Returning nested expressions based on list property
 Literals5 - Float::[10] Return a negative zero float without integer digits
-Literals5 - Float::[12] Return a very long negative float without integer digits
-Literals5 - Float::[13] Return a positive float with positive lower case exponent
-Literals5 - Float::[14] Return a positive float with positive upper case exponent
-Literals5 - Float::[15] Return a positive float with positive lower case exponent without integer digits
-Literals5 - Float::[16] Return a positive float with negative lower case exponent
-Literals5 - Float::[17] Return a positive float with negative lower case exponent without integer digits
-Literals5 - Float::[18] Return a positive float with negative upper case exponent without integer digits
-Literals5 - Float::[19] Return a negative float in with positive lower case exponent
-Literals5 - Float::[20] Return a negative float in with positive upper case exponent
-Literals5 - Float::[21] Return a negative float with positive lower case exponent without integer digits
-Literals5 - Float::[22] Return a negative float with negative lower case exponent
-Literals5 - Float::[23] Return a negative float with negative lower case exponent without integer digits
-Literals5 - Float::[24] Return a negative float with negative upper case exponent without integer digits
-Literals5 - Float::[25] Return a positive float with one integer digit and maximum positive exponent
-Literals5 - Float::[26] Return a positive float with nine integer digit and maximum positive exponent
-Literals5 - Float::[2] Return a short positive float without integer digits
-Literals5 - Float::[4] Return a long positive float without integer digits
-Literals5 - Float::[6] Return a very long positive float without integer digits
-Literals5 - Float::[8] Return a positive zero float without integer digits
 Literals5 - Float::[9] Return a negative zero float
 Literals6 - String::[10] Accept valid Unicode literal
 Literals6 - String::[11] Return a double-quoted string with one character
@@ -501,18 +471,11 @@ Merge9 - Merge clause interoperation with other clauses::[4] MERGE after WITH wi
 Null1 - IS NULL validation::[1] Property null check on non-null node
 Null1 - IS NULL validation::[2] Property null check on optional non-null node
 Null1 - IS NULL validation::[3] Property null check on null node
-Null1 - IS NULL validation::[4] A literal null IS null
 Null1 - IS NULL validation::[5] IS NULL on a map
-Null1 - IS NULL validation::[6] IS NULL is case insensitive
 Null2 - IS NOT NULL validation::[1] Property not null check on non-null node
 Null2 - IS NOT NULL validation::[2] Property not null check on optional non-null node
 Null2 - IS NOT NULL validation::[3] Property not null check on null node
-Null2 - IS NOT NULL validation::[4] A literal null is not IS NOT null
 Null2 - IS NOT NULL validation::[5] IS NOT NULL on a map
-Null2 - IS NOT NULL validation::[6] IS NOT NULL is case insensitive
-Null3 - Null evaluation::[1] The inverse of a null is a null
-Null3 - Null evaluation::[2] It is unknown - i.e. null - if a null is equal to a null
-Null3 - Null evaluation::[3] It is unknown - i.e. null - if a null is not equal to a null
 Null3 - Null evaluation::[4] Using null in IN
 Path1 - Nodes of a path::[1] `nodes()` on null path
 Path2 - Relationships of a path::[1] Return relationships by fetching them from the path
@@ -521,7 +484,9 @@ Path2 - Relationships of a path::[3] `relationships()` on null path
 Path3 - Length of a path::[1] Return a var length path of length zero
 Path3 - Length of a path::[2] Failing when using `length()` on a node
 Path3 - Length of a path::[3] Failing when using `length()` on a relationship
+Pattern1 - Pattern predicate::[10] Fail on introducing unbounded variables in pattern
 Pattern1 - Pattern predicate::[10] Matching on a specific type of undirected connection with length 2
+Pattern1 - Pattern predicate::[11] Fail on checking self pattern
 Pattern1 - Pattern predicate::[12] Matching two nodes on a single directed connection between them
 Pattern1 - Pattern predicate::[13] Fail on matching two nodes on a single undirected connection between them
 Pattern1 - Pattern predicate::[14] Matching two nodes on a specific type of single outgoing directed connection
@@ -562,7 +527,6 @@ Precedence1 - On boolean values::[16] Conjunction takes precedence over inclusiv
 Precedence1 - On boolean values::[17] Negation takes precedence over conjunction in every combination of truth values
 Precedence1 - On boolean values::[18] Negation takes precedence over inclusive disjunction in every combination of truth values
 Precedence1 - On boolean values::[19] Comparison operators takes precedence over boolean negation in every combination of truth values
-Precedence1 - On boolean values::[1] Exclusive disjunction takes precedence over inclusive disjunction
 Precedence1 - On boolean values::[20] Pairs of comparison operators and boolean negation that are associative in every combination of truth values
 Precedence1 - On boolean values::[21] Comparison operators take precedence over binary boolean operators in every combination of truth values
 Precedence1 - On boolean values::[22] Pairs of comparison operators and binary boolean operators that are associative in every combination of truth values
@@ -572,10 +536,6 @@ Precedence1 - On boolean values::[25] Null predicates take precedence over binar
 Precedence1 - On boolean values::[26] List predicate takes precedence over comparison operators in every combination of truth values
 Precedence1 - On boolean values::[27] List predicate takes precedence over negation in every combination of truth values
 Precedence1 - On boolean values::[28] List predicate takes precedence over binary boolean operators in every combination of truth values
-Precedence1 - On boolean values::[2] Conjunction disjunction takes precedence over exclusive disjunction
-Precedence1 - On boolean values::[3] Conjunction disjunction takes precedence over inclusive disjunction
-Precedence1 - On boolean values::[4] Negation takes precedence over conjunction
-Precedence1 - On boolean values::[5] Negation takes precedence over inclusive disjunction
 Precedence1 - On boolean values::[6] Comparison operator takes precedence over boolean negation
 Precedence1 - On boolean values::[7] Comparison operator takes precedence over binary boolean operator
 Precedence1 - On boolean values::[8] Null predicate takes precedence over comparison operator

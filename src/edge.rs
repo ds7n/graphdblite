@@ -55,13 +55,11 @@ pub fn create_edge(
     insert_into_sorted(&mut in_ids, src.0);
     kv::put(conn, kv::TABLE_ADJ_IN, &in_key, &encode_id_list(&in_ids))?;
 
-    // Store edge properties if non-empty.
-    if !properties.is_empty() {
-        let props_key = edge_props_key(src, dst, label);
-        let data =
-            rmp_serde::to_vec(&properties).map_err(|e| GraphError::Serialization(e.to_string()))?;
-        kv::put(conn, kv::TABLE_EDGE_PROPS, &props_key, &data)?;
-    }
+    // Always store an edge_props row so relationship counting works correctly.
+    let props_key = edge_props_key(src, dst, label);
+    let data =
+        rmp_serde::to_vec(&properties).map_err(|e| GraphError::Serialization(e.to_string()))?;
+    kv::put(conn, kv::TABLE_EDGE_PROPS, &props_key, &data)?;
 
     Ok(())
 }
@@ -119,14 +117,12 @@ pub fn batch_create_edges(
         kv::put(conn, kv::TABLE_ADJ_IN, &in_key, &encode_id_list(&ids))?;
     }
 
-    // Write edge properties (non-empty only).
+    // Always store edge_props rows so relationship counting works correctly.
     for (src, dst, properties) in edges {
-        if !properties.is_empty() {
-            let props_key = edge_props_key(*src, *dst, label);
-            let data = rmp_serde::to_vec(properties)
-                .map_err(|e| GraphError::Serialization(e.to_string()))?;
-            kv::put(conn, kv::TABLE_EDGE_PROPS, &props_key, &data)?;
-        }
+        let props_key = edge_props_key(*src, *dst, label);
+        let data = rmp_serde::to_vec(properties)
+            .map_err(|e| GraphError::Serialization(e.to_string()))?;
+        kv::put(conn, kv::TABLE_EDGE_PROPS, &props_key, &data)?;
     }
 
     Ok(())
@@ -234,13 +230,9 @@ pub fn set_edge_property(
         props.insert(key.to_string(), value);
     }
     let props_key = edge_props_key(src, dst, label);
-    if props.is_empty() {
-        kv::delete(conn, kv::TABLE_EDGE_PROPS, &props_key)?;
-    } else {
-        let data =
-            rmp_serde::to_vec(&props).map_err(|e| GraphError::Serialization(e.to_string()))?;
-        kv::put(conn, kv::TABLE_EDGE_PROPS, &props_key, &data)?;
-    }
+    let data =
+        rmp_serde::to_vec(&props).map_err(|e| GraphError::Serialization(e.to_string()))?;
+    kv::put(conn, kv::TABLE_EDGE_PROPS, &props_key, &data)?;
     Ok(())
 }
 

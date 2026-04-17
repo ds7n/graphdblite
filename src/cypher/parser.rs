@@ -923,32 +923,8 @@ fn parse_assignment_list(
 // === Expression parsing ===
 
 fn parse_bool_expr(pair: pest::iterators::Pair<Rule>) -> crate::types::Result<Expr> {
-    // bool_expr = { xor_term ~ (or_op ~ xor_term)* }
-    let mut children: Vec<pest::iterators::Pair<Rule>> = pair.into_inner().collect();
-
-    if children.len() == 1 {
-        return parse_xor_term(children.remove(0));
-    }
-
-    // Left-associative OR chain.
-    let mut left = parse_xor_term(children.remove(0))?;
-    let mut i = 0;
-    while i < children.len() {
-        if children[i].as_rule() == Rule::or_op {
-            i += 1;
-            let right = parse_xor_term(children.remove(i))?;
-            children.remove(i - 1); // remove or_op
-            i -= 1;
-            left = Expr::BinaryOp {
-                left: Box::new(left),
-                op: BinOp::Or,
-                right: Box::new(right),
-            };
-        } else {
-            i += 1;
-        }
-    }
-    Ok(left)
+    // bool_expr = { expr }
+    parse_expr(pair.into_inner().next().unwrap())
 }
 
 fn parse_xor_term(pair: pest::iterators::Pair<Rule>) -> crate::types::Result<Expr> {
@@ -1033,11 +1009,8 @@ fn parse_bool_primary(pair: pest::iterators::Pair<Rule>) -> crate::types::Result
     match inner.as_rule() {
         Rule::case_expr => parse_case_expr(inner),
         Rule::exists_subquery => parse_exists_subquery(inner),
-        Rule::is_null_check => parse_is_null_check(inner, false),
-        Rule::is_not_null_check => parse_is_null_check(inner, true),
-        Rule::in_check => parse_in_check(inner),
-        Rule::comparison => parse_comparison(inner),
-        Rule::bool_expr => parse_bool_expr(inner),
+        Rule::expr => parse_expr(inner),
+        Rule::cmp_or_value => parse_cmp_or_value(inner),
         _ => Err(GraphError::Serialization(format!(
             "unexpected bool primary: {:?}",
             inner.as_rule()
@@ -1045,15 +1018,44 @@ fn parse_bool_primary(pair: pest::iterators::Pair<Rule>) -> crate::types::Result
     }
 }
 
-fn parse_in_check(pair: pest::iterators::Pair<Rule>) -> crate::types::Result<Expr> {
+fn parse_cmp_or_value(pair: pest::iterators::Pair<Rule>) -> crate::types::Result<Expr> {
     let mut children = pair.into_inner();
     let left = parse_add_expr(children.next().unwrap())?;
-    let right = parse_add_expr(children.next().unwrap())?;
-    Ok(Expr::BinaryOp {
-        left: Box::new(left),
-        op: BinOp::In,
-        right: Box::new(right),
-    })
+
+    // Check for optional suffix (IS NOT NULL, IS NULL, IN, comparison)
+    match children.next() {
+        None => Ok(left),
+        Some(suffix) => match suffix.as_rule() {
+            Rule::is_not_null_suffix => Ok(Expr::IsNotNull(Box::new(left))),
+            Rule::is_null_suffix => Ok(Expr::IsNull(Box::new(left))),
+            Rule::in_suffix => {
+                let right_pair = suffix
+                    .into_inner()
+                    .find(|p| p.as_rule() == Rule::add_expr)
+                    .unwrap();
+                let right = parse_add_expr(right_pair)?;
+                Ok(Expr::BinaryOp {
+                    left: Box::new(left),
+                    op: BinOp::In,
+                    right: Box::new(right),
+                })
+            }
+            Rule::comp_suffix => {
+                let mut inner = suffix.into_inner();
+                let op = parse_comp_op(inner.next().unwrap())?;
+                let right = parse_add_expr(inner.next().unwrap())?;
+                Ok(Expr::BinaryOp {
+                    left: Box::new(left),
+                    op,
+                    right: Box::new(right),
+                })
+            }
+            _ => Err(GraphError::Serialization(format!(
+                "unexpected cmp_or_value suffix: {:?}",
+                suffix.as_rule()
+            ))),
+        },
+    }
 }
 
 fn parse_case_expr(pair: pest::iterators::Pair<Rule>) -> crate::types::Result<Expr> {
@@ -1064,7 +1066,7 @@ fn parse_case_expr(pair: pest::iterators::Pair<Rule>) -> crate::types::Result<Ex
         match inner.as_rule() {
             Rule::case_when_clause => {
                 let mut children = inner.into_inner();
-                let condition = parse_bool_expr(children.next().unwrap())?;
+                let condition = parse_expr(children.next().unwrap())?;
                 let result = parse_expr(children.next().unwrap())?;
                 alternatives.push((Box::new(condition), Box::new(result)));
             }
@@ -1106,33 +1108,6 @@ fn parse_exists_subquery(pair: pest::iterators::Pair<Rule>) -> crate::types::Res
     })
 }
 
-fn parse_is_null_check(
-    pair: pest::iterators::Pair<Rule>,
-    negated: bool,
-) -> crate::types::Result<Expr> {
-    let expr = parse_expr(pair.into_inner().next().unwrap())?;
-    if negated {
-        Ok(Expr::IsNotNull(Box::new(expr)))
-    } else {
-        Ok(Expr::IsNull(Box::new(expr)))
-    }
-}
-
-fn parse_comparison(pair: pest::iterators::Pair<Rule>) -> crate::types::Result<Expr> {
-    let mut children = pair.into_inner();
-    let left = parse_expr(children.next().unwrap())?;
-    let op_pair = children.next().unwrap();
-    let right = parse_expr(children.next().unwrap())?;
-
-    let op = parse_comp_op(op_pair)?;
-
-    Ok(Expr::BinaryOp {
-        left: Box::new(left),
-        op,
-        right: Box::new(right),
-    })
-}
-
 fn parse_comp_op(pair: pest::iterators::Pair<Rule>) -> crate::types::Result<BinOp> {
     let text = pair.as_str().trim();
     // Check for multi-word operators via sub-rules first.
@@ -1162,12 +1137,32 @@ fn parse_comp_op(pair: pest::iterators::Pair<Rule>) -> crate::types::Result<BinO
 }
 
 fn parse_expr(pair: pest::iterators::Pair<Rule>) -> crate::types::Result<Expr> {
-    let inner = pair.into_inner().next().unwrap();
-    match inner.as_rule() {
-        Rule::in_expr => parse_in_expr(inner),
-        Rule::add_expr => parse_add_expr(inner),
-        _ => parse_atom_expr(inner),
+    // expr = { xor_term ~ (or_op ~ xor_term)* }
+    let mut children: Vec<pest::iterators::Pair<Rule>> = pair.into_inner().collect();
+
+    if children.len() == 1 {
+        return parse_xor_term(children.remove(0));
     }
+
+    // Left-associative OR chain.
+    let mut left = parse_xor_term(children.remove(0))?;
+    let mut i = 0;
+    while i < children.len() {
+        if children[i].as_rule() == Rule::or_op {
+            i += 1;
+            let right = parse_xor_term(children.remove(i))?;
+            children.remove(i - 1); // remove or_op
+            i -= 1;
+            left = Expr::BinaryOp {
+                left: Box::new(left),
+                op: BinOp::Or,
+                right: Box::new(right),
+            };
+        } else {
+            i += 1;
+        }
+    }
+    Ok(left)
 }
 
 fn parse_in_expr(pair: pest::iterators::Pair<Rule>) -> crate::types::Result<Expr> {
@@ -1225,6 +1220,7 @@ fn parse_mul_expr(pair: pest::iterators::Pair<Rule>) -> crate::types::Result<Exp
         let op = match op_pair.as_str() {
             "*" => BinOp::Mul,
             "/" => BinOp::Div,
+            "%" => BinOp::Mod,
             _ => {
                 return Err(GraphError::Serialization(format!(
                     "unexpected mul op: {}",
@@ -1442,6 +1438,9 @@ fn parse_literal(pair: pest::iterators::Pair<Rule>) -> crate::types::Result<Expr
                 .as_str()
                 .parse()
                 .map_err(|e| GraphError::Serialization(format!("invalid float: {e}")))?;
+            if n.is_infinite() {
+                return Err(GraphError::syntax("floating point value overflow".to_string()));
+            }
             Ok(Expr::Literal(LiteralValue::F64(n)))
         }
         Rule::string_literal => {

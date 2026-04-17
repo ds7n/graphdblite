@@ -43,10 +43,7 @@ fn kind_matches(err: &QueryError, expected: &str) -> bool {
 fn phase_matches(phase: QueryPhase, expected: &str) -> bool {
     // openCypher TCK uses lower-case phase names like "runtime", "parse",
     // "semantic analysis" / "semanticAnalysis".
-    let normalized_expected = expected
-        .trim()
-        .to_ascii_lowercase()
-        .replace([' ', '-'], "");
+    let normalized_expected = expected.trim().to_ascii_lowercase().replace([' ', '-'], "");
     let phase_str = match phase {
         QueryPhase::Parse => "parse",
         QueryPhase::SemanticAnalysis => "semanticanalysis",

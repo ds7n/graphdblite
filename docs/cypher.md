@@ -16,6 +16,9 @@ MATCH (n:Person {name: 'Alice'}) RETURN n.age
 
 -- Match without label (scans all nodes)
 MATCH (n) RETURN n
+
+-- Multi-label match (node must have both labels)
+MATCH (n:Person:Employee) RETURN n.name
 ```
 
 ### Relationship patterns
@@ -23,6 +26,9 @@ MATCH (n) RETURN n
 ```cypher
 -- Directed relationship
 MATCH (a:Person)-[:KNOWS]->(b:Person) RETURN a.name, b.name
+
+-- Bracketless shorthand (matches any edge type)
+MATCH (a:Person)-->(b) RETURN a.name, b.name
 
 -- Incoming direction
 MATCH (a:Person)<-[:KNOWS]-(b:Person) RETURN a.name, b.name
@@ -155,6 +161,12 @@ WITH a, collect(b.name) AS friends
 WITH a, friends, length(friends) AS cnt
 WHERE cnt > 1
 RETURN a.name, friends
+
+-- Forward a variable into a new MATCH
+MATCH (a:Person)
+WITH a
+MATCH (a)-->(b)
+RETURN a.name, b.name
 ```
 
 ### UNWIND
@@ -251,6 +263,18 @@ RETURN n.name,
 
 ## Graph algorithms
 
+### Path variables
+
+Bind the matched path to a variable.
+
+```cypher
+-- Single-node path
+MATCH p = (n:Person) RETURN p
+
+-- Path through relationships
+MATCH p = (a:Person)-[:KNOWS]->(b:Person) RETURN p, length(p)
+```
+
 ### shortestPath
 
 Find the shortest path between two nodes.
@@ -279,7 +303,10 @@ RETURN p, length(p) AS hops
 -- Create a node
 CREATE (n:Person {name: 'Alice', age: 30})
 
--- Create a relationship (nodes must already be bound)
+-- Create nodes and a relationship inline
+CREATE (:Person {name: 'Alice'})-[:KNOWS]->(:Person {name: 'Bob'})
+
+-- Create a relationship between existing nodes
 MATCH (a:Person {name: 'Alice'}), (b:Person {name: 'Bob'})
 CREATE (a)-[:KNOWS {since: 2020}]->(b)
 

@@ -21,6 +21,58 @@ pub fn eval_expr(expr: &Expr, record: &Record, conn: &Connection) -> crate::type
                 items.iter().map(|e| eval_expr(e, record, conn)).collect();
             Ok(Value::List(values?))
         }
+        Expr::Index { expr, index } => {
+            let base = eval_expr(expr, record, conn)?;
+            let idx = eval_expr(index, record, conn)?;
+            match (base, idx) {
+                (Value::List(items), Value::I64(i)) => {
+                    let len = items.len() as i64;
+                    let resolved = if i < 0 { len + i } else { i };
+                    if resolved >= 0 && (resolved as usize) < items.len() {
+                        Ok(items.into_iter().nth(resolved as usize).unwrap())
+                    } else {
+                        Ok(Value::Null)
+                    }
+                }
+                (Value::Null, _) | (_, Value::Null) => Ok(Value::Null),
+                _ => Ok(Value::Null),
+            }
+        }
+        Expr::Slice { expr, start, end } => {
+            let base = eval_expr(expr, record, conn)?;
+            let start_val = start
+                .as_ref()
+                .map(|e| eval_expr(e, record, conn))
+                .transpose()?;
+            let end_val = end
+                .as_ref()
+                .map(|e| eval_expr(e, record, conn))
+                .transpose()?;
+            match base {
+                Value::List(items) => {
+                    let len = items.len() as i64;
+                    let resolve = |v: i64| {
+                        let r = if v < 0 { len + v } else { v };
+                        r.clamp(0, len) as usize
+                    };
+                    let s = match &start_val {
+                        Some(Value::I64(i)) => resolve(*i),
+                        _ => 0,
+                    };
+                    let e = match &end_val {
+                        Some(Value::I64(i)) => resolve(*i),
+                        _ => len as usize,
+                    };
+                    if s >= e {
+                        Ok(Value::List(vec![]))
+                    } else {
+                        Ok(Value::List(items[s..e].to_vec()))
+                    }
+                }
+                Value::Null => Ok(Value::Null),
+                _ => Ok(Value::Null),
+            }
+        }
         Expr::Star => Ok(Value::Null),
         Expr::Parameter(name) => Err(crate::types::GraphError::argument(
             crate::types::QueryPhase::Runtime,
@@ -483,6 +535,13 @@ fn eval_binop(left: &Value, op: BinOp, right: &Value) -> crate::types::Result<Va
                 _ => Ok(Value::Null), // at least one NULL, none false
             }
         }
+        // Three-valued XOR: NULL XOR anything → NULL
+        BinOp::Xor => {
+            match (to_tribool(left), to_tribool(right)) {
+                (Some(a), Some(b)) => Ok(Value::Bool(a ^ b)),
+                _ => Ok(Value::Null), // at least one NULL
+            }
+        }
         // Three-valued OR: NULL OR true → true, NULL OR false → NULL
         BinOp::Or => {
             match (to_tribool(left), to_tribool(right)) {
@@ -687,9 +746,36 @@ pub fn expr_to_column_name(expr: &Expr) -> String {
             }
         }
         Expr::Star => "*".to_string(),
-        Expr::Literal(lit) => format!("{lit:?}"),
+        Expr::Literal(lit) => match lit {
+            LiteralValue::Null => "null".to_string(),
+            LiteralValue::Bool(b) => b.to_string(),
+            LiteralValue::I64(n) => n.to_string(),
+            LiteralValue::F64(n) => n.to_string(),
+            LiteralValue::String(s) => format!("'{s}'"),
+        },
         Expr::Case { .. } => "CASE".to_string(),
-        Expr::List(_) => "list".to_string(),
+        Expr::List(items) => {
+            let inner: Vec<String> = items.iter().map(expr_to_column_name).collect();
+            format!("[{}]", inner.join(", "))
+        }
+        Expr::Index { expr, index } => {
+            format!(
+                "{}[{}]",
+                expr_to_column_name(expr),
+                expr_to_column_name(index)
+            )
+        }
+        Expr::Slice { expr, start, end } => {
+            let s = start
+                .as_ref()
+                .map(|e| expr_to_column_name(e))
+                .unwrap_or_default();
+            let e = end
+                .as_ref()
+                .map(|e| expr_to_column_name(e))
+                .unwrap_or_default();
+            format!("{}[{}..{}]", expr_to_column_name(expr), s, e)
+        }
         _ => "_expr".to_string(),
     }
 }

@@ -241,8 +241,6 @@ Graph9 - Retrieve all properties as a property map::[1] `properties()` on a node
 Graph9 - Retrieve all properties as a property map::[2] `properties()` on a relationship
 Graph9 - Retrieve all properties as a property map::[3] `properties()` on null
 Graph9 - Retrieve all properties as a property map::[4] `properties()` on a map
-List1 - Dynamic Element Access::[1] Indexing into literal list
-List1 - Dynamic Element Access::[2] Indexing into nested literal lists
 List1 - Dynamic Element Access::[3] Use list lookup based on parameters when there is no type information
 List1 - Dynamic Element Access::[4] Use list lookup based on parameters when there is lhs type information
 List1 - Dynamic Element Access::[5] Use list lookup based on parameters when there is rhs type information
@@ -344,25 +342,6 @@ List6 - List size::[7] Using size of pattern comprehension to test existence
 List6 - List size::[8] Get node degree via size of pattern comprehension
 List6 - List size::[9] Get node degree via size of pattern comprehension that specifies a relationship type
 List9 - List Tail::[1] Returning nested expressions based on list property
-Literals3 - Hexadecimal integer::[10] Return a upper case hexadecimal integer
-Literals3 - Hexadecimal integer::[11] Return a mixed case hexadecimal integer
-Literals3 - Hexadecimal integer::[1] Return a short positive hexadecimal integer
-Literals3 - Hexadecimal integer::[2] Return a long positive hexadecimal integer
-Literals3 - Hexadecimal integer::[3] Return the largest hexadecimal integer
-Literals3 - Hexadecimal integer::[4] Return a positive hexadecimal zero
-Literals3 - Hexadecimal integer::[5] Return a negative hexadecimal zero
-Literals3 - Hexadecimal integer::[6] Return a short negative hexadecimal integer
-Literals3 - Hexadecimal integer::[7] Return a long negative hexadecimal integer
-Literals3 - Hexadecimal integer::[8] Return the smallest hexadecimal integer
-Literals3 - Hexadecimal integer::[9] Return a lower case hexadecimal integer
-Literals4 - Octal integer::[1] Return a short positive octal integer
-Literals4 - Octal integer::[2] Return a long positive octal integer
-Literals4 - Octal integer::[3] Return the largest octal integer
-Literals4 - Octal integer::[4] Return a positive octal zero
-Literals4 - Octal integer::[5] Return a negative octal zero
-Literals4 - Octal integer::[6] Return a short negative octal integer
-Literals4 - Octal integer::[7] Return a long negative octal integer
-Literals4 - Octal integer::[8] Return the smallest octal integer
 Literals5 - Float::[10] Return a negative zero float without integer digits
 Literals5 - Float::[12] Return a very long negative float without integer digits
 Literals5 - Float::[13] Return a positive float with positive lower case exponent
@@ -392,13 +371,9 @@ Literals6 - String::[5] Return a single-quoted string with escaped characters
 Literals6 - String::[9] Return a double-quoted empty string
 Literals7 - List::[14] Return a list containing multiple integer
 Literals7 - List::[16] Return a list containing multiple mixed values
-Literals7 - List::[5] Return a list containing a hexadecimal integer
-Literals7 - List::[6] Return a list containing a octal integer
 Literals7 - List::[7] Return a list containing a float
-Literals8 - Maps::[10] Return a map containing a octal integer
 Literals8 - Maps::[11] Return a map containing a float
 Literals8 - Maps::[22] Fail on a map containing unquoted string
-Literals8 - Maps::[9] Return a map containing a hexadecimal integer
 Map1 - Static value access::[1] Statically access a field of a non-null map
 Map1 - Static value access::[2] Statically access a field of a null map
 Map1 - Static value access::[3] Statically access a field of a map resulting from an expression

@@ -1,12 +1,3 @@
-# TCK skiplist — known-failing scenarios
-#
-# Format: FeatureName::ScenarioName (one per line)
-# Blank lines and lines starting with # are ignored.
-# Remove lines as features land to turn them into regression tests.
-#
-# Generated: 2026-04-17
-# Source: cargo test --test tck (full run, 220 feature files)
-
 Aggregation1 - Count::[1] Count only non-null values
 Aggregation1 - Count::[2] Counting loop relationships
 Aggregation2 - Min and Max::[10] `min()` over list values
@@ -284,6 +275,13 @@ List3 - List Equality::[6] Equality between different nested lists with null sho
 List3 - List Equality::[7] Equality between almost equal nested lists with null should return null
 List4 - List Concatenation::[1] Concatenating lists of same type
 List4 - List Concatenation::[2] Concatenating a list with a scalar of same type
+List5 - List Membership Validation - IN Operator::[1] IN should work with nested list subscripting
+List5 - List Membership Validation - IN Operator::[21] IN should return null if LHS and RHS are null - list version
+List5 - List Membership Validation - IN Operator::[29] IN should return null if comparison with null is required, list version
+List5 - List Membership Validation - IN Operator::[31] IN should return null when comparing two so-called identical lists where one element is null
+List5 - List Membership Validation - IN Operator::[34] IN should return null if comparison with null is required, list version 2
+List5 - List Membership Validation - IN Operator::[3] IN should work with list slices
+List5 - List Membership Validation - IN Operator::[42] Failing when using IN on a non-list literal
 List6 - List size::[10] Get node degree via size of pattern comprehension that specifies multiple relationship types
 List6 - List size::[2] Setting and returning the size of a list property
 List6 - List size::[3] Concatenating and returning the size of literal lists
@@ -1136,10 +1134,3 @@ WithWhere6 - Filter on aggregates::[1] Filter a single aggregate
 WithWhere7 - Variable visibility under aliasing::[1] WHERE sees a variable bound before but not after WITH
 WithWhere7 - Variable visibility under aliasing::[2] WHERE sees a variable bound after but not before WITH
 WithWhere7 - Variable visibility under aliasing::[3] WHERE sees both, variable bound before but not after WITH and variable bound after but not before WITH
-List5 - List Membership Validation - IN Operator::[1] IN should work with nested list subscripting
-List5 - List Membership Validation - IN Operator::[3] IN should work with list slices
-List5 - List Membership Validation - IN Operator::[21] IN should return null if LHS and RHS are null - list version
-List5 - List Membership Validation - IN Operator::[29] IN should return null if comparison with null is required, list version
-List5 - List Membership Validation - IN Operator::[31] IN should return null when comparing two so-called identical lists where one element is null
-List5 - List Membership Validation - IN Operator::[34] IN should return null if comparison with null is required, list version 2
-List5 - List Membership Validation - IN Operator::[42] Failing when using IN on a non-list literal

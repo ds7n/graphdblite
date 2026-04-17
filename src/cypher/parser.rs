@@ -117,10 +117,11 @@ fn parse_explain(pair: pest::iterators::Pair<Rule>) -> crate::types::Result<Stat
     Ok(Statement::Explain(Box::new(stmt)))
 }
 
+/// Parsed output of a MATCH clause: required patterns, optional pattern groups, and WHERE filter.
+type MatchParts = (Vec<Pattern>, Vec<Vec<Pattern>>, Option<Expr>);
+
 /// Extract patterns, optional patterns, and WHERE from a `match_part` rule.
-fn parse_match_part(
-    pair: pest::iterators::Pair<Rule>,
-) -> crate::types::Result<(Vec<Pattern>, Vec<Vec<Pattern>>, Option<Expr>)> {
+fn parse_match_part(pair: pest::iterators::Pair<Rule>) -> crate::types::Result<MatchParts> {
     let mut patterns = Vec::new();
     let mut optional_patterns = Vec::new();
     let mut where_clause = None;

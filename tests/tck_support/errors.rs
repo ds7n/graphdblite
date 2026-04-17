@@ -46,8 +46,7 @@ fn phase_matches(phase: QueryPhase, expected: &str) -> bool {
     let normalized_expected = expected
         .trim()
         .to_ascii_lowercase()
-        .replace(' ', "")
-        .replace('-', "");
+        .replace([' ', '-'], "");
     let phase_str = match phase {
         QueryPhase::Parse => "parse",
         QueryPhase::SemanticAnalysis => "semanticanalysis",

@@ -10,11 +10,21 @@ use graphdblite::Database;
 
 /// Open a fresh in-memory database seeded with the named graph definition.
 pub fn load_named_graph(name: &str) -> Result<Database> {
-    let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+    let graphs_dir = Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("tests")
         .join("tck")
-        .join("graphs")
-        .join(format!("{name}.cypher"));
+        .join("graphs");
+
+    // Named graphs live in subdirectories: graphs/<name>/<name>.cypher
+    // Fall back to flat layout: graphs/<name>.cypher
+    let path = {
+        let nested = graphs_dir.join(name).join(format!("{name}.cypher"));
+        if nested.exists() {
+            nested
+        } else {
+            graphs_dir.join(format!("{name}.cypher"))
+        }
+    };
 
     let source = fs::read_to_string(&path)
         .with_context(|| format!("reading named graph {name}: {}", path.display()))?;

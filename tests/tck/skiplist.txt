@@ -61,8 +61,6 @@ Comparison1 - Equality::[5] Comparing relationships to relationships
 Comparison1 - Equality::[6] Comparing lists to lists
 Comparison1 - Equality::[7] Comparing maps to maps
 Comparison1 - Equality::[8] Equality and inequality of NaN
-Comparison2 - Half-bounded Range::[1] Comparing strings and integers using > in an AND'd predicate
-Comparison2 - Half-bounded Range::[2] Comparing strings and integers using > in a OR'd predicate
 Comparison2 - Half-bounded Range::[3] Comparing across types yields null, except numbers
 Comparison2 - Half-bounded Range::[4] Comparing lists
 Comparison2 - Half-bounded Range::[5] Comparing NaN
@@ -86,34 +84,19 @@ CountingSubgraphMatches1 - Matching subgraph patterns and count the number of ma
 CountingSubgraphMatches1 - Matching subgraph patterns and count the number of matches::[7] Counting distinct undirected self-relationships in self-relationship graph
 CountingSubgraphMatches1 - Matching subgraph patterns and count the number of matches::[9] Counting directed self-relationships
 Create1 - Creating nodes::[11] Create a single node with null properties should not return those properties
-Create1 - Creating nodes::[12] CREATE does not lose precision on large integers
 Create1 - Creating nodes::[13] Fail when creating a node that is already bound
 Create1 - Creating nodes::[14] Fail when creating a node with properties that is already bound
 Create1 - Creating nodes::[15] Fail when adding a new label predicate on a node that is already bound 1
 Create1 - Creating nodes::[16] Fail when adding new label predicate on a node that is already bound 2
 Create1 - Creating nodes::[20] Fail when creating a node using undefined variable in pattern
-Create1 - Creating nodes::[3] Create a single node with a label
-Create1 - Creating nodes::[4] Create two nodes with same label
-Create1 - Creating nodes::[5] Create a single node with multiple labels
-Create1 - Creating nodes::[6] Create three nodes with multiple labels
-Create2 - Creating relationships::[10] Create a single self loop on an existing node
-Create2 - Creating relationships::[11] Create a single relationship and an end node on an existing starting node
-Create2 - Creating relationships::[12] Create a single relationship and a starting node on an existing end node
 Create2 - Creating relationships::[14] Create a single relationship with a property and return it
 Create2 - Creating relationships::[16] Create a single relationship with two properties and return them
 Create2 - Creating relationships::[17] Create a single relationship with null properties should not return those properties
 Create2 - Creating relationships::[18] Fail when creating a relationship without a type
 Create2 - Creating relationships::[19] Fail when creating a relationship without a direction
-Create2 - Creating relationships::[1] Create two nodes and a single relationship in a single pattern
 Create2 - Creating relationships::[23] Fail when creating a relationship that is already bound
 Create2 - Creating relationships::[24] Fail when creating a relationship using undefined variable in pattern
-Create2 - Creating relationships::[2] Create two nodes and a single relationship in separate patterns
 Create2 - Creating relationships::[3] Create two nodes and a single relationship in separate clauses
-Create2 - Creating relationships::[4] Create two nodes and a single relationship in the reverse direction
-Create2 - Creating relationships::[5] Create a single relationship between two existing nodes
-Create2 - Creating relationships::[6] Create a single relationship between two existing nodes in the reverse direction
-Create2 - Creating relationships::[7] Create a single node and a single self loop in a single pattern
-Create2 - Creating relationships::[8] Create a single node and a single self loop in separate patterns
 Create2 - Creating relationships::[9] Create a single node and a single self loop in separate clauses
 Create3 - Interoperation with other clauses::[10] WITH-UNWIND-CREATE: A bound node should be recognized after projection with WITH + UNWIND
 Create3 - Interoperation with other clauses::[11] WITH-MERGE-CREATE: A bound node should be recognized after projection with WITH + MERGE node
@@ -128,20 +111,11 @@ Create3 - Interoperation with other clauses::[8] WITH-CREATE: Only a single node
 Create3 - Interoperation with other clauses::[9] WITH-CREATE: A bound node should be recognized after projection with WITH + WITH
 Create4 - Large Create Query::[1] Generate the movie graph
 Create4 - Large Create Query::[2] Many CREATE clauses
-Create5 - Multiple hops create patterns::[1] Create a pattern with multiple hops
-Create5 - Multiple hops create patterns::[2] Create a pattern with multiple hops in the reverse direction
-Create5 - Multiple hops create patterns::[3] Create a pattern with multiple hops in varying directions
-Create5 - Multiple hops create patterns::[4] Create a pattern with multiple hops with multiple types and varying directions
-Create5 - Multiple hops create patterns::[5] Create a pattern with multiple hops and varying directions
 Create6 - Persistence of create clause side effects::[10] Skipping and limiting to a few results after creating relationships does not affect the result set nor the side effects
 Create6 - Persistence of create clause side effects::[11] Skipping zero result and limiting to all results after creating relationships does not affect the result set nor the side effects
 Create6 - Persistence of create clause side effects::[12] Filtering after creating relationships affects the result set but not the side effects
 Create6 - Persistence of create clause side effects::[13] Aggregating in `RETURN` after creating relationships affects the result set but not the side effects
 Create6 - Persistence of create clause side effects::[14] Aggregating in `WITH` after creating relationships affects the result set but not the side effects
-Create6 - Persistence of create clause side effects::[1] Limiting to zero results after creating nodes affects the result set but not the side effects
-Create6 - Persistence of create clause side effects::[2] Skipping all results after creating nodes affects the result set but not the side effects
-Create6 - Persistence of create clause side effects::[3] Skipping and limiting to a few results after creating nodes does not affect the result set nor the side effects
-Create6 - Persistence of create clause side effects::[4] Skipping zero result and limiting to all results after creating nodes does not affect the result set nor the side effects
 Create6 - Persistence of create clause side effects::[5] Filtering after creating nodes affects the result set but not the side effects
 Create6 - Persistence of create clause side effects::[6] Aggregating in `RETURN` after creating nodes affects the result set but not the side effects
 Create6 - Persistence of create clause side effects::[7] Aggregating in `WITH` after creating nodes affects the result set but not the side effects
@@ -255,12 +229,7 @@ List2 - List Slicing::[6] List slice with negative range
 List2 - List Slicing::[7] List slice with invalid range
 List2 - List Slicing::[8] List slice with exceeding range
 List2 - List Slicing::[9] List slice with null range
-List3 - List Equality::[1] Equality between list and literal should return false
-List3 - List Equality::[2] Equality of lists of different length should return false despite nulls
-List3 - List Equality::[3] Equality between different lists with null should return false
 List3 - List Equality::[4] Equality between almost equal lists with null should return null
-List3 - List Equality::[5] Equality of nested lists of different length should return false despite nulls
-List3 - List Equality::[6] Equality between different nested lists with null should return false
 List3 - List Equality::[7] Equality between almost equal nested lists with null should return null
 List4 - List Concatenation::[1] Concatenating lists of same type
 List4 - List Concatenation::[2] Concatenating a list with a scalar of same type
@@ -288,9 +257,6 @@ Literals6 - String::[12] Return a double-quoted string with uft-8 characters
 Literals6 - String::[13] Failing on incorrect unicode literal
 Literals6 - String::[5] Return a single-quoted string with escaped characters
 Literals6 - String::[9] Return a double-quoted empty string
-Literals7 - List::[16] Return a list containing multiple mixed values
-Literals7 - List::[7] Return a list containing a float
-Literals8 - Maps::[11] Return a map containing a float
 Literals8 - Maps::[22] Fail on a map containing unquoted string
 Map1 - Static value access::[1] Statically access a field of a non-null map
 Map1 - Static value access::[2] Statically access a field of a null map
@@ -422,11 +388,8 @@ Merge1 - Merge node::[2] Merge node with label
 Merge1 - Merge node::[7] Merge should work when finding multiple elements
 Merge1 - Merge node::[8] Merge should handle argument properly
 Merge1 - Merge node::[9] Merge should support updates while merging
-Merge2 - Merge node - on create::[3] Merge node with label add property on create
-Merge2 - Merge node - on create::[5] Merge should be able to use properties of bound node in ON CREATE
 Merge2 - Merge node - on create::[6] Fail when using undefined variable in ON CREATE
 Merge3 - Merge node - on match::[1] Merge should be able to set labels on match
-Merge3 - Merge node - on match::[4] Merge should be able to use properties of bound node in ON MATCH
 Merge3 - Merge node - on match::[5] Fail when using undefined variable in ON MATCH
 Merge4 - Merge node - on match and on create::[1] Merge should be able to set labels on match and on create
 Merge4 - Merge node - on match and on create::[2] Merge should be able to use properties of bound node in ON MATCH and ON CREATE
@@ -440,7 +403,6 @@ Merge5 - Merge relationships::[16] Aliasing of existing nodes 1
 Merge5 - Merge relationships::[17] Aliasing of existing nodes 2
 Merge5 - Merge relationships::[18] Double aliasing of existing nodes 1
 Merge5 - Merge relationships::[19] Double aliasing of existing nodes 2
-Merge5 - Merge relationships::[1] Creating a relationship
 Merge5 - Merge relationships::[20] Do not match on deleted entities
 Merge5 - Merge relationships::[21] Do not match on deleted relationships
 Merge5 - Merge relationships::[24] Fail when merging relationship without type, no colon
@@ -458,8 +420,6 @@ Merge6 - Merge relationships - on create::[2] Using ON CREATE on a relationship
 Merge6 - Merge relationships - on create::[4] Null-setting one property with ON CREATE
 Merge6 - Merge relationships - on create::[6] Copying properties from node with ON CREATE
 Merge6 - Merge relationships - on create::[7] Copying properties from literal map with ON CREATE
-Merge7 - Merge relationships - on match::[1] Using ON MATCH on created node
-Merge7 - Merge relationships - on match::[2] Using ON MATCH on created relationship
 Merge7 - Merge relationships - on match::[3] Using ON MATCH on a relationship
 Merge7 - Merge relationships - on match::[4] Copying properties from node with ON MATCH
 Merge7 - Merge relationships - on match::[5] Copying properties from literal map with ON MATCH
@@ -540,7 +500,6 @@ Precedence1 - On boolean values::[6] Comparison operator takes precedence over b
 Precedence1 - On boolean values::[7] Comparison operator takes precedence over binary boolean operator
 Precedence1 - On boolean values::[8] Null predicate takes precedence over comparison operator
 Precedence1 - On boolean values::[9] Null predicate takes precedence over negation
-Precedence2 - On numeric values::[1] Numeric multiplicative operations takes precedence over numeric additive operations
 Precedence2 - On numeric values::[2] Exponentiation takes precedence over numeric multiplicative operations
 Precedence2 - On numeric values::[3] Exponentiation takes precedence over numeric additive operations
 Precedence2 - On numeric values::[4] Numeric unary negative takes precedence over exponentiation
@@ -695,7 +654,6 @@ Return2 - Return single expression (correctly projecting an expression)::[1] Ari
 Return2 - Return single expression (correctly projecting an expression)::[7] Adding list properties in projection
 Return2 - Return single expression (correctly projecting an expression)::[8] Returning label predicate expression
 Return2 - Return single expression (correctly projecting an expression)::[9] Returning a projected map
-Return3 - Return multiple expressions (if column order correct)::[1] Returning multiple expressions
 Return3 - Return multiple expressions (if column order correct)::[3] Projecting nodes and relationships
 Return4 - Column renaming::[10] Fail when returning multiple columns with same name
 Return4 - Column renaming::[11] Reusing variable names in RETURN
@@ -719,7 +677,6 @@ Return6 - Implicit grouping with aggregates::[2] Projecting an arithmetic expres
 Return6 - Implicit grouping with aggregates::[3] Aggregating by a list property has a correct definition of equality
 Return6 - Implicit grouping with aggregates::[4] Support multiple divisions in aggregate function
 Return6 - Implicit grouping with aggregates::[5] Aggregates inside normal functions
-Return6 - Implicit grouping with aggregates::[6] Handle aggregates inside non-aggregate expressions
 Return6 - Implicit grouping with aggregates::[8] Handle aggregation on functions
 Return6 - Implicit grouping with aggregates::[9] Aggregates with arithmetics
 Return7 - Return all variables::[1] Return all variables
@@ -941,7 +898,6 @@ TypeConversion4 - To String::[10] Fail `toString()` on invalid types #Example: m
 TypeConversion4 - To String::[10] Fail `toString()` on invalid types #Example: node
 TypeConversion4 - To String::[10] Fail `toString()` on invalid types #Example: path
 TypeConversion4 - To String::[10] Fail `toString()` on invalid types #Example: relationship
-TypeConversion4 - To String::[3] `toString()` handling inlined boolean
 TypeConversion4 - To String::[4] `toString()` handling boolean properties
 TypeConversion4 - To String::[6] `toString()` on a list of integers
 TypeConversion4 - To String::[7] `toString()` on node property
@@ -1057,9 +1013,7 @@ WithOrderBy3 - Order by multiple expressions::[1] Sort by two expressions, both 
 WithOrderBy3 - Order by multiple expressions::[2] Sort by two expressions, first in ascending order, second in descending order
 WithOrderBy3 - Order by multiple expressions::[3] Sort by two expressions, first in descending order, second in ascending order
 WithOrderBy3 - Order by multiple expressions::[4] Sort by two expressions, both in descending order
-WithOrderBy3 - Order by multiple expressions::[5] An expression without explicit sort direction is sorted in ascending order
 WithOrderBy3 - Order by multiple expressions::[6] An constant expression does not influence the order determined by other expression before and after the constant expression
-WithOrderBy3 - Order by multiple expressions::[7] The order direction cannot be overwritten
 WithOrderBy4 - Order by in combination with projection and aliasing::[10] Sort by a non-projected expression containing an alias of a projected expression containing the variable shadowed by the alias
 WithOrderBy4 - Order by in combination with projection and aliasing::[11] Sort by an aggregate projection
 WithOrderBy4 - Order by in combination with projection and aliasing::[12] Sort by an aliased aggregate projection
@@ -1094,3 +1048,4 @@ WithWhere6 - Filter on aggregates::[1] Filter a single aggregate
 WithWhere7 - Variable visibility under aliasing::[1] WHERE sees a variable bound before but not after WITH
 WithWhere7 - Variable visibility under aliasing::[2] WHERE sees a variable bound after but not before WITH
 WithWhere7 - Variable visibility under aliasing::[3] WHERE sees both, variable bound before but not after WITH and variable bound after but not before WITH
+WithOrderBy3 - Order by multiple expressions::[7] The order direction cannot be overwritten

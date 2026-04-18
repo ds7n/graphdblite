@@ -137,7 +137,7 @@ all_shortest_paths_fn = { ^"allShortestPaths" ~ "(" ~ pattern ~ ")" }
 pattern = { node_pattern ~ (rel_pattern ~ node_pattern)* }
 
 node_pattern = { "(" ~ ident? ~ label_spec? ~ property_map? ~ ")" }
-label_spec = { (":" ~ ident)+ }
+label_spec = { (":" ~ symbolic_name)+ }
 
 rel_pattern = { rel_right | rel_left | rel_undirected | rel_right_bare | rel_left_bare | rel_undirected_bare }
 rel_right = { "-[" ~ rel_detail ~ "]->" }
@@ -148,7 +148,7 @@ rel_left_bare = { "<--" }
 rel_undirected_bare = { "--" }
 
 rel_detail = { ident? ~ rel_type_spec? ~ property_map? ~ var_length? }
-rel_type_spec = { ":" ~ ident ~ ("|" ~ ident)* }
+rel_type_spec = { ":" ~ symbolic_name ~ ("|" ~ symbolic_name)* }
 
 var_length = { "*" ~ int_range? }
 int_range = { integer ~ ".." ~ integer? }
@@ -260,6 +260,10 @@ property_pair = { ident ~ ":" ~ expr }
 ident_list = { ident ~ ("," ~ ident)* }
 
 ident = @{ !keyword ~ (ASCII_ALPHA | "_") ~ (ASCII_ALPHANUMERIC | "_")* }
+
+// Like ident but allows keywords — used for labels and relationship types
+// where the leading ":" provides unambiguous context.
+symbolic_name = @{ (ASCII_ALPHA | "_") ~ (ASCII_ALPHANUMERIC | "_")* }
 
 keyword = {
     (^"MATCH" | ^"WHERE" | ^"RETURN" | ^"CREATE" | ^"DELETE" | ^"DETACH" | ^"SET" |

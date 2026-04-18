@@ -549,7 +549,7 @@ fn parse_node_pattern(pair: pest::iterators::Pair<Rule>) -> crate::types::Result
             Rule::ident => variable = Some(inner.as_str().to_string()),
             Rule::label_spec => {
                 for child in inner.into_inner() {
-                    if child.as_rule() == Rule::ident {
+                    if child.as_rule() == Rule::symbolic_name {
                         labels.push(child.as_str().to_string());
                     }
                 }
@@ -587,7 +587,7 @@ fn parse_rel_pattern(pair: pest::iterators::Pair<Rule>) -> crate::types::Result<
                     Rule::ident => variable = Some(detail.as_str().to_string()),
                     Rule::rel_type_spec => {
                         for rt in detail.into_inner() {
-                            if rt.as_rule() == Rule::ident {
+                            if rt.as_rule() == Rule::symbolic_name {
                                 rel_types.push(rt.as_str().to_string());
                             }
                         }

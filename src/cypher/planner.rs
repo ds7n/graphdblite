@@ -295,9 +295,10 @@ fn plan_return(stmt: &ReturnStatement) -> crate::types::Result<LogicalOp> {
 
 fn plan_create(stmt: &CreateStatement) -> crate::types::Result<LogicalOp> {
     let mut ops = Vec::new();
+    let mut seen = HashSet::new();
 
     for pattern in &stmt.patterns {
-        let pattern_ops = plan_create_pattern(pattern)?;
+        let pattern_ops = plan_create_pattern(pattern, &mut seen)?;
         ops.extend(pattern_ops);
     }
 
@@ -328,8 +329,9 @@ fn plan_match_create(
     }
 
     let mut create_ops = Vec::new();
+    let mut seen = HashSet::new();
     for pattern in &stmt.create_patterns {
-        create_ops.extend(plan_create_pattern(pattern)?);
+        create_ops.extend(plan_create_pattern(pattern, &mut seen)?);
     }
 
     let mut result = LogicalOp::MatchCreate {
@@ -465,8 +467,9 @@ fn plan_unwind(_conn: &Connection, stmt: &UnwindStatement) -> crate::types::Resu
             limit,
         } => {
             let mut create_ops = Vec::new();
+            let mut seen = HashSet::new();
             for pattern in patterns {
-                create_ops.extend(plan_create_pattern(pattern)?);
+                create_ops.extend(plan_create_pattern(pattern, &mut seen)?);
             }
             op = LogicalOp::MatchCreate {
                 input: Box::new(op),
@@ -1252,7 +1255,14 @@ fn plan_node_scan(
 }
 
 /// Plan CREATE pattern into individual CreateNode/CreateEdge operations.
-fn plan_create_pattern(pattern: &Pattern) -> crate::types::Result<Vec<LogicalOp>> {
+///
+/// `seen` tracks named variables that already have a `CreateNode` op emitted
+/// (across all patterns in the same CREATE statement) to avoid creating
+/// duplicate nodes for reused variables like `CREATE (a), (a)-[:R]->(b)`.
+fn plan_create_pattern(
+    pattern: &Pattern,
+    seen: &mut HashSet<String>,
+) -> crate::types::Result<Vec<LogicalOp>> {
     let mut ops = Vec::new();
     let mut last_alias: Option<String> = None;
     let mut anon_counter = 0usize;
@@ -1261,15 +1271,21 @@ fn plan_create_pattern(pattern: &Pattern) -> crate::types::Result<Vec<LogicalOp>
     while i < pattern.elements.len() {
         match &pattern.elements[i] {
             PatternElement::Node(node) => {
+                let is_named = node.variable.is_some();
                 let alias = node.variable.clone().or_else(|| {
                     anon_counter += 1;
                     Some(format!("__anon_{}", anon_counter))
                 });
-                ops.push(LogicalOp::CreateNode {
-                    labels: node.labels.clone(),
-                    alias: alias.clone(),
-                    properties: node.properties.clone(),
-                });
+                // Only dedup named variables; anonymous nodes are always new.
+                let already_seen =
+                    is_named && alias.as_ref().is_some_and(|n| !seen.insert(n.clone()));
+                if !already_seen {
+                    ops.push(LogicalOp::CreateNode {
+                        labels: node.labels.clone(),
+                        alias: alias.clone(),
+                        properties: node.properties.clone(),
+                    });
+                }
                 last_alias = alias;
                 i += 1;
             }
@@ -1283,15 +1299,22 @@ fn plan_create_pattern(pattern: &Pattern) -> crate::types::Result<Vec<LogicalOp>
                     }
                 };
 
+                let dst_is_named = dst_node.variable.is_some();
                 let dst_alias = dst_node.variable.clone().or_else(|| {
                     anon_counter += 1;
                     Some(format!("__anon_{}", anon_counter))
                 });
-                ops.push(LogicalOp::CreateNode {
-                    labels: dst_node.labels.clone(),
-                    alias: dst_alias.clone(),
-                    properties: dst_node.properties.clone(),
-                });
+                let dst_already_seen = dst_is_named
+                    && dst_alias
+                        .as_ref()
+                        .is_some_and(|n| !seen.insert(n.clone()));
+                if !dst_already_seen {
+                    ops.push(LogicalOp::CreateNode {
+                        labels: dst_node.labels.clone(),
+                        alias: dst_alias.clone(),
+                        properties: dst_node.properties.clone(),
+                    });
+                }
 
                 let src = last_alias.clone().ok_or_else(|| {
                     GraphError::Serialization("edge without source node".to_string())

@@ -7,13 +7,13 @@ Last updated: 2026-04-17
 Full openCypher TCK vendored (220 feature files, commit `677cbaf`).
 
 ```
-111 features parsed (1 parse error: Match5.feature)
-857 total scenario instances running
-785 passed
- 72 skipped (cucumber-level)
-1096 skiplisted (known failures)
+115 features parsed (1 parse error: Match5.feature)
+922 total scenario instances running
+841 passed
+ 81 skipped (cucumber-level)
+1051 skiplisted (known failures)
  ────
-785/1881 unique scenarios passing (41.7%)
+841/1973 unique scenarios passing (42.6%)
 ```
 
 ## Pass rate by area
@@ -25,25 +25,25 @@ All running scenarios pass at 100%. The table below shows total scenarios
 
 | Area | Running | Skiplisted | Total | Notes |
 |------|--------:|-----------:|------:|-------|
-| Literals | 119 | 19 | 138 | Float exponent/leading-dot added |
+| Literals | 122 | 19 | 141 | Float exponent/leading-dot added |
 | Match | 56 | 76 | 132 | Core pattern matching |
-| Call | 39 | 2 | 41 | Procedures |
-| List | 41 | 67 | 108 | IN in expr context |
-| WithOrderBy | 9 | 102 | 111 | Sorting |
+| Call | 39 | 16 | 55 | Procedures |
+| List | 46 | 62 | 108 | IN in expr context |
+| WithOrderBy | 10 | 101 | 111 | Sorting |
 | String | 29 | 4 | 33 | |
-| Create | 18 | 60 | 78 | Write-clause RETURN |
-| Merge | 19 | 56 | 75 | Write-clause RETURN |
-| Return | 23 | 40 | 63 | |
+| Create | 42 | 36 | 78 | Labels-as-keywords fixed |
+| Merge | 25 | 50 | 75 | Write-clause RETURN |
+| Return | 25 | 38 | 63 | |
 | Set | 3 | 50 | 53 | |
 | Match (where) | 10 | 24 | 34 | |
 | Delete | 7 | 34 | 41 | |
 | Graph | 20 | 28 | 48 | Node/rel property access |
-| TypeConversion | 8 | 39 | 47 | toInteger(), toFloat(), etc. |
-| Comparison | 8 | 25 | 33 | Equality + ordering |
+| TypeConversion | 9 | 38 | 47 | toInteger(), toFloat(), etc. |
+| Comparison | 10 | 23 | 33 | Equality + ordering |
 | Boolean | 11 | 25 | 36 | AND/OR/XOR/NOT in expr context |
 | Quantifier | 4 | 96 | 100 | ALL/ANY/NONE predicates |
 | Temporal | 0 | 89 | 89 | Date/time (not implemented) |
-| Precedence | 5 | 38 | 43 | Operator precedence |
+| Precedence | 6 | 37 | 43 | Operator precedence |
 | Pattern | 3 | 33 | 36 | Pattern predicate |
 | Remove | 0 | 33 | 33 | Property/label removal |
 | ReturnSkipLimit | 24 | 7 | 31 | Pagination |
@@ -69,26 +69,35 @@ Regenerate with: `uv run tests/tck/analyze_blockers.py`
 
 | Sole | Impact | Construct | Notes |
 |-----:|-------:|-----------|-------|
-| 151 | 313 | Write-clause RETURN side effects | Side-effect delta tracking |
+| 141 | 299 | Write-clause RETURN side effects | Side-effect delta tracking |
 | 36 | 55 | Temporal types | datetime(), date(), duration() |
 | 33 | 53 | Quantifier predicates | single(), none(), any(), all() |
-| 23 | 37 | CREATE (no RETURN) side effects | |
+| 13 | 27 | CREATE (no RETURN) side effects | |
 | 10 | 21 | IN [list] | Null semantics |
-| 9 | 31 | IS NULL / IS NOT NULL | Property access |
+| 9 | 30 | IS NULL / IS NOT NULL | Property access |
 | 9 | 16 | Parameter $param | |
 | 8 | 24 | ORDER BY | WITH...ORDER BY |
-| 7 | 19 | String functions | |
-| 6 | 35 | Aggregation (non-count) | sum/avg/min/max/collect |
+| 6 | 34 | Aggregation (non-count) | sum/avg/min/max/collect |
 | 6 | 19 | List functions | range(), reverse(), tail() |
-| 5 | 34 | MERGE | |
+| 6 | 18 | String functions | |
+| 5 | 33 | MERGE | |
 
 ## Skiplist
 
-`skiplist.txt` lists 1096 known-failing `Feature::Scenario` pairs.
+`skiplist.txt` lists 1051 known-failing `Feature::Scenario` pairs.
 The harness filters these out and exits non-zero only if a *non-skiplisted*
 scenario fails — making the TCK a regression gate.
 
 ## History
+
+### Phase 6 — Skiplist cleanup & targeted fixes (2026-04-17)
+
+- [x] Allow keywords as labels/rel types (`symbolic_name` grammar rule)
+- [x] Filter null properties in CREATE (`{p: null}` no longer stored)
+- [x] Fix CREATE pattern duplicate nodes (named variable dedup across patterns)
+- [x] Batch unskip: 45 confirmed-passing scenarios removed from skiplist
+- [x] Add newly-exposed failing scenarios from grammar fix to skiplist
+- Result: 785 → 841 passing scenarios (+56), skiplist 1096 → 1051
 
 ### Phase 5 — Grammar & expression improvements (2026-04-17)
 

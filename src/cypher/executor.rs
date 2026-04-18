@@ -993,6 +993,9 @@ fn exec_create_sequence(conn: &Connection, ops: &[LogicalOp]) -> Result<Vec<Reco
                 let dummy_rec = Record::new();
                 for (key, expr) in properties {
                     let val = eval_expr(expr, &dummy_rec, conn)?;
+                    if val == Value::Null {
+                        continue;
+                    }
                     props.insert(key.clone(), val);
                 }
                 let id = node::create_node(conn, labels, props.clone())?;
@@ -1020,6 +1023,9 @@ fn exec_create_sequence(conn: &Connection, ops: &[LogicalOp]) -> Result<Vec<Reco
                 let dummy_rec = Record::new();
                 for (key, expr) in properties {
                     let val = eval_expr(expr, &dummy_rec, conn)?;
+                    if val == Value::Null {
+                        continue;
+                    }
                     props.insert(key.clone(), val);
                 }
                 edge::create_edge(conn, *src, *dst, edge_type, props)?;
@@ -1073,6 +1079,9 @@ fn exec_match_create(
                     let mut props = Properties::new();
                     for (key, expr) in properties {
                         let val = eval_expr(expr, rec, conn)?;
+                        if val == Value::Null {
+                            continue;
+                        }
                         props.insert(key.clone(), val);
                     }
                     let id = node::create_node(conn, labels, props.clone())?;
@@ -1099,6 +1108,9 @@ fn exec_match_create(
                     let mut props = Properties::new();
                     for (key, expr) in properties {
                         let val = eval_expr(expr, rec, conn)?;
+                        if val == Value::Null {
+                            continue;
+                        }
                         props.insert(key.clone(), val);
                     }
                     edge::create_edge(conn, *src, *dst, edge_type, props)?;

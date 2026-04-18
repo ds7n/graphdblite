@@ -1,8 +1,8 @@
 # TCK Conformance Improvement Plan
 
-## Status: Phases 1-5 complete (2026-04-17)
+## Status: Phases 1-6 complete (2026-04-17)
 
-785 scenarios passing, 1096 skiplisted, 0 failures.
+841 scenarios passing, 1051 skiplisted, 0 failures.
 
 ---
 
@@ -37,6 +37,14 @@ Extended `float_literal` grammar: leading dot (`.5`), exponents (`1e9`, `1.0E-5`
 
 Systematically removed skiplist entries for Boolean, Null, Comparison, Precedence, Literals5, and Mathematical scenarios. Re-added those that still fail due to deeper issues (null propagation, map/NaN comparisons, UNWIND interaction).
 
+### Phase 6: Skiplist cleanup & targeted fixes ✓
+
+Three code fixes and a systematic skiplist sweep:
+- **symbolic_name rule**: Labels and relationship types now allow keywords (e.g. `CREATE (:End)`, `CREATE (:Not)`) via a new `symbolic_name` grammar rule used in `label_spec` and `rel_type_spec`. This exposed 4 previously-unparseable feature files.
+- **Null property filtering**: `CREATE ({p: null})` no longer stores `p`. Added null check in `exec_create_sequence` and `exec_match_create` property loops.
+- **CREATE dedup**: `CREATE (a), (a)-[:R]->(b)` no longer creates duplicate nodes. `plan_create_pattern` tracks `seen` named variables across patterns, skipping `CreateNode` for already-seen aliases.
+- **Batch unskip**: Removed 45 confirmed-passing skiplist entries (Create1-6, Comparison2, List3, Literals7-8, Merge2-3-5-7, Precedence2, Return3-6, TypeConversion4, WithOrderBy3).
+
 ---
 
 ## Next priorities (by impact)
@@ -45,27 +53,26 @@ Regenerate with: `uv run tests/tck/analyze_blockers.py`
 
 | Sole | Impact | Construct | Notes |
 |-----:|-------:|-----------|-------|
-| 151 | 313 | Write-clause RETURN side effects | Side-effect delta tracking |
+| 141 | 299 | Write-clause RETURN side effects | Side-effect delta tracking |
 | 36 | 55 | Temporal types | datetime(), date(), duration() |
 | 33 | 53 | Quantifier predicates | single(), none(), any(), all() |
-| 23 | 37 | CREATE (no RETURN) side effects | Side-effect assertion gaps |
+| 13 | 27 | CREATE (no RETURN) side effects | Side-effect assertion gaps |
 | 10 | 21 | IN [list] | Remaining: null semantics |
-| 9 | 31 | IS NULL / IS NOT NULL | Property access on missing props |
+| 9 | 30 | IS NULL / IS NOT NULL | Property access on missing props |
 | 9 | 16 | Parameter $param | |
 | 8 | 24 | ORDER BY | WITH...ORDER BY interaction |
-| 7 | 19 | String functions | toString(), replace(), etc. |
-| 6 | 35 | Aggregation (non-count) | sum/avg/min/max/collect |
+| 6 | 34 | Aggregation (non-count) | sum/avg/min/max/collect |
 | 6 | 19 | List functions | range(), reverse(), tail(), etc. |
-| 5 | 34 | MERGE | |
-| 5 | 10 | NOT prefix | Null propagation in NOT |
+| 6 | 18 | String functions | toString(), replace(), etc. |
+| 5 | 33 | MERGE | |
 
 ### Recommended next phase
 
-**Side-effect delta tracking** (151 sole-blocker scenarios): The `GraphCounts::delta()` method and step assertions need to accurately track `+nodes`, `-nodes`, `+labels`, `+properties`, `+relationships`, `-relationships`. This is the single biggest unlock.
+**Quantifier functions** (33 sole-blocker, 53 impact): Adding `all()`, `any()`, `none()`, `single()` as list predicate functions. Relatively self-contained — grammar rule, parser, eval.
 
-**Quantifier functions** (33 sole-blocker, 53 impact): Adding `all()`, `any()`, `none()`, `single()` as list predicate functions.
+**Aggregation functions** (6 sole-blocker, 34 impact): Extending beyond `count()` to `sum`, `avg`, `min`, `max`, `collect`.
 
-**Aggregation functions** (6 sole-blocker, 35 impact): Extending beyond `count()` to `sum`, `avg`, `min`, `max`, `collect`.
+**REMOVE statement** (33 scenarios): Grammar + AST + parser + planner + executor for property/label removal.
 
 ## Critical files
 - `tests/tck_support/world.rs` — harness counts

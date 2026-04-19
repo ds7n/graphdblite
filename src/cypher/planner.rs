@@ -424,7 +424,7 @@ fn plan_remove(conn: &Connection, stmt: &RemoveStatement) -> crate::types::Resul
     Ok(op)
 }
 
-fn plan_unwind(_conn: &Connection, stmt: &UnwindStatement) -> crate::types::Result<LogicalOp> {
+fn plan_unwind(conn: &Connection, stmt: &UnwindStatement) -> crate::types::Result<LogicalOp> {
     let mut op = LogicalOp::Unwind {
         input: Box::new(LogicalOp::EmptyRow),
         expr: stmt.expr.clone(),
@@ -434,6 +434,7 @@ fn plan_unwind(_conn: &Connection, stmt: &UnwindStatement) -> crate::types::Resu
     match &stmt.body {
         UnwindBody::Return {
             where_clause,
+            intermediate_clauses,
             return_clause,
             order_by,
             skip,
@@ -444,6 +445,25 @@ fn plan_unwind(_conn: &Connection, stmt: &UnwindStatement) -> crate::types::Resu
                     input: Box::new(op),
                     predicate: predicate.clone(),
                 };
+            }
+
+            // Apply intermediate clauses (WITH/UNWIND/MATCH).
+            for clause in intermediate_clauses {
+                match clause {
+                    IntermediateClause::With(with) => {
+                        op = plan_with(op, with)?;
+                    }
+                    IntermediateClause::Unwind(unwind) => {
+                        op = LogicalOp::Unwind {
+                            input: Box::new(op),
+                            expr: unwind.expr.clone(),
+                            alias: unwind.alias.clone(),
+                        };
+                    }
+                    IntermediateClause::Match(im) => {
+                        op = plan_intermediate_match(conn, op, im)?;
+                    }
+                }
             }
 
             let has_aggregates = return_clause

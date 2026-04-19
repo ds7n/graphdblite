@@ -160,6 +160,7 @@ pub struct UnwindStatement {
 pub enum UnwindBody {
     Return {
         where_clause: Option<Expr>,
+        intermediate_clauses: Vec<IntermediateClause>,
         return_clause: ReturnClause,
         order_by: Vec<SortItem>,
         skip: Option<u64>,

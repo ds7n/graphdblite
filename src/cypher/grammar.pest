@@ -52,6 +52,7 @@ unwind_create = { ^"CREATE" ~ create_pattern_list ~ (return_clause ~ order_by_cl
 
 unwind_return = {
     where_clause? ~
+    ((with_clause ~ match_part?) | unwind_clause)* ~
     return_clause ~
     order_by_clause? ~
     skip_clause? ~

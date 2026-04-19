@@ -7,13 +7,13 @@ Last updated: 2026-04-19
 Full openCypher TCK vendored (220 feature files, commit `677cbaf`).
 
 ```
-128 features parsed (1 parse error: Match5.feature)
-1452 total scenario instances running
-1371 passed
+129 features parsed (1 parse error: Match5.feature)
+1474 total scenario instances running
+1393 passed
   81 skipped (cucumber-level)
- 952 skiplisted (known failures)
+ 940 skiplisted (known failures)
  ────
-1371/2404 unique scenarios passing (57.0%)
+1393/2414 unique scenarios passing (57.7%)
 ```
 
 ## Pass rate by area
@@ -97,7 +97,9 @@ scenario fails — making the TCK a regression gate.
 - [x] Fix WITH clause ordering: WHERE before ORDER BY/SKIP/LIMIT
 - [x] Add map property access in eval (map.key patterns)
 - [x] Add `value_to_expr` for List/Map parameter resolution
-- Result: 1351 → 1371 passing scenarios (+20), skiplist 966 → 952
+- [x] Extend `unwind_return` grammar to support intermediate WITH/MATCH/UNWIND clauses
+- [x] Planner: handle intermediate clauses in `plan_unwind`
+- Result: 1351 → 1393 passing scenarios (+42), skiplist 966 → 940
 
 ### Phase 8 — Temporal types (2026-04-19)
 

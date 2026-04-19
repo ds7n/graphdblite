@@ -1,6 +1,8 @@
 use std::collections::HashMap;
 
-use crate::cypher::ast::{Assignment, Expr, LiteralValue, Pattern, RemoveItem, ReturnItem, SortItem};
+use crate::cypher::ast::{
+    Assignment, Expr, LiteralValue, Pattern, RemoveItem, ReturnItem, SortItem,
+};
 use crate::types::Direction;
 
 /// Logical query plan operator. Language-agnostic IR that the executor consumes.

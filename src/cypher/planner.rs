@@ -397,9 +397,7 @@ fn plan_remove(conn: &Connection, stmt: &RemoveStatement) -> crate::types::Resul
     // Optional MATCH clauses.
     for opt_pats in &stmt.optional_patterns {
         let right = plan_patterns(conn, opt_pats)?;
-        let optional_aliases = collect_pattern_variables(opt_pats)
-            .into_iter()
-            .collect();
+        let optional_aliases = collect_pattern_variables(opt_pats).into_iter().collect();
         op = LogicalOp::LeftOuterJoin {
             input: Box::new(op),
             right: Box::new(right),
@@ -1343,10 +1341,8 @@ fn plan_create_pattern(
                     anon_counter += 1;
                     Some(format!("__anon_{}", anon_counter))
                 });
-                let dst_already_seen = dst_is_named
-                    && dst_alias
-                        .as_ref()
-                        .is_some_and(|n| !seen.insert(n.clone()));
+                let dst_already_seen =
+                    dst_is_named && dst_alias.as_ref().is_some_and(|n| !seen.insert(n.clone()));
                 if !dst_already_seen {
                     ops.push(LogicalOp::CreateNode {
                         labels: dst_node.labels.clone(),

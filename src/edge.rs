@@ -120,8 +120,8 @@ pub fn batch_create_edges(
     // Always store edge_props rows so relationship counting works correctly.
     for (src, dst, properties) in edges {
         let props_key = edge_props_key(*src, *dst, label);
-        let data = rmp_serde::to_vec(properties)
-            .map_err(|e| GraphError::Serialization(e.to_string()))?;
+        let data =
+            rmp_serde::to_vec(properties).map_err(|e| GraphError::Serialization(e.to_string()))?;
         kv::put(conn, kv::TABLE_EDGE_PROPS, &props_key, &data)?;
     }
 
@@ -230,8 +230,7 @@ pub fn set_edge_property(
         props.insert(key.to_string(), value);
     }
     let props_key = edge_props_key(src, dst, label);
-    let data =
-        rmp_serde::to_vec(&props).map_err(|e| GraphError::Serialization(e.to_string()))?;
+    let data = rmp_serde::to_vec(&props).map_err(|e| GraphError::Serialization(e.to_string()))?;
     kv::put(conn, kv::TABLE_EDGE_PROPS, &props_key, &data)?;
     Ok(())
 }

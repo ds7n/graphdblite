@@ -1522,7 +1522,9 @@ fn parse_literal(pair: pest::iterators::Pair<Rule>) -> crate::types::Result<Expr
                 .parse()
                 .map_err(|e| GraphError::Serialization(format!("invalid float: {e}")))?;
             if n.is_infinite() {
-                return Err(GraphError::syntax("floating point value overflow".to_string()));
+                return Err(GraphError::syntax(
+                    "floating point value overflow".to_string(),
+                ));
             }
             Ok(Expr::Literal(LiteralValue::F64(n)))
         }
@@ -1610,9 +1612,8 @@ fn parse_quantifier_expr(pair: pest::iterators::Pair<Rule>) -> crate::types::Res
     }
 
     Ok(Expr::Quantifier {
-        kind: kind.ok_or_else(|| {
-            GraphError::Serialization("missing quantifier name".to_string())
-        })?,
+        kind: kind
+            .ok_or_else(|| GraphError::Serialization("missing quantifier name".to_string()))?,
         variable: variable.ok_or_else(|| {
             GraphError::Serialization("missing variable in quantifier".to_string())
         })?,
@@ -2100,13 +2101,8 @@ pub fn resolve_params(
             assignments: resolve_assignments(&s.assignments, params)?,
         })),
         Statement::Remove(r) => {
-            let (return_clause, order_by, skip, limit) = resolve_optional_return(
-                &r.return_clause,
-                &r.order_by,
-                r.skip,
-                r.limit,
-                params,
-            )?;
+            let (return_clause, order_by, skip, limit) =
+                resolve_optional_return(&r.return_clause, &r.order_by, r.skip, r.limit, params)?;
             Ok(Statement::Remove(RemoveStatement {
                 patterns: resolve_patterns(&r.patterns, params)?,
                 optional_patterns: r

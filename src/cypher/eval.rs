@@ -12,6 +12,11 @@ pub fn eval_expr(expr: &Expr, record: &Record, conn: &Connection) -> crate::type
         Expr::Literal(lit) => Ok(literal_to_value(lit)),
         Expr::Variable(name) => Ok(record.get(name).cloned().unwrap_or(Value::Null)),
         Expr::Property(var, prop) => {
+            // If the variable is explicitly bound to Null (e.g. from OPTIONAL MATCH),
+            // property access should return Null per Cypher's null propagation rules.
+            if record.get(var) == Some(&Value::Null) {
+                return Ok(Value::Null);
+            }
             // Look up "var.prop" as a flattened key in the record.
             let key = format!("{var}.{prop}");
             if let Some(val) = record.get(&key) {
@@ -97,6 +102,29 @@ pub fn eval_expr(expr: &Expr, record: &Record, conn: &Connection) -> crate::type
                 }
                 Value::Null => Ok(Value::Null),
                 _ => Ok(Value::Null),
+            }
+        }
+        Expr::HasLabel(var, labels) => {
+            // n:Label — check if the node bound to var has all specified labels.
+            if record.get(var) == Some(&Value::Null) {
+                return Ok(Value::Null);
+            }
+            let label_key = format!("{var}.__labels");
+            if let Some(Value::List(node_labels)) = record.get(&label_key) {
+                let has_all = labels.iter().all(|lbl| {
+                    node_labels.contains(&Value::String(lbl.clone()))
+                });
+                Ok(Value::Bool(has_all))
+            } else {
+                // Fallback: look up from database.
+                let id_key = format!("{var}.__id");
+                if let Some(Value::I64(id)) = record.get(&id_key) {
+                    if let Ok(node) = crate::node::get_node(conn, crate::types::NodeId(*id as u64)) {
+                        let has_all = labels.iter().all(|lbl| node.labels.contains(lbl));
+                        return Ok(Value::Bool(has_all));
+                    }
+                }
+                Ok(Value::Bool(false))
             }
         }
         Expr::Star => Ok(Value::Null),
@@ -1090,6 +1118,38 @@ pub fn expr_to_column_name(expr: &Expr) -> String {
                 .map(|e| expr_to_column_name(e))
                 .unwrap_or_default();
             format!("{}[{}..{}]", expr_to_column_name(expr), s, e)
+        }
+        Expr::BinaryOp { left, op, right } => {
+            let l = expr_to_column_name(left);
+            let r = expr_to_column_name(right);
+            let op_str = match op {
+                BinOp::Add => "+",
+                BinOp::Sub => "-",
+                BinOp::Mul => "*",
+                BinOp::Div => "/",
+                BinOp::Mod => "%",
+                BinOp::Eq => "=",
+                BinOp::Neq => "<>",
+                BinOp::Lt => "<",
+                BinOp::Gt => ">",
+                BinOp::Lte => "<=",
+                BinOp::Gte => ">=",
+                BinOp::And => " AND ",
+                BinOp::Or => " OR ",
+                BinOp::Xor => " XOR ",
+                BinOp::In => " IN ",
+                BinOp::StartsWith => " STARTS WITH ",
+                BinOp::EndsWith => " ENDS WITH ",
+                BinOp::Contains => " CONTAINS ",
+            };
+            format!("{l} {op_str} {r}")
+        }
+        Expr::IsNull(inner) => format!("{} IS NULL", expr_to_column_name(inner)),
+        Expr::IsNotNull(inner) => format!("{} IS NOT NULL", expr_to_column_name(inner)),
+        Expr::Not(inner) => format!("NOT {}", expr_to_column_name(inner)),
+        Expr::HasLabel(var, labels) => {
+            let label_str: Vec<String> = labels.iter().map(|l| format!(":{l}")).collect();
+            format!("{var}{}", label_str.join(""))
         }
         _ => "_expr".to_string(),
     }

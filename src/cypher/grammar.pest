@@ -33,13 +33,13 @@ match_stmt = {
 }
 
 match_part = {
-    (^"MATCH" ~ pattern_list ~ optional_match_clause* ~ where_clause?) |
-    (optional_match_clause+ ~ where_clause?)
+    (^"MATCH" ~ pattern_list ~ where_clause? ~ optional_match_clause*) |
+    (optional_match_clause+)
 }
 
 with_clause = { ^"WITH" ~ return_items ~ order_by_clause? ~ skip_clause? ~ limit_clause? ~ where_clause? }
 
-optional_match_clause = { ^"OPTIONAL" ~ ^"MATCH" ~ pattern_list }
+optional_match_clause = { ^"OPTIONAL" ~ ^"MATCH" ~ pattern_list ~ where_clause? }
 
 // === UNWIND statement ===
 
@@ -71,6 +71,7 @@ unwind_clause = { ^"UNWIND" ~ expr ~ ^"AS" ~ ident }
 
 create_stmt = {
     ^"CREATE" ~ create_pattern_list ~
+    (^"CREATE" ~ create_pattern_list)* ~
     (return_clause ~ order_by_clause? ~ skip_clause? ~ limit_clause?)?
 }
 
@@ -243,7 +244,9 @@ mul_expr = { atom_expr ~ (mul_op ~ atom_expr)* }
 add_op = { "+" | "-" }
 mul_op = { "*" | "/" | "%" }
 atom_expr = { atom_primary ~ subscript* }
-atom_primary = _{ case_expr | quantifier_expr | dotted_function_call | function_call | property_access | literal | list_comprehension | list_literal | map_literal | star | parameter | "(" ~ expr ~ ")" | variable }
+atom_primary = _{ case_expr | quantifier_expr | dotted_function_call | function_call | property_access | has_label_expr | literal | list_comprehension | list_literal | map_literal | star | parameter | "(" ~ expr ~ ")" | variable }
+
+has_label_expr = { ident ~ label_spec }
 
 dotted_function_call = { dotted_function_name ~ "(" ~ function_args ~ ")" }
 dotted_function_name = @{
@@ -275,7 +278,7 @@ list_literal = { "[" ~ (expr ~ ("," ~ expr)*)? ~ "]" }
 map_literal = { "{" ~ (map_pair ~ ("," ~ map_pair)*)? ~ "}" }
 map_pair = { ident ~ ":" ~ expr }
 
-property_access = { ident ~ "." ~ ident }
+property_access = { ident ~ "." ~ property_key }
 variable = { ident }
 star = { "*" }
 
@@ -287,7 +290,11 @@ expr_list = { expr ~ ("," ~ expr)* }
 // === Property maps ===
 
 property_map = { "{" ~ property_pair ~ ("," ~ property_pair)* ~ "}" }
-property_pair = { ident ~ ":" ~ expr }
+property_pair = { property_key ~ ":" ~ expr }
+
+// Property keys allow keywords (e.g. {exists: 42}) since the colon provides
+// unambiguous context, similar to label_spec using symbolic_name.
+property_key = @{ (ASCII_ALPHA | "_") ~ (ASCII_ALPHANUMERIC | "_")* }
 
 // === Identifiers and literals ===
 

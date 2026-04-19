@@ -820,6 +820,37 @@ fn plan_multi_clause(
                 }
             }
             Clause::Create { patterns } => {
+                // Validate VariableAlreadyBound: in a CREATE pattern, if a node
+                // variable is already in scope AND the pattern tries to create a
+                // new node (standalone node or node with labels/properties), that's an error.
+                // But if it's used as an endpoint in a relationship pattern where
+                // it's already bound, it references the existing node.
+                for pattern in patterns {
+                    // Check standalone node patterns (single-element patterns).
+                    if pattern.elements.len() == 1 {
+                        if let PatternElement::Node(n) = &pattern.elements[0] {
+                            if let Some(ref var) = n.variable {
+                                if scope_vars.contains(var) || seen_create_vars.contains(var) {
+                                    return Err(GraphError::syntax(format!(
+                                        "VariableAlreadyBound: variable `{var}` already bound"
+                                    )));
+                                }
+                            }
+                        }
+                    }
+                    // Check relationship variables for rebinding.
+                    for elem in &pattern.elements {
+                        if let PatternElement::Relationship(r) = elem {
+                            if let Some(ref var) = r.variable {
+                                if scope_vars.contains(var) || seen_create_vars.contains(var) {
+                                    return Err(GraphError::syntax(format!(
+                                        "VariableAlreadyBound: variable `{var}` already bound"
+                                    )));
+                                }
+                            }
+                        }
+                    }
+                }
                 let mut create_ops = Vec::new();
                 for pattern in patterns {
                     create_ops.extend(plan_create_pattern_with_counter(

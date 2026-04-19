@@ -1088,6 +1088,9 @@ fn exec_create_node(
     let dummy_rec = Record::new();
     for (key, expr) in properties {
         let val = eval_expr(expr, &dummy_rec, conn)?;
+        if val == Value::Null {
+            continue;
+        }
         props.insert(key.clone(), val);
     }
 

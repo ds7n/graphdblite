@@ -60,6 +60,7 @@ fn is_bare_write(plan: &LogicalOp) -> bool {
             | LogicalOp::MatchCreate { .. }
             | LogicalOp::Delete { .. }
             | LogicalOp::SetProperty { .. }
+            | LogicalOp::Remove { .. }
             | LogicalOp::Merge { .. }
             | LogicalOp::MatchMerge { .. }
     )
@@ -117,6 +118,7 @@ fn is_read_only(plan: &LogicalOp) -> bool {
         | LogicalOp::MatchCreate { .. }
         | LogicalOp::Delete { .. }
         | LogicalOp::SetProperty { .. }
+        | LogicalOp::Remove { .. }
         | LogicalOp::Merge { .. }
         | LogicalOp::MatchMerge { .. } => false,
     }
@@ -219,6 +221,8 @@ fn exec(conn: &Connection, plan: &LogicalOp, ctx: &ExecContext) -> Result<Vec<Re
         LogicalOp::SetProperty { input, assignments } => {
             exec_set_property(conn, input, assignments, ctx)
         }
+
+        LogicalOp::Remove { input, items } => exec_remove(conn, input, items, ctx),
 
         LogicalOp::Merge {
             pattern,
@@ -1204,6 +1208,95 @@ fn exec_set_property(
         }
     }
     Ok(vec![])
+}
+
+fn exec_remove(
+    conn: &Connection,
+    input: &LogicalOp,
+    items: &[crate::cypher::ast::RemoveItem],
+    ctx: &ExecContext,
+) -> Result<Vec<Record>> {
+    let mut records = exec(conn, input, ctx)?;
+    for rec in &mut records {
+        for item in items {
+            match item {
+                crate::cypher::ast::RemoveItem::Property { variable, property } => {
+                    // Check if this is an edge variable.
+                    let edge_src_key = format!("{variable}.__src");
+                    let edge_dst_key = format!("{variable}.__dst");
+                    let edge_type_key = format!("{variable}.__type");
+                    if let (
+                        Some(Value::I64(src)),
+                        Some(Value::I64(dst)),
+                        Some(Value::String(label)),
+                    ) = (
+                        rec.get(&edge_src_key),
+                        rec.get(&edge_dst_key),
+                        rec.get(&edge_type_key),
+                    ) {
+                        let src = *src;
+                        let dst = *dst;
+                        let label = label.clone();
+                        // Remove edge property by setting to Null.
+                        edge::set_edge_property(
+                            conn,
+                            NodeId(src as u64),
+                            NodeId(dst as u64),
+                            &label,
+                            property,
+                            Value::Null,
+                        )?;
+                        // Update record to reflect removal.
+                        let prop_key = format!("{variable}.{property}");
+                        rec.set(prop_key, Value::Null);
+                    } else if let Some(Value::I64(id)) = rec.get(variable) {
+                        let id = *id;
+                        let node_id = NodeId(id as u64);
+                        let old = node::get_node(conn, node_id)?;
+                        node::remove_node_property(conn, node_id, property)?;
+                        let mut new_props = old.properties.clone();
+                        new_props.remove(property);
+                        index::update_indexes_for_node(
+                            conn,
+                            node_id,
+                            old.labels.first().map(|s| s.as_str()).unwrap_or(""),
+                            Some(&old.properties),
+                            &new_props,
+                        )?;
+                        // Update record to reflect removal.
+                        let prop_key = format!("{variable}.{property}");
+                        rec.set(prop_key, Value::Null);
+                    }
+                }
+                crate::cypher::ast::RemoveItem::Label { variable, labels } => {
+                    if let Some(Value::I64(id)) = rec.get(variable) {
+                        let id = *id;
+                        let node_id = NodeId(id as u64);
+                        for label in labels {
+                            node::remove_node_label(conn, node_id, label)?;
+                        }
+                        // Update the labels in the record.
+                        let label_key = format!("{variable}.__labels");
+                        if let Some(Value::List(current_labels)) = rec.get(&label_key) {
+                            let updated: Vec<Value> = current_labels
+                                .iter()
+                                .filter(|l| {
+                                    if let Value::String(s) = l {
+                                        !labels.contains(s)
+                                    } else {
+                                        true
+                                    }
+                                })
+                                .cloned()
+                                .collect();
+                            rec.set(label_key, Value::List(updated));
+                        }
+                    }
+                }
+            }
+        }
+    }
+    Ok(records)
 }
 
 fn exec_merge(

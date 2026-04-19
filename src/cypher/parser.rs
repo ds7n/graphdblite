@@ -88,6 +88,7 @@ fn parse_single_stmt(pair: pest::iterators::Pair<Rule>) -> crate::types::Result<
         Rule::match_merge_stmt => parse_match_merge(pair).map(Statement::MatchMerge),
         Rule::delete_stmt => parse_delete(pair).map(Statement::Delete),
         Rule::set_stmt => parse_set(pair).map(Statement::Set),
+        Rule::remove_stmt => parse_remove(pair).map(Statement::Remove),
         Rule::merge_stmt => parse_merge(pair).map(Statement::Merge),
         Rule::unwind_stmt => parse_unwind(pair).map(Statement::Unwind),
         Rule::return_stmt => parse_return_stmt(pair).map(Statement::Return),
@@ -409,6 +410,87 @@ fn parse_set(pair: pest::iterators::Pair<Rule>) -> crate::types::Result<SetState
         where_clause,
         assignments,
     })
+}
+
+fn parse_remove(pair: pest::iterators::Pair<Rule>) -> crate::types::Result<RemoveStatement> {
+    let mut patterns = Vec::new();
+    let mut optional_patterns = Vec::new();
+    let mut where_clause = None;
+    let mut items = Vec::new();
+    let mut return_clause = None;
+    let mut order_by = Vec::new();
+    let mut skip = None;
+    let mut limit = None;
+
+    for inner in pair.into_inner() {
+        match inner.as_rule() {
+            Rule::pattern_list => patterns = parse_pattern_list(inner)?,
+            Rule::optional_match_clause => {
+                for child in inner.into_inner() {
+                    if child.as_rule() == Rule::pattern_list {
+                        optional_patterns.push(parse_pattern_list(child)?);
+                    }
+                }
+            }
+            Rule::where_clause => where_clause = Some(parse_where(inner)?),
+            Rule::remove_item_list => {
+                for item in inner.into_inner() {
+                    if item.as_rule() == Rule::remove_item {
+                        items.push(parse_remove_item(item)?);
+                    }
+                }
+            }
+            Rule::return_clause => return_clause = Some(parse_return(inner)?),
+            Rule::order_by_clause => order_by = parse_order_by(inner)?,
+            Rule::skip_clause => skip = Some(parse_skip(inner)?),
+            Rule::limit_clause => limit = Some(parse_limit(inner)?),
+            _ => {}
+        }
+    }
+
+    Ok(RemoveStatement {
+        patterns,
+        optional_patterns,
+        where_clause,
+        items,
+        return_clause,
+        order_by,
+        skip,
+        limit,
+    })
+}
+
+/// Parse a single remove item: either `n.prop` or `n:Label`.
+fn parse_remove_item(pair: pest::iterators::Pair<Rule>) -> crate::types::Result<RemoveItem> {
+    let inner = pair.into_inner().next().unwrap();
+    match inner.as_rule() {
+        Rule::remove_property => {
+            let mut parts = inner.into_inner().next().unwrap().into_inner();
+            let variable = parts.next().unwrap().as_str().to_string();
+            let property = parts.next().unwrap().as_str().to_string();
+            Ok(RemoveItem::Property { variable, property })
+        }
+        Rule::remove_label => {
+            let mut variable = String::new();
+            let mut labels = Vec::new();
+            for child in inner.into_inner() {
+                match child.as_rule() {
+                    Rule::ident => variable = child.as_str().to_string(),
+                    Rule::label_spec => {
+                        for label in child.into_inner() {
+                            labels.push(label.as_str().to_string());
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            Ok(RemoveItem::Label { variable, labels })
+        }
+        _ => Err(GraphError::Serialization(format!(
+            "unexpected remove item: {:?}",
+            inner.as_rule()
+        ))),
+    }
 }
 
 fn parse_merge(pair: pest::iterators::Pair<Rule>) -> crate::types::Result<MergeStatement> {
@@ -1253,6 +1335,7 @@ fn parse_atom_expr(pair: pest::iterators::Pair<Rule>) -> crate::types::Result<Ex
             Ok(expr)
         }
         Rule::case_expr => parse_case_expr(pair),
+        Rule::quantifier_expr => parse_quantifier_expr(pair),
         Rule::function_call => parse_function_call(pair),
         Rule::property_access => {
             let mut parts = pair.into_inner();
@@ -1497,6 +1580,51 @@ fn parse_list_comprehension(pair: pest::iterators::Pair<Rule>) -> crate::types::
     })
 }
 
+/// Parse a quantifier predicate: none/single/any/all(x IN list WHERE pred).
+fn parse_quantifier_expr(pair: pest::iterators::Pair<Rule>) -> crate::types::Result<Expr> {
+    let mut kind = None;
+    let mut variable = None;
+    let mut list_expr = None;
+    let mut predicate = None;
+
+    for inner in pair.into_inner() {
+        match inner.as_rule() {
+            Rule::quantifier_name => {
+                kind = Some(match inner.as_str().to_lowercase().as_str() {
+                    "none" => QuantifierKind::None,
+                    "single" => QuantifierKind::Single,
+                    "any" => QuantifierKind::Any,
+                    "all" => QuantifierKind::All,
+                    other => {
+                        return Err(GraphError::Serialization(format!(
+                            "unknown quantifier: {other}"
+                        )))
+                    }
+                });
+            }
+            Rule::ident => variable = Some(inner.as_str().to_string()),
+            Rule::expr => list_expr = Some(Box::new(parse_expr(inner)?)),
+            Rule::where_clause => predicate = Some(Box::new(parse_where(inner)?)),
+            _ => {}
+        }
+    }
+
+    Ok(Expr::Quantifier {
+        kind: kind.ok_or_else(|| {
+            GraphError::Serialization("missing quantifier name".to_string())
+        })?,
+        variable: variable.ok_or_else(|| {
+            GraphError::Serialization("missing variable in quantifier".to_string())
+        })?,
+        list_expr: list_expr.ok_or_else(|| {
+            GraphError::Serialization("missing list expression in quantifier".to_string())
+        })?,
+        predicate: predicate.ok_or_else(|| {
+            GraphError::Serialization("missing WHERE predicate in quantifier".to_string())
+        })?,
+    })
+}
+
 // === Error humanization ===
 
 /// Map pest grammar rule names to user-friendly descriptions.
@@ -1644,6 +1772,17 @@ fn resolve_expr(expr: &Expr, params: &HashMap<String, Value>) -> crate::types::R
                 .as_ref()
                 .map(|m| resolve_expr(m, params).map(Box::new))
                 .transpose()?,
+        }),
+        Expr::Quantifier {
+            kind,
+            variable,
+            list_expr,
+            predicate,
+        } => Ok(Expr::Quantifier {
+            kind: *kind,
+            variable: variable.clone(),
+            list_expr: Box::new(resolve_expr(list_expr, params)?),
+            predicate: Box::new(resolve_expr(predicate, params)?),
         }),
         Expr::Exists {
             patterns,
@@ -1960,6 +2099,33 @@ pub fn resolve_params(
                 .transpose()?,
             assignments: resolve_assignments(&s.assignments, params)?,
         })),
+        Statement::Remove(r) => {
+            let (return_clause, order_by, skip, limit) = resolve_optional_return(
+                &r.return_clause,
+                &r.order_by,
+                r.skip,
+                r.limit,
+                params,
+            )?;
+            Ok(Statement::Remove(RemoveStatement {
+                patterns: resolve_patterns(&r.patterns, params)?,
+                optional_patterns: r
+                    .optional_patterns
+                    .iter()
+                    .map(|ps| resolve_patterns(ps, params))
+                    .collect::<crate::types::Result<Vec<_>>>()?,
+                where_clause: r
+                    .where_clause
+                    .as_ref()
+                    .map(|e| resolve_expr(e, params))
+                    .transpose()?,
+                items: r.items.clone(),
+                return_clause,
+                order_by,
+                skip,
+                limit,
+            }))
+        }
         Statement::Merge(m) => {
             let (return_clause, order_by, skip, limit) =
                 resolve_optional_return(&m.return_clause, &m.order_by, m.skip, m.limit, params)?;

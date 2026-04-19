@@ -2296,10 +2296,10 @@ fn e2e_list_comprehension_filter_all() {
     }
     let tx = db.begin_read().unwrap();
     let results = tx
-        .query("MATCH (n:X) RETURN [x IN [1, 2, 3] WHERE x > 100] AS none")
+        .query("MATCH (n:X) RETURN [x IN [1, 2, 3] WHERE x > 100] AS empty_list")
         .unwrap();
     assert_eq!(results.len(), 1);
-    assert_eq!(results[0].get("none").unwrap(), &Value::List(vec![]));
+    assert_eq!(results[0].get("empty_list").unwrap(), &Value::List(vec![]));
     tx.commit().unwrap();
 }
 

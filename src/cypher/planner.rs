@@ -73,6 +73,7 @@ pub fn plan(conn: &Connection, stmt: &Statement) -> crate::types::Result<Logical
         Statement::MatchCreate(mc) => plan_match_create(conn, mc),
         Statement::Delete(d) => plan_delete(conn, d),
         Statement::Set(s) => plan_set(conn, s),
+        Statement::Remove(r) => plan_remove(conn, r),
         Statement::Merge(m) => plan_merge(m),
         Statement::MatchMerge(mm) => plan_match_merge(conn, mm),
         Statement::Unwind(u) => plan_unwind(conn, u),
@@ -388,6 +389,41 @@ fn plan_set(conn: &Connection, stmt: &SetStatement) -> crate::types::Result<Logi
         input: Box::new(op),
         assignments: stmt.assignments.clone(),
     })
+}
+
+fn plan_remove(conn: &Connection, stmt: &RemoveStatement) -> crate::types::Result<LogicalOp> {
+    let mut op = plan_patterns(conn, &stmt.patterns)?;
+
+    // Optional MATCH clauses.
+    for opt_pats in &stmt.optional_patterns {
+        let right = plan_patterns(conn, opt_pats)?;
+        let optional_aliases = collect_pattern_variables(opt_pats)
+            .into_iter()
+            .collect();
+        op = LogicalOp::LeftOuterJoin {
+            input: Box::new(op),
+            right: Box::new(right),
+            optional_aliases,
+        };
+    }
+
+    if let Some(ref predicate) = stmt.where_clause {
+        op = LogicalOp::Filter {
+            input: Box::new(op),
+            predicate: predicate.clone(),
+        };
+    }
+
+    op = LogicalOp::Remove {
+        input: Box::new(op),
+        items: stmt.items.clone(),
+    };
+
+    if let Some(ref rc) = stmt.return_clause {
+        op = apply_return_projection(op, rc, &stmt.order_by, stmt.skip, stmt.limit)?;
+    }
+
+    Ok(op)
 }
 
 fn plan_unwind(_conn: &Connection, stmt: &UnwindStatement) -> crate::types::Result<LogicalOp> {
@@ -888,6 +924,9 @@ fn check_expr_variables(expr: &Expr, scope: &HashSet<String>) -> crate::types::R
         }
         Expr::Literal(_) | Expr::Parameter(_) | Expr::Star => {}
         Expr::ListComprehension { list_expr, .. } => {
+            check_expr_variables(list_expr, scope)?;
+        }
+        Expr::Quantifier { list_expr, .. } => {
             check_expr_variables(list_expr, scope)?;
         }
         Expr::Exists { .. } => {}

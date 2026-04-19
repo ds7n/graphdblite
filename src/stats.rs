@@ -34,7 +34,14 @@ pub fn increment_label_count(conn: &Connection, label: &str) -> Result<()> {
 /// Decrement the node count for a label by 1.
 pub fn decrement_label_count(conn: &Connection, label: &str) -> Result<()> {
     let count = get_label_count(conn, label)?;
-    set_label_count(conn, label, count.saturating_sub(1))
+    let new_count = count.saturating_sub(1);
+    if new_count == 0 {
+        let key = format!("{LABEL_COUNT_PREFIX}{label}");
+        conn.execute("DELETE FROM metadata WHERE key = ?1", rusqlite::params![key])?;
+        Ok(())
+    } else {
+        set_label_count(conn, label, new_count)
+    }
 }
 
 /// Set the node count for a label.

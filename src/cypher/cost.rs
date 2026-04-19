@@ -114,6 +114,7 @@ fn estimate_rows(conn: &Connection, plan: &LogicalOp) -> f64 {
         | LogicalOp::MatchCreate { .. }
         | LogicalOp::Delete { .. }
         | LogicalOp::SetProperty { .. }
+        | LogicalOp::Remove { .. }
         | LogicalOp::Merge { .. }
         | LogicalOp::MatchMerge { .. } => 1.0,
 
@@ -226,6 +227,7 @@ fn format_plan_tree(conn: &Connection, plan: &LogicalOp, depth: usize, lines: &m
             format!("{d}Delete {variables:?}")
         }
         LogicalOp::SetProperty { .. } => "SetProperty".to_string(),
+        LogicalOp::Remove { .. } => "Remove".to_string(),
         LogicalOp::Merge { .. } => "Merge".to_string(),
         LogicalOp::MatchMerge { .. } => "MatchMerge".to_string(),
         LogicalOp::Union { inputs, all } => {
@@ -251,6 +253,7 @@ fn format_plan_tree(conn: &Connection, plan: &LogicalOp, depth: usize, lines: &m
         | LogicalOp::MatchMerge { input, .. }
         | LogicalOp::Delete { input, .. }
         | LogicalOp::SetProperty { input, .. }
+        | LogicalOp::Remove { input, .. }
         | LogicalOp::Unwind { input, .. }
         | LogicalOp::MaterializePath { input, .. } => {
             format_plan_tree(conn, input, depth + 1, lines);

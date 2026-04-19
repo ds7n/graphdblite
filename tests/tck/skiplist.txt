@@ -161,8 +161,7 @@ ExistentialSubquery3 - Nested existential subquery::[2] Nested full existential 
 ExistentialSubquery3 - Nested existential subquery::[3] Nested full existential subquery with pattern predicate
 Graph3 - Node labels::[1] Creating node without label
 Graph3 - Node labels::[4] Create node with label in pattern
-Graph3 - Node labels::[5] Using `labels()` in return clauses
-Graph3 - Node labels::[7] `labels()` on null node
+Graph3 - Node labels::[8] `labels()` failing on a path
 Graph3 - Node labels::[9] `labels()` failing on invalid arguments
 Graph4 - Edge relationship type::[1] `type()`
 Graph4 - Edge relationship type::[2] `type()` on two relationships
@@ -514,17 +513,7 @@ Precedence4 - On null value::[1] Null predicate takes precedence over comparison
 Precedence4 - On null value::[2] Null predicate takes precedence over boolean negation
 Precedence4 - On null value::[3] Null predicate takes precedence over binary boolean operator
 Precedence4 - On null value::[4] String predicate takes precedence over binary boolean operator
-Quantifier1 - None quantifier::[10] None quantifier on lists containing nulls
-Quantifier1 - None quantifier::[11] None quantifier with IS NULL predicate
-Quantifier1 - None quantifier::[12] None quantifier with IS NOT NULL predicate
-Quantifier1 - None quantifier::[13] None quantifier is true if the predicate is statically false and the list is not empty
-Quantifier1 - None quantifier::[14] None quantifier is false if the predicate is statically true and the list is not empty
-Quantifier1 - None quantifier::[1] None quantifier is always true on empty list
-Quantifier1 - None quantifier::[2] None quantifier on list literal containing booleans
-Quantifier1 - None quantifier::[3] None quantifier on list literal containing integers
-Quantifier1 - None quantifier::[4] None quantifier on list literal containing floats
-Quantifier1 - None quantifier::[5] None quantifier on list literal containing strings
-Quantifier1 - None quantifier::[6] None quantifier on list literal containing lists
+Quantifier1 - None quantifier::[15] Fail none quantifier on type mismatch between list elements and predicate
 Quantifier1 - None quantifier::[7] None quantifier on list literal containing maps
 Quantifier1 - None quantifier::[8] None quantifier on list containing nodes
 Quantifier1 - None quantifier::[9] None quantifier on list containing relationships
@@ -543,106 +532,40 @@ Quantifier12 - All quantifier invariants::[2] All quantifier is always true if t
 Quantifier12 - All quantifier invariants::[3] All quantifier is always equal the none quantifier on the boolean negative of the predicate
 Quantifier12 - All quantifier invariants::[4] All quantifier is always equal the boolean negative of the any quantifier on the boolean negative of the predicate
 Quantifier12 - All quantifier invariants::[5] All quantifier is always equal whether the size of the list filtered with same the predicate is equal the size of the unfiltered list
-Quantifier2 - Single quantifier::[10] Single quantifier on lists containing nulls
-Quantifier2 - Single quantifier::[11] Single quantifier with IS NULL predicate
-Quantifier2 - Single quantifier::[12] Single quantifier with IS NOT NULL predicate
-Quantifier2 - Single quantifier::[13] Single quantifier is false if the predicate is statically false and the list is not empty
-Quantifier2 - Single quantifier::[14] Single quantifier is false if the predicate is statically true and the list has more than one element
-Quantifier2 - Single quantifier::[15] Single quantifier is true if the predicate is statically true and the list has exactly one non-null element
-Quantifier2 - Single quantifier::[1] Single quantifier is always false on empty list
-Quantifier2 - Single quantifier::[2] Single quantifier on list literal
-Quantifier2 - Single quantifier::[3] Single quantifier on list literal containing integers
-Quantifier2 - Single quantifier::[4] Single quantifier on list literal containing floats
-Quantifier2 - Single quantifier::[5] Single quantifier on list literal containing strings
-Quantifier2 - Single quantifier::[6] Single quantifier on list literal containing lists
+Quantifier2 - Single quantifier::[16] Fail single quantifier on type mismatch between list elements and predicate
 Quantifier2 - Single quantifier::[7] Single quantifier on list literal containing maps
 Quantifier2 - Single quantifier::[8] Single quantifier on list containing nodes
 Quantifier2 - Single quantifier::[9] Single quantifier on list containing relationships
-Quantifier3 - Any quantifier::[10] Any quantifier on lists containing nulls
-Quantifier3 - Any quantifier::[11] Any quantifier with IS NULL predicate
-Quantifier3 - Any quantifier::[12] Any quantifier with IS NOT NULL predicate
-Quantifier3 - Any quantifier::[13] Any quantifier is false if the predicate is statically false and the list is not empty
-Quantifier3 - Any quantifier::[14] Any quantifier is true if the predicate is statically true and the list is not empty
-Quantifier3 - Any quantifier::[1] Any quantifier is always false on empty list
-Quantifier3 - Any quantifier::[2] Any quantifier on list literal
-Quantifier3 - Any quantifier::[3] Any quantifier on list literal containing integers
-Quantifier3 - Any quantifier::[4] Any quantifier on list literal containing floats
-Quantifier3 - Any quantifier::[5] Any quantifier on list literal containing strings
-Quantifier3 - Any quantifier::[6] Any quantifier on list literal containing lists
+Quantifier3 - Any quantifier::[15] Fail any quantifier on type mismatch between list elements and predicate
 Quantifier3 - Any quantifier::[7] Any quantifier on list literal containing maps
 Quantifier3 - Any quantifier::[8] Any quantifier on list containing nodes
 Quantifier3 - Any quantifier::[9] Any quantifier on list containing relationships
-Quantifier4 - All quantifier::[10] All quantifier on lists containing nulls
-Quantifier4 - All quantifier::[11] All quantifier with IS NULL predicate
-Quantifier4 - All quantifier::[12] All quantifier with IS NOT NULL predicate
-Quantifier4 - All quantifier::[13] All quantifier is false if the predicate is statically false and the list is not empty
-Quantifier4 - All quantifier::[14] All quantifier is true if the predicate is statically true and the list is not empty
-Quantifier4 - All quantifier::[1] All quantifier is always true on empty list
-Quantifier4 - All quantifier::[2] All quantifier on list literal
-Quantifier4 - All quantifier::[3] All quantifier on list literal containing integers
-Quantifier4 - All quantifier::[4] All quantifier on list literal containing floats
-Quantifier4 - All quantifier::[5] All quantifier on list literal containing strings
-Quantifier4 - All quantifier::[6] All quantifier on list literal containing lists
+Quantifier4 - All quantifier::[15] Fail all quantifier on type mismatch between list elements and predicate
 Quantifier4 - All quantifier::[7] All quantifier on list literal containing maps
 Quantifier4 - All quantifier::[8] All quantifier on list containing nodes
 Quantifier4 - All quantifier::[9] All quantifier on list containing relationships
-Quantifier5 - None quantifier interop::[1] None quantifier can nest itself and other quantifiers on nested lists
 Quantifier5 - None quantifier interop::[2] None quantifier can nest itself and other quantifiers on the same list
-Quantifier5 - None quantifier interop::[3] None quantifier is equal the boolean negative of the any quantifier
-Quantifier5 - None quantifier interop::[4] None quantifier is equal the all quantifier on the boolean negative of the predicate
-Quantifier5 - None quantifier interop::[5] None quantifier is equal whether the size of the list filtered with same the predicate is zero
-Quantifier6 - Single quantifier interop::[1] Single quantifier can nest itself and other quantifiers on nested lists
 Quantifier6 - Single quantifier interop::[2] Single quantifier can nest itself and other quantifiers on the same list
-Quantifier6 - Single quantifier interop::[3] Single quantifier is equal whether the size of the list filtered with same the predicate is one
-Quantifier7 - Any quantifier interop::[1] Any quantifier can nest itself and other quantifiers on nested lists
 Quantifier7 - Any quantifier interop::[2] Any quantifier can nest itself and other quantifiers on the same list
 Quantifier7 - Any quantifier interop::[3] Any quantifier is true if the single or the all quantifier is true
-Quantifier7 - Any quantifier interop::[4] Any quantifier is equal the boolean negative of the none quantifier
-Quantifier7 - Any quantifier interop::[5] Any quantifier is equal the boolean negative of the all quantifier on the boolean negative of the predicate
-Quantifier7 - Any quantifier interop::[6] Any quantifier is equal whether the size of the list filtered with same the predicate is grater zero
-Quantifier8 - All quantifier interop::[1] All quantifier can nest itself and other quantifiers on nested lists
 Quantifier8 - All quantifier interop::[2] All quantifier can nest itself and other quantifiers on the same list
-Quantifier8 - All quantifier interop::[3] All quantifier is equal the none quantifier on the boolean negative of the predicate
-Quantifier8 - All quantifier interop::[4] All quantifier is equal the boolean negative of the any quantifier on the boolean negative of the predicate
-Quantifier8 - All quantifier interop::[5] All quantifier is equal whether the size of the list filtered with same the predicate is equal the size of the unfiltered list
 Quantifier9 - None quantifier invariants::[1] None quantifier is always true if the predicate is statically false and the list is not empty
 Quantifier9 - None quantifier invariants::[2] None quantifier is always false if the predicate is statically true and the list is not empty
 Quantifier9 - None quantifier invariants::[3] None quantifier is always equal the boolean negative of the any quantifier
 Quantifier9 - None quantifier invariants::[4] None quantifier is always equal the all quantifier on the boolean negative of the predicate
 Quantifier9 - None quantifier invariants::[5] None quantifier is always equal whether the size of the list filtered with same the predicate is zero
-Remove1 - Remove a Property::[1] Remove a single node property
-Remove1 - Remove a Property::[2] Remove multiple node properties
-Remove1 - Remove a Property::[3] Remove a single relationship property
 Remove1 - Remove a Property::[4] Remove multiple relationship properties
 Remove1 - Remove a Property::[5] Ignore null when removing property from a node
-Remove1 - Remove a Property::[6] Ignore null when removing property from a relationship
-Remove1 - Remove a Property::[7] Remove a missing node property
-Remove2 - Remove a Label::[1] Remove a single label from a node with a single label
-Remove2 - Remove a Label::[2] Remove a single label from a node with two labels
-Remove2 - Remove a Label::[3] Remove two labels from a node with three labels
-Remove2 - Remove a Label::[4] Remove a non-existent node label
 Remove2 - Remove a Label::[5] Ignore null when removing a node label
-Remove3 - Persistence of remove clause side effects::[10] Skipping and limiting to a few results after removing a label from nodes affects the result set but not the side effects
-Remove3 - Persistence of remove clause side effects::[11] Skipping zero result and limiting to all results after removing a label from nodes does not affect the result set nor the side effects
 Remove3 - Persistence of remove clause side effects::[12] Filtering after removing a label from nodes affects the result set but not the side effects
 Remove3 - Persistence of remove clause side effects::[13] Aggregating in `RETURN` after removing a label from nodes affects the result set but not the side effects
 Remove3 - Persistence of remove clause side effects::[14] Aggregating in `WITH` after removing a label from nodes affects the result set but not the side effects
-Remove3 - Persistence of remove clause side effects::[15] Limiting to zero results after removing a property from relationships affects the result set but not the side effects
-Remove3 - Persistence of remove clause side effects::[16] Skipping all results after removing a property from relationships affects the result set but not the side effects
-Remove3 - Persistence of remove clause side effects::[17] Skipping and limiting to a few results after removing a property from relationships affects the result set but not the side effects
-Remove3 - Persistence of remove clause side effects::[18] Skipping zero result and limiting to all results after removing a property from relationships does not affect the result set nor the side effects
 Remove3 - Persistence of remove clause side effects::[19] Filtering after removing a property from relationships affects the result set but not the side effects
-Remove3 - Persistence of remove clause side effects::[1] Limiting to zero results after removing a property from nodes affects the result set but not the side effects
 Remove3 - Persistence of remove clause side effects::[20] Aggregating in `RETURN` after removing a property from relationships affects the result set but not the side effects
 Remove3 - Persistence of remove clause side effects::[21] Aggregating in `WITH` after removing a property from relationships affects the result set but not the side effects
-Remove3 - Persistence of remove clause side effects::[2] Skipping all results after removing a property from nodes affects the result set but not the side effects
-Remove3 - Persistence of remove clause side effects::[3] Skipping and limiting to a few results after removing a property from nodes affects the result set but not the side effects
-Remove3 - Persistence of remove clause side effects::[4] Skipping zero results and limiting to all results after removing a property from nodes does not affect the result set nor the side effects
 Remove3 - Persistence of remove clause side effects::[5] Filtering after removing a property from nodes affects the result set but not the side effects
 Remove3 - Persistence of remove clause side effects::[6] Aggregating in `RETURN` after removing a property from nodes affects the result set but not the side effects
 Remove3 - Persistence of remove clause side effects::[7] Aggregating in `WITH` after removing a property from nodes affects the result set but not the side effects
-Remove3 - Persistence of remove clause side effects::[8] Limiting to zero results after removing a label from nodes affects the result set but not the side effects
-Remove3 - Persistence of remove clause side effects::[9] Skipping all results after removing a label from nodes affects the result set but not the side effects
 Return2 - Return single expression (correctly projecting an expression)::[10] Return count aggregation over an empty graph
 Return2 - Return single expression (correctly projecting an expression)::[12] Projecting a list of nodes and relationships
 Return2 - Return single expression (correctly projecting an expression)::[13] Projecting a map of nodes and relationships
@@ -1014,6 +937,7 @@ WithOrderBy3 - Order by multiple expressions::[2] Sort by two expressions, first
 WithOrderBy3 - Order by multiple expressions::[3] Sort by two expressions, first in descending order, second in ascending order
 WithOrderBy3 - Order by multiple expressions::[4] Sort by two expressions, both in descending order
 WithOrderBy3 - Order by multiple expressions::[6] An constant expression does not influence the order determined by other expression before and after the constant expression
+WithOrderBy3 - Order by multiple expressions::[7] The order direction cannot be overwritten
 WithOrderBy4 - Order by in combination with projection and aliasing::[10] Sort by a non-projected expression containing an alias of a projected expression containing the variable shadowed by the alias
 WithOrderBy4 - Order by in combination with projection and aliasing::[11] Sort by an aggregate projection
 WithOrderBy4 - Order by in combination with projection and aliasing::[12] Sort by an aliased aggregate projection
@@ -1048,4 +972,3 @@ WithWhere6 - Filter on aggregates::[1] Filter a single aggregate
 WithWhere7 - Variable visibility under aliasing::[1] WHERE sees a variable bound before but not after WITH
 WithWhere7 - Variable visibility under aliasing::[2] WHERE sees a variable bound after but not before WITH
 WithWhere7 - Variable visibility under aliasing::[3] WHERE sees both, variable bound before but not after WITH and variable bound after but not before WITH
-WithOrderBy3 - Order by multiple expressions::[7] The order direction cannot be overwritten

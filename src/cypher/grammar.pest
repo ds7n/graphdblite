@@ -8,7 +8,7 @@ COMMENT = _{ "//" ~ (!"\n" ~ ANY)* }
 statement = { SOI ~ union_stmt ~ ";"? ~ EOI }
 union_stmt = { single_stmt ~ (union_op ~ single_stmt)* }
 union_op = { ^"UNION" ~ ^"ALL"? }
-single_stmt = { explain_stmt | match_create_stmt | match_merge_stmt | match_stmt | unwind_stmt | create_stmt | delete_stmt | set_stmt | merge_stmt | return_stmt }
+single_stmt = { explain_stmt | match_create_stmt | match_merge_stmt | match_stmt | unwind_stmt | create_stmt | delete_stmt | set_stmt | remove_stmt | merge_stmt | return_stmt }
 
 explain_stmt = { ^"EXPLAIN" ~ (match_create_stmt | match_stmt | unwind_stmt) }
 
@@ -115,6 +115,21 @@ set_stmt = {
 assignment_list = { assignment ~ ("," ~ assignment)* }
 assignment = { property_access ~ "=" ~ expr }
 
+// === REMOVE statement ===
+
+remove_stmt = {
+    ^"MATCH" ~ pattern_list ~
+    optional_match_clause* ~
+    where_clause? ~
+    ^"REMOVE" ~ remove_item_list ~
+    (return_clause ~ order_by_clause? ~ skip_clause? ~ limit_clause?)?
+}
+
+remove_item_list = { remove_item ~ ("," ~ remove_item)* }
+remove_item = { remove_label | remove_property }
+remove_property = { property_access }
+remove_label = { ident ~ label_spec }
+
 // === MERGE statement ===
 
 merge_stmt = {
@@ -220,7 +235,10 @@ mul_expr = { atom_expr ~ (mul_op ~ atom_expr)* }
 add_op = { "+" | "-" }
 mul_op = { "*" | "/" | "%" }
 atom_expr = { atom_primary ~ subscript* }
-atom_primary = _{ case_expr | function_call | property_access | literal | list_comprehension | list_literal | map_literal | star | parameter | "(" ~ expr ~ ")" | variable }
+atom_primary = _{ case_expr | quantifier_expr | function_call | property_access | literal | list_comprehension | list_literal | map_literal | star | parameter | "(" ~ expr ~ ")" | variable }
+
+quantifier_expr = { quantifier_name ~ "(" ~ ident ~ in_kw ~ expr ~ where_clause ~ ")" }
+quantifier_name = @{ (^"none" | ^"single" | ^"any" | ^"all") ~ !(ASCII_ALPHANUMERIC | "_") }
 subscript = { "[" ~ subscript_inner ~ "]" }
 subscript_inner = { slice_full | slice_from | slice_to | expr }
 slice_full = { expr ~ ".." ~ expr }
@@ -246,7 +264,7 @@ variable = { ident }
 star = { "*" }
 
 function_call = { function_name ~ "(" ~ function_args ~ ")" }
-function_name = @{ ^"count" | ^"sum" | ^"avg" | ^"min" | ^"max" | ^"collect" | ^"length" | ^"nodes" | ^"toLower" | ^"toUpper" | ^"toString" | ^"toInteger" | ^"toFloat" | ^"keys" | ^"id" | ^"coalesce" | ^"type" | ^"head" | ^"tail" | ^"last" | ^"size" | ^"abs" | ^"substring" | ^"replace" | ^"split" | ^"trim" | ^"reverse" | ^"range" }
+function_name = @{ ^"count" | ^"sum" | ^"avg" | ^"min" | ^"max" | ^"collect" | ^"length" | ^"nodes" | ^"toLower" | ^"toUpper" | ^"toString" | ^"toInteger" | ^"toFloat" | ^"keys" | ^"labels" | ^"id" | ^"coalesce" | ^"type" | ^"head" | ^"tail" | ^"last" | ^"size" | ^"abs" | ^"substring" | ^"replace" | ^"split" | ^"trim" | ^"reverse" | ^"range" }
 function_args = { star | expr_list | "" }
 expr_list = { expr ~ ("," ~ expr)* }
 
@@ -266,11 +284,12 @@ ident = @{ !keyword ~ (ASCII_ALPHA | "_") ~ (ASCII_ALPHANUMERIC | "_")* }
 symbolic_name = @{ (ASCII_ALPHA | "_") ~ (ASCII_ALPHANUMERIC | "_")* }
 
 keyword = {
-    (^"MATCH" | ^"WHERE" | ^"RETURN" | ^"CREATE" | ^"DELETE" | ^"DETACH" | ^"SET" |
+    (^"MATCH" | ^"WHERE" | ^"RETURN" | ^"CREATE" | ^"DELETE" | ^"DETACH" | ^"SET" | ^"REMOVE" |
      ^"MERGE" | ^"ORDER" | ^"BY" | ^"SKIP" | ^"LIMIT" | ^"AND" | ^"OR" | ^"NOT" |
      ^"AS" | ^"IS" | ^"ON" | ^"ASC" | ^"DESC" | ^"STARTS" | ^"ENDS" | ^"WITH" | ^"CONTAINS" |
      ^"OPTIONAL" | ^"UNWIND" | ^"TRUE" | ^"FALSE" | ^"NULL" |
      ^"CASE" | ^"WHEN" | ^"THEN" | ^"ELSE" | ^"END" | ^"EXISTS" | ^"IN" | ^"DISTINCT" | ^"UNION" | ^"ALL" | ^"XOR" |
+     ^"NONE" | ^"SINGLE" | ^"ANY" |
      ^"shortestPath" | ^"allShortestPaths" | ^"EXPLAIN" |
      ^"count" | ^"sum" | ^"avg" | ^"min" | ^"max" | ^"collect" | ^"length" | ^"nodes")
     ~ !(ASCII_ALPHANUMERIC | "_")

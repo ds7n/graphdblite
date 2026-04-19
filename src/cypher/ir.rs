@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-use crate::cypher::ast::{Assignment, Expr, LiteralValue, Pattern, ReturnItem, SortItem};
+use crate::cypher::ast::{Assignment, Expr, LiteralValue, Pattern, RemoveItem, ReturnItem, SortItem};
 use crate::types::Direction;
 
 /// Logical query plan operator. Language-agnostic IR that the executor consumes.
@@ -118,6 +118,12 @@ pub enum LogicalOp {
     SetProperty {
         input: Box<LogicalOp>,
         assignments: Vec<Assignment>,
+    },
+
+    /// Remove properties/labels from nodes/edges.
+    Remove {
+        input: Box<LogicalOp>,
+        items: Vec<RemoveItem>,
     },
 
     /// Merge: match-or-create pattern.

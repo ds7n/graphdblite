@@ -122,6 +122,24 @@ pub fn remove_node_property(conn: &Connection, id: NodeId, key: &str) -> Result<
     Ok(())
 }
 
+/// Remove a label from an existing node.
+pub fn remove_node_label(conn: &Connection, id: NodeId, label: &str) -> Result<()> {
+    let data =
+        kv::get(conn, kv::TABLE_NODES, &id.to_be_bytes())?.ok_or(GraphError::NodeNotFound(id))?;
+    let mut record: NodeRecord =
+        rmp_serde::from_slice(&data).map_err(|e| GraphError::Serialization(e.to_string()))?;
+    if !record.labels.contains(&label.to_string()) {
+        return Ok(());
+    }
+    record.labels.retain(|l| l != label);
+    let new_data =
+        rmp_serde::to_vec(&record).map_err(|e| GraphError::Serialization(e.to_string()))?;
+    let label_col = record.labels.join(":");
+    put_node(conn, &id.to_be_bytes(), &label_col, &new_data)?;
+    stats::decrement_label_count(conn, label)?;
+    Ok(())
+}
+
 /// Scan nodes by label using the indexed label column.
 ///
 /// When `label` is empty, returns all nodes.

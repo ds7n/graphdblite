@@ -1,6 +1,6 @@
 use rusqlite::Connection;
 
-use crate::cypher::ast::{BinOp, Expr, LiteralValue};
+use crate::cypher::ast::{BinOp, Expr, LiteralValue, QuantifierKind};
 use crate::cypher::record::Record;
 use crate::types::Value;
 
@@ -141,6 +141,12 @@ pub fn eval_expr(expr: &Expr, record: &Record, conn: &Connection) -> crate::type
             record,
             conn,
         ),
+        Expr::Quantifier {
+            kind,
+            variable,
+            list_expr,
+            predicate,
+        } => eval_quantifier(*kind, variable, list_expr, predicate, record, conn),
         Expr::Exists {
             patterns,
             where_clause,
@@ -268,6 +274,42 @@ fn eval_function_call(
                     keys.sort();
                     Ok(Value::List(keys.into_iter().map(Value::String).collect()))
                 }
+                _ => Ok(Value::Null),
+            }
+        }
+        "labels" => {
+            // labels(n) — return label list from the __labels record field or database.
+            if let Some(Expr::Variable(var)) = args.first() {
+                let label_key = format!("{var}.__labels");
+                if let Some(val @ Value::List(_)) = record.get(&label_key) {
+                    return Ok(val.clone());
+                }
+                // Fallback: look up from database.
+                let id_key = format!("{var}.__id");
+                if let Some(Value::I64(id)) = record.get(&id_key).or_else(|| record.get(var)) {
+                    if let Ok(node) = crate::node::get_node(conn, crate::types::NodeId(*id as u64))
+                    {
+                        return Ok(Value::List(
+                            node.labels.into_iter().map(Value::String).collect(),
+                        ));
+                    }
+                }
+            }
+            // Also handle labels(id_value) where the arg evaluates to an integer.
+            let arg = eval_single_arg(args, record, conn)?;
+            match arg {
+                Value::I64(id) => {
+                    if let Ok(node) =
+                        crate::node::get_node(conn, crate::types::NodeId(id as u64))
+                    {
+                        Ok(Value::List(
+                            node.labels.into_iter().map(Value::String).collect(),
+                        ))
+                    } else {
+                        Ok(Value::Null)
+                    }
+                }
+                Value::Null => Ok(Value::Null),
                 _ => Ok(Value::Null),
             }
         }
@@ -501,6 +543,85 @@ fn eval_list_comprehension(
     }
 
     Ok(Value::List(results))
+}
+
+/// Evaluate a quantifier predicate: none/single/any/all(x IN list WHERE pred).
+///
+/// Uses three-valued logic (true/false/null) per Cypher semantics.
+fn eval_quantifier(
+    kind: QuantifierKind,
+    variable: &str,
+    list_expr: &Expr,
+    predicate: &Expr,
+    record: &Record,
+    conn: &Connection,
+) -> crate::types::Result<Value> {
+    let list_val = eval_expr(list_expr, record, conn)?;
+    let items = match list_val {
+        Value::List(items) => items,
+        Value::Null => return Ok(Value::Null),
+        _ => {
+            return Err(crate::types::GraphError::Serialization(
+                "quantifier requires a list input".to_string(),
+            ))
+        }
+    };
+
+    let mut true_count: usize = 0;
+    let mut false_count: usize = 0;
+    let mut null_count: usize = 0;
+
+    for item in &items {
+        let mut local = record.clone();
+        local.set(variable.to_string(), item.clone());
+        let val = eval_expr(predicate, &local, conn)?;
+        match val {
+            Value::Bool(true) => true_count += 1,
+            Value::Bool(false) => false_count += 1,
+            _ => null_count += 1,
+        }
+    }
+
+    match kind {
+        QuantifierKind::All => {
+            if false_count > 0 {
+                Ok(Value::Bool(false))
+            } else if null_count > 0 {
+                Ok(Value::Null)
+            } else {
+                Ok(Value::Bool(true))
+            }
+        }
+        QuantifierKind::Any => {
+            if true_count > 0 {
+                Ok(Value::Bool(true))
+            } else if null_count > 0 {
+                Ok(Value::Null)
+            } else {
+                Ok(Value::Bool(false))
+            }
+        }
+        QuantifierKind::None => {
+            if true_count > 0 {
+                Ok(Value::Bool(false))
+            } else if null_count > 0 {
+                Ok(Value::Null)
+            } else {
+                Ok(Value::Bool(true))
+            }
+        }
+        QuantifierKind::Single => {
+            if true_count == 1 && null_count == 0 {
+                Ok(Value::Bool(true))
+            } else if true_count > 1 {
+                Ok(Value::Bool(false))
+            } else if true_count == 0 && null_count == 0 {
+                Ok(Value::Bool(false))
+            } else {
+                Ok(Value::Null)
+            }
+        }
+    }
 }
 
 /// Evaluate an EXISTS { pattern [WHERE expr] } subquery.

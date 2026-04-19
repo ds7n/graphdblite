@@ -9,6 +9,7 @@ pub enum Statement {
     MatchMerge(MatchMergeStatement),
     Delete(DeleteStatement),
     Set(SetStatement),
+    Remove(RemoveStatement),
     Merge(MergeStatement),
     Unwind(UnwindStatement),
     /// Standalone RETURN (no preceding MATCH / CREATE).
@@ -92,6 +93,26 @@ pub struct SetStatement {
     pub patterns: Vec<Pattern>,
     pub where_clause: Option<Expr>,
     pub assignments: Vec<Assignment>,
+}
+
+/// MATCH ... REMOVE n.prop, n:Label [RETURN ...]
+#[derive(Debug, Clone, PartialEq)]
+pub struct RemoveStatement {
+    pub patterns: Vec<Pattern>,
+    pub optional_patterns: Vec<Vec<Pattern>>,
+    pub where_clause: Option<Expr>,
+    pub items: Vec<RemoveItem>,
+    pub return_clause: Option<ReturnClause>,
+    pub order_by: Vec<SortItem>,
+    pub skip: Option<u64>,
+    pub limit: Option<u64>,
+}
+
+/// An item to remove: property or label(s).
+#[derive(Debug, Clone, PartialEq)]
+pub enum RemoveItem {
+    Property { variable: String, property: String },
+    Label { variable: String, labels: Vec<String> },
 }
 
 /// MATCH ... MERGE pattern ON CREATE SET ... ON MATCH SET ... [RETURN ...]
@@ -299,8 +320,24 @@ pub enum Expr {
         start: Option<Box<Expr>>,
         end: Option<Box<Expr>>,
     },
+    /// Quantifier predicate: none/single/any/all(x IN list WHERE pred)
+    Quantifier {
+        kind: QuantifierKind,
+        variable: String,
+        list_expr: Box<Expr>,
+        predicate: Box<Expr>,
+    },
     /// Wildcard * (used in count(*) and RETURN *)
     Star,
+}
+
+/// Quantifier predicate kind.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum QuantifierKind {
+    None,
+    Single,
+    Any,
+    All,
 }
 
 #[derive(Debug, Clone, PartialEq)]

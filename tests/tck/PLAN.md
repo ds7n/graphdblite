@@ -1,8 +1,8 @@
 # TCK Conformance Improvement Plan
 
-## Status: Phases 1-6 complete (2026-04-17)
+## Status: Phases 1-7 complete (2026-04-19)
 
-841 scenarios passing, 1051 skiplisted, 0 failures.
+1298 scenarios passing, 974 skiplisted, 0 failures.
 
 ---
 
@@ -45,6 +45,18 @@ Three code fixes and a systematic skiplist sweep:
 - **CREATE dedup**: `CREATE (a), (a)-[:R]->(b)` no longer creates duplicate nodes. `plan_create_pattern` tracks `seen` named variables across patterns, skipping `CreateNode` for already-seen aliases.
 - **Batch unskip**: Removed 45 confirmed-passing skiplist entries (Create1-6, Comparison2, List3, Literals7-8, Merge2-3-5-7, Precedence2, Return3-6, TypeConversion4, WithOrderBy3).
 
+### Phase 7: Quantifier functions, REMOVE statement, labels() ✓
+
+Three features and a batch unskip:
+
+- **Quantifier predicates**: `none()`, `single()`, `any()`, `all()` with `(x IN list WHERE pred)` syntax. New `quantifier_expr` grammar rule placed before `function_call` in `atom_primary`. `QuantifierKind` enum and `Expr::Quantifier` AST variant. Evaluation uses three-valued null logic (tracks true/false/null counts per element). ~59 scenarios unlocked; 41 remain skiplisted (map/node/rel items, invariants needing `rand()` etc.).
+
+- **REMOVE statement**: Full pipeline — grammar, AST (`RemoveStatement`, `RemoveItem::Property`/`Label`), parser, `LogicalOp::Remove` IR, planner, executor. `node::remove_node_label()` added. Records are updated in-place after removal so downstream RETURN sees correct values. Fixed `decrement_label_count` to delete stat entry when count reaches 0 (was leaving stale entries). 21 scenarios unlocked; 13 remain (OPTIONAL MATCH + REMOVE, WITH/aggregation side effects).
+
+- **`labels()` function**: Added to grammar `function_name` and `eval_function_call`. Reads from `__labels` record field or falls back to database lookup.
+
+- **Batch unskip**: 77 scenarios removed from skiplist total.
+
 ---
 
 ## Next priorities (by impact)
@@ -53,26 +65,26 @@ Regenerate with: `uv run tests/tck/analyze_blockers.py`
 
 | Sole | Impact | Construct | Notes |
 |-----:|-------:|-----------|-------|
-| 141 | 299 | Write-clause RETURN side effects | Side-effect delta tracking |
+| 141 | 298 | Write-clause RETURN side effects | Side-effect delta tracking |
 | 36 | 55 | Temporal types | datetime(), date(), duration() |
-| 33 | 53 | Quantifier predicates | single(), none(), any(), all() |
 | 13 | 27 | CREATE (no RETURN) side effects | Side-effect assertion gaps |
-| 10 | 21 | IN [list] | Remaining: null semantics |
-| 9 | 30 | IS NULL / IS NOT NULL | Property access on missing props |
+| 13 | 20 | Quantifier predicates (remaining) | Map/node/rel items, invariants |
+| 10 | 12 | IN [list] | Remaining: null semantics |
+| 9 | 26 | IS NULL / IS NOT NULL | Property access on missing props |
 | 9 | 16 | Parameter $param | |
 | 8 | 24 | ORDER BY | WITH...ORDER BY interaction |
 | 6 | 34 | Aggregation (non-count) | sum/avg/min/max/collect |
-| 6 | 19 | List functions | range(), reverse(), tail(), etc. |
+| 6 | 18 | List functions | range(), reverse(), tail(), etc. |
 | 6 | 18 | String functions | toString(), replace(), etc. |
 | 5 | 33 | MERGE | |
 
 ### Recommended next phase
 
-**Quantifier functions** (33 sole-blocker, 53 impact): Adding `all()`, `any()`, `none()`, `single()` as list predicate functions. Relatively self-contained — grammar rule, parser, eval.
+**Write-clause RETURN side effects** (141 sole-blocker, 298 impact): The single largest blocker. CREATE/MERGE/SET/DELETE with RETURN need side-effect delta tracking.
 
-**Aggregation functions** (6 sole-blocker, 34 impact): Extending beyond `count()` to `sum`, `avg`, `min`, `max`, `collect`.
+**Aggregation functions** (6 sole-blocker, 34 impact): UNWIND + aggregation pipeline, GROUP BY with count/sum/avg/min/max/collect.
 
-**REMOVE statement** (33 scenarios): Grammar + AST + parser + planner + executor for property/label removal.
+**REMOVE side-effect persistence** (13 remaining): OPTIONAL MATCH + REMOVE, WITH/aggregation after REMOVE.
 
 ## Critical files
 - `tests/tck_support/world.rs` — harness counts

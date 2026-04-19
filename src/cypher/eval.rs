@@ -53,17 +53,60 @@ pub fn eval_expr(expr: &Expr, record: &Record, conn: &Connection) -> crate::type
             Ok(Value::List(values?))
         }
         Expr::Index { expr, index } => {
+            // If the base is a variable, first try to build a compound binding
+            // for dynamic property access (n['name']).
+            if let Expr::Variable(var) = expr.as_ref() {
+                let idx_val = eval_expr(index, record, conn)?;
+                if let Value::String(key) = &idx_val {
+                    // Dynamic property access on a node/edge variable.
+                    let prop_key = format!("{var}.{key}");
+                    if let Some(val) = record.get(&prop_key) {
+                        return Ok(val.clone());
+                    }
+                    // Check if var is null.
+                    if record.get(var) == Some(&Value::Null) {
+                        return Ok(Value::Null);
+                    }
+                    // Try map access.
+                    if let Some(Value::Map(map)) = record.get(var) {
+                        return Ok(map.get(key).cloned().unwrap_or(Value::Null));
+                    }
+                    // Fallback: look up from database if var has __id metadata.
+                    let id_key = format!("{var}.__id");
+                    if let Some(Value::I64(id)) = record.get(&id_key) {
+                        if let Ok(node) =
+                            crate::node::get_node(conn, crate::types::NodeId(*id as u64))
+                        {
+                            return Ok(node
+                                .properties
+                                .get(key.as_str())
+                                .cloned()
+                                .unwrap_or(Value::Null));
+                        }
+                    }
+                }
+            }
             let base = eval_expr(expr, record, conn)?;
             let idx = eval_expr(index, record, conn)?;
-            match (base, idx) {
+            match (&base, &idx) {
                 (Value::List(items), Value::I64(i)) => {
                     let len = items.len() as i64;
-                    let resolved = if i < 0 { len + i } else { i };
+                    let resolved = if *i < 0 { len + *i } else { *i };
                     if resolved >= 0 && (resolved as usize) < items.len() {
-                        Ok(items.into_iter().nth(resolved as usize).unwrap())
+                        Ok(items[resolved as usize].clone())
                     } else {
                         Ok(Value::Null)
                     }
+                }
+                // Dynamic property access on node/edge/map values.
+                (Value::Node(n), Value::String(key)) => {
+                    Ok(n.properties.get(key).cloned().unwrap_or(Value::Null))
+                }
+                (Value::Edge(e), Value::String(key)) => {
+                    Ok(e.properties.get(key).cloned().unwrap_or(Value::Null))
+                }
+                (Value::Map(m), Value::String(key)) => {
+                    Ok(m.get(key).cloned().unwrap_or(Value::Null))
                 }
                 (Value::Null, _) | (_, Value::Null) => Ok(Value::Null),
                 _ => Ok(Value::Null),
@@ -224,6 +267,37 @@ fn eval_single_arg(
         .map(|v| v.unwrap_or(Value::Null))
 }
 
+/// Build a TypeError for invalid argument types passed to type conversion functions.
+fn invalid_argument_type(func_name: &str, value: &Value) -> GraphError {
+    let type_name = match value {
+        Value::Null => "Null",
+        Value::Bool(_) => "Boolean",
+        Value::I64(_) => "Integer",
+        Value::F64(_) => "Float",
+        Value::String(_) => "String",
+        Value::List(_) => "List",
+        Value::Map(_) => "Map",
+        Value::Node(_) => "Node",
+        Value::Edge(_) => "Relationship",
+        Value::Path(_) => "Path",
+        _ => "Unknown",
+    };
+    GraphError::Query(QueryError::TypeError {
+        phase: QueryPhase::Runtime,
+        message: format!("{func_name}: invalid argument type {type_name}"),
+    })
+}
+
+/// Format a float for toString() output. Uses decimal notation without
+/// trailing zeros, but always keeps at least one decimal digit (e.g. "3.0").
+fn format_float(f: f64) -> String {
+    if f.fract() == 0.0 && f.is_finite() {
+        format!("{f:.1}")
+    } else {
+        format!("{f}")
+    }
+}
+
 /// Evaluate a function call.
 ///
 /// Aggregate functions (count, sum, avg, etc.) are handled by the Aggregate
@@ -234,7 +308,8 @@ fn eval_function_call(
     record: &Record,
     conn: &Connection,
 ) -> crate::types::Result<Value> {
-    match name {
+    let name_lower = name.to_ascii_lowercase();
+    match name_lower.as_str() {
         "length" => {
             let arg = args
                 .first()
@@ -281,38 +356,115 @@ fn eval_function_call(
             match arg {
                 Value::Null => Ok(Value::Null),
                 Value::String(s) => Ok(Value::String(s)),
-                other => Ok(Value::String(other.to_string())),
+                Value::I64(n) => Ok(Value::String(n.to_string())),
+                Value::F64(f) => Ok(Value::String(format_float(f))),
+                Value::Bool(b) => Ok(Value::String(b.to_string())),
+                other => Err(invalid_argument_type("toString()", &other)),
+            }
+        }
+        "toboolean" => {
+            let arg = eval_single_arg(args, record, conn)?;
+            match arg {
+                Value::Null => Ok(Value::Null),
+                Value::Bool(_) => Ok(arg),
+                Value::String(s) => match s.to_lowercase().as_str() {
+                    "true" => Ok(Value::Bool(true)),
+                    "false" => Ok(Value::Bool(false)),
+                    _ => Ok(Value::Null),
+                },
+                other => Err(invalid_argument_type("toBoolean()", &other)),
             }
         }
         "tointeger" => {
             let arg = eval_single_arg(args, record, conn)?;
             match arg {
+                Value::Null => Ok(Value::Null),
                 Value::I64(_) => Ok(arg),
                 Value::F64(f) => Ok(Value::I64(f as i64)),
-                Value::String(s) => Ok(s.parse::<i64>().map(Value::I64).unwrap_or(Value::Null)),
+                Value::String(s) => {
+                    // Try integer first, then float (truncated).
+                    if let Ok(n) = s.parse::<i64>() {
+                        Ok(Value::I64(n))
+                    } else if let Ok(f) = s.parse::<f64>() {
+                        Ok(Value::I64(f as i64))
+                    } else {
+                        Ok(Value::Null)
+                    }
+                }
                 Value::Bool(b) => Ok(Value::I64(if b { 1 } else { 0 })),
-                _ => Ok(Value::Null),
+                other => Err(invalid_argument_type("toInteger()", &other)),
             }
         }
         "tofloat" => {
             let arg = eval_single_arg(args, record, conn)?;
             match arg {
+                Value::Null => Ok(Value::Null),
                 Value::F64(_) => Ok(arg),
                 Value::I64(n) => Ok(Value::F64(n as f64)),
                 Value::String(s) => Ok(s.parse::<f64>().map(Value::F64).unwrap_or(Value::Null)),
-                _ => Ok(Value::Null),
+                other => Err(invalid_argument_type("toFloat()", &other)),
             }
         }
         "keys" => {
+            // keys(n) — return property keys for a node, edge, or map.
+            // For variable-based lookup, prefer the database (source of truth
+            // after mutations like REMOVE).
+            if let Some(Expr::Variable(var)) = args.first() {
+                let id_key = format!("{var}.__id");
+                if let Some(Value::I64(id)) = record.get(&id_key) {
+                    if let Ok(node) = crate::node::get_node(conn, crate::types::NodeId(*id as u64))
+                    {
+                        let mut keys: Vec<String> = node.properties.keys().cloned().collect();
+                        keys.sort();
+                        return Ok(Value::List(keys.into_iter().map(Value::String).collect()));
+                    }
+                }
+                // Try edge binding.
+                let type_key = format!("{var}.__type");
+                let src_key = format!("{var}.__src");
+                if record.get(&type_key).is_some() && record.get(&src_key).is_some() {
+                    if let Some(compound) =
+                        crate::cypher::executor::build_compound_binding(record, var)
+                    {
+                        if let Value::Edge(e) = compound {
+                            let mut keys: Vec<String> = e.properties.keys().cloned().collect();
+                            keys.sort();
+                            return Ok(Value::List(keys.into_iter().map(Value::String).collect()));
+                        }
+                    }
+                }
+                // Map binding.
+                if let Some(Value::Map(m)) = record.get(var) {
+                    let mut keys: Vec<String> = m.keys().cloned().collect();
+                    keys.sort();
+                    return Ok(Value::List(keys.into_iter().map(Value::String).collect()));
+                }
+            }
             let arg = eval_single_arg(args, record, conn)?;
             match arg {
+                Value::Node(n) => {
+                    let mut keys: Vec<String> = n.properties.keys().cloned().collect();
+                    keys.sort();
+                    Ok(Value::List(keys.into_iter().map(Value::String).collect()))
+                }
+                Value::Edge(e) => {
+                    let mut keys: Vec<String> = e.properties.keys().cloned().collect();
+                    keys.sort();
+                    Ok(Value::List(keys.into_iter().map(Value::String).collect()))
+                }
+                Value::Map(m) => {
+                    let mut keys: Vec<String> = m.keys().cloned().collect();
+                    keys.sort();
+                    Ok(Value::List(keys.into_iter().map(Value::String).collect()))
+                }
                 Value::I64(id) => {
-                    // keys(node_id) — return property keys for the node.
+                    // Legacy: keys(node_id) — look up from database.
                     let node = crate::node::get_node(conn, crate::types::NodeId(id as u64))?;
                     let mut keys: Vec<String> = node.properties.keys().cloned().collect();
                     keys.sort();
                     Ok(Value::List(keys.into_iter().map(Value::String).collect()))
                 }
+                Value::Null => Ok(Value::Null),
                 _ => Ok(Value::Null),
             }
         }
@@ -334,35 +486,109 @@ fn eval_function_call(
                     }
                 }
             }
-            // Also handle labels(id_value) where the arg evaluates to an integer.
+            // Handle compound Value::Node.
             let arg = eval_single_arg(args, record, conn)?;
             match arg {
-                Value::I64(id) => {
-                    if let Ok(node) = crate::node::get_node(conn, crate::types::NodeId(id as u64)) {
-                        Ok(Value::List(
-                            node.labels.into_iter().map(Value::String).collect(),
-                        ))
-                    } else {
-                        Ok(Value::Null)
-                    }
-                }
+                Value::Node(n) => Ok(Value::List(
+                    n.labels.into_iter().map(Value::String).collect(),
+                )),
                 Value::Null => Ok(Value::Null),
-                _ => Ok(Value::Null),
+                other => Err(invalid_argument_type("labels()", &other)),
             }
         }
         "id" => {
-            // id(n) — extract the __id field from the record binding.
+            // id(n) — extract the node/edge ID.
+            if let Some(Expr::Variable(var)) = args.first() {
+                let id_key = format!("{var}.__id");
+                if let Some(val @ Value::I64(_)) = record.get(&id_key) {
+                    return Ok(val.clone());
+                }
+            }
             let arg = eval_single_arg(args, record, conn)?;
             match arg {
                 Value::I64(_) => Ok(arg),
+                Value::Node(n) => Ok(Value::I64(n.id.0 as i64)),
+                Value::Null => Ok(Value::Null),
                 _ => Ok(Value::Null),
             }
         }
         "type" => {
             // type(r) — extract the relationship type from a binding.
+            if let Some(Expr::Variable(var)) = args.first() {
+                let type_key = format!("{var}.__type");
+                if let Some(Value::String(s)) = record.get(&type_key) {
+                    return Ok(Value::String(s.clone()));
+                }
+                // If the variable itself is bound to Null (e.g. OPTIONAL MATCH with no match)
+                if record.get(var) == Some(&Value::Null) {
+                    return Ok(Value::Null);
+                }
+                // Fallback: if the variable is bound to a relationship type string
+                // (legacy flat-record shape where var = type_name).
+                if let Some(Value::String(s)) = record.get(var) {
+                    if record.get(&format!("{var}.__src")).is_some() {
+                        return Ok(Value::String(s.clone()));
+                    }
+                }
+            }
             let arg = eval_single_arg(args, record, conn)?;
             match arg {
+                Value::Edge(e) => Ok(Value::String(e.label)),
+                // A relationship variable in flat records is stored as String(type_name).
                 Value::String(_) => Ok(arg),
+                Value::Null => Ok(Value::Null),
+                other => Err(invalid_argument_type("type()", &other)),
+            }
+        }
+        "properties" => {
+            // properties(n) — return a map of all properties on a node/edge/map.
+            if let Some(Expr::Variable(var)) = args.first() {
+                if let Some(compound) = crate::cypher::executor::build_compound_binding(record, var)
+                {
+                    return match compound {
+                        Value::Node(n) => {
+                            let map = n.properties.into_iter().collect();
+                            Ok(Value::Map(map))
+                        }
+                        Value::Edge(e) => {
+                            let map = e.properties.into_iter().collect();
+                            Ok(Value::Map(map))
+                        }
+                        _ => Ok(Value::Null),
+                    };
+                }
+                // If variable is null (OPTIONAL MATCH with no match), return null.
+                if record.get(var) == Some(&Value::Null) {
+                    return Ok(Value::Null);
+                }
+            }
+            let arg = eval_single_arg(args, record, conn)?;
+            match arg {
+                Value::Node(n) => {
+                    let map = n.properties.into_iter().collect();
+                    Ok(Value::Map(map))
+                }
+                Value::Edge(e) => {
+                    let map = e.properties.into_iter().collect();
+                    Ok(Value::Map(map))
+                }
+                Value::Map(_) => Ok(arg),
+                Value::Null => Ok(Value::Null),
+                _ => Ok(Value::Null),
+            }
+        }
+        "relationships" => {
+            // relationships(p) — return list of edges in a path.
+            let arg = args
+                .first()
+                .map(|a| eval_expr(a, record, conn))
+                .transpose()?;
+            match arg {
+                Some(Value::Path(p)) => {
+                    let list = p.edges.into_iter().map(Value::Edge).collect();
+                    Ok(Value::List(list))
+                }
+                Some(Value::Null) | None => Ok(Value::Null),
                 _ => Ok(Value::Null),
             }
         }

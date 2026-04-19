@@ -223,6 +223,8 @@ pub struct AggregateExpr {
     pub distinct: bool,
     /// Second argument for percentile functions (the percentile value).
     pub extra_arg: Option<Expr>,
+    /// Original function name as written in the query (preserves case).
+    pub original_name: String,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

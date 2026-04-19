@@ -92,6 +92,7 @@ fn parse_single_stmt(pair: pest::iterators::Pair<Rule>) -> crate::types::Result<
         Rule::remove_stmt => parse_remove(pair).map(Statement::Remove),
         Rule::merge_stmt => parse_merge(pair).map(Statement::Merge),
         Rule::unwind_stmt => parse_unwind(pair).map(Statement::Unwind),
+        Rule::with_stmt => parse_with_stmt(pair).map(Statement::Match),
         Rule::return_stmt => parse_return_stmt(pair).map(Statement::Return),
         _ => Err(GraphError::Serialization(format!(
             "unexpected rule: {:?}",
@@ -207,6 +208,54 @@ fn parse_match(pair: pest::iterators::Pair<Rule>) -> crate::types::Result<MatchS
         patterns,
         optional_patterns,
         where_clause,
+        intermediate_clauses,
+        return_clause: return_clause
+            .ok_or_else(|| GraphError::Serialization("missing RETURN clause".to_string()))?,
+        order_by,
+        skip,
+        limit,
+    })
+}
+
+/// Parse a standalone `WITH ... RETURN` statement.
+///
+/// Produces a MatchStatement with empty patterns — the leading WITH clause
+/// is the first intermediate clause.
+fn parse_with_stmt(pair: pest::iterators::Pair<Rule>) -> crate::types::Result<MatchStatement> {
+    let mut intermediate_clauses = Vec::new();
+    let mut return_clause = None;
+    let mut order_by = Vec::new();
+    let mut skip = None;
+    let mut limit = None;
+
+    for inner in pair.into_inner() {
+        match inner.as_rule() {
+            Rule::with_clause => {
+                intermediate_clauses.push(IntermediateClause::With(parse_with(inner)?))
+            }
+            Rule::match_part => {
+                let (mp_patterns, mp_optional, mp_where) = parse_match_part(inner)?;
+                intermediate_clauses.push(IntermediateClause::Match(IntermediateMatch {
+                    patterns: mp_patterns,
+                    optional_patterns: mp_optional,
+                    where_clause: mp_where,
+                }));
+            }
+            Rule::unwind_clause => {
+                intermediate_clauses.push(IntermediateClause::Unwind(parse_unwind_clause(inner)?))
+            }
+            Rule::return_clause => return_clause = Some(parse_return(inner)?),
+            Rule::order_by_clause => order_by = parse_order_by(inner)?,
+            Rule::skip_clause => skip = Some(parse_skip(inner)?),
+            Rule::limit_clause => limit = Some(parse_limit(inner)?),
+            _ => {}
+        }
+    }
+
+    Ok(MatchStatement {
+        patterns: Vec::new(),
+        optional_patterns: Vec::new(),
+        where_clause: None,
         intermediate_clauses,
         return_clause: return_clause
             .ok_or_else(|| GraphError::Serialization("missing RETURN clause".to_string()))?,
@@ -1899,7 +1948,7 @@ fn parse_function_call(pair: pest::iterators::Pair<Rule>) -> crate::types::Resul
 
     for inner in pair.into_inner() {
         match inner.as_rule() {
-            Rule::function_name => name = inner.as_str().to_lowercase(),
+            Rule::function_name => name = inner.as_str().to_string(),
             Rule::function_args => {
                 for arg in inner.into_inner() {
                     match arg.as_rule() {

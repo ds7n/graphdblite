@@ -2833,8 +2833,13 @@ fn agg_fn_name(f: AggregateFunction) -> &'static str {
 /// `expr_to_column_name` produces for the original `FunctionCall` expression.
 fn agg_col_name(agg: &AggregateExpr) -> String {
     agg.alias.clone().unwrap_or_else(|| {
+        let name = if agg.original_name.is_empty() {
+            agg_fn_name(agg.function).to_string()
+        } else {
+            agg.original_name.clone()
+        };
         let expr = crate::cypher::ast::Expr::FunctionCall {
-            name: agg_fn_name(agg.function).to_string(),
+            name,
             args: vec![agg.input.clone()],
             distinct: agg.distinct,
         };

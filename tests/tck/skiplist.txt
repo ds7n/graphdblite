@@ -74,33 +74,31 @@ ExistentialSubquery2 - Full existential subquery::[2] Full existential subquery 
 ExistentialSubquery3 - Nested existential subquery::[1] Nested simple existential subquery
 ExistentialSubquery3 - Nested existential subquery::[2] Nested full existential subquery
 ExistentialSubquery3 - Nested existential subquery::[3] Nested full existential subquery with pattern predicate
-Graph3 - Node labels::[1] Creating node without label
-Graph3 - Node labels::[4] Create node with label in pattern
+# BLOCKER: compile-time type checking not implemented (TypeError at runtime vs SyntaxError expected)
 Graph3 - Node labels::[8] `labels()` failing on a path
-Graph3 - Node labels::[9] `labels()` failing on invalid arguments
-Graph4 - Edge relationship type::[1] `type()`
-Graph4 - Edge relationship type::[2] `type()` on two relationships
-Graph4 - Edge relationship type::[4] `type()` on mixed null and non-null relationships
-Graph4 - Edge relationship type::[5] `type()` handling Any type
+# BLOCKER: type() accepts String values from flat record bindings; cannot distinguish '' from rel type
 Graph4 - Edge relationship type::[6] `type()` failing on invalid arguments
+# BLOCKER: compile-time type checking for type() on node variables
 Graph4 - Edge relationship type::[7] Failing when using `type()` on a node
-Graph5 - Node and edge label expressions::[1] Single-labels expression on nodes
+# BLOCKER: label expression on relationships (r:T2 syntax not supported)
 Graph5 - Node and edge label expressions::[2] Single-labels expression on relationships
-Graph5 - Node and edge label expressions::[3] Conjunctive labels expression on nodes
-Graph5 - Node and edge label expressions::[4] Conjunctive labels expression on nodes with varying order and repeating labels
-Graph5 - Node and edge label expressions::[5] Label expression on null
+# BLOCKER: (expr).property grammar not supported
 Graph6 - Static property access::[4] Statically access a property of a node resulting from an expression
 Graph6 - Static property access::[8] Statically access a property of a relationship resulting from an expression
+# BLOCKER: compile-time type checking for property access on non-graph elements
 Graph6 - Static property access::[9] Fail when performing property access on a non-graph element
-Graph7 - Dynamic property access::[1] Execute n['name'] in read queries
-Graph7 - Dynamic property access::[2] Execute n['name'] in update queries
-Graph7 - Dynamic property access::[3] Use dynamic property lookup based on parameters when there is lhs type information
-Graph8 - Property keys function::[5] Using `keys()` on a relationship, non-empty result
-Graph8 - Property keys function::[8] Using `keys()` and `IN` to check property existence
-Graph9 - Retrieve all properties as a property map::[1] `properties()` on a node
-Graph9 - Retrieve all properties as a property map::[2] `properties()` on a relationship
-Graph9 - Retrieve all properties as a property map::[3] `properties()` on null
-Graph9 - Retrieve all properties as a property map::[4] `properties()` on a map
+# BLOCKER: compile-time type checking for properties() on invalid literal types
+Graph9 - Retrieve all properties as a property map::[5] `properties()` failing on an integer literal
+Graph9 - Retrieve all properties as a property map::[6] `properties()` failing on a string literal
+Graph9 - Retrieve all properties as a property map::[7] `properties()` failing on a list of booleans
+# BLOCKER: flat record architecture cannot distinguish node/relationship from I64/String in list comprehensions
+TypeConversion1 - To Boolean::[5] Fail `toBoolean()` on invalid types #Example: relationship
+TypeConversion2 - To Integer::[8] Fail `toInteger()` on invalid types #Example: node
+TypeConversion2 - To Integer::[8] Fail `toInteger()` on invalid types #Example: relationship
+TypeConversion3 - To Float::[6] Fail `toFloat()` on invalid types #Example: node
+TypeConversion3 - To Float::[6] Fail `toFloat()` on invalid types #Example: relationship
+TypeConversion4 - To String::[10] Fail `toString()` on invalid types #Example: node
+TypeConversion4 - To String::[10] Fail `toString()` on invalid types #Example: relationship
 List1 - Dynamic Element Access::[3] Use list lookup based on parameters when there is no type information
 List1 - Dynamic Element Access::[4] Use list lookup based on parameters when there is lhs type information
 List1 - Dynamic Element Access::[5] Use list lookup based on parameters when there is rhs type information
@@ -625,44 +623,6 @@ TriadicSelection1 - Query three related nodes on binary-tree graphs::[6] Handlin
 TriadicSelection1 - Query three related nodes on binary-tree graphs::[7] Handling triadic friend of a friend that is not a friend with same labels
 TriadicSelection1 - Query three related nodes on binary-tree graphs::[8] Handling triadic friend of a friend that is not a friend with different labels
 TriadicSelection1 - Query three related nodes on binary-tree graphs::[9] Handling triadic friend of a friend that is not a friend with implicit subset of labels
-TypeConversion1 - To Boolean::[1] `toBoolean()` on booleans
-TypeConversion1 - To Boolean::[2] `toBoolean()` on valid literal string
-TypeConversion1 - To Boolean::[3] `toBoolean()` on variables with valid string values
-TypeConversion1 - To Boolean::[4] `toBoolean()` on invalid strings
-TypeConversion1 - To Boolean::[5] Fail `toBoolean()` on invalid types #Example: float
-TypeConversion1 - To Boolean::[5] Fail `toBoolean()` on invalid types #Example: list
-TypeConversion1 - To Boolean::[5] Fail `toBoolean()` on invalid types #Example: map
-TypeConversion1 - To Boolean::[5] Fail `toBoolean()` on invalid types #Example: node
-TypeConversion1 - To Boolean::[5] Fail `toBoolean()` on invalid types #Example: path
-TypeConversion1 - To Boolean::[5] Fail `toBoolean()` on invalid types #Example: relationship
-TypeConversion2 - To Integer::[1] `toInteger()` on float
-TypeConversion2 - To Integer::[2] `toInteger()` returning null on non-numerical string
-TypeConversion2 - To Integer::[3] `toInteger()` handling mixed number types
-TypeConversion2 - To Integer::[4] `toInteger()` handling Any type
-TypeConversion2 - To Integer::[5] `toInteger()` on a list of strings
-TypeConversion2 - To Integer::[8] Fail `toInteger()` on invalid types #Example: list
-TypeConversion2 - To Integer::[8] Fail `toInteger()` on invalid types #Example: map
-TypeConversion2 - To Integer::[8] Fail `toInteger()` on invalid types #Example: node
-TypeConversion2 - To Integer::[8] Fail `toInteger()` on invalid types #Example: path
-TypeConversion2 - To Integer::[8] Fail `toInteger()` on invalid types #Example: relationship
-TypeConversion3 - To Float::[1] `toFloat()` on mixed number types
-TypeConversion3 - To Float::[2] `toFloat()` returning null on non-numerical string
-TypeConversion3 - To Float::[3] `toFloat()` handling Any type
-TypeConversion3 - To Float::[4] `toFloat()` on a list of strings
-TypeConversion3 - To Float::[6] Fail `toFloat()` on invalid types #Example: boolean
-TypeConversion3 - To Float::[6] Fail `toFloat()` on invalid types #Example: list
-TypeConversion3 - To Float::[6] Fail `toFloat()` on invalid types #Example: map
-TypeConversion3 - To Float::[6] Fail `toFloat()` on invalid types #Example: node
-TypeConversion3 - To Float::[6] Fail `toFloat()` on invalid types #Example: path
-TypeConversion3 - To Float::[6] Fail `toFloat()` on invalid types #Example: relationship
-TypeConversion4 - To String::[10] Fail `toString()` on invalid types #Example: list
-TypeConversion4 - To String::[10] Fail `toString()` on invalid types #Example: map
-TypeConversion4 - To String::[10] Fail `toString()` on invalid types #Example: node
-TypeConversion4 - To String::[10] Fail `toString()` on invalid types #Example: path
-TypeConversion4 - To String::[10] Fail `toString()` on invalid types #Example: relationship
-TypeConversion4 - To String::[4] `toString()` handling boolean properties
-TypeConversion4 - To String::[6] `toString()` on a list of integers
-TypeConversion4 - To String::[7] `toString()` on node property
 Union1 - Union::[5] Failing when UNION has different columns
 Union2 - Union All::[5] Failing when UNION ALL has different columns
 Union3 - Union in combination with Union All::[1] Failing when mixing UNION and UNION ALL
@@ -679,6 +639,8 @@ Unwind1::[7] Double unwinding a list of lists
 With2 - Forward single expression::[1] Forwarding a property to express a join
 With2 - Forward single expression::[2] Forwarding a nested map literal
 With4 - Variable aliasing::[2] Aliasing expression to new variable name
+# BLOCKER: ColumnNameConflict validation not implemented for WITH
+With4 - Variable aliasing::[4] Fail when forwarding multiple aliases with the same name
 With4 - Variable aliasing::[5] Fail when not aliasing expressions in WITH
 With4 - Variable aliasing::[6] Reusing variable names in WITH
 With4 - Variable aliasing::[7] Multiple aliasing and backreferencing
@@ -755,6 +717,10 @@ WithOrderBy3 - Order by multiple expressions::[2] Sort by two expressions, first
 WithOrderBy3 - Order by multiple expressions::[3] Sort by two expressions, first in descending order, second in ascending order
 WithOrderBy3 - Order by multiple expressions::[4] Sort by two expressions, both in descending order
 WithOrderBy3 - Order by multiple expressions::[6] An constant expression does not influence the order determined by other expression before and after the constant expression
+# BLOCKER: UndefinedVariable validation not implemented for WITH...ORDER BY
+WithOrderBy3 - Order by multiple expressions::[8] Fail on sorting by any number of undefined variables in any position #Example: out of scope
+WithOrderBy3 - Order by multiple expressions::[8] Fail on sorting by any number of undefined variables in any position #Example: never defined
+WithOrderBy3 - Order by multiple expressions::[8] Fail on sorting by any number of undefined variables in any position #Example: mixed
 WithOrderBy4 - Order by in combination with projection and aliasing::[10] Sort by a non-projected expression containing an alias of a projected expression containing the variable shadowed by the alias
 WithOrderBy4 - Order by in combination with projection and aliasing::[11] Sort by an aggregate projection
 WithOrderBy4 - Order by in combination with projection and aliasing::[12] Sort by an aliased aggregate projection

@@ -3,56 +3,20 @@ Aggregation2 - Min and Max::[12] `min()` over mixed values
 Aggregation2 - Min and Max::[9] `max()` over list values
 Aggregation3 - Sum::[2] No overflow during summation
 Aggregation6 - Percentiles::[5] `percentileDisc()` failing in more involved query
-Boolean1 - And logical operations::[4] Conjunction is commutative on non-null
-Boolean1 - And logical operations::[5] Conjunction is commutative on null
-Boolean1 - And logical operations::[6] Conjunction is associative on non-null
-Boolean1 - And logical operations::[7] Conjunction is associative on null
-Boolean1 - And logical operations::[8] Fail on conjunction of at least one non-booleans
-Boolean2 - OR logical operations::[4] Disjunction is commutative on non-null
-Boolean2 - OR logical operations::[5] Disjunction is commutative on null
-Boolean2 - OR logical operations::[6] Disjunction is associative on non-null
-Boolean2 - OR logical operations::[7] Disjunction is associative on null
-Boolean2 - OR logical operations::[8] Fail on disjunction of at least one non-booleans
-Boolean3 - XOR logical operations::[4] Exclusive disjunction is commutative on non-null
-Boolean3 - XOR logical operations::[5] Exclusive disjunction is commutative on null
-Boolean3 - XOR logical operations::[6] Exclusive disjunction is associative on non-null
-Boolean3 - XOR logical operations::[7] Exclusive disjunction is associative on null
-Boolean3 - XOR logical operations::[8] Fail on exclusive disjunction of at least one non-booleans
-Boolean4 - NOT logical operations::[2] Double logical negation of truth values
-Boolean4 - NOT logical operations::[4] Fail when using NOT on a non-boolean literal
-Boolean5 - Interop of logical operations::[1] Disjunction is distributive over conjunction on non-null
-Boolean5 - Interop of logical operations::[2] Disjunction is distributive over conjunction on null
-Boolean5 - Interop of logical operations::[3] Conjunction is distributive over disjunction on non-null
-Boolean5 - Interop of logical operations::[4] Conjunction is distributive over disjunction on null
-Boolean5 - Interop of logical operations::[5] Conjunction is distributive over exclusive disjunction on non-null
-Boolean5 - Interop of logical operations::[6] Conjunction is not distributive over exclusive disjunction on null
-Boolean5 - Interop of logical operations::[7] De Morgan's law on non-null: the negation of a disjunction is the conjunction of the negations
-Boolean5 - Interop of logical operations::[8] De Morgan's law on non-null: the negation of a conjunction is the disjunction of the negations
-Call1 - Basic procedure calling::[13] Standalone call to unknown procedure should fail
-Call1 - Basic procedure calling::[14] In-query call to unknown procedure should fail
-Comparison1 - Equality::[14] Direction of traversed relationship is not significant for path equality, simple
-Comparison1 - Equality::[17] Failing when comparing to an undefined variable
+# BLOCKER: WITH collect(...) parsing not supported for standalone WITH...RETURN
 Comparison1 - Equality::[1] Number-typed integer comparison
 Comparison1 - Equality::[2] Number-typed float comparison
 Comparison1 - Equality::[3] Any-typed string comparison
-Comparison1 - Equality::[4] Comparing nodes to nodes
+# BLOCKER: relationship variable binding across WITH...MATCH clauses
 Comparison1 - Equality::[5] Comparing relationships to relationships
-Comparison1 - Equality::[6] Comparing lists to lists
-Comparison1 - Equality::[7] Comparing maps to maps
-Comparison1 - Equality::[8] Equality and inequality of NaN
+# BLOCKER: path equality with self-loop and named path patterns
+Comparison1 - Equality::[14] Direction of traversed relationship is not significant for path equality, simple
+# BLOCKER: UndefinedVariable semantic validation not implemented
+Comparison1 - Equality::[17] Failing when comparing to an undefined variable
+# BLOCKER: complex multi-clause query with path patterns, range(), size(), subscript
 Comparison2 - Half-bounded Range::[3] Comparing across types yields null, except numbers
-Comparison2 - Half-bounded Range::[4] Comparing lists
-Comparison2 - Half-bounded Range::[5] Comparing NaN
-Comparison3 - Full-Bound Range::[1] Handling numerical ranges 1
-Comparison3 - Full-Bound Range::[2] Handling numerical ranges 2
-Comparison3 - Full-Bound Range::[3] Handling numerical ranges 3
-Comparison3 - Full-Bound Range::[4] Handling numerical ranges 4
-Comparison3 - Full-Bound Range::[5] Handling string ranges 1
-Comparison3 - Full-Bound Range::[6] Handling string ranges 2
-Comparison3 - Full-Bound Range::[7] Handling string ranges 3
-Comparison3 - Full-Bound Range::[8] Handling string ranges 4
-Comparison3 - Full-Bound Range::[9] Handling empty range
-Comparison4 - Combination of Comparisons::[1] Handling long chains of operators
+Call1 - Basic procedure calling::[13] Standalone call to unknown procedure should fail
+Call1 - Basic procedure calling::[14] In-query call to unknown procedure should fail
 Conditional1 - Coalesce expression::[1] Run coalesce
 Conditional2 - Case Expression::[1] Simple cases over integers
 CountingSubgraphMatches1 - Matching subgraph patterns and count the number of matches::[10] Mixing directed and undirected pattern parts with self-relationship, count
@@ -410,43 +374,6 @@ Pattern2 - Pattern Comprehension::[6] Aggregate on a pattern comprehension
 Pattern2 - Pattern Comprehension::[7] Use a pattern comprehension inside a list comprehension
 Pattern2 - Pattern Comprehension::[8] Use a pattern comprehension in WITH
 Pattern2 - Pattern Comprehension::[9] Use a variable-length pattern comprehension in WITH
-Precedence1 - On boolean values::[10] Null predicate takes precedence over boolean operator
-Precedence1 - On boolean values::[11] List predicate takes precedence over comparison operator
-Precedence1 - On boolean values::[12] List predicate takes precedence over negation
-Precedence1 - On boolean values::[13] List predicate takes precedence over boolean operator
-Precedence1 - On boolean values::[14] Exclusive disjunction takes precedence over inclusive disjunction in every combination of truth values
-Precedence1 - On boolean values::[15] Conjunction takes precedence over exclusive disjunction in every combination of truth values
-Precedence1 - On boolean values::[16] Conjunction takes precedence over inclusive disjunction in every combination of truth values
-Precedence1 - On boolean values::[17] Negation takes precedence over conjunction in every combination of truth values
-Precedence1 - On boolean values::[18] Negation takes precedence over inclusive disjunction in every combination of truth values
-Precedence1 - On boolean values::[19] Comparison operators takes precedence over boolean negation in every combination of truth values
-Precedence1 - On boolean values::[20] Pairs of comparison operators and boolean negation that are associative in every combination of truth values
-Precedence1 - On boolean values::[21] Comparison operators take precedence over binary boolean operators in every combination of truth values
-Precedence1 - On boolean values::[22] Pairs of comparison operators and binary boolean operators that are associative in every combination of truth values
-Precedence1 - On boolean values::[23] Null predicates take precedence over comparison operators in every combination of truth values
-Precedence1 - On boolean values::[24] Null predicates take precedence over boolean negation on every truth values
-Precedence1 - On boolean values::[25] Null predicates take precedence over binary boolean operators in every combination of truth values
-Precedence1 - On boolean values::[26] List predicate takes precedence over comparison operators in every combination of truth values
-Precedence1 - On boolean values::[27] List predicate takes precedence over negation in every combination of truth values
-Precedence1 - On boolean values::[28] List predicate takes precedence over binary boolean operators in every combination of truth values
-Precedence1 - On boolean values::[6] Comparison operator takes precedence over boolean negation
-Precedence1 - On boolean values::[7] Comparison operator takes precedence over binary boolean operator
-Precedence1 - On boolean values::[8] Null predicate takes precedence over comparison operator
-Precedence1 - On boolean values::[9] Null predicate takes precedence over negation
-Precedence2 - On numeric values::[2] Exponentiation takes precedence over numeric multiplicative operations
-Precedence2 - On numeric values::[3] Exponentiation takes precedence over numeric additive operations
-Precedence2 - On numeric values::[4] Numeric unary negative takes precedence over exponentiation
-Precedence2 - On numeric values::[5] Numeric unary negative takes precedence over numeric additive operations
-Precedence3 - On list values::[1] List element access takes precedence over list appending
-Precedence3 - On list values::[2] List element access takes precedence over list concatenation
-Precedence3 - On list values::[3] List slicing takes precedence over list concatenation
-Precedence3 - On list values::[4] List appending takes precedence over list element containment
-Precedence3 - On list values::[5] List concatenation takes precedence over list element containment
-Precedence3 - On list values::[6] List element containment takes precedence over comparison operator
-Precedence4 - On null value::[1] Null predicate takes precedence over comparison operator
-Precedence4 - On null value::[2] Null predicate takes precedence over boolean negation
-Precedence4 - On null value::[3] Null predicate takes precedence over binary boolean operator
-Precedence4 - On null value::[4] String predicate takes precedence over binary boolean operator
 Quantifier1 - None quantifier::[15] Fail none quantifier on type mismatch between list elements and predicate
 Quantifier1 - None quantifier::[7] None quantifier on list literal containing maps
 Quantifier1 - None quantifier::[8] None quantifier on list containing nodes

@@ -253,21 +253,28 @@ limit_clause = { ^"LIMIT" ~ integer }
 bool_expr = { expr }
 xor_term = { bool_term ~ (xor_op ~ bool_term)* }
 bool_term = { bool_factor ~ (and_op ~ bool_factor)* }
-bool_factor = { not_op? ~ bool_primary }
-bool_primary = { case_expr | exists_subquery | "(" ~ expr ~ ")" | cmp_or_value }
+bool_factor = { not_op* ~ bool_primary }
+bool_primary = { cmp_or_value }
 
-// Parse add_expr once, then optionally check for a comparison/IS NULL/IN suffix.
-// This avoids PEG exponential backtracking from re-parsing add_expr in each alternative.
-cmp_or_value = { add_expr ~ (is_not_null_suffix | is_null_suffix | in_suffix | comp_suffix)? }
+// Comparison: predicate_expr (comp_op predicate_expr)*
+// Supports chained comparisons like `1 < x < 3` → `1 < x AND x < 3`.
+// Predicates (IS NULL, IS NOT NULL, IN, string predicates) bind tighter than comparison.
+cmp_or_value = { predicate_expr ~ comp_suffix* }
+comp_suffix = { comp_op ~ predicate_expr }
+
+// Predicate expressions: cmp_primary with optional IS NULL / IS NOT NULL / IN / string predicate suffix.
+predicate_expr = { cmp_primary ~ (is_not_null_suffix | is_null_suffix | in_suffix | string_pred_suffix)? }
+cmp_primary = { case_expr | exists_subquery | add_expr | "(" ~ expr ~ ")" }
 is_not_null_suffix = { is_kw ~ not_kw ~ null_kw }
 is_null_suffix = { is_kw ~ null_kw }
 in_suffix = { in_kw ~ add_expr }
+string_pred_suffix = { string_pred_op ~ add_expr }
+string_pred_op = { starts_with_op | ends_with_op | contains_op }
 
 is_kw = @{ ^"IS" ~ !(ASCII_ALPHANUMERIC | "_") }
 in_kw = @{ ^"IN" ~ !(ASCII_ALPHANUMERIC | "_") }
 null_kw = @{ ^"NULL" ~ !(ASCII_ALPHANUMERIC | "_") }
 not_kw = @{ ^"NOT" ~ !(ASCII_ALPHANUMERIC | "_") }
-comp_suffix = { comp_op ~ add_expr }
 
 exists_subquery = { ^"EXISTS" ~ "{" ~ pattern_list ~ where_clause? ~ "}" }
 
@@ -285,7 +292,7 @@ xor_op = @{ ^"XOR" ~ !(ASCII_ALPHANUMERIC | "_") }
 and_op = @{ ^"AND" ~ !(ASCII_ALPHANUMERIC | "_") }
 not_op = @{ ^"NOT" ~ !(ASCII_ALPHANUMERIC | "_") }
 
-comp_op = { "<>" | "<=" | ">=" | "<" | ">" | "=" | starts_with_op | ends_with_op | contains_op }
+comp_op = { "<>" | "<=" | ">=" | "<" | ">" | "=" }
 starts_with_op = { ^"STARTS" ~ ^"WITH" }
 ends_with_op = { ^"ENDS" ~ ^"WITH" }
 contains_op = { ^"CONTAINS" }
@@ -293,11 +300,14 @@ contains_op = { ^"CONTAINS" }
 expr = { xor_term ~ (or_op ~ xor_term)* }
 in_expr = { add_expr ~ (^"IN" ~ add_expr)? }
 add_expr = { mul_expr ~ (add_op ~ mul_expr)* }
-mul_expr = { atom_expr ~ (mul_op ~ atom_expr)* }
+mul_expr = { exp_expr ~ (mul_op ~ exp_expr)* }
+exp_expr = { atom_expr ~ (exp_op ~ atom_expr)* }
+exp_op = { "^" }
 add_op = { "+" | "-" }
 mul_op = { "*" | "/" | "%" }
 atom_expr = { atom_primary ~ subscript* }
-atom_primary = _{ case_expr | quantifier_expr | dotted_function_call | function_call | property_access | has_label_expr | literal | list_comprehension | list_literal | map_literal | star | parameter | "(" ~ expr ~ ")" | variable }
+atom_primary = _{ case_expr | quantifier_expr | dotted_function_call | function_call | property_access | has_label_expr | literal | list_comprehension | list_literal | map_literal | star | parameter | unary_minus_expr | "(" ~ expr ~ ")" | variable }
+unary_minus_expr = { "-" ~ atom_expr }
 
 has_label_expr = { ident ~ label_spec }
 

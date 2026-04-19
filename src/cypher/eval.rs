@@ -2,7 +2,7 @@ use rusqlite::Connection;
 
 use crate::cypher::ast::{BinOp, Expr, LiteralValue, QuantifierKind};
 use crate::cypher::record::Record;
-use crate::types::Value;
+use crate::types::{GraphError, QueryError, QueryPhase, Value};
 
 /// Evaluate an expression against a record, producing a Value.
 ///
@@ -140,9 +140,9 @@ pub fn eval_expr(expr: &Expr, record: &Record, conn: &Connection) -> crate::type
         }
         Expr::Not(inner) => {
             let val = eval_expr(inner, record, conn)?;
-            match val {
-                Value::Bool(b) => Ok(Value::Bool(!b)),
-                _ => Ok(Value::Null),
+            match to_tribool(&val)? {
+                Some(b) => Ok(Value::Bool(!b)),
+                None => Ok(Value::Null),
             }
         }
         Expr::IsNull(inner) => {
@@ -786,7 +786,7 @@ fn eval_binop(left: &Value, op: BinOp, right: &Value) -> crate::types::Result<Va
     match op {
         // Three-valued AND: NULL AND false → false, NULL AND true → NULL
         BinOp::And => {
-            match (to_tribool(left), to_tribool(right)) {
+            match (to_tribool(left)?, to_tribool(right)?) {
                 (Some(false), _) | (_, Some(false)) => Ok(Value::Bool(false)),
                 (Some(true), Some(true)) => Ok(Value::Bool(true)),
                 _ => Ok(Value::Null), // at least one NULL, none false
@@ -794,14 +794,14 @@ fn eval_binop(left: &Value, op: BinOp, right: &Value) -> crate::types::Result<Va
         }
         // Three-valued XOR: NULL XOR anything → NULL
         BinOp::Xor => {
-            match (to_tribool(left), to_tribool(right)) {
+            match (to_tribool(left)?, to_tribool(right)?) {
                 (Some(a), Some(b)) => Ok(Value::Bool(a ^ b)),
                 _ => Ok(Value::Null), // at least one NULL
             }
         }
         // Three-valued OR: NULL OR true → true, NULL OR false → NULL
         BinOp::Or => {
-            match (to_tribool(left), to_tribool(right)) {
+            match (to_tribool(left)?, to_tribool(right)?) {
                 (Some(true), _) | (_, Some(true)) => Ok(Value::Bool(true)),
                 (Some(false), Some(false)) => Ok(Value::Bool(false)),
                 _ => Ok(Value::Null), // at least one NULL, none true
@@ -874,7 +874,25 @@ fn eval_binop(left: &Value, op: BinOp, right: &Value) -> crate::types::Result<Va
             if let Some(result) = eval_temporal_add(left, right) {
                 result
             } else {
-                eval_arithmetic(left, right, |a, b| a + b, |a, b| a + b)
+                // List concatenation and append/prepend.
+                match (left, right) {
+                    (Value::List(a), Value::List(b)) => {
+                        let mut result = a.clone();
+                        result.extend(b.iter().cloned());
+                        Ok(Value::List(result))
+                    }
+                    (Value::List(a), val) => {
+                        let mut result = a.clone();
+                        result.push(val.clone());
+                        Ok(Value::List(result))
+                    }
+                    (val, Value::List(b)) => {
+                        let mut result = vec![val.clone()];
+                        result.extend(b.iter().cloned());
+                        Ok(Value::List(result))
+                    }
+                    _ => eval_arithmetic(left, right, |a, b| a + b, |a, b| a + b),
+                }
             }
         }
         BinOp::Sub => {
@@ -916,14 +934,13 @@ fn eval_binop(left: &Value, op: BinOp, right: &Value) -> crate::types::Result<Va
                     }
                 }
                 (Value::F64(a), Value::F64(b)) => {
-                    if *b == 0.0 {
-                        Ok(Value::Null)
-                    } else {
-                        Ok(Value::F64(a / b))
-                    }
+                    // Float division: 0.0/0.0 → NaN, x/0.0 → ±Inf (IEEE 754)
+                    Ok(Value::F64(a / b))
                 }
                 (Value::I64(a), Value::F64(b)) => {
-                    if *b == 0.0 {
+                    if *b == 0.0 && *a == 0 {
+                        Ok(Value::F64(f64::NAN))
+                    } else if *b == 0.0 {
                         Ok(Value::Null)
                     } else {
                         Ok(Value::F64(*a as f64 / b))
@@ -974,6 +991,17 @@ fn eval_binop(left: &Value, op: BinOp, right: &Value) -> crate::types::Result<Va
                 _ => Ok(Value::Null),
             }
         }
+        BinOp::Pow => {
+            // Exponentiation: always returns Float.
+            match (left, right) {
+                (Value::Null, _) | (_, Value::Null) => Ok(Value::Null),
+                (Value::I64(a), Value::I64(b)) => Ok(Value::F64((*a as f64).powf(*b as f64))),
+                (Value::F64(a), Value::F64(b)) => Ok(Value::F64(a.powf(*b))),
+                (Value::I64(a), Value::F64(b)) => Ok(Value::F64((*a as f64).powf(*b))),
+                (Value::F64(a), Value::I64(b)) => Ok(Value::F64(a.powf(*b as f64))),
+                _ => Ok(Value::Null),
+            }
+        }
     }
 }
 
@@ -996,12 +1024,41 @@ fn eval_arithmetic(
     }
 }
 
-/// Convert a Value to a three-valued boolean: Some(true), Some(false), or None (null).
-fn to_tribool(v: &Value) -> Option<bool> {
+//// Convert a Value to a three-valued boolean: Some(true), Some(false), or None (null).
+/// Returns Err for non-boolean non-null values (InvalidArgumentType).
+fn to_tribool(v: &Value) -> crate::types::Result<Option<bool>> {
     match v {
-        Value::Bool(b) => Some(*b),
-        Value::Null => None,
-        _ => Some(false), // non-boolean non-null → falsy
+        Value::Bool(b) => Ok(Some(*b)),
+        Value::Null => Ok(None),
+        _ => Err(GraphError::Query(QueryError::SyntaxError {
+            phase: QueryPhase::Runtime,
+            message: format!(
+                "Type mismatch: expected Boolean but was {}",
+                value_type_name(v)
+            ),
+        })),
+    }
+}
+
+/// Get a human-readable type name for a value.
+fn value_type_name(v: &Value) -> &'static str {
+    match v {
+        Value::Bool(_) => "Boolean",
+        Value::I64(_) => "Integer",
+        Value::F64(_) => "Float",
+        Value::String(_) => "String",
+        Value::List(_) => "List",
+        Value::Map(_) => "Map",
+        Value::Null => "Null",
+        Value::Node(_) => "Node",
+        Value::Edge(_) => "Relationship",
+        Value::Path(_) => "Path",
+        Value::Date(_) => "Date",
+        Value::LocalTime(_) => "LocalTime",
+        Value::Time(_) => "Time",
+        Value::LocalDateTime(_) => "LocalDateTime",
+        Value::DateTime(_) => "DateTime",
+        Value::Duration(_) => "Duration",
     }
 }
 
@@ -1010,24 +1067,73 @@ fn values_equal(a: &Value, b: &Value) -> Value {
     if matches!(a, Value::Null) || matches!(b, Value::Null) {
         return Value::Null;
     }
-    let eq = match (a, b) {
-        (Value::Bool(a), Value::Bool(b)) => a == b,
-        (Value::I64(a), Value::I64(b)) => a == b,
-        (Value::F64(a), Value::F64(b)) => a == b,
-        (Value::I64(a), Value::F64(b)) => (*a as f64) == *b,
-        (Value::F64(a), Value::I64(b)) => *a == (*b as f64),
-        (Value::String(a), Value::String(b)) => a == b,
-        (Value::List(a), Value::List(b)) => a == b,
-        (Value::Map(a), Value::Map(b)) => a == b,
-        (Value::Date(a), Value::Date(b)) => a == b,
-        (Value::LocalTime(a), Value::LocalTime(b)) => a == b,
-        (Value::Time(a), Value::Time(b)) => a == b,
-        (Value::LocalDateTime(a), Value::LocalDateTime(b)) => a == b,
-        (Value::DateTime(a), Value::DateTime(b)) => a == b,
-        (Value::Duration(a), Value::Duration(b)) => a == b,
-        _ => false,
-    };
-    Value::Bool(eq)
+    match (a, b) {
+        (Value::Bool(a), Value::Bool(b)) => Value::Bool(a == b),
+        (Value::I64(a), Value::I64(b)) => Value::Bool(a == b),
+        (Value::F64(a), Value::F64(b)) => Value::Bool(a == b),
+        (Value::I64(a), Value::F64(b)) => Value::Bool((*a as f64) == *b),
+        (Value::F64(a), Value::I64(b)) => Value::Bool(*a == (*b as f64)),
+        (Value::String(a), Value::String(b)) => Value::Bool(a == b),
+        (Value::List(a), Value::List(b)) => lists_equal(a, b),
+        (Value::Map(a), Value::Map(b)) => maps_equal(a, b),
+        (Value::Node(a), Value::Node(b)) => Value::Bool(a.id == b.id),
+        (Value::Edge(a), Value::Edge(b)) => Value::Bool(a == b),
+        (Value::Date(a), Value::Date(b)) => Value::Bool(a == b),
+        (Value::LocalTime(a), Value::LocalTime(b)) => Value::Bool(a == b),
+        (Value::Time(a), Value::Time(b)) => Value::Bool(a == b),
+        (Value::LocalDateTime(a), Value::LocalDateTime(b)) => Value::Bool(a == b),
+        (Value::DateTime(a), Value::DateTime(b)) => Value::Bool(a == b),
+        (Value::Duration(a), Value::Duration(b)) => Value::Bool(a == b),
+        _ => Value::Bool(false),
+    }
+}
+
+/// Three-valued list equality: propagates null if any element comparison yields null.
+fn lists_equal(a: &[Value], b: &[Value]) -> Value {
+    if a.len() != b.len() {
+        return Value::Bool(false);
+    }
+    let mut has_null = false;
+    for (ae, be) in a.iter().zip(b.iter()) {
+        match values_equal(ae, be) {
+            Value::Bool(false) => return Value::Bool(false),
+            Value::Null => has_null = true,
+            _ => {} // true, continue
+        }
+    }
+    if has_null {
+        Value::Null
+    } else {
+        Value::Bool(true)
+    }
+}
+
+/// Three-valued map equality: propagates null if values with matching keys compare as null.
+fn maps_equal(
+    a: &std::collections::BTreeMap<String, Value>,
+    b: &std::collections::BTreeMap<String, Value>,
+) -> Value {
+    // Maps with different key sets are not equal (keys with null values still count).
+    let a_keys: std::collections::BTreeSet<&String> = a.keys().collect();
+    let b_keys: std::collections::BTreeSet<&String> = b.keys().collect();
+    if a_keys != b_keys {
+        return Value::Bool(false);
+    }
+    let mut has_null = false;
+    for key in &a_keys {
+        let av = a.get(*key).unwrap();
+        let bv = b.get(*key).unwrap();
+        match values_equal(av, bv) {
+            Value::Bool(false) => return Value::Bool(false),
+            Value::Null => has_null = true,
+            _ => {}
+        }
+    }
+    if has_null {
+        Value::Null
+    } else {
+        Value::Bool(true)
+    }
 }
 
 /// Compare two values, returning Null if either is null or types are incomparable.
@@ -1037,12 +1143,26 @@ fn compare_to_value(a: &Value, b: &Value, pred: impl Fn(std::cmp::Ordering) -> b
     }
     match compare_values(a, b) {
         Some(ord) => Value::Bool(pred(ord)),
-        None => Value::Null,
+        None => {
+            // NaN comparisons with numeric types yield false (not null).
+            let both_numeric = is_numeric(a) && is_numeric(b);
+            if both_numeric {
+                Value::Bool(false) // NaN involved
+            } else {
+                Value::Null // cross-type → null
+            }
+        }
     }
+}
+
+/// Check if a value is a numeric type (integer or float).
+fn is_numeric(v: &Value) -> bool {
+    matches!(v, Value::I64(_) | Value::F64(_))
 }
 
 fn compare_values(a: &Value, b: &Value) -> Option<std::cmp::Ordering> {
     match (a, b) {
+        (Value::Bool(a), Value::Bool(b)) => Some(a.cmp(b)),
         (Value::I64(a), Value::I64(b)) => Some(a.cmp(b)),
         (Value::F64(a), Value::F64(b)) => a.partial_cmp(b),
         (Value::I64(a), Value::F64(b)) => (*a as f64).partial_cmp(b),
@@ -1061,6 +1181,16 @@ fn compare_values(a: &Value, b: &Value) -> Option<std::cmp::Ordering> {
             let a_utc = a.0 - a.1;
             let b_utc = b.0 - b.1;
             Some(a_utc.cmp(&b_utc))
+        }
+        // List comparison: lexicographic ordering.
+        (Value::List(a), Value::List(b)) => {
+            for (ae, be) in a.iter().zip(b.iter()) {
+                match compare_values(ae, be) {
+                    Some(std::cmp::Ordering::Equal) => continue,
+                    other => return other,
+                }
+            }
+            Some(a.len().cmp(&b.len()))
         }
         // Duration is NOT orderable per Cypher spec.
         _ => None,
@@ -1134,6 +1264,7 @@ pub fn expr_to_column_name(expr: &Expr) -> String {
                 BinOp::Mul => "*",
                 BinOp::Div => "/",
                 BinOp::Mod => "%",
+                BinOp::Pow => "^",
                 BinOp::Eq => "=",
                 BinOp::Neq => "<>",
                 BinOp::Lt => "<",

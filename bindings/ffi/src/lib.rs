@@ -481,6 +481,12 @@ pub unsafe extern "C" fn graphdb_result_value_type(
         Some(Value::Map(_)) => 7,
         Some(Value::Node(_)) => 8,
         Some(Value::Edge(_)) => 9,
+        Some(Value::Date(_)) => 10,
+        Some(Value::LocalTime(_)) => 11,
+        Some(Value::Time(_)) => 12,
+        Some(Value::LocalDateTime(_)) => 13,
+        Some(Value::DateTime(_)) => 14,
+        Some(Value::Duration(_)) => 15,
     }
 }
 
@@ -603,6 +609,7 @@ fn format_value(val: &Value) -> String {
                 .collect();
             format!("{{{}}}", parts.join(", "))
         }
+        other => format!("{other}"),
     }
 }
 
@@ -710,6 +717,12 @@ fn value_to_json(out: &mut String, val: &Value) {
                 value_to_json(out, v);
             }
             out.push('}');
+        }
+        // Temporal types — serialize as quoted ISO strings in JSON.
+        other => {
+            out.push('"');
+            json_escape_into(out, &format!("{other}"));
+            out.push('"');
         }
     }
 }

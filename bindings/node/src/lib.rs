@@ -67,6 +67,10 @@ fn value_to_napi(env: &Env, val: &Value) -> Result<napi::JsUnknown> {
             }
             Ok(obj.into_unknown())
         }
+        // Temporal types — expose as ISO string.
+        other => env
+            .create_string(&format!("{other}"))
+            .map(|v| v.into_unknown()),
     }
 }
 

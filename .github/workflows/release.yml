@@ -55,7 +55,7 @@ jobs:
       - name: Package
         run: |
           mkdir -p staging
-          cp crates/ffi/graphdblite.h staging/
+          cp bindings/ffi/graphdblite.h staging/
           cp target/aarch64-apple-darwin/release/libgraphdblite_ffi.a staging/ 2>/dev/null || true
           cp target/aarch64-apple-darwin/release/libgraphdblite_ffi.dylib staging/ 2>/dev/null || true
           tar czf graphdblite-ffi-aarch64-apple-darwin.tar.gz -C staging .
@@ -75,7 +75,7 @@ jobs:
     runs-on: macos-latest
     defaults:
       run:
-        working-directory: crates/node
+        working-directory: bindings/node
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -90,7 +90,7 @@ jobs:
       - uses: actions/upload-artifact@v4
         with:
           name: node-${{ matrix.target }}
-          path: crates/node/*.node
+          path: bindings/node/*.node
 
   upload:
     needs: [build-cli-macos, build-ffi-macos, build-node-macos]

@@ -5,7 +5,7 @@ echo "==> Copying source"
 cp -a /src/. /build/
 cd /build
 
-MANIFEST="crates/python/Cargo.toml"
+MANIFEST="bindings/python/Cargo.toml"
 mkdir -p /dist/wheels
 
 # Wrapper that strips --target= flags cc-rs injects (zig rejects Rust triples).

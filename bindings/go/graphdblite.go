@@ -26,7 +26,7 @@ package graphdblite
 
 /*
 #cgo LDFLAGS: -L${SRCDIR}/lib -lgraphdblite_ffi -lm -ldl -lpthread
-#include "../../crates/ffi/graphdblite.h"
+#include "../ffi/graphdblite.h"
 #include <stdlib.h>
 */
 import "C"

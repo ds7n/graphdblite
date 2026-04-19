@@ -196,7 +196,7 @@ build_ffi() {
   log "Building FFI libraries"
   ensure_dir "$DIST_DIR/ffi"
 
-  local header="$REPO_ROOT/crates/ffi/graphdblite.h"
+  local header="$REPO_ROOT/bindings/ffi/graphdblite.h"
 
   # Linux x86_64 (native)
   fresh_build
@@ -268,7 +268,7 @@ build_node() {
   log "Building Node.js addons"
   ensure_dir "$DIST_DIR/node"
 
-  local node_dir="$REPO_ROOT/crates/node"
+  local node_dir="$REPO_ROOT/bindings/node"
 
   # Install npm deps if needed.
   if [[ ! -d "$node_dir/node_modules" ]]; then
@@ -331,7 +331,7 @@ build_wheels() {
   log "Building Python wheels"
   ensure_dir "$DIST_DIR/wheels"
 
-  local manifest="$REPO_ROOT/crates/python/Cargo.toml"
+  local manifest="$REPO_ROOT/bindings/python/Cargo.toml"
 
   # Linux x86_64 — manylinux (zig for glibc compat)
   fresh_build

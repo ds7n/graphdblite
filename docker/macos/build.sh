@@ -32,7 +32,7 @@ for TARGET in aarch64-apple-darwin x86_64-apple-darwin; do
     echo "  ==> FFI ($TARGET)"
     cargo build --release -p graphdblite-ffi --target "$TARGET"
     staging=$(mktemp -d)
-    cp crates/ffi/graphdblite.h "$staging/"
+    cp bindings/ffi/graphdblite.h "$staging/"
     cp "target/${TARGET}/release"/libgraphdblite_ffi.{a,dylib} "$staging/" 2>/dev/null || true
     tar czf "/dist/ffi/graphdblite-ffi-${TARGET}.tar.gz" -C "$staging" .
     sha256sum "/dist/ffi/graphdblite-ffi-${TARGET}.tar.gz" \
@@ -41,13 +41,13 @@ for TARGET in aarch64-apple-darwin x86_64-apple-darwin; do
 
     # Node.js
     echo "  ==> Node.js ($TARGET)"
-    (cd crates/node && npm install && npx napi build --platform --release --target "$TARGET")
-    cp crates/node/*.node /dist/node/ 2>/dev/null || true
+    (cd bindings/node && npm install && npx napi build --platform --release --target "$TARGET")
+    cp bindings/node/*.node /dist/node/ 2>/dev/null || true
 
     # Python wheel
     echo "  ==> Wheel ($TARGET)"
     maturin build --release --out /dist/wheels \
-        --manifest-path crates/python/Cargo.toml \
+        --manifest-path bindings/python/Cargo.toml \
         --target "$TARGET"
 done
 

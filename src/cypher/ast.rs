@@ -111,8 +111,14 @@ pub struct RemoveStatement {
 /// An item to remove: property or label(s).
 #[derive(Debug, Clone, PartialEq)]
 pub enum RemoveItem {
-    Property { variable: String, property: String },
-    Label { variable: String, labels: Vec<String> },
+    Property {
+        variable: String,
+        property: String,
+    },
+    Label {
+        variable: String,
+        labels: Vec<String>,
+    },
 }
 
 /// MATCH ... MERGE pattern ON CREATE SET ... ON MATCH SET ... [RETURN ...]

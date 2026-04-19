@@ -299,9 +299,7 @@ fn eval_function_call(
             let arg = eval_single_arg(args, record, conn)?;
             match arg {
                 Value::I64(id) => {
-                    if let Ok(node) =
-                        crate::node::get_node(conn, crate::types::NodeId(id as u64))
-                    {
+                    if let Ok(node) = crate::node::get_node(conn, crate::types::NodeId(id as u64)) {
                         Ok(Value::List(
                             node.labels.into_iter().map(Value::String).collect(),
                         ))

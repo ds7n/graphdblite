@@ -679,14 +679,12 @@ String10 - Exact Substring Search::[8] Handling non-string operands for CONTAINS
 String8 - Exact String Prefix Search::[8] Handling non-string operands for STARTS WITH
 String9 - Exact String Suffix Search::[8] Handling non-string operands for ENDS WITH
 Temporal1 - Create Temporal Values from a Map::[10] Should construct date time with named time zone
-Temporal1 - Create Temporal Values from a Map::[11] Should construct date time from epoch
 Temporal1 - Create Temporal Values from a Map::[12] Should construct duration
 Temporal1 - Create Temporal Values from a Map::[13] Should construct temporal with time offset with second precision
 Temporal1 - Create Temporal Values from a Map::[1] Should construct week date
 Temporal1 - Create Temporal Values from a Map::[2] Should construct week localdatetime
 Temporal1 - Create Temporal Values from a Map::[3] Should construct week datetime
 Temporal1 - Create Temporal Values from a Map::[4] Should construct date
-Temporal1 - Create Temporal Values from a Map::[5] Should construct local time
 Temporal1 - Create Temporal Values from a Map::[6] Should construct time
 Temporal1 - Create Temporal Values from a Map::[7] Should construct local date time
 Temporal1 - Create Temporal Values from a Map::[8] Should construct date time with default time zone
@@ -694,7 +692,6 @@ Temporal1 - Create Temporal Values from a Map::[9] Should construct date time wi
 Temporal10 - Compute Durations Between two Temporal Values::[10] Should handle large durations in seconds
 Temporal10 - Compute Durations Between two Temporal Values::[11] Should handle when seconds and subseconds have different signs
 Temporal10 - Compute Durations Between two Temporal Values::[12] Should compute durations with no difference
-Temporal10 - Compute Durations Between two Temporal Values::[13] Should propagate null
 Temporal10 - Compute Durations Between two Temporal Values::[1] Should split between boundaries correctly
 Temporal10 - Compute Durations Between two Temporal Values::[2] Should compute duration between two temporals
 Temporal10 - Compute Durations Between two Temporal Values::[3] Should compute duration between two temporals in months
@@ -704,11 +701,6 @@ Temporal10 - Compute Durations Between two Temporal Values::[6] Should compute d
 Temporal10 - Compute Durations Between two Temporal Values::[7] Should compute negative duration between in big units
 Temporal10 - Compute Durations Between two Temporal Values::[8] Should handle durations at daylight saving time day
 Temporal10 - Compute Durations Between two Temporal Values::[9] Should handle large durations
-Temporal2 - Create Temporal Values from a String::[1] Should parse date from string
-Temporal2 - Create Temporal Values from a String::[2] Should parse local time from string
-Temporal2 - Create Temporal Values from a String::[3] Should parse time from string
-Temporal2 - Create Temporal Values from a String::[4] Should parse local date time from string
-Temporal2 - Create Temporal Values from a String::[5] Should parse date time from string
 Temporal2 - Create Temporal Values from a String::[6] Should parse date time with named time zone from string
 Temporal2 - Create Temporal Values from a String::[7] Should parse duration from string
 Temporal3 - Project Temporal Values from other Temporal Values::[10] Should select date and time into date time

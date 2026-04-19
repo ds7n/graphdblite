@@ -257,5 +257,6 @@ fn format_value(val: Option<&Value>) -> String {
         Some(m @ Value::Map(_)) => format!("{m}"),
         Some(n @ Value::Node(_)) => format!("{n}"),
         Some(e @ Value::Edge(_)) => format!("{e}"),
+        Some(other) => format!("{other}"),
     }
 }

@@ -1336,6 +1336,7 @@ fn parse_atom_expr(pair: pest::iterators::Pair<Rule>) -> crate::types::Result<Ex
         }
         Rule::case_expr => parse_case_expr(pair),
         Rule::quantifier_expr => parse_quantifier_expr(pair),
+        Rule::dotted_function_call => parse_dotted_function_call(pair),
         Rule::function_call => parse_function_call(pair),
         Rule::property_access => {
             let mut parts = pair.into_inner();
@@ -1435,6 +1436,37 @@ fn parse_subscript(base: Expr, pair: pest::iterators::Pair<Rule>) -> crate::type
             inner.as_rule()
         ))),
     }
+}
+
+/// Parse a dotted function call: `datetime.fromepoch(args)`, `duration.between(args)`, etc.
+fn parse_dotted_function_call(pair: pest::iterators::Pair<Rule>) -> crate::types::Result<Expr> {
+    let mut name = String::new();
+    let mut args = Vec::new();
+
+    for inner in pair.into_inner() {
+        match inner.as_rule() {
+            Rule::dotted_function_name => name = inner.as_str().to_lowercase(),
+            Rule::function_args => {
+                for arg in inner.into_inner() {
+                    match arg.as_rule() {
+                        Rule::star => args.push(Expr::Star),
+                        Rule::expr_list => {
+                            for expr_pair in arg.into_inner() {
+                                if expr_pair.as_rule() == Rule::expr {
+                                    args.push(parse_expr(expr_pair)?);
+                                }
+                            }
+                        }
+                        Rule::expr => args.push(parse_expr(arg)?),
+                        _ => {}
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+
+    Ok(Expr::FunctionCall { name, args })
 }
 
 fn parse_function_call(pair: pest::iterators::Pair<Rule>) -> crate::types::Result<Expr> {

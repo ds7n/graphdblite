@@ -7,13 +7,13 @@ Last updated: 2026-04-19
 Full openCypher TCK vendored (220 feature files, commit `677cbaf`).
 
 ```
-122 features parsed (1 parse error: Match5.feature)
-1379 total scenario instances running
-1298 passed
+125 features parsed (1 parse error: Match5.feature)
+1432 total scenario instances running
+1351 passed
   81 skipped (cucumber-level)
- 974 skiplisted (known failures)
+ 966 skiplisted (known failures)
  ────
-1298/2353 unique scenarios passing (55.2%)
+1351/2398 unique scenarios passing (56.3%)
 ```
 
 ## Pass rate by area
@@ -89,6 +89,21 @@ The harness filters these out and exits non-zero only if a *non-skiplisted*
 scenario fails — making the TCK a regression gate.
 
 ## History
+
+### Phase 8 — Temporal types (2026-04-19)
+
+- [x] Add `chrono` and `chrono-tz` dependencies
+- [x] Create `src/temporal.rs` with 6 wrapper types (CypherDate, CypherLocalTime, CypherTime, CypherLocalDateTime, CypherDateTime, CypherDuration)
+  - ISO 8601 Display, string parsing, map construction
+  - Custom Serialize/Deserialize for MessagePack storage
+  - PartialEq, Eq, Hash implementations
+- [x] Extend Value enum with 6 temporal variants
+- [x] Add temporal constructor functions to grammar and evaluator
+- [x] Add `dotted_function_call` grammar rule for `datetime.fromepoch` etc.
+- [x] Add temporal component accessors (d.year, t.hour, etc.)
+- [x] Extend values_equal and compare_values for temporal types
+- [x] Update TCK harness for temporal-vs-string comparison
+- Result: 1298 → 1351 passing scenarios (+53), skiplist 974 → 966
 
 ### Phase 7 — Quantifier functions, REMOVE statement, labels() (2026-04-19)
 

@@ -1,8 +1,8 @@
 # TCK Conformance Improvement Plan
 
-## Status: Phases 1-7 complete (2026-04-19)
+## Status: Phases 1-8 complete (2026-04-19)
 
-1298 scenarios passing, 974 skiplisted, 0 failures.
+1351 scenarios passing, 966 skiplisted, 0 failures.
 
 ---
 
@@ -44,6 +44,12 @@ Three code fixes and a systematic skiplist sweep:
 - **Null property filtering**: `CREATE ({p: null})` no longer stores `p`. Added null check in `exec_create_sequence` and `exec_match_create` property loops.
 - **CREATE dedup**: `CREATE (a), (a)-[:R]->(b)` no longer creates duplicate nodes. `plan_create_pattern` tracks `seen` named variables across patterns, skipping `CreateNode` for already-seen aliases.
 - **Batch unskip**: Removed 45 confirmed-passing skiplist entries (Create1-6, Comparison2, List3, Literals7-8, Merge2-3-5-7, Precedence2, Return3-6, TypeConversion4, WithOrderBy3).
+
+### Phase 8: Temporal types ✓
+
+Full temporal type system: 6 wrapper types in `src/temporal.rs` (CypherDate, CypherLocalTime, CypherTime, CypherLocalDateTime, CypherDateTime, CypherDuration). ISO 8601 parsing (calendar, week, ordinal dates; colon/compact time formats), map construction, Display, Serialize/Deserialize for MessagePack storage. Value enum extended with 6 temporal variants. Temporal constructor functions (date, localtime, time, localdatetime, datetime, duration) with string and map dispatch. Dotted function grammar rule for `datetime.fromepoch`/`datetime.fromepochmillis`. Temporal component accessors (d.year, t.hour, etc.). Comparison operators for temporal types. TCK harness updated for temporal-vs-string comparison.
+
+8 temporal scenarios pass (Temporal2 string parsing for 5 basic types + 3 from new feature files). 81 remain skiplisted (complex map construction with week/ordinal dates, named timezones, storage, rendering, arithmetic, duration computation, truncation).
 
 ### Phase 7: Quantifier functions, REMOVE statement, labels() ✓
 

@@ -149,6 +149,25 @@ fn value_equal(a: &Value, b: &Value) -> bool {
                     .iter()
                     .all(|(k, v)| mb.get(k).is_some_and(|w| value_equal(v, w)))
         }
+        // Temporal values: TCK feature files express expected temporal results as
+        // single-quoted strings. Compare the temporal's Display output against the string.
+        (Value::Date(d), Value::String(s)) | (Value::String(s), Value::Date(d)) => {
+            d.to_string() == *s
+        }
+        (Value::LocalTime(t), Value::String(s)) | (Value::String(s), Value::LocalTime(t)) => {
+            t.to_string() == *s
+        }
+        (Value::Time(t), Value::String(s)) | (Value::String(s), Value::Time(t)) => {
+            t.to_string() == *s
+        }
+        (Value::LocalDateTime(dt), Value::String(s))
+        | (Value::String(s), Value::LocalDateTime(dt)) => dt.to_string() == *s,
+        (Value::DateTime(dt), Value::String(s)) | (Value::String(s), Value::DateTime(dt)) => {
+            dt.to_string() == *s
+        }
+        (Value::Duration(d), Value::String(s)) | (Value::String(s), Value::Duration(d)) => {
+            d.to_string() == *s
+        }
         _ => a == b,
     }
 }

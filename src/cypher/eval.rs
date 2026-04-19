@@ -198,7 +198,7 @@ pub fn eval_expr(expr: &Expr, record: &Record, conn: &Connection) -> crate::type
             }
             Ok(Value::Map(map))
         }
-        Expr::FunctionCall { name, args } => eval_function_call(name, args, record, conn),
+        Expr::FunctionCall { name, args, .. } => eval_function_call(name, args, record, conn),
     }
 }
 
@@ -1082,11 +1082,16 @@ pub fn expr_to_column_name(expr: &Expr) -> String {
     match expr {
         Expr::Variable(name) => name.clone(),
         Expr::Property(var, prop) => format!("{var}.{prop}"),
-        Expr::FunctionCall { name, args } => {
+        Expr::FunctionCall {
+            name,
+            args,
+            distinct,
+        } => {
+            let dist_prefix = if *distinct { "DISTINCT " } else { "" };
             if args.is_empty() || matches!(args[0], Expr::Star) {
                 format!("{name}(*)")
             } else {
-                format!("{name}({})", expr_to_column_name(&args[0]))
+                format!("{name}({dist_prefix}{})", expr_to_column_name(&args[0]))
             }
         }
         Expr::Star => "*".to_string(),

@@ -219,6 +219,9 @@ pub struct AggregateExpr {
     pub function: AggregateFunction,
     pub input: Expr,
     pub alias: Option<String>,
+    pub distinct: bool,
+    /// Second argument for percentile functions (the percentile value).
+    pub extra_arg: Option<Expr>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -229,4 +232,8 @@ pub enum AggregateFunction {
     Min,
     Max,
     Collect,
+    PercentileDisc,
+    PercentileCont,
+    StDev,
+    StDevP,
 }

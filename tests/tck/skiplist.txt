@@ -2,15 +2,7 @@ Aggregation1 - Count::[2] Counting loop relationships
 Aggregation2 - Min and Max::[12] `min()` over mixed values
 Aggregation2 - Min and Max::[9] `max()` over list values
 Aggregation3 - Sum::[2] No overflow during summation
-Aggregation6 - Percentiles::[1] `percentileDisc()`
-Aggregation6 - Percentiles::[2] `percentileCont()`
-Aggregation6 - Percentiles::[3] `percentileCont()` failing on bad arguments
-Aggregation6 - Percentiles::[4] `percentileDisc()` failing on bad arguments
 Aggregation6 - Percentiles::[5] `percentileDisc()` failing in more involved query
-Aggregation8 - DISTINCT::[1] Distinct on unbound node
-Aggregation8 - DISTINCT::[2] Distinct on null
-Aggregation8 - DISTINCT::[3] Collect distinct nulls
-Aggregation8 - DISTINCT::[4] Collect distinct values mixed with nulls
 Boolean1 - And logical operations::[4] Conjunction is commutative on non-null
 Boolean1 - And logical operations::[5] Conjunction is commutative on null
 Boolean1 - And logical operations::[6] Conjunction is associative on non-null

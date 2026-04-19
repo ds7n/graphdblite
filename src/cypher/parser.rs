@@ -1645,12 +1645,17 @@ fn parse_dotted_function_call(pair: pest::iterators::Pair<Rule>) -> crate::types
         }
     }
 
-    Ok(Expr::FunctionCall { name, args })
+    Ok(Expr::FunctionCall {
+        name,
+        args,
+        distinct: false,
+    })
 }
 
 fn parse_function_call(pair: pest::iterators::Pair<Rule>) -> crate::types::Result<Expr> {
     let mut name = String::new();
     let mut args = Vec::new();
+    let mut distinct = false;
 
     for inner in pair.into_inner() {
         match inner.as_rule() {
@@ -1659,6 +1664,7 @@ fn parse_function_call(pair: pest::iterators::Pair<Rule>) -> crate::types::Resul
                 for arg in inner.into_inner() {
                     match arg.as_rule() {
                         Rule::star => args.push(Expr::Star),
+                        Rule::distinct_keyword => distinct = true,
                         Rule::expr_list => {
                             for expr_pair in arg.into_inner() {
                                 if expr_pair.as_rule() == Rule::expr {
@@ -1675,7 +1681,11 @@ fn parse_function_call(pair: pest::iterators::Pair<Rule>) -> crate::types::Resul
         }
     }
 
-    Ok(Expr::FunctionCall { name, args })
+    Ok(Expr::FunctionCall {
+        name,
+        args,
+        distinct,
+    })
 }
 
 /// Parse an integer literal string, handling decimal, hex (0x), and octal (0o) formats.
@@ -1952,12 +1962,17 @@ fn resolve_expr(expr: &Expr, params: &HashMap<String, Value>) -> crate::types::R
         Expr::Not(inner) => Ok(Expr::Not(Box::new(resolve_expr(inner, params)?))),
         Expr::IsNull(inner) => Ok(Expr::IsNull(Box::new(resolve_expr(inner, params)?))),
         Expr::IsNotNull(inner) => Ok(Expr::IsNotNull(Box::new(resolve_expr(inner, params)?))),
-        Expr::FunctionCall { name, args } => {
+        Expr::FunctionCall {
+            name,
+            args,
+            distinct,
+        } => {
             let resolved: crate::types::Result<Vec<Expr>> =
                 args.iter().map(|a| resolve_expr(a, params)).collect();
             Ok(Expr::FunctionCall {
                 name: name.clone(),
                 args: resolved?,
+                distinct: *distinct,
             })
         }
         Expr::Case {

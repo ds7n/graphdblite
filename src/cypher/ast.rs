@@ -331,7 +331,11 @@ pub enum Expr {
     /// IS NOT NULL check.
     IsNotNull(Box<Expr>),
     /// Function call: name(args)
-    FunctionCall { name: String, args: Vec<Expr> },
+    FunctionCall {
+        name: String,
+        args: Vec<Expr>,
+        distinct: bool,
+    },
     /// CASE WHEN cond THEN result ... ELSE default END
     Case {
         alternatives: Vec<(Box<Expr>, Box<Expr>)>,

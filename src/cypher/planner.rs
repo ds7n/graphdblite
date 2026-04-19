@@ -1593,7 +1593,7 @@ fn is_aggregate_fn(expr: &Expr) -> bool {
     matches!(
         expr,
         Expr::FunctionCall { name, .. }
-            if matches!(name.as_str(), "count" | "sum" | "avg" | "min" | "max" | "collect")
+            if matches!(name.as_str(), "count" | "sum" | "avg" | "min" | "max" | "collect" | "percentiledisc" | "percentilecont" | "stdev" | "stdevp")
     )
 }
 
@@ -1604,7 +1604,11 @@ fn split_aggregates(items: &[ReturnItem]) -> crate::types::Result<(Vec<Expr>, Ve
 
     for item in items {
         match &item.expr {
-            Expr::FunctionCall { name, args } => {
+            Expr::FunctionCall {
+                name,
+                args,
+                distinct,
+            } => {
                 let function = match name.as_str() {
                     "count" => Some(AggregateFunction::Count),
                     "sum" => Some(AggregateFunction::Sum),
@@ -1612,14 +1616,21 @@ fn split_aggregates(items: &[ReturnItem]) -> crate::types::Result<(Vec<Expr>, Ve
                     "min" => Some(AggregateFunction::Min),
                     "max" => Some(AggregateFunction::Max),
                     "collect" => Some(AggregateFunction::Collect),
+                    "percentiledisc" => Some(AggregateFunction::PercentileDisc),
+                    "percentilecont" => Some(AggregateFunction::PercentileCont),
+                    "stdev" => Some(AggregateFunction::StDev),
+                    "stdevp" => Some(AggregateFunction::StDevP),
                     _ => None, // Scalar function — treat as regular expression.
                 };
                 if let Some(function) = function {
                     let input = args.first().cloned().unwrap_or(Expr::Star);
+                    let extra_arg = args.get(1).cloned();
                     aggregates.push(AggregateExpr {
                         function,
                         input,
                         alias: item.alias.clone(),
+                        distinct: *distinct,
+                        extra_arg,
                     });
                 } else {
                     group_keys.push(item.expr.clone());

@@ -1723,16 +1723,28 @@ fn humanize_pest_error(err: pest::error::Error<Rule>) -> String {
 
 use crate::types::Value;
 
-fn value_to_literal(val: &Value) -> crate::types::Result<LiteralValue> {
+/// Convert a Value to an Expr, handling all types including List and Map.
+fn value_to_expr(val: &Value) -> crate::types::Result<Expr> {
     match val {
-        Value::Null => Ok(LiteralValue::Null),
-        Value::Bool(b) => Ok(LiteralValue::Bool(*b)),
-        Value::I64(n) => Ok(LiteralValue::I64(*n)),
-        Value::F64(n) => Ok(LiteralValue::F64(*n)),
-        Value::String(s) => Ok(LiteralValue::String(s.clone())),
+        Value::Null => Ok(Expr::Literal(LiteralValue::Null)),
+        Value::Bool(b) => Ok(Expr::Literal(LiteralValue::Bool(*b))),
+        Value::I64(n) => Ok(Expr::Literal(LiteralValue::I64(*n))),
+        Value::F64(n) => Ok(Expr::Literal(LiteralValue::F64(*n))),
+        Value::String(s) => Ok(Expr::Literal(LiteralValue::String(s.clone()))),
+        Value::List(items) => {
+            let exprs: crate::types::Result<Vec<Expr>> = items.iter().map(value_to_expr).collect();
+            Ok(Expr::List(exprs?))
+        }
+        Value::Map(map) => {
+            let pairs: crate::types::Result<Vec<(String, Expr)>> = map
+                .iter()
+                .map(|(k, v)| value_to_expr(v).map(|e| (k.clone(), e)))
+                .collect();
+            Ok(Expr::MapLiteral(pairs?))
+        }
         _ => Err(GraphError::argument(
             crate::types::QueryPhase::SemanticAnalysis,
-            "unsupported parameter type (only scalar values allowed)",
+            "unsupported parameter type",
         )),
     }
 }
@@ -1746,7 +1758,7 @@ fn resolve_expr(expr: &Expr, params: &HashMap<String, Value>) -> crate::types::R
                     format!("missing parameter: ${name}"),
                 )
             })?;
-            Ok(Expr::Literal(value_to_literal(val)?))
+            value_to_expr(val)
         }
         Expr::BinaryOp { left, op, right } => Ok(Expr::BinaryOp {
             left: Box::new(resolve_expr(left, params)?),

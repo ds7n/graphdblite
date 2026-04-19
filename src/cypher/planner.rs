@@ -620,7 +620,15 @@ fn plan_with(input: LogicalOp, with: &WithClause) -> crate::types::Result<Logica
         emit_compound: false,
     };
 
-    // Apply ORDER BY before WHERE so that ordering is preserved through filtering.
+    // Apply WITH's WHERE filter before ORDER BY/SKIP/LIMIT (Cypher semantics).
+    if let Some(ref predicate) = with.where_clause {
+        op = LogicalOp::Filter {
+            input: Box::new(op),
+            predicate: predicate.clone(),
+        };
+    }
+
+    // Apply ORDER BY.
     if !with.order_by.is_empty() {
         op = LogicalOp::Sort {
             input: Box::new(op),
@@ -641,14 +649,6 @@ fn plan_with(input: LogicalOp, with: &WithClause) -> crate::types::Result<Logica
         op = LogicalOp::Limit {
             input: Box::new(op),
             count,
-        };
-    }
-
-    // Apply WITH's WHERE filter.
-    if let Some(ref predicate) = with.where_clause {
-        op = LogicalOp::Filter {
-            input: Box::new(op),
-            predicate: predicate.clone(),
         };
     }
 

@@ -78,6 +78,7 @@ pub fn plan(conn: &Connection, stmt: &Statement) -> crate::types::Result<Logical
         Statement::MatchMerge(mm) => plan_match_merge(conn, mm),
         Statement::Unwind(u) => plan_unwind(conn, u),
         Statement::Return(r) => plan_return(r),
+        Statement::MultiClause(mc) => plan_multi_clause(conn, mc),
         Statement::Explain(inner) => plan(conn, inner),
         Statement::Union { statements, all } => {
             let inputs: crate::types::Result<Vec<LogicalOp>> =
@@ -741,6 +742,220 @@ fn plan_match_merge(
     Ok(result)
 }
 
+/// Plan a multi-clause statement by threading an operator through each clause.
+fn plan_multi_clause(
+    conn: &Connection,
+    stmt: &MultiClauseStatement,
+) -> crate::types::Result<LogicalOp> {
+    use crate::cypher::ast::Clause;
+
+    let mut op: Option<LogicalOp> = None;
+    let mut seen_create_vars: HashSet<String> = HashSet::new();
+    let mut anon_counter: usize = 0;
+    let mut scope_vars: HashSet<String> = HashSet::new();
+    let mut var_types: std::collections::HashMap<String, VarKind> =
+        std::collections::HashMap::new();
+
+    for clause in &stmt.clauses {
+        match clause {
+            Clause::Match {
+                patterns,
+                optional_patterns,
+                where_clause,
+            } => {
+                // Validate variable-type consistency (node vs rel vs path) across all clauses.
+                validate_variable_types_with_map(patterns, &mut var_types)?;
+                let match_op = plan_patterns(conn, patterns)?;
+                op = Some(if let Some(input) = op.take() {
+                    // Correlated join: thread prior rows into MATCH.
+                    let mut joined = LogicalOp::CorrelatedJoin {
+                        input: Box::new(input),
+                        right: Box::new(match_op),
+                    };
+                    // Optional matches.
+                    let mut bound_vars = collect_pattern_variables(patterns);
+                    for opt in optional_patterns {
+                        let (right, new_aliases, opt_filter) =
+                            plan_optional_match(conn, opt, &bound_vars)?;
+                        joined = LogicalOp::LeftOuterJoin {
+                            input: Box::new(joined),
+                            right: Box::new(right),
+                            optional_aliases: new_aliases.clone(),
+                            opt_filter,
+                        };
+                        bound_vars.extend(new_aliases);
+                    }
+                    if let Some(ref pred) = where_clause {
+                        joined = LogicalOp::Filter {
+                            input: Box::new(joined),
+                            predicate: pred.clone(),
+                        };
+                    }
+                    joined
+                } else {
+                    let mut m = match_op;
+                    let mut bound_vars = collect_pattern_variables(patterns);
+                    for opt in optional_patterns {
+                        let (right, new_aliases, opt_filter) =
+                            plan_optional_match(conn, opt, &bound_vars)?;
+                        m = LogicalOp::LeftOuterJoin {
+                            input: Box::new(m),
+                            right: Box::new(right),
+                            optional_aliases: new_aliases.clone(),
+                            opt_filter,
+                        };
+                        bound_vars.extend(new_aliases);
+                    }
+                    if let Some(ref pred) = where_clause {
+                        m = LogicalOp::Filter {
+                            input: Box::new(m),
+                            predicate: pred.clone(),
+                        };
+                    }
+                    m
+                });
+                scope_vars.extend(collect_pattern_variables(patterns));
+                for opt in optional_patterns {
+                    scope_vars.extend(collect_pattern_variables(&opt.patterns));
+                }
+            }
+            Clause::Create { patterns } => {
+                let mut create_ops = Vec::new();
+                for pattern in patterns {
+                    create_ops.extend(plan_create_pattern_with_counter(
+                        pattern,
+                        &mut seen_create_vars,
+                        &mut anon_counter,
+                    )?);
+                }
+                op = Some(if let Some(input) = op.take() {
+                    LogicalOp::MatchCreate {
+                        input: Box::new(input),
+                        create_ops,
+                    }
+                } else {
+                    // Standalone CREATE (no preceding clause).
+                    if create_ops.len() == 1 {
+                        create_ops.remove(0)
+                    } else {
+                        LogicalOp::CreateSequence { ops: create_ops }
+                    }
+                });
+                scope_vars.extend(collect_pattern_variables(patterns));
+            }
+            Clause::Merge {
+                pattern,
+                on_create,
+                on_match,
+            } => {
+                op = Some(if let Some(input) = op.take() {
+                    LogicalOp::MatchMerge {
+                        input: Box::new(input),
+                        merge_pattern: pattern.clone(),
+                        on_create: on_create.clone(),
+                        on_match: on_match.clone(),
+                    }
+                } else {
+                    LogicalOp::Merge {
+                        pattern: pattern.clone(),
+                        on_create: on_create.clone(),
+                        on_match: on_match.clone(),
+                    }
+                });
+                scope_vars.extend(collect_pattern_variables(&[pattern.clone()]));
+            }
+            Clause::With(with) => {
+                let input = op.take().unwrap_or(LogicalOp::EmptyRow);
+                op = Some(plan_with(input, with)?);
+                // WITH resets scope.
+                let old_scope = scope_vars.clone();
+                scope_vars.clear();
+                for item in &with.items {
+                    if let Expr::Star = &item.expr {
+                        scope_vars = old_scope.clone();
+                    } else if let Some(ref alias) = item.alias {
+                        scope_vars.insert(alias.clone());
+                    } else if let Expr::Variable(var) = &item.expr {
+                        scope_vars.insert(var.clone());
+                    }
+                }
+            }
+            Clause::Unwind(unwind) => {
+                let input = op.take().unwrap_or(LogicalOp::EmptyRow);
+                op = Some(LogicalOp::Unwind {
+                    input: Box::new(input),
+                    expr: unwind.expr.clone(),
+                    alias: unwind.alias.clone(),
+                });
+                scope_vars.insert(unwind.alias.clone());
+            }
+            Clause::Set { items } => {
+                let input = op
+                    .take()
+                    .ok_or_else(|| GraphError::semantic("SET requires preceding MATCH"))?;
+                let mut current = input;
+                for item in items {
+                    current = match item {
+                        SetItem::Property(a) => LogicalOp::SetProperty {
+                            input: Box::new(current),
+                            assignments: vec![a.clone()],
+                        },
+                        SetItem::Label { variable, labels } => LogicalOp::SetLabel {
+                            input: Box::new(current),
+                            variable: variable.clone(),
+                            labels: labels.clone(),
+                        },
+                        SetItem::MapOverwrite { variable, value } => LogicalOp::SetProperties {
+                            input: Box::new(current),
+                            variable: variable.clone(),
+                            value: value.clone(),
+                            merge: false,
+                        },
+                        SetItem::MapMerge { variable, value } => LogicalOp::SetProperties {
+                            input: Box::new(current),
+                            variable: variable.clone(),
+                            value: value.clone(),
+                            merge: true,
+                        },
+                    };
+                }
+                op = Some(current);
+            }
+            Clause::Remove { items } => {
+                let input = op
+                    .take()
+                    .ok_or_else(|| GraphError::semantic("REMOVE requires preceding MATCH"))?;
+                op = Some(LogicalOp::Remove {
+                    input: Box::new(input),
+                    items: items.clone(),
+                });
+            }
+            Clause::Delete { variables, detach } => {
+                let input = op
+                    .take()
+                    .ok_or_else(|| GraphError::semantic("DELETE requires preceding MATCH"))?;
+                op = Some(LogicalOp::Delete {
+                    input: Box::new(input),
+                    variables: variables.clone(),
+                    detach: *detach,
+                });
+            }
+        }
+    }
+
+    let mut result = op.unwrap_or(LogicalOp::EmptyRow);
+
+    if let Some(ref rc) = stmt.return_clause {
+        // Validate RETURN references only in-scope variables.
+        if !scope_vars.is_empty() {
+            validate_return_variables(&rc.items, &scope_vars)?;
+        }
+        result = apply_return_projection(result, rc, &stmt.order_by, stmt.skip, stmt.limit)?;
+    }
+
+    Ok(result)
+}
+
 /// Plan a WITH clause as an intermediate projection (+aggregation) and optional filter.
 fn plan_with(input: LogicalOp, with: &WithClause) -> crate::types::Result<LogicalOp> {
     let mut op = input;
@@ -1111,21 +1326,26 @@ fn collect_pattern_variables(patterns: &[Pattern]) -> HashSet<String> {
     vars
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum VarKind {
+    Node,
+    Relationship,
+    Path,
+}
+
 /// Validate that no variable is used as more than one type (node, relationship,
 /// path) within the same MATCH statement's patterns. Raises `SyntaxError` on
 /// conflicts — e.g. `MATCH ()-[r]-(r)` uses `r` as both relationship and node.
 fn validate_variable_types(patterns: &[Pattern]) -> crate::types::Result<()> {
-    use std::collections::HashMap;
+    let mut types: std::collections::HashMap<String, VarKind> = std::collections::HashMap::new();
+    validate_variable_types_with_map(patterns, &mut types)
+}
 
-    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-    enum VarKind {
-        Node,
-        Relationship,
-        Path,
-    }
-
-    let mut types: HashMap<String, VarKind> = HashMap::new();
-
+/// Validate variable types against a persistent type map across clauses.
+fn validate_variable_types_with_map(
+    patterns: &[Pattern],
+    types: &mut std::collections::HashMap<String, VarKind>,
+) -> crate::types::Result<()> {
     for pattern in patterns {
         // Path variable binding: `r = (...)-[...]->(...)`
         if let Some(ref path_var) = pattern.path_variable {
@@ -1460,9 +1680,17 @@ fn plan_create_pattern(
     pattern: &Pattern,
     seen: &mut HashSet<String>,
 ) -> crate::types::Result<Vec<LogicalOp>> {
+    let mut anon_counter = 0usize;
+    plan_create_pattern_with_counter(pattern, seen, &mut anon_counter)
+}
+
+fn plan_create_pattern_with_counter(
+    pattern: &Pattern,
+    seen: &mut HashSet<String>,
+    anon_counter: &mut usize,
+) -> crate::types::Result<Vec<LogicalOp>> {
     let mut ops = Vec::new();
     let mut last_alias: Option<String> = None;
-    let mut anon_counter = 0usize;
 
     let mut i = 0;
     while i < pattern.elements.len() {
@@ -1470,7 +1698,7 @@ fn plan_create_pattern(
             PatternElement::Node(node) => {
                 let is_named = node.variable.is_some();
                 let alias = node.variable.clone().or_else(|| {
-                    anon_counter += 1;
+                    *anon_counter += 1;
                     Some(format!("__anon_{}", anon_counter))
                 });
                 // Only dedup named variables; anonymous nodes are always new.
@@ -1505,7 +1733,7 @@ fn plan_create_pattern(
 
                 let dst_is_named = dst_node.variable.is_some();
                 let dst_alias = dst_node.variable.clone().or_else(|| {
-                    anon_counter += 1;
+                    *anon_counter += 1;
                     Some(format!("__anon_{}", anon_counter))
                 });
                 let dst_already_seen =

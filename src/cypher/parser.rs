@@ -82,6 +82,7 @@ fn parse_union_stmt(pair: pest::iterators::Pair<Rule>) -> crate::types::Result<S
 fn parse_single_stmt(pair: pest::iterators::Pair<Rule>) -> crate::types::Result<Statement> {
     match pair.as_rule() {
         Rule::explain_stmt => parse_explain(pair),
+        Rule::multi_clause_stmt => parse_multi_clause(pair).map(Statement::MultiClause),
         Rule::match_stmt => parse_match(pair).map(Statement::Match),
         Rule::create_stmt => parse_create(pair).map(Statement::Create),
         Rule::match_create_stmt => parse_match_create(pair).map(Statement::MatchCreate),
@@ -234,6 +235,132 @@ fn parse_return_stmt(pair: pest::iterators::Pair<Rule>) -> crate::types::Result<
     Ok(ReturnStatement {
         return_clause: return_clause
             .ok_or_else(|| GraphError::Serialization("missing RETURN clause".to_string()))?,
+        order_by,
+        skip,
+        limit,
+    })
+}
+
+fn parse_multi_clause(
+    pair: pest::iterators::Pair<Rule>,
+) -> crate::types::Result<MultiClauseStatement> {
+    let mut clauses = Vec::new();
+    let mut return_clause = None;
+    let mut order_by = Vec::new();
+    let mut skip = None;
+    let mut limit = None;
+
+    for inner in pair.into_inner() {
+        match inner.as_rule() {
+            Rule::multi_match_clause => {
+                let (patterns, optional_patterns, where_clause) = parse_match_part(inner)?;
+                clauses.push(Clause::Match {
+                    patterns,
+                    optional_patterns,
+                    where_clause,
+                });
+            }
+            Rule::multi_create_clause => {
+                let mut patterns = Vec::new();
+                for child in inner.into_inner() {
+                    if child.as_rule() == Rule::create_pattern_list {
+                        for pat in child.into_inner() {
+                            if pat.as_rule() == Rule::create_pattern {
+                                patterns.push(parse_pattern_inner(pat)?);
+                            }
+                        }
+                    }
+                }
+                clauses.push(Clause::Create { patterns });
+            }
+            Rule::multi_merge_clause => {
+                let mut merge_pattern = None;
+                let mut on_create = Vec::new();
+                let mut on_match = Vec::new();
+                for child in inner.into_inner() {
+                    match child.as_rule() {
+                        Rule::pattern => merge_pattern = Some(parse_pattern(child)?),
+                        Rule::on_create_clause => {
+                            for grandchild in child.into_inner() {
+                                if grandchild.as_rule() == Rule::property_assignment_list {
+                                    on_create = parse_assignment_list(grandchild)?;
+                                }
+                            }
+                        }
+                        Rule::on_match_clause => {
+                            for grandchild in child.into_inner() {
+                                if grandchild.as_rule() == Rule::property_assignment_list {
+                                    on_match = parse_assignment_list(grandchild)?;
+                                }
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+                if let Some(pattern) = merge_pattern {
+                    clauses.push(Clause::Merge {
+                        pattern,
+                        on_create,
+                        on_match,
+                    });
+                }
+            }
+            Rule::multi_unwind_clause | Rule::unwind_clause => {
+                let uc = parse_unwind_clause(inner)?;
+                clauses.push(Clause::Unwind(uc));
+            }
+            Rule::with_clause => {
+                clauses.push(Clause::With(parse_with(inner)?));
+            }
+            Rule::multi_set_clause => {
+                let mut items = Vec::new();
+                for child in inner.into_inner() {
+                    if child.as_rule() == Rule::assignment_list {
+                        items = parse_set_item_list(child)?;
+                    }
+                }
+                clauses.push(Clause::Set { items });
+            }
+            Rule::multi_remove_clause => {
+                let mut remove_items = Vec::new();
+                for child in inner.into_inner() {
+                    if child.as_rule() == Rule::remove_item_list {
+                        remove_items = parse_remove_item_list(child)?;
+                    }
+                }
+                clauses.push(Clause::Remove {
+                    items: remove_items,
+                });
+            }
+            Rule::multi_delete_clause => {
+                let mut detach = false;
+                let mut variables = Vec::new();
+                for child in inner.into_inner() {
+                    match child.as_rule() {
+                        Rule::detach_keyword => detach = true,
+                        Rule::ident_list => {
+                            for id in child.into_inner() {
+                                if id.as_rule() == Rule::ident {
+                                    variables.push(id.as_str().to_string());
+                                }
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+                clauses.push(Clause::Delete { variables, detach });
+            }
+            Rule::return_clause => return_clause = Some(parse_return(inner)?),
+            Rule::order_by_clause => order_by = parse_order_by(inner)?,
+            Rule::skip_clause => skip = Some(parse_skip(inner)?),
+            Rule::limit_clause => limit = Some(parse_limit(inner)?),
+            _ => {}
+        }
+    }
+
+    Ok(MultiClauseStatement {
+        clauses,
+        return_clause,
         order_by,
         skip,
         limit,
@@ -589,6 +716,19 @@ fn parse_remove(pair: pest::iterators::Pair<Rule>) -> crate::types::Result<Remov
         skip,
         limit,
     })
+}
+
+/// Parse a remove_item_list into a Vec<RemoveItem>.
+fn parse_remove_item_list(
+    pair: pest::iterators::Pair<Rule>,
+) -> crate::types::Result<Vec<RemoveItem>> {
+    let mut items = Vec::new();
+    for item in pair.into_inner() {
+        if item.as_rule() == Rule::remove_item {
+            items.push(parse_remove_item(item)?);
+        }
+    }
+    Ok(items)
 }
 
 /// Parse a single remove item: either `n.prop` or `n:Label`.
@@ -2511,6 +2651,29 @@ pub fn resolve_params(
             skip: r.skip,
             limit: r.limit,
         })),
+        Statement::MultiClause(mc) => {
+            let clauses = mc
+                .clauses
+                .iter()
+                .map(|c| resolve_clause(c, params))
+                .collect::<crate::types::Result<Vec<_>>>()?;
+            Ok(Statement::MultiClause(MultiClauseStatement {
+                clauses,
+                return_clause: mc
+                    .return_clause
+                    .as_ref()
+                    .map(|rc| {
+                        Ok::<_, GraphError>(ReturnClause {
+                            items: resolve_return_items(&rc.items, params)?,
+                            distinct: rc.distinct,
+                        })
+                    })
+                    .transpose()?,
+                order_by: resolve_sort_items(&mc.order_by, params)?,
+                skip: mc.skip,
+                limit: mc.limit,
+            }))
+        }
         Statement::Explain(inner) => {
             Ok(Statement::Explain(Box::new(resolve_params(inner, params)?)))
         }
@@ -2524,5 +2687,66 @@ pub fn resolve_params(
                 all: *all,
             })
         }
+    }
+}
+
+/// Resolve parameters in a multi-clause Clause.
+fn resolve_clause(
+    clause: &Clause,
+    params: &HashMap<String, Value>,
+) -> crate::types::Result<Clause> {
+    match clause {
+        Clause::Match {
+            patterns,
+            optional_patterns,
+            where_clause,
+        } => Ok(Clause::Match {
+            patterns: resolve_patterns(patterns, params)?,
+            optional_patterns: optional_patterns
+                .iter()
+                .map(|om| resolve_optional_match(om, params))
+                .collect::<crate::types::Result<Vec<_>>>()?,
+            where_clause: where_clause
+                .as_ref()
+                .map(|e| resolve_expr(e, params))
+                .transpose()?,
+        }),
+        Clause::Create { patterns } => Ok(Clause::Create {
+            patterns: resolve_patterns(patterns, params)?,
+        }),
+        Clause::Merge {
+            pattern,
+            on_create,
+            on_match,
+        } => Ok(Clause::Merge {
+            pattern: resolve_pattern(pattern, params)?,
+            on_create: resolve_assignments(on_create, params)?,
+            on_match: resolve_assignments(on_match, params)?,
+        }),
+        Clause::With(with) => Ok(Clause::With(WithClause {
+            items: resolve_return_items(&with.items, params)?,
+            order_by: resolve_sort_items(&with.order_by, params)?,
+            skip: with.skip,
+            limit: with.limit,
+            where_clause: with
+                .where_clause
+                .as_ref()
+                .map(|e| resolve_expr(e, params))
+                .transpose()?,
+        })),
+        Clause::Unwind(uw) => Ok(Clause::Unwind(UnwindClause {
+            expr: resolve_expr(&uw.expr, params)?,
+            alias: uw.alias.clone(),
+        })),
+        Clause::Set { items } => Ok(Clause::Set {
+            items: resolve_set_items(items, params)?,
+        }),
+        Clause::Remove { items } => Ok(Clause::Remove {
+            items: items.clone(),
+        }),
+        Clause::Delete { variables, detach } => Ok(Clause::Delete {
+            variables: variables.clone(),
+            detach: *detach,
+        }),
     }
 }

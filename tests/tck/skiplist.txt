@@ -1,20 +1,7 @@
-Aggregation1 - Count::[1] Count only non-null values
 Aggregation1 - Count::[2] Counting loop relationships
-Aggregation2 - Min and Max::[10] `min()` over list values
-Aggregation2 - Min and Max::[11] `max()` over mixed values
 Aggregation2 - Min and Max::[12] `min()` over mixed values
-Aggregation2 - Min and Max::[1] `max()` over integers
-Aggregation2 - Min and Max::[2] `min()` over integers
-Aggregation2 - Min and Max::[3] `max()` over floats
-Aggregation2 - Min and Max::[4] `min()` over floats
-Aggregation2 - Min and Max::[5] `max()` over mixed numeric values
-Aggregation2 - Min and Max::[6] `min()` over mixed numeric values
-Aggregation2 - Min and Max::[7] `max()` over strings
-Aggregation2 - Min and Max::[8] `min()` over strings
 Aggregation2 - Min and Max::[9] `max()` over list values
-Aggregation3 - Sum::[1] Sum only non-null values
 Aggregation3 - Sum::[2] No overflow during summation
-Aggregation5 - Collect::[1] `collect()` filtering nulls
 Aggregation6 - Percentiles::[1] `percentileDisc()`
 Aggregation6 - Percentiles::[2] `percentileCont()`
 Aggregation6 - Percentiles::[3] `percentileCont()` failing on bad arguments
@@ -435,7 +422,6 @@ Null2 - IS NOT NULL validation::[1] Property not null check on non-null node
 Null2 - IS NOT NULL validation::[2] Property not null check on optional non-null node
 Null2 - IS NOT NULL validation::[3] Property not null check on null node
 Null2 - IS NOT NULL validation::[5] IS NOT NULL on a map
-Null3 - Null evaluation::[4] Using null in IN
 Path1 - Nodes of a path::[1] `nodes()` on null path
 Path2 - Relationships of a path::[1] Return relationships by fetching them from the path
 Path2 - Relationships of a path::[2] Return relationships by fetching them from the path - starting from the end

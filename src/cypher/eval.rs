@@ -30,6 +30,10 @@ pub fn eval_expr(expr: &Expr, record: &Record, conn: &Connection) -> crate::type
                     return Ok(node.properties.get(prop).cloned().unwrap_or(Value::Null));
                 }
             }
+            // Map property access: map.key
+            if let Some(Value::Map(map)) = record.get(var) {
+                return Ok(map.get(prop).cloned().unwrap_or(Value::Null));
+            }
             // Temporal component accessor: d.year, d.month, etc.
             if let Some(val) = record.get(var) {
                 if let Some(result) = temporal_accessor(val, prop) {

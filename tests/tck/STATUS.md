@@ -7,13 +7,13 @@ Last updated: 2026-04-19
 Full openCypher TCK vendored (220 feature files, commit `677cbaf`).
 
 ```
-125 features parsed (1 parse error: Match5.feature)
-1432 total scenario instances running
-1351 passed
+128 features parsed (1 parse error: Match5.feature)
+1452 total scenario instances running
+1371 passed
   81 skipped (cucumber-level)
- 966 skiplisted (known failures)
+ 952 skiplisted (known failures)
  ────
-1351/2398 unique scenarios passing (56.3%)
+1371/2404 unique scenarios passing (57.0%)
 ```
 
 ## Pass rate by area
@@ -89,6 +89,15 @@ The harness filters these out and exits non-zero only if a *non-skiplisted*
 scenario fails — making the TCK a regression gate.
 
 ## History
+
+### Phase 9 — Aggregation, ORDER BY, IS NULL, Parameters (2026-04-19)
+
+- [x] Fix aggregate column name mismatch (`max(*)` → `max(x)`) via `agg_col_name` helper
+- [x] Add Bool and List to `compare_values_for_sort` with Cypher type ordering
+- [x] Fix WITH clause ordering: WHERE before ORDER BY/SKIP/LIMIT
+- [x] Add map property access in eval (map.key patterns)
+- [x] Add `value_to_expr` for List/Map parameter resolution
+- Result: 1351 → 1371 passing scenarios (+20), skiplist 966 → 952
 
 ### Phase 8 — Temporal types (2026-04-19)
 

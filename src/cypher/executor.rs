@@ -714,10 +714,7 @@ fn exec_aggregate(
         // No grouping — aggregate over all records.
         let mut rec = Record::new();
         for agg in aggregates {
-            let col_name = agg
-                .alias
-                .clone()
-                .unwrap_or_else(|| format!("{}(*)", agg_fn_name(agg.function)));
+            let col_name = agg_col_name(agg);
             let val = compute_aggregate(agg, &records, conn)?;
             rec.set(col_name, val);
         }
@@ -767,10 +764,7 @@ fn exec_aggregate(
             }
         }
         for agg in aggregates {
-            let col_name = agg
-                .alias
-                .clone()
-                .unwrap_or_else(|| format!("{}(*)", agg_fn_name(agg.function)));
+            let col_name = agg_col_name(agg);
             let val = compute_aggregate(agg, group_records, conn)?;
             rec.set(col_name, val);
         }
@@ -2219,8 +2213,32 @@ fn value_less_than(a: &Value, b: &Value) -> bool {
     }
 }
 
+/// Cypher type ordering rank for cross-type comparisons.
+/// Order: Map < Node < Relationship < Path < List < String < Bool < Number < Null
+fn type_rank(v: &Value) -> u8 {
+    match v {
+        Value::Map(_) => 0,
+        Value::Node(_) => 1,
+        Value::Edge(_) => 2,
+        Value::Path(_) => 3,
+        Value::List(_) => 4,
+        Value::String(_) => 5,
+        Value::Bool(_) => 6,
+        Value::I64(_) | Value::F64(_) => 7,
+        Value::Null => 8,
+        // Temporal types grouped after numbers.
+        Value::Date(_)
+        | Value::LocalTime(_)
+        | Value::Time(_)
+        | Value::LocalDateTime(_)
+        | Value::DateTime(_)
+        | Value::Duration(_) => 7,
+    }
+}
+
 fn compare_values_for_sort(a: &Value, b: &Value) -> std::cmp::Ordering {
     match (a, b) {
+        (Value::Bool(a), Value::Bool(b)) => a.cmp(b),
         (Value::I64(a), Value::I64(b)) => a.cmp(b),
         (Value::F64(a), Value::F64(b)) => a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal),
         (Value::I64(a), Value::F64(b)) => (*a as f64)
@@ -2230,10 +2248,17 @@ fn compare_values_for_sort(a: &Value, b: &Value) -> std::cmp::Ordering {
             .partial_cmp(&(*b as f64))
             .unwrap_or(std::cmp::Ordering::Equal),
         (Value::String(a), Value::String(b)) => a.cmp(b),
-        (Value::Null, Value::Null) => std::cmp::Ordering::Equal,
-        (Value::Null, _) => std::cmp::Ordering::Greater, // nulls last
-        (_, Value::Null) => std::cmp::Ordering::Less,
-        _ => std::cmp::Ordering::Equal,
+        (Value::List(a), Value::List(b)) => {
+            for (x, y) in a.iter().zip(b.iter()) {
+                let ord = compare_values_for_sort(x, y);
+                if ord != std::cmp::Ordering::Equal {
+                    return ord;
+                }
+            }
+            a.len().cmp(&b.len())
+        }
+        // Different types: compare by type rank.
+        _ => type_rank(a).cmp(&type_rank(b)),
     }
 }
 
@@ -2409,4 +2434,16 @@ fn agg_fn_name(f: AggregateFunction) -> &'static str {
         AggregateFunction::Max => "max",
         AggregateFunction::Collect => "collect",
     }
+}
+
+/// Compute the column name for an aggregate expression, matching what
+/// `expr_to_column_name` produces for the original `FunctionCall` expression.
+fn agg_col_name(agg: &AggregateExpr) -> String {
+    agg.alias.clone().unwrap_or_else(|| {
+        let expr = crate::cypher::ast::Expr::FunctionCall {
+            name: agg_fn_name(agg.function).to_string(),
+            args: vec![agg.input.clone()],
+        };
+        expr_to_column_name(&expr)
+    })
 }

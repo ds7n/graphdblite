@@ -1,8 +1,8 @@
 # TCK Conformance Improvement Plan
 
-## Status: Phases 1-8 complete (2026-04-19)
+## Status: Phases 1-9 complete (2026-04-19)
 
-1351 scenarios passing, 966 skiplisted, 0 failures.
+1371 scenarios passing, 952 skiplisted, 0 failures.
 
 ---
 

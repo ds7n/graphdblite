@@ -368,15 +368,33 @@ fn plan_delete(conn: &Connection, stmt: &DeleteStatement) -> crate::types::Resul
         };
     }
 
-    Ok(LogicalOp::Delete {
+    let mut op = LogicalOp::Delete {
         input: Box::new(op),
         variables: stmt.variables.clone(),
         detach: stmt.detach,
-    })
+    };
+
+    if let Some(ref rc) = stmt.return_clause {
+        op = apply_return_projection(op, rc, &stmt.order_by, stmt.skip, stmt.limit)?;
+    }
+
+    Ok(op)
 }
 
 fn plan_set(conn: &Connection, stmt: &SetStatement) -> crate::types::Result<LogicalOp> {
     let mut op = plan_patterns(conn, &stmt.patterns)?;
+
+    // Optional MATCH clauses.
+    let mut bound_vars = collect_pattern_variables(&stmt.patterns);
+    for opt_patterns in &stmt.optional_patterns {
+        let (right, new_aliases) = plan_optional_patterns(conn, opt_patterns, &bound_vars)?;
+        op = LogicalOp::LeftOuterJoin {
+            input: Box::new(op),
+            right: Box::new(right),
+            optional_aliases: new_aliases.clone(),
+        };
+        bound_vars.extend(new_aliases);
+    }
 
     if let Some(ref predicate) = stmt.where_clause {
         op = LogicalOp::Filter {
@@ -385,10 +403,16 @@ fn plan_set(conn: &Connection, stmt: &SetStatement) -> crate::types::Result<Logi
         };
     }
 
-    Ok(LogicalOp::SetProperty {
+    let mut op = LogicalOp::SetProperty {
         input: Box::new(op),
         assignments: stmt.assignments.clone(),
-    })
+    };
+
+    if let Some(ref rc) = stmt.return_clause {
+        op = apply_return_projection(op, rc, &stmt.order_by, stmt.skip, stmt.limit)?;
+    }
+
+    Ok(op)
 }
 
 fn plan_remove(conn: &Connection, stmt: &RemoveStatement) -> crate::types::Result<LogicalOp> {

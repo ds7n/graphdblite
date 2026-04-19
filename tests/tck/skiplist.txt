@@ -125,20 +125,12 @@ Delete5 - Delete clause interoperation with built-in data types::[5] Detach dele
 Delete5 - Delete clause interoperation with built-in data types::[6] Delete relationships from nested map/list
 Delete5 - Delete clause interoperation with built-in data types::[7] Delete paths from nested map/list
 Delete5 - Delete clause interoperation with built-in data types::[8] Failing when using undefined variable in DELETE
-Delete6 - Persistence of delete clause side effects::[10] Skipping and limiting to a few results after deleting relationships affects the result set but not the side effects
-Delete6 - Persistence of delete clause side effects::[11] Skipping zero result and limiting to all results after deleting relationships does not affect the result set nor the side effects
 Delete6 - Persistence of delete clause side effects::[12] Filtering after deleting relationships affects the result set but not the side effects
 Delete6 - Persistence of delete clause side effects::[13] Aggregating in `RETURN` after deleting relationships affects the result set but not the side effects
 Delete6 - Persistence of delete clause side effects::[14] Aggregating in `WITH` after deleting relationships affects the result set but not the side effects
-Delete6 - Persistence of delete clause side effects::[1] Limiting to zero results after deleting nodes affects the result set but not the side effects
-Delete6 - Persistence of delete clause side effects::[2] Skipping all results after deleting nodes affects the result set but not the side effects
-Delete6 - Persistence of delete clause side effects::[3] Skipping and limiting to a few results after deleting nodes affects the result set but not the side effects
-Delete6 - Persistence of delete clause side effects::[4] Skipping zero results and limiting to all results after deleting nodes does not affect the result set nor the side effects
 Delete6 - Persistence of delete clause side effects::[5] Filtering after deleting nodes affects the result set but not the side effects
 Delete6 - Persistence of delete clause side effects::[6] Aggregating in `RETURN` after deleting nodes affects the result set but not the side effects
 Delete6 - Persistence of delete clause side effects::[7] Aggregating in `WITH` after deleting nodes affects the result set but not the side effects
-Delete6 - Persistence of delete clause side effects::[8] Limiting to zero results after deleting relationships affects the result set but not the side effects
-Delete6 - Persistence of delete clause side effects::[9] Skipping all results after deleting relationships affects the result set but not the side effects
 ExistentialSubquery1 - Simple existential subquery::[1] Simple subquery without WHERE clause
 ExistentialSubquery2 - Full existential subquery::[1] Full existential subquery
 ExistentialSubquery2 - Full existential subquery::[2] Full existential subquery with aggregation
@@ -611,15 +603,14 @@ ReturnSkipLimit2 - Limit::[8] Limit to more rows than actual results 2
 ReturnSkipLimit3 - Skip and limit::[2] Get rows in the middle by param
 ReturnSkipLimit3 - Skip and limit::[3] Limiting amount of rows when there are fewer left than the LIMIT argument
 Set1 - Set a Property::[10] Failing when setting a list of maps as a property
-Set1 - Set a Property::[11] Set multiple node properties
 Set1 - Set a Property::[1] Set a property
 Set1 - Set a Property::[2] Set a property to an expression
 Set1 - Set a Property::[3] Set a property by selecting the node using a simple expression
 Set1 - Set a Property::[4] Set a property by selecting the relationship using a simple expression
-Set1 - Set a Property::[5] Adding a list property
 Set1 - Set a Property::[6] Concatenate elements onto a list property
 Set1 - Set a Property::[7] Concatenate elements in reverse onto a list property
 Set1 - Set a Property::[8] Ignore null when setting property
+Set1 - Set a Property::[9] Failing when using undefined variable in SET
 Set2 - Set a Property to Null::[1] Setting a node property to null removes the existing property
 Set2 - Set a Property to Null::[2] Setting a node property to null removes the existing property, but not before SET
 Set2 - Set a Property to Null::[3] Setting a relationship property to null removes the existing property

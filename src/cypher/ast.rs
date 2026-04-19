@@ -77,7 +77,7 @@ pub struct MatchCreateStatement {
     pub limit: Option<u64>,
 }
 
-/// MATCH ... [DETACH] DELETE n, m
+/// MATCH ... [DETACH] DELETE n, m [RETURN ...]
 #[derive(Debug, Clone, PartialEq)]
 pub struct DeleteStatement {
     pub patterns: Vec<Pattern>,
@@ -85,14 +85,23 @@ pub struct DeleteStatement {
     pub where_clause: Option<Expr>,
     pub detach: bool,
     pub variables: Vec<String>,
+    pub return_clause: Option<ReturnClause>,
+    pub order_by: Vec<SortItem>,
+    pub skip: Option<u64>,
+    pub limit: Option<u64>,
 }
 
-/// MATCH ... SET n.prop = value
+/// MATCH ... SET n.prop = value [RETURN ...]
 #[derive(Debug, Clone, PartialEq)]
 pub struct SetStatement {
     pub patterns: Vec<Pattern>,
+    pub optional_patterns: Vec<Vec<Pattern>>,
     pub where_clause: Option<Expr>,
     pub assignments: Vec<Assignment>,
+    pub return_clause: Option<ReturnClause>,
+    pub order_by: Vec<SortItem>,
+    pub skip: Option<u64>,
+    pub limit: Option<u64>,
 }
 
 /// MATCH ... REMOVE n.prop, n:Label [RETURN ...]

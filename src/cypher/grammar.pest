@@ -104,7 +104,8 @@ delete_stmt = {
     ^"MATCH" ~ pattern_list ~
     optional_match_clause* ~
     where_clause? ~
-    detach_keyword? ~ ^"DELETE" ~ ident_list
+    detach_keyword? ~ ^"DELETE" ~ ident_list ~
+    (return_clause ~ order_by_clause? ~ skip_clause? ~ limit_clause?)?
 }
 
 detach_keyword = { ^"DETACH" }
@@ -113,8 +114,10 @@ detach_keyword = { ^"DETACH" }
 
 set_stmt = {
     ^"MATCH" ~ pattern_list ~
+    optional_match_clause* ~
     where_clause? ~
-    ^"SET" ~ assignment_list
+    ^"SET" ~ assignment_list ~
+    (return_clause ~ order_by_clause? ~ skip_clause? ~ limit_clause?)?
 }
 
 assignment_list = { assignment ~ ("," ~ assignment)* }

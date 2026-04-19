@@ -86,10 +86,9 @@ fn split_setup_statements(script: &str) -> Vec<String> {
         let current_starts_with_create = current_trimmed.starts_with("CREATE");
         let current_starts_with_unwind = current_trimmed.starts_with("UNWIND");
         let line_starts_with_create = trimmed.starts_with("CREATE");
-        let should_split = is_keyword_start
-            && !current.is_empty()
-            && !(current_starts_with_create && line_starts_with_create)
-            && !(current_starts_with_unwind && line_starts_with_create);
+        let keep_together =
+            line_starts_with_create && (current_starts_with_create || current_starts_with_unwind);
+        let should_split = is_keyword_start && !current.is_empty() && !keep_together;
         if should_split {
             stmts.push(current.clone());
             current.clear();

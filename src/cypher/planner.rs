@@ -893,7 +893,7 @@ fn plan_multi_clause(
                         on_match: on_match.clone(),
                     }
                 });
-                scope_vars.extend(collect_pattern_variables(&[pattern.clone()]));
+                scope_vars.extend(collect_pattern_variables(std::slice::from_ref(pattern)));
             }
             Clause::With(with) => {
                 let input = op.take().unwrap_or(LogicalOp::EmptyRow);

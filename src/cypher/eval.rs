@@ -423,14 +423,12 @@ fn eval_function_call(
                 let type_key = format!("{var}.__type");
                 let src_key = format!("{var}.__src");
                 if record.get(&type_key).is_some() && record.get(&src_key).is_some() {
-                    if let Some(compound) =
+                    if let Some(Value::Edge(e)) =
                         crate::cypher::executor::build_compound_binding(record, var)
                     {
-                        if let Value::Edge(e) = compound {
-                            let mut keys: Vec<String> = e.properties.keys().cloned().collect();
-                            keys.sort();
-                            return Ok(Value::List(keys.into_iter().map(Value::String).collect()));
-                        }
+                        let mut keys: Vec<String> = e.properties.keys().cloned().collect();
+                        keys.sort();
+                        return Ok(Value::List(keys.into_iter().map(Value::String).collect()));
                     }
                 }
                 // Map binding.
@@ -1261,7 +1259,7 @@ fn eval_arithmetic(
     }
 }
 
-//// Convert a Value to a three-valued boolean: Some(true), Some(false), or None (null).
+/// Convert a Value to a three-valued boolean: Some(true), Some(false), or None (null).
 /// Returns Err for non-boolean non-null values (InvalidArgumentType).
 fn to_tribool(v: &Value) -> crate::types::Result<Option<bool>> {
     match v {

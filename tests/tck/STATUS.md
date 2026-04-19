@@ -8,12 +8,12 @@ Full openCypher TCK vendored (220 feature files, commit `677cbaf`).
 
 ```
 130 features parsed (1 parse error: Match5.feature)
-1494 total scenario instances running
-1413 passed
-  81 skipped (cucumber-level)
- 920 skiplisted (known failures)
+2034 total scenario instances running
+1952 passed
+  82 skipped (cucumber-level)
+ 678 skiplisted (known failures)
  ────
-1413/2333 unique scenarios passing (60.6%)
+1952/2630 unique scenarios passing (74.2%)
 ```
 
 ## Pass rate by area
@@ -25,44 +25,44 @@ All running scenarios pass at 100%. The table below shows total scenarios
 
 | Area | Running | Skiplisted | Total |
 |------|--------:|-----------:|------:|
-| Match | 56 | 76 | 132 |
-| Literals | 122 | 9 | 131 |
-| WithOrderBy | 32 | 79 | 111 |
-| List | 46 | 62 | 108 |
-| Quantifier | 59 | 41 | 100 |
+| Literals | 122 | 0 | 122 |
+| Match | 68 | 52 | 120 |
+| Quantifier | 88 | 13 | 101 |
+| WithOrderBy | 29 | 74 | 103 |
+| List | 46 | 49 | 95 |
 | Temporal | 8 | 81 | 89 |
-| Create | 43 | 35 | 78 |
-| Merge | 25 | 50 | 75 |
-| Return | 25 | 38 | 63 |
-| Set | 3 | 49 | 52 |
-| Graph | 21 | 27 | 48 |
-| TypeConversion | 9 | 38 | 47 |
-| Precedence | 6 | 37 | 43 |
+| Create | 67 | 10 | 77 |
+| Merge | 46 | 27 | 73 |
+| Precedence | 43 | 0 | 43 |
+| Return | 24 | 28 | 52 |
+| TypeConversion | 40 | 8 | 48 |
+| Graph | 38 | 10 | 48 |
 | Call | 39 | 2 | 41 |
-| Boolean | 11 | 25 | 36 |
+| Set | 22 | 28 | 50 |
+| Boolean | 36 | 0 | 36 |
 | Pattern | 3 | 33 | 36 |
-| ReturnOrderBy | 21 | 14 | 35 |
-| MatchWhere | 10 | 24 | 34 |
-| Comparison | 10 | 23 | 33 |
-| Delete | 7 | 26 | 33 |
-| Remove | 21 | 12 | 33 |
+| Delete | 15 | 18 | 33 |
 | String | 29 | 3 | 32 |
+| Remove | 20 | 12 | 32 |
 | ReturnSkipLimit | 24 | 7 | 31 |
-| With | 15 | 14 | 29 |
-| Aggregation | 14 | 13 | 27 |
-| WithWhere | 4 | 15 | 19 |
-| Map | 3 | 16 | 19 |
+| Comparison | 26 | 0 | 26 |
+| ReturnOrderBy | 21 | 8 | 29 |
+| Aggregation | 22 | 5 | 27 |
+| With | 14 | 13 | 27 |
+| MatchWhere | 18 | 12 | 30 |
 | TriadicSelection | 0 | 19 | 19 |
-| Null | 8 | 8 | 16 |
+| Map | 3 | 13 | 16 |
+| WithWhere | 4 | 15 | 19 |
+| Null | 10 | 6 | 16 |
 | Unwind | 5 | 9 | 14 |
 | Union | 8 | 4 | 12 |
 | CountingSubgraphMatches | 4 | 7 | 11 |
 | ExistentialSubquery | 4 | 6 | 10 |
 | WithSkipLimit | 4 | 5 | 9 |
 | Path | 0 | 7 | 7 |
-| Mathematical | 2 | 4 | 6 |
+| Mathematical | 2 | 3 | 5 |
 | Conditional | 0 | 2 | 2 |
-| **Total** | **701** | **920** | **1621** |
+| **Total** | **952** | **678** | **1630** |
 
 ## Highest-impact work items
 
@@ -72,61 +72,104 @@ Regenerate with: `uv run tests/tck/analyze_blockers.py`
 
 | Sole | Impact | Construct |
 |-----:|-------:|-----------|
-| 139 | 294 | Write-clause RETURN side effects (CREATE/MERGE...RETURN) |
-| 30 | 49 | Temporal types |
-| 13 | 27 | CREATE (no RETURN) side effects |
-| 13 | 20 | Quantifier predicates (remaining) |
-| 10 | 12 | IN [list] |
-| 9 | 26 | IS NULL / IS NOT NULL |
-| 8 | 15 | Parameter $param |
+| 113 | 218 | write-result (CREATE/MERGE ... RETURN) |
+| 30 | 49 | temporal types |
 | 8 | 14 | ORDER BY |
-| 8 | 8 | List slicing [a..b] |
-| 6 | 18 | List functions |
-| 6 | 18 | String functions |
-| 5 | 33 | MERGE |
-| 5 | 10 | NOT prefix |
-| 4 | 7 | XOR |
-| 4 | 6 | Pattern comprehension |
+| 8 | 14 | parameter $param |
+| 7 | 7 | list slicing [a..b] |
+| 6 | 14 | list functions |
+| 5 | 6 | IN [list] |
+| 4 | 16 | MERGE |
 | 4 | 4 | UNION |
-| 2 | 5 | List indexing [n] |
-| 1 | 45 | OPTIONAL MATCH |
-| 1 | 31 | SET property/label |
-| 1 | 23 | Aggregation (non-count) |
+| 4 | 6 | pattern comprehension |
+| 4 | 4 | single()/none()/any()/all() |
+| 3 | 13 | CREATE (no RETURN) |
+| 2 | 4 | list indexing [n] |
 | 1 | 18 | DELETE/DETACH DELETE |
-| 1 | 5 | Float literal |
+| 1 | 18 | SET property/label |
+| 1 | 14 | aggregation (non-count) |
+| 1 | 13 | IS NULL / IS NOT NULL |
+| 1 | 4 | float literal |
+| 1 | 2 | math functions |
 | 1 | 1 | CASE/WHEN |
-| 1 | 1 | CONTAINS/STARTS/ENDS |
 
 ### High-impact (in scenarios with ≤2 missing constructs)
 
 | Impact | Construct |
 |-------:|-----------|
-| 294 | Write-clause RETURN side effects |
-| 49 | Temporal types |
-| 45 | OPTIONAL MATCH |
-| 33 | MERGE |
-| 31 | SET property/label |
-| 27 | CREATE (no RETURN) side effects |
-| 26 | IS NULL / IS NOT NULL |
-| 23 | Aggregation (non-count) |
-| 23 | Var-length rel `*` |
-| 20 | Quantifier predicates |
+| 218 | write-result (CREATE/MERGE ... RETURN) |
+| 49 | temporal types |
+| 23 | OPTIONAL MATCH |
+| 23 | var-length rel `*` |
 | 18 | DELETE/DETACH DELETE |
-| 18 | List functions |
-| 18 | String functions |
-| 15 | Parameter $param |
+| 18 | SET property/label |
+| 16 | MERGE |
+| 14 | aggregation (non-count) |
+| 14 | parameter $param |
 | 14 | ORDER BY |
-
-88 scenarios have 0 detected blockers (harness/comparison issues).
-52 skiplisted scenarios not matched to feature file.
+| 14 | list functions |
 
 ## Skiplist
 
-`skiplist.txt` lists 920 known-failing `Feature::Scenario` pairs.
+`skiplist.txt` lists 678 known-failing `Feature::Scenario` pairs.
 The harness filters these out and exits non-zero only if a *non-skiplisted*
 scenario fails — making the TCK a regression gate.
 
 ## History
+
+### Phase 17 — Quantifier edge cases, rand(), CASE+operator fix (2026-04-19)
+
+- [x] Add `rand()` function
+- [x] Fix CASE WHEN in arithmetic expressions (was short-circuiting in `cmp_primary`)
+- [x] Fix WITH alias shadowing in projection (coalesce(x, y) AS x)
+- Result: 1816 → 1952 passing scenarios (+136), skiplist 706 → 678
+
+### Phase 16 — TypeConversion + Graph functions (2026-04-19)
+
+- [x] Add `toBoolean()` function with TypeError for invalid types
+- [x] Fix `toInteger()`, `toFloat()`, `toString()` to raise TypeError for invalid types
+- [x] Add `properties()` function for nodes, edges, maps
+- [x] Add `relationships()` function for paths
+- [x] Fix `labels()`, `type()`, `keys()`, `id()` for compound Value types
+- [x] Add dynamic property access (`n['key']`)
+- [x] Add `with_stmt` grammar rule for standalone `WITH ... RETURN`
+- [x] Fix aggregate function name case sensitivity
+- Result: 1795 → 1816 passing scenarios (+21), skiplist 750 → 706
+
+### Phase 15 — Boolean/Comparison/Precedence overhaul (2026-04-19)
+
+- [x] Restructure expression precedence: `expr → xor → and → not → predicate → cmp → add → mul → exp → unary → atom`
+- [x] Add exponentiation operator (`^`)
+- [x] Add chained comparison desugaring (`a < b < c` → `a < b AND b < c`)
+- [x] Three-valued boolean type checking (AND/OR/XOR/NOT error on non-boolean)
+- [x] NaN handling (`0.0/0.0` → NaN, comparisons → false)
+- [x] Boolean/list ordering in comparisons
+- [x] Three-valued list and map equality with null propagation
+- Result: 1512 → 1795 passing scenarios (+283), skiplist 828 → 750
+
+### Phase 14 — Multi-clause CREATE/MERGE (2026-04-19)
+
+- [x] Add `multi_clause_stmt` grammar and `MultiClauseStatement` AST
+- [x] Multi-clause planner threading LogicalOp through CREATE/MERGE/WITH chains
+- [x] Relationship variable binding in CREATE/MERGE edge operations
+- [x] CREATE validation (VariableAlreadyBound) and null property handling
+- Result: 1468 → 1512 passing scenarios (+44), skiplist 873 → 828
+
+### Phase 13 — Aggregation DISTINCT + percentile/stdev (2026-04-19)
+
+- [x] Per-function DISTINCT (`count(DISTINCT x)`, `collect(DISTINCT x)`)
+- [x] Add `percentileDisc`, `percentileCont`, `stDev`, `stDevP` aggregation functions
+- [x] Thread `distinct: bool` and `extra_arg` through grammar → AST → IR → executor
+- Result: 1452 → 1468 passing scenarios (+16), skiplist 881 → 873
+
+### Phase 12 — OPTIONAL MATCH + SET extensions (2026-04-19)
+
+- [x] OPTIONAL MATCH: null property access, LeftOuterJoin null-filling, MaterializePath null handling
+- [x] Add `n:Label` predicate (has_label) in WHERE clauses
+- [x] OPTIONAL MATCH WHERE uses opt_filter (null-fill instead of drop rows)
+- [x] SET `n:Label`, `SET n = {map}`, `SET n += {map}` — new SetItem enum, grammar, parser, IR, planner, executor
+- [x] `add_node_label()` and `set_all_node_properties()` storage functions
+- Result: 1413 → 1452 passing scenarios (+39), skiplist 920 → 881
 
 ### Phase 11 — Write-clause RETURN support for SET and DELETE (2026-04-19)
 

@@ -1,8 +1,8 @@
 # TCK Conformance Improvement Plan
 
-## Status: Phases 1-11 complete (2026-04-19)
+## Status: Phases 1-17 complete (2026-04-19)
 
-1413 scenarios passing (60.6%), 920 skiplisted, 0 failures.
+1952 scenarios passing (74.2%), 678 skiplisted, 0 failures.
 
 ---
 
@@ -44,6 +44,47 @@ Three code fixes and a systematic skiplist sweep:
 - **Null property filtering**: `CREATE ({p: null})` no longer stores `p`. Added null check in `exec_create_sequence` and `exec_match_create` property loops.
 - **CREATE dedup**: `CREATE (a), (a)-[:R]->(b)` no longer creates duplicate nodes. `plan_create_pattern` tracks `seen` named variables across patterns, skipping `CreateNode` for already-seen aliases.
 - **Batch unskip**: Removed 45 confirmed-passing skiplist entries (Create1-6, Comparison2, List3, Literals7-8, Merge2-3-5-7, Precedence2, Return3-6, TypeConversion4, WithOrderBy3).
+
+### Phase 17: Quantifier edge cases, rand(), CASE+operator fix ✓
+
+- Added `rand()` function
+- Fixed CASE WHEN in arithmetic (was short-circuiting in `cmp_primary`)
+- Fixed WITH alias shadowing in projection (coalesce(x, y) AS x)
+- Result: 1816 → 1952 passing (+136), skiplist 706 → 678
+
+### Phase 16: TypeConversion + Graph functions ✓
+
+- Added `toBoolean()`, fixed `toInteger()`/`toFloat()`/`toString()` TypeError handling
+- Added `properties()`, `relationships()` functions
+- Fixed `labels()`, `type()`, `keys()`, `id()` for compound Value types
+- Added dynamic property access (`n['key']`)
+- Added `with_stmt` grammar rule for standalone `WITH ... RETURN`
+- Result: 1795 → 1816 passing (+21), skiplist 750 → 706
+
+### Phase 15: Boolean/Comparison/Precedence overhaul ✓
+
+- Restructured expression precedence hierarchy with exponentiation, chained comparisons
+- Three-valued boolean type checking, NaN handling, boolean/list ordering
+- Result: 1512 → 1795 passing (+283), skiplist 828 → 750
+
+### Phase 14: Multi-clause CREATE/MERGE ✓
+
+- `multi_clause_stmt` grammar and `MultiClauseStatement` AST
+- Relationship variable binding in CREATE/MERGE edge operations
+- CREATE validation (VariableAlreadyBound) and null property handling
+- Result: 1468 → 1512 passing (+44), skiplist 873 → 828
+
+### Phase 13: Aggregation DISTINCT + percentile/stdev ✓
+
+- Per-function DISTINCT, `percentileDisc`, `percentileCont`, `stDev`, `stDevP`
+- Result: 1452 → 1468 passing (+16), skiplist 881 → 873
+
+### Phase 12: OPTIONAL MATCH + SET extensions ✓
+
+- OPTIONAL MATCH null handling (property access, LeftOuterJoin, MaterializePath)
+- `n:Label` predicate in WHERE, opt_filter semantics
+- SET `n:Label`, `SET n = {map}`, `SET n += {map}` — full pipeline
+- Result: 1413 → 1452 passing (+39), skiplist 920 → 881
 
 ### Phase 11: Write-clause RETURN support for SET and DELETE ✓
 
@@ -103,41 +144,41 @@ Regenerate with: `uv run tests/tck/analyze_blockers.py`
 
 | Sole | Impact | Construct |
 |-----:|-------:|-----------|
-| 139 | 294 | Write-clause RETURN side effects (CREATE/MERGE...RETURN) |
-| 30 | 49 | Temporal types |
-| 13 | 27 | CREATE (no RETURN) side effects |
-| 13 | 20 | Quantifier predicates (remaining) |
-| 10 | 12 | IN [list] |
-| 9 | 26 | IS NULL / IS NOT NULL |
-| 8 | 15 | Parameter $param |
+| 113 | 218 | write-result (CREATE/MERGE ... RETURN) |
+| 30 | 49 | temporal types |
 | 8 | 14 | ORDER BY |
-| 8 | 8 | List slicing [a..b] |
-| 6 | 18 | List functions |
-| 6 | 18 | String functions |
-| 5 | 33 | MERGE |
-| 5 | 10 | NOT prefix |
+| 8 | 14 | parameter $param |
+| 7 | 7 | list slicing [a..b] |
+| 6 | 14 | list functions |
+| 5 | 6 | IN [list] |
+| 4 | 16 | MERGE |
+| 4 | 6 | pattern comprehension |
+| 3 | 13 | CREATE (no RETURN) |
+| 1 | 18 | DELETE/DETACH DELETE |
+| 1 | 18 | SET property/label |
+| 1 | 14 | aggregation (non-count) |
 
 ### Recommended next phases
 
-**Phase 12: Temporal types (remaining 30 sole-blockers, 49 impact)**
+**Phase 18: Temporal types (remaining 30 sole-blockers, 49 impact)**
 Map construction with week/ordinal dates, named timezones, storage round-trip,
 rendering, duration computation, truncation. Extends Phase 8 work.
 
-**Phase 13: OPTIONAL MATCH** (1 sole-blocker, 45 high-impact)
-Null propagation for unmatched optional patterns. High co-occurrence with
-other blockers (IS NULL, DELETE, SET, MatchWhere).
+**Phase 19: WithOrderBy/ORDER BY (74 skiplisted, 14 sole-blockers)**
+ORDER BY in WITH clauses — temporal sorting, mixed-type sorting, aggregation
+in WITH context, node/relationship sorting.
 
-**Phase 14: SET property/label grammar** (1 sole-blocker, 31 impact)
-Remaining SET scenarios need SET n:Label, SET n = {map}, SET n += {map}
-assignment grammar extensions beyond simple property SET.
+**Phase 20: List operations (49 skiplisted)**
+List slicing [a..b], list indexing error handling, list functions
+(range, reverse, tail), list/pattern comprehension.
 
-**Phase 15: Aggregation + DISTINCT** (1+4 sole-blockers, 23+8 impact)
-Remaining aggregation gaps (sum overflow, percentiles, mixed-type min/max)
-and DISTINCT in RETURN/WITH contexts.
+**Phase 21: Remaining write-result / side-effect issues (113 sole-blockers)**
+Many are harness categorization artifacts. Remaining real blockers:
+ON CREATE/ON MATCH SET with labels, MERGE path binding, snapshot isolation,
+multi-clause aggregation.
 
-**Phase 16: List operations** (list slicing [a..b], list indexing [n],
-range(), reverse(), tail(), list comprehension, pattern comprehension)
-Combined 20+ sole-blockers across list-related constructs.
+**Phase 22: Pattern features (33 skiplisted)**
+Pattern comprehension, pattern predicates. Requires deeper planner work.
 
 ## Critical files
 - `tests/tck_support/world.rs` — harness counts

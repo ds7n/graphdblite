@@ -45,6 +45,20 @@ Three code fixes and a systematic skiplist sweep:
 - **CREATE dedup**: `CREATE (a), (a)-[:R]->(b)` no longer creates duplicate nodes. `plan_create_pattern` tracks `seen` named variables across patterns, skipping `CreateNode` for already-seen aliases.
 - **Batch unskip**: Removed 45 confirmed-passing skiplist entries (Create1-6, Comparison2, List3, Literals7-8, Merge2-3-5-7, Precedence2, Return3-6, TypeConversion4, WithOrderBy3).
 
+### Phase 9: Aggregation, ORDER BY, IS NULL, Parameters (partial) ✓
+
+Five targeted fixes:
+- **Aggregate column name mismatch**: `exec_aggregate` was storing results as `max(*)` but `exec_project` looked up `max(x)`. New `agg_col_name` helper uses `expr_to_column_name` for consistency. Unlocked 13 aggregation scenarios (Count, Min/Max, Sum, Collect).
+- **Sort comparator**: Added `Value::Bool` and `Value::List` to `compare_values_for_sort`, plus Cypher cross-type ordering via `type_rank()`.
+- **WITH clause ordering**: Moved WHERE filter before ORDER BY/SKIP/LIMIT in `plan_with` per Cypher spec.
+- **Map property access**: `Expr::Property(var, prop)` now checks if `var` is bound to a `Value::Map` and extracts the key. Fixes `map.key IS NULL` patterns.
+- **Parameter resolution**: Replaced `value_to_literal` with `value_to_expr` to support List/Map parameter values.
+
+Remaining blockers discovered:
+- WithOrderBy (101 scenarios): All use `UNWIND...WITH...ORDER BY...RETURN` — the `unwind_stmt` grammar only supports `UNWIND...RETURN` or `UNWIND...CREATE`, not intermediate WITH clauses.
+- Parameters: Most scenarios need `n[$param]` dynamic property access (subscript on node/map with parameter index), which is a deeper eval issue.
+- IS NULL: Remaining scenarios involve OPTIONAL MATCH null propagation edge cases.
+
 ### Phase 8: Temporal types ✓
 
 Full temporal type system: 6 wrapper types in `src/temporal.rs` (CypherDate, CypherLocalTime, CypherTime, CypherLocalDateTime, CypherDateTime, CypherDuration). ISO 8601 parsing (calendar, week, ordinal dates; colon/compact time formats), map construction, Display, Serialize/Deserialize for MessagePack storage. Value enum extended with 6 temporal variants. Temporal constructor functions (date, localtime, time, localdatetime, datetime, duration) with string and map dispatch. Dotted function grammar rule for `datetime.fromepoch`/`datetime.fromepochmillis`. Temporal component accessors (d.year, t.hour, etc.). Comparison operators for temporal types. TCK harness updated for temporal-vs-string comparison.

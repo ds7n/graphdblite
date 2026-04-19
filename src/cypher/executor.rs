@@ -208,6 +208,7 @@ fn exec(conn: &Connection, plan: &LogicalOp, ctx: &ExecContext) -> Result<Vec<Re
             dst_alias,
             edge_type,
             properties,
+            ..
         } => exec_create_edge(conn, src_alias, dst_alias, edge_type, properties),
 
         LogicalOp::CreateSequence { ops } => exec_create_sequence(conn, ops),
@@ -1148,6 +1149,7 @@ fn exec_create_sequence(conn: &Connection, ops: &[LogicalOp]) -> Result<Vec<Reco
                 src_alias,
                 dst_alias,
                 edge_type,
+                rel_alias,
                 properties,
             } => {
                 let src = bindings.get(src_alias).ok_or_else(|| {
@@ -1165,7 +1167,20 @@ fn exec_create_sequence(conn: &Connection, ops: &[LogicalOp]) -> Result<Vec<Reco
                     }
                     props.insert(key.clone(), val);
                 }
-                edge::create_edge(conn, *src, *dst, edge_type, props)?;
+                edge::create_edge(conn, *src, *dst, edge_type, props.clone())?;
+                // Bind edge metadata for RETURN access.
+                if let Some(r_alias) = rel_alias {
+                    last_record.set(r_alias.clone(), Value::String(edge_type.clone()));
+                    last_record.set(format!("{r_alias}.__src"), Value::I64(src.0 as i64));
+                    last_record.set(format!("{r_alias}.__dst"), Value::I64(dst.0 as i64));
+                    last_record.set(
+                        format!("{r_alias}.__type"),
+                        Value::String(edge_type.clone()),
+                    );
+                    for (key, val) in &props {
+                        last_record.set(format!("{r_alias}.{key}"), val.clone());
+                    }
+                }
             }
             _ => {
                 // Shouldn't happen in a CreateSequence.
@@ -1234,6 +1249,7 @@ fn exec_match_create(
                     src_alias,
                     dst_alias,
                     edge_type,
+                    rel_alias,
                     properties,
                 } => {
                     let src = bindings.get(src_alias).ok_or_else(|| {
@@ -1250,7 +1266,20 @@ fn exec_match_create(
                         }
                         props.insert(key.clone(), val);
                     }
-                    edge::create_edge(conn, *src, *dst, edge_type, props)?;
+                    edge::create_edge(conn, *src, *dst, edge_type, props.clone())?;
+                    // Bind edge metadata for RETURN access.
+                    if let Some(r_alias) = rel_alias {
+                        out_rec.set(r_alias.clone(), Value::String(edge_type.clone()));
+                        out_rec.set(format!("{r_alias}.__src"), Value::I64(src.0 as i64));
+                        out_rec.set(format!("{r_alias}.__dst"), Value::I64(dst.0 as i64));
+                        out_rec.set(
+                            format!("{r_alias}.__type"),
+                            Value::String(edge_type.clone()),
+                        );
+                        for (key, val) in &props {
+                            out_rec.set(format!("{r_alias}.{key}"), val.clone());
+                        }
+                    }
                 }
                 _ => {}
             }
@@ -1867,7 +1896,7 @@ fn exec_match_merge(
             _ => continue,
         };
 
-        let out_rec = rec.clone();
+        let mut out_rec = rec.clone();
 
         if !edge::edge_exists(conn, src_id, dst_id, &edge_type)? {
             let mut props = Properties::new();
@@ -1898,6 +1927,22 @@ fn exec_match_merge(
                     &assignment.property,
                     val,
                 )?;
+            }
+        }
+
+        // Bind the relationship variable (if any) so RETURN can reference it.
+        if let Some(ref r_alias) = rel.variable {
+            out_rec.set(r_alias.clone(), Value::String(edge_type.clone()));
+            out_rec.set(format!("{r_alias}.__src"), Value::I64(src_id.0 as i64));
+            out_rec.set(format!("{r_alias}.__dst"), Value::I64(dst_id.0 as i64));
+            out_rec.set(
+                format!("{r_alias}.__type"),
+                Value::String(edge_type.clone()),
+            );
+            // Include edge properties in the record.
+            let edge_props = edge::get_edge_properties(conn, src_id, dst_id, &edge_type)?;
+            for (key, val) in &edge_props {
+                out_rec.set(format!("{r_alias}.{key}"), val.clone());
             }
         }
 

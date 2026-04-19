@@ -97,6 +97,7 @@ pub enum LogicalOp {
         src_alias: String,
         dst_alias: String,
         edge_type: String,
+        rel_alias: Option<String>,
         properties: HashMap<String, Expr>,
     },
 

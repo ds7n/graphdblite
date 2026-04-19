@@ -1763,6 +1763,7 @@ fn plan_create_pattern_with_counter(
                     src_alias: src,
                     dst_alias: dst,
                     edge_type: rel.rel_types.first().cloned().unwrap_or_default(),
+                    rel_alias: rel.variable.clone(),
                     properties: rel.properties.clone(),
                 });
 

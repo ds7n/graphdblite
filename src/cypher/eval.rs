@@ -841,10 +841,41 @@ fn eval_binop(left: &Value, op: BinOp, right: &Value) -> crate::types::Result<Va
             }
             _ => Ok(Value::Null),
         },
-        BinOp::Add => eval_arithmetic(left, right, |a, b| a + b, |a, b| a + b),
-        BinOp::Sub => eval_arithmetic(left, right, |a, b| a - b, |a, b| a - b),
-        BinOp::Mul => eval_arithmetic(left, right, |a, b| a * b, |a, b| a * b),
+        BinOp::Add => {
+            if let Some(result) = eval_temporal_add(left, right) {
+                result
+            } else {
+                eval_arithmetic(left, right, |a, b| a + b, |a, b| a + b)
+            }
+        }
+        BinOp::Sub => {
+            if let Some(result) = eval_temporal_sub(left, right) {
+                result
+            } else {
+                eval_arithmetic(left, right, |a, b| a - b, |a, b| a - b)
+            }
+        }
+        BinOp::Mul => {
+            // Duration * Number
+            if let Some(result) = eval_duration_mul(left, right) {
+                result
+            } else {
+                eval_arithmetic(left, right, |a, b| a * b, |a, b| a * b)
+            }
+        }
         BinOp::Div => {
+            // Duration / Number.
+            if let (Value::Duration(d), Value::I64(n)) = (left, right) {
+                if *n == 0 {
+                    return Ok(Value::Null);
+                }
+                return Ok(Value::Duration(crate::temporal::CypherDuration {
+                    months: d.months / n,
+                    days: d.days / n,
+                    seconds: d.seconds / n,
+                    nanos: d.nanos / n,
+                }));
+            }
             // Division by zero → Null (Cypher semantics).
             match (left, right) {
                 (Value::Null, _) | (_, Value::Null) => Ok(Value::Null),
@@ -1062,6 +1093,139 @@ pub fn expr_to_column_name(expr: &Expr) -> String {
         }
         _ => "_expr".to_string(),
     }
+}
+
+/// Temporal + Duration arithmetic. Returns Some if handled, None to fall through.
+fn eval_temporal_add(left: &Value, right: &Value) -> Option<crate::types::Result<Value>> {
+    use crate::temporal::{
+        CypherDate, CypherDateTime, CypherDuration, CypherLocalDateTime, CypherLocalTime,
+    };
+    use chrono::{Months, NaiveDateTime};
+
+    match (left, right) {
+        (Value::Duration(a), Value::Duration(b)) => Some(Ok(Value::Duration(CypherDuration {
+            months: a.months + b.months,
+            days: a.days + b.days,
+            seconds: a.seconds + b.seconds,
+            nanos: a.nanos + b.nanos,
+        }))),
+        (Value::Date(d), Value::Duration(dur)) | (Value::Duration(dur), Value::Date(d)) => {
+            let mut date = d.0;
+            if dur.months != 0 {
+                if dur.months > 0 {
+                    date = date
+                        .checked_add_months(Months::new(dur.months as u32))
+                        .unwrap_or(date);
+                } else {
+                    date = date
+                        .checked_sub_months(Months::new((-dur.months) as u32))
+                        .unwrap_or(date);
+                }
+            }
+            date += chrono::Duration::days(dur.days);
+            date = date
+                + chrono::Duration::seconds(dur.seconds)
+                + chrono::Duration::nanoseconds(dur.nanos);
+            Some(Ok(Value::Date(CypherDate(date))))
+        }
+        (Value::LocalTime(t), Value::Duration(dur))
+        | (Value::Duration(dur), Value::LocalTime(t)) => {
+            let time = t.0
+                + chrono::Duration::seconds(dur.seconds)
+                + chrono::Duration::nanoseconds(dur.nanos);
+            Some(Ok(Value::LocalTime(CypherLocalTime(time))))
+        }
+        (Value::LocalDateTime(dt), Value::Duration(dur))
+        | (Value::Duration(dur), Value::LocalDateTime(dt)) => {
+            let mut date = dt.0.date();
+            if dur.months != 0 {
+                if dur.months > 0 {
+                    date = date
+                        .checked_add_months(Months::new(dur.months as u32))
+                        .unwrap_or(date);
+                } else {
+                    date = date
+                        .checked_sub_months(Months::new((-dur.months) as u32))
+                        .unwrap_or(date);
+                }
+            }
+            date += chrono::Duration::days(dur.days);
+            let ndt = NaiveDateTime::new(date, dt.0.time())
+                + chrono::Duration::seconds(dur.seconds)
+                + chrono::Duration::nanoseconds(dur.nanos);
+            Some(Ok(Value::LocalDateTime(CypherLocalDateTime(ndt))))
+        }
+        (Value::DateTime(dt), Value::Duration(dur))
+        | (Value::Duration(dur), Value::DateTime(dt)) => {
+            let mut date = dt.0.date();
+            if dur.months != 0 {
+                if dur.months > 0 {
+                    date = date
+                        .checked_add_months(Months::new(dur.months as u32))
+                        .unwrap_or(date);
+                } else {
+                    date = date
+                        .checked_sub_months(Months::new((-dur.months) as u32))
+                        .unwrap_or(date);
+                }
+            }
+            date += chrono::Duration::days(dur.days);
+            let ndt = NaiveDateTime::new(date, dt.0.time())
+                + chrono::Duration::seconds(dur.seconds)
+                + chrono::Duration::nanoseconds(dur.nanos);
+            Some(Ok(Value::DateTime(CypherDateTime(ndt, dt.1, dt.2.clone()))))
+        }
+        _ => None,
+    }
+}
+
+/// Temporal - Duration subtraction. Returns Some if handled.
+fn eval_temporal_sub(left: &Value, right: &Value) -> Option<crate::types::Result<Value>> {
+    use crate::temporal::CypherDuration;
+
+    match (left, right) {
+        (Value::Duration(a), Value::Duration(b)) => Some(Ok(Value::Duration(CypherDuration {
+            months: a.months - b.months,
+            days: a.days - b.days,
+            seconds: a.seconds - b.seconds,
+            nanos: a.nanos - b.nanos,
+        }))),
+        (_, Value::Duration(dur)) => {
+            // Temporal - Duration → negate duration and add.
+            let neg = CypherDuration {
+                months: -dur.months,
+                days: -dur.days,
+                seconds: -dur.seconds,
+                nanos: -dur.nanos,
+            };
+            eval_temporal_add(left, &Value::Duration(neg))
+        }
+        _ => None,
+    }
+}
+
+/// Duration * Number. Returns Some if handled.
+fn eval_duration_mul(left: &Value, right: &Value) -> Option<crate::types::Result<Value>> {
+    use crate::temporal::CypherDuration;
+
+    let (dur, n) = match (left, right) {
+        (Value::Duration(d), Value::I64(n)) | (Value::I64(n), Value::Duration(d)) => (d, *n),
+        (Value::Duration(d), Value::F64(n)) | (Value::F64(n), Value::Duration(d)) => {
+            return Some(Ok(Value::Duration(CypherDuration {
+                months: (d.months as f64 * n) as i64,
+                days: (d.days as f64 * n) as i64,
+                seconds: (d.seconds as f64 * n) as i64,
+                nanos: (d.nanos as f64 * n) as i64,
+            })));
+        }
+        _ => return None,
+    };
+    Some(Ok(Value::Duration(CypherDuration {
+        months: dur.months * n,
+        days: dur.days * n,
+        seconds: dur.seconds * n,
+        nanos: dur.nanos * n,
+    })))
 }
 
 /// Extract a temporal component accessor (e.g., `d.year`, `t.hour`).

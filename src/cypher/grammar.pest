@@ -48,7 +48,11 @@ unwind_stmt = {
     (unwind_create | unwind_return)
 }
 
-unwind_create = { ^"CREATE" ~ create_pattern_list ~ (return_clause ~ order_by_clause? ~ skip_clause? ~ limit_clause?)? }
+unwind_create = {
+    ^"CREATE" ~ create_pattern_list ~
+    ((with_clause ~ match_part?) | unwind_clause)* ~
+    (return_clause ~ order_by_clause? ~ skip_clause? ~ limit_clause?)?
+}
 
 unwind_return = {
     where_clause? ~

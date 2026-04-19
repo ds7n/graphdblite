@@ -168,6 +168,7 @@ pub enum UnwindBody {
     },
     Create {
         patterns: Vec<Pattern>,
+        intermediate_clauses: Vec<IntermediateClause>,
         return_clause: Option<ReturnClause>,
         order_by: Vec<SortItem>,
         skip: Option<u64>,

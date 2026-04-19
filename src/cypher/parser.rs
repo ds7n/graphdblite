@@ -804,6 +804,7 @@ fn parse_unwind(pair: pest::iterators::Pair<Rule>) -> crate::types::Result<Unwin
             Rule::ident => alias = Some(inner.as_str().to_string()),
             Rule::unwind_return => {
                 let mut where_clause = None;
+                let mut intermediate_clauses = Vec::new();
                 let mut return_clause = None;
                 let mut order_by = Vec::new();
                 let mut skip = None;
@@ -811,6 +812,23 @@ fn parse_unwind(pair: pest::iterators::Pair<Rule>) -> crate::types::Result<Unwin
                 for child in inner.into_inner() {
                     match child.as_rule() {
                         Rule::where_clause => where_clause = Some(parse_where(child)?),
+                        Rule::with_clause => {
+                            intermediate_clauses.push(IntermediateClause::With(parse_with(child)?));
+                        }
+                        Rule::match_part => {
+                            let (mp_patterns, mp_optional, mp_where) = parse_match_part(child)?;
+                            intermediate_clauses.push(IntermediateClause::Match(
+                                IntermediateMatch {
+                                    patterns: mp_patterns,
+                                    optional_patterns: mp_optional,
+                                    where_clause: mp_where,
+                                },
+                            ));
+                        }
+                        Rule::unwind_clause => {
+                            intermediate_clauses
+                                .push(IntermediateClause::Unwind(parse_unwind_clause(child)?));
+                        }
                         Rule::return_clause => return_clause = Some(parse_return(child)?),
                         Rule::order_by_clause => order_by = parse_order_by(child)?,
                         Rule::skip_clause => skip = Some(parse_skip(child)?),
@@ -820,6 +838,7 @@ fn parse_unwind(pair: pest::iterators::Pair<Rule>) -> crate::types::Result<Unwin
                 }
                 body = Some(UnwindBody::Return {
                     where_clause,
+                    intermediate_clauses,
                     return_clause: return_clause.ok_or_else(|| {
                         GraphError::Serialization("missing RETURN clause in UNWIND".to_string())
                     })?,
@@ -2183,6 +2202,7 @@ pub fn resolve_params(
             let body = match &u.body {
                 UnwindBody::Return {
                     where_clause,
+                    intermediate_clauses,
                     return_clause,
                     order_by,
                     skip,
@@ -2192,6 +2212,10 @@ pub fn resolve_params(
                         .as_ref()
                         .map(|e| resolve_expr(e, params))
                         .transpose()?,
+                    intermediate_clauses: resolve_intermediate_clauses(
+                        intermediate_clauses,
+                        params,
+                    )?,
                     return_clause: ReturnClause {
                         items: resolve_return_items(&return_clause.items, params)?,
                         distinct: return_clause.distinct,

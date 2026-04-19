@@ -829,7 +829,6 @@ With6 - Implicit grouping with aggregates::[5] Handle constants and parameters i
 With6 - Implicit grouping with aggregates::[8] Fail if not projected variables are used inside an expression which contains an aggregation expression
 With6 - Implicit grouping with aggregates::[9] Fail if more complex expression, even if projected, are used inside expression which contains an aggregation expression
 With7 - WITH on WITH::[2] Multiple WITHs using a predicate and aggregation
-WithOrderBy1 - Order by a single variable::[10] Sort lists in descending order
 WithOrderBy1 - Order by a single variable::[11] Sort dates in ascending order
 WithOrderBy1 - Order by a single variable::[12] Sort dates in descending order
 WithOrderBy1 - Order by a single variable::[13] Sort local times in ascending order
@@ -839,7 +838,6 @@ WithOrderBy1 - Order by a single variable::[16] Sort times in descending order
 WithOrderBy1 - Order by a single variable::[17] Sort local date times in ascending order
 WithOrderBy1 - Order by a single variable::[18] Sort local date times in descending order
 WithOrderBy1 - Order by a single variable::[19] Sort date times in ascending order
-WithOrderBy1 - Order by a single variable::[1] Sort booleans in ascending order
 WithOrderBy1 - Order by a single variable::[20] Sort date times in descending order
 WithOrderBy1 - Order by a single variable::[21] Sort distinct types in ascending order
 WithOrderBy1 - Order by a single variable::[22] Sort distinct types in descending order
@@ -850,7 +848,6 @@ WithOrderBy1 - Order by a single variable::[26] Sort by an integer variable proj
 WithOrderBy1 - Order by a single variable::[27] Sort by a float variable projected from a node property in ascending order
 WithOrderBy1 - Order by a single variable::[28] Sort by a float variable projected from a node property in descending order
 WithOrderBy1 - Order by a single variable::[29] Sort by a string variable projected from a node property in ascending order
-WithOrderBy1 - Order by a single variable::[2] Sort booleans in descending order
 WithOrderBy1 - Order by a single variable::[30] Sort by a string variable projected from a node property in descending order
 WithOrderBy1 - Order by a single variable::[31] Sort by a list variable projected from a node property in ascending order
 WithOrderBy1 - Order by a single variable::[32] Sort by a list variable projected from a node property in descending order
@@ -861,11 +858,9 @@ WithOrderBy1 - Order by a single variable::[36] Sort by a local time variable pr
 WithOrderBy1 - Order by a single variable::[37] Sort by a time variable projected from a node property in ascending order
 WithOrderBy1 - Order by a single variable::[38] Sort by a time variable projected from a node property in descending order
 WithOrderBy1 - Order by a single variable::[39] Sort by a local date time variable projected from a node property in ascending order
-WithOrderBy1 - Order by a single variable::[3] Sort integers in ascending order
 WithOrderBy1 - Order by a single variable::[40] Sort by a local date time variable projected from a node property in descending order
 WithOrderBy1 - Order by a single variable::[41] Sort by a date time variable projected from a node property in ascending order
 WithOrderBy1 - Order by a single variable::[42] Sort by a date time variable projected from a node property in descending order
-WithOrderBy1 - Order by a single variable::[43] Sort by a variable that is only partially orderable on a non-distinct binding table
 WithOrderBy1 - Order by a single variable::[44] Sort by a variable that is only partially orderable on a non-distinct binding table, but made distinct
 WithOrderBy1 - Order by a single variable::[45] Sort order should be consistent with comparisons where comparisons are defined #Example: booleans
 WithOrderBy1 - Order by a single variable::[45] Sort order should be consistent with comparisons where comparisons are defined #Example: dates
@@ -879,12 +874,6 @@ WithOrderBy1 - Order by a single variable::[45] Sort order should be consistent 
 WithOrderBy1 - Order by a single variable::[45] Sort order should be consistent with comparisons where comparisons are defined #Example: times
 WithOrderBy1 - Order by a single variable::[46] Fail on sorting by an undefined variable #Example: never defined
 WithOrderBy1 - Order by a single variable::[46] Fail on sorting by an undefined variable #Example: out of scope
-WithOrderBy1 - Order by a single variable::[4] Sort integers in descending order
-WithOrderBy1 - Order by a single variable::[5] Sort floats in ascending order
-WithOrderBy1 - Order by a single variable::[6] Sort floats in descending order
-WithOrderBy1 - Order by a single variable::[7] Sort strings in ascending order
-WithOrderBy1 - Order by a single variable::[8] Sort strings in descending order
-WithOrderBy1 - Order by a single variable::[9] Sort lists in ascending order
 WithOrderBy2 - Order by a single expression::[10] Sort by a list expression in descending order
 WithOrderBy2 - Order by a single expression::[11] Sort by a date expression in ascending order
 WithOrderBy2 - Order by a single expression::[12] Sort by a date expression in descending order
@@ -915,7 +904,6 @@ WithOrderBy3 - Order by multiple expressions::[2] Sort by two expressions, first
 WithOrderBy3 - Order by multiple expressions::[3] Sort by two expressions, first in descending order, second in ascending order
 WithOrderBy3 - Order by multiple expressions::[4] Sort by two expressions, both in descending order
 WithOrderBy3 - Order by multiple expressions::[6] An constant expression does not influence the order determined by other expression before and after the constant expression
-WithOrderBy3 - Order by multiple expressions::[7] The order direction cannot be overwritten
 WithOrderBy4 - Order by in combination with projection and aliasing::[10] Sort by a non-projected expression containing an alias of a projected expression containing the variable shadowed by the alias
 WithOrderBy4 - Order by in combination with projection and aliasing::[11] Sort by an aggregate projection
 WithOrderBy4 - Order by in combination with projection and aliasing::[12] Sort by an aliased aggregate projection

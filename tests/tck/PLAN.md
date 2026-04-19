@@ -2,7 +2,7 @@
 
 ## Status: Phases 1-9 complete (2026-04-19)
 
-1371 scenarios passing, 952 skiplisted, 0 failures.
+1393 scenarios passing, 940 skiplisted, 0 failures.
 
 ---
 
@@ -54,8 +54,10 @@ Five targeted fixes:
 - **Map property access**: `Expr::Property(var, prop)` now checks if `var` is bound to a `Value::Map` and extracts the key. Fixes `map.key IS NULL` patterns.
 - **Parameter resolution**: Replaced `value_to_literal` with `value_to_expr` to support List/Map parameter values.
 
-Remaining blockers discovered:
-- WithOrderBy (101 scenarios): All use `UNWIND...WITH...ORDER BY...RETURN` — the `unwind_stmt` grammar only supports `UNWIND...RETURN` or `UNWIND...CREATE`, not intermediate WITH clauses.
+- **UNWIND...WITH grammar extension**: Extended `unwind_return` grammar rule to support intermediate WITH/MATCH/UNWIND clauses before RETURN, mirroring `match_stmt`. Updated planner to apply intermediate clauses in `plan_unwind`. Unlocked 12 WithOrderBy scenarios (boolean, integer, float, string sorting).
+
+Remaining blockers:
+- WithOrderBy (89 scenarios): Need temporal sorting, mixed-type sorting, aggregation in WITH context, node/relationship sorting.
 - Parameters: Most scenarios need `n[$param]` dynamic property access (subscript on node/map with parameter index), which is a deeper eval issue.
 - IS NULL: Remaining scenarios involve OPTIONAL MATCH null propagation edge cases.
 

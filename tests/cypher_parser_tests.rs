@@ -113,7 +113,7 @@ fn parse_match_with_count() {
         Statement::Match(m) => {
             let item = &m.return_clause.items[0];
             match &item.expr {
-                Expr::FunctionCall { name, args } => {
+                Expr::FunctionCall { name, args, .. } => {
                     assert_eq!(name, "count");
                     assert_eq!(args.len(), 1);
                     assert!(matches!(args[0], Expr::Star));

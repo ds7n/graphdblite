@@ -811,12 +811,33 @@ fn exec_aggregate(
 }
 
 fn compute_aggregate(agg: &AggregateExpr, records: &[Record], conn: &Connection) -> Result<Value> {
+    // When DISTINCT is set, deduplicate input values (skip nulls).
+    let deduped_records: Vec<Record>;
+    let effective_records = if agg.distinct && !matches!(agg.input, Expr::Star) {
+        let mut seen: Vec<Value> = Vec::new();
+        let mut kept = Vec::new();
+        for rec in records {
+            let val = eval_expr(&agg.input, rec, conn)?;
+            if matches!(val, Value::Null) {
+                continue;
+            }
+            if !seen.contains(&val) {
+                seen.push(val);
+                kept.push(rec.clone());
+            }
+        }
+        deduped_records = kept;
+        &deduped_records
+    } else {
+        records
+    };
+
     match agg.function {
         AggregateFunction::Count => {
             if matches!(agg.input, Expr::Star) {
-                Ok(Value::I64(records.len() as i64))
+                Ok(Value::I64(effective_records.len() as i64))
             } else {
-                let count = records
+                let count = effective_records
                     .iter()
                     .filter(|r| !matches!(eval_expr(&agg.input, r, conn), Ok(Value::Null)))
                     .count();
@@ -827,7 +848,7 @@ fn compute_aggregate(agg: &AggregateExpr, records: &[Record], conn: &Connection)
             let mut i64_sum: i64 = 0;
             let mut f64_sum: f64 = 0.0;
             let mut all_integer = true;
-            for rec in records {
+            for rec in effective_records {
                 match eval_expr(&agg.input, rec, conn)? {
                     Value::I64(n) => {
                         i64_sum = i64_sum.wrapping_add(n);
@@ -849,7 +870,7 @@ fn compute_aggregate(agg: &AggregateExpr, records: &[Record], conn: &Connection)
         AggregateFunction::Avg => {
             let mut sum = 0.0f64;
             let mut count = 0;
-            for rec in records {
+            for rec in effective_records {
                 match eval_expr(&agg.input, rec, conn)? {
                     Value::I64(n) => {
                         sum += n as f64;
@@ -870,7 +891,7 @@ fn compute_aggregate(agg: &AggregateExpr, records: &[Record], conn: &Connection)
         }
         AggregateFunction::Min => {
             let mut min: Option<Value> = None;
-            for rec in records {
+            for rec in effective_records {
                 let val = eval_expr(&agg.input, rec, conn)?;
                 if !matches!(val, Value::Null) {
                     min = Some(match min {
@@ -889,7 +910,7 @@ fn compute_aggregate(agg: &AggregateExpr, records: &[Record], conn: &Connection)
         }
         AggregateFunction::Max => {
             let mut max: Option<Value> = None;
-            for rec in records {
+            for rec in effective_records {
                 let val = eval_expr(&agg.input, rec, conn)?;
                 if !matches!(val, Value::Null) {
                     max = Some(match max {
@@ -908,13 +929,95 @@ fn compute_aggregate(agg: &AggregateExpr, records: &[Record], conn: &Connection)
         }
         AggregateFunction::Collect => {
             let mut items = Vec::new();
-            for rec in records {
+            for rec in effective_records {
                 let val = eval_expr(&agg.input, rec, conn)?;
                 if !matches!(val, Value::Null) {
                     items.push(val);
                 }
             }
             Ok(Value::List(items))
+        }
+        AggregateFunction::PercentileDisc | AggregateFunction::PercentileCont => {
+            // Evaluate the percentile parameter from extra_arg.
+            let pct = match &agg.extra_arg {
+                Some(pct_expr) => {
+                    let empty_rec = Record::new();
+                    let first_rec = effective_records.first().unwrap_or(&empty_rec);
+                    match eval_expr(pct_expr, first_rec, conn)? {
+                        Value::F64(v) => v,
+                        Value::I64(v) => v as f64,
+                        other => {
+                            return Err(GraphError::argument(
+                                crate::types::QueryPhase::Runtime,
+                                format!("NumberOutOfRange: expected number but got {other:?}"),
+                            ));
+                        }
+                    }
+                }
+                None => {
+                    return Err(GraphError::argument(
+                        crate::types::QueryPhase::Runtime,
+                        "NumberOutOfRange: percentile function requires a second argument"
+                            .to_string(),
+                    ));
+                }
+            };
+            if !(0.0..=1.0).contains(&pct) {
+                return Err(GraphError::argument(
+                    crate::types::QueryPhase::Runtime,
+                    format!("NumberOutOfRange: percentile must be between 0.0 and 1.0, got {pct}"),
+                ));
+            }
+            // Collect numeric values.
+            let mut values: Vec<f64> = Vec::new();
+            for rec in effective_records {
+                match eval_expr(&agg.input, rec, conn)? {
+                    Value::I64(n) => values.push(n as f64),
+                    Value::F64(n) => values.push(n),
+                    _ => {}
+                }
+            }
+            if values.is_empty() {
+                return Ok(Value::Null);
+            }
+            values.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+
+            if matches!(agg.function, AggregateFunction::PercentileDisc) {
+                let idx = (pct * (values.len() - 1) as f64).round() as usize;
+                Ok(Value::F64(values[idx]))
+            } else {
+                // PercentileCont: linear interpolation.
+                let pos = pct * (values.len() - 1) as f64;
+                let lower = pos.floor() as usize;
+                let upper = pos.ceil() as usize;
+                if lower == upper {
+                    Ok(Value::F64(values[lower]))
+                } else {
+                    let frac = pos - lower as f64;
+                    Ok(Value::F64(
+                        values[lower] * (1.0 - frac) + values[upper] * frac,
+                    ))
+                }
+            }
+        }
+        AggregateFunction::StDev | AggregateFunction::StDevP => {
+            let mut values: Vec<f64> = Vec::new();
+            for rec in effective_records {
+                match eval_expr(&agg.input, rec, conn)? {
+                    Value::I64(n) => values.push(n as f64),
+                    Value::F64(n) => values.push(n),
+                    _ => {}
+                }
+            }
+            let n = values.len();
+            let is_sample = matches!(agg.function, AggregateFunction::StDev);
+            if n == 0 || (is_sample && n < 2) {
+                return Ok(Value::F64(0.0));
+            }
+            let mean = values.iter().sum::<f64>() / n as f64;
+            let variance: f64 = values.iter().map(|v| (v - mean).powi(2)).sum::<f64>()
+                / if is_sample { (n - 1) as f64 } else { n as f64 };
+            Ok(Value::F64(variance.sqrt()))
         }
     }
 }
@@ -2671,6 +2774,10 @@ fn agg_fn_name(f: AggregateFunction) -> &'static str {
         AggregateFunction::Min => "min",
         AggregateFunction::Max => "max",
         AggregateFunction::Collect => "collect",
+        AggregateFunction::PercentileDisc => "percentileDisc",
+        AggregateFunction::PercentileCont => "percentileCont",
+        AggregateFunction::StDev => "stDev",
+        AggregateFunction::StDevP => "stDevP",
     }
 }
 
@@ -2681,6 +2788,7 @@ fn agg_col_name(agg: &AggregateExpr) -> String {
         let expr = crate::cypher::ast::Expr::FunctionCall {
             name: agg_fn_name(agg.function).to_string(),
             args: vec![agg.input.clone()],
+            distinct: agg.distinct,
         };
         expr_to_column_name(&expr)
     })

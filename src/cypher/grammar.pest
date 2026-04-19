@@ -290,8 +290,8 @@ variable = { ident }
 star = { "*" }
 
 function_call = { function_name ~ "(" ~ function_args ~ ")" }
-function_name = @{ ^"count" | ^"sum" | ^"avg" | ^"min" | ^"max" | ^"collect" | ^"length" | ^"nodes" | ^"toLower" | ^"toUpper" | ^"toString" | ^"toInteger" | ^"toFloat" | ^"keys" | ^"labels" | ^"id" | ^"coalesce" | ^"type" | ^"head" | ^"tail" | ^"last" | ^"size" | ^"abs" | ^"substring" | ^"replace" | ^"split" | ^"trim" | ^"reverse" | ^"range" | ^"localdatetime" | ^"localtime" | ^"datetime" | ^"date" | ^"duration" | ^"time" }
-function_args = { star | expr_list | "" }
+function_name = @{ ^"count" | ^"sum" | ^"avg" | ^"min" | ^"max" | ^"collect" | ^"percentileDisc" | ^"percentileCont" | ^"stDev" | ^"stDevP" | ^"length" | ^"nodes" | ^"toLower" | ^"toUpper" | ^"toString" | ^"toInteger" | ^"toFloat" | ^"keys" | ^"labels" | ^"id" | ^"coalesce" | ^"type" | ^"head" | ^"tail" | ^"last" | ^"size" | ^"abs" | ^"substring" | ^"replace" | ^"split" | ^"trim" | ^"reverse" | ^"range" | ^"localdatetime" | ^"localtime" | ^"datetime" | ^"date" | ^"duration" | ^"time" }
+function_args = { star | distinct_keyword ~ expr_list | expr_list | "" }
 expr_list = { expr ~ ("," ~ expr)* }
 
 // === Property maps ===

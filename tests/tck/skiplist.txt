@@ -600,25 +600,12 @@ Set1 - Set a Property::[9] Failing when using undefined variable in SET
 Set2 - Set a Property to Null::[1] Setting a node property to null removes the existing property
 Set2 - Set a Property to Null::[2] Setting a node property to null removes the existing property, but not before SET
 Set2 - Set a Property to Null::[3] Setting a relationship property to null removes the existing property
-Set3 - Set a Label::[1] Add a single label to a node with no label
-Set3 - Set a Label::[2] Adding multiple labels to a node with no label
-Set3 - Set a Label::[3] Add a single label to a node with an existing label
-Set3 - Set a Label::[4] Adding multiple labels to a node with an existing label
-Set3 - Set a Label::[5] Ignore whitespace before colon 1
-Set3 - Set a Label::[8] Ignore null when setting label
-Set4 - Set all properties with a map::[1] Set multiple properties with a property map
+# BLOCKER: side-effect counting uses net-delta, not gross; SET = map rewrites property counts
 Set4 - Set all properties with a map::[2] Non-existent values in a property map are removed with SET
 Set4 - Set all properties with a map::[3] Null values in a property map are removed with SET
-Set4 - Set all properties with a map::[4] All properties are removed if node is set to empty property map
-Set4 - Set all properties with a map::[5] Ignore null when setting properties using an overriding map
-Set5 - Set multiple properties with a map::[1] Ignore null when setting properties using an appending map
+# BLOCKER: side-effect counting uses net-delta for +=
 Set5 - Set multiple properties with a map::[2] Overwrite values when using +=
-Set5 - Set multiple properties with a map::[3] Retain old values when using +=
-Set5 - Set multiple properties with a map::[4] Explicit null values in a map remove old values
-Set5 - Set multiple properties with a map::[5] Set an empty map when using += has no effect
-Set6 - Persistence of set clause side effects::[10] Skipping and limiting to a few results after adding a label on nodes affects the result set but not the side effects
-Set6 - Persistence of set clause side effects::[11] Skipping zero result and limiting to all results after adding a label on nodes does not affect the result set nor the side effects
-Set6 - Persistence of set clause side effects::[12] Filtering after adding a label on nodes affects the result set but not the side effects
+# BLOCKER: `sum` is a keyword and cannot be used as an alias
 Set6 - Persistence of set clause side effects::[13] Aggregating in `RETURN` after adding a label on nodes affects the result set but not the side effects
 Set6 - Persistence of set clause side effects::[14] Aggregating in `WITH` after adding a label on nodes affects the result set but not the side effects
 Set6 - Persistence of set clause side effects::[15] Limiting to zero results after setting a property on relationships affects the result set but not the side effects
@@ -635,8 +622,6 @@ Set6 - Persistence of set clause side effects::[4] Skipping zero results and lim
 Set6 - Persistence of set clause side effects::[5] Filtering after setting a property on nodes affects the result set but not the side effects
 Set6 - Persistence of set clause side effects::[6] Aggregating in `RETURN` after setting a property on nodes affects the result set but not the side effects
 Set6 - Persistence of set clause side effects::[7] Aggregating in `WITH` after setting a property on nodes affects the result set but not the side effects
-Set6 - Persistence of set clause side effects::[8] Limiting to zero results after adding a label on nodes affects the result set but not the side effects
-Set6 - Persistence of set clause side effects::[9] Skipping all results after adding a label on nodes affects the result set but not the side effects
 String10 - Exact Substring Search::[8] Handling non-string operands for CONTAINS
 String8 - Exact String Prefix Search::[8] Handling non-string operands for STARTS WITH
 String9 - Exact String Suffix Search::[8] Handling non-string operands for ENDS WITH

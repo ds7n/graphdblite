@@ -384,7 +384,11 @@ fn plan_delete(conn: &Connection, stmt: &DeleteStatement) -> crate::types::Resul
 }
 
 fn plan_set(conn: &Connection, stmt: &SetStatement) -> crate::types::Result<LogicalOp> {
-    let mut op = plan_patterns(conn, &stmt.patterns)?;
+    let mut op = if stmt.patterns.is_empty() {
+        LogicalOp::SingleRow
+    } else {
+        plan_patterns(conn, &stmt.patterns)?
+    };
 
     // Optional MATCH clauses.
     let mut bound_vars = collect_pattern_variables(&stmt.patterns);
@@ -406,10 +410,52 @@ fn plan_set(conn: &Connection, stmt: &SetStatement) -> crate::types::Result<Logi
         };
     }
 
-    let mut op = LogicalOp::SetProperty {
-        input: Box::new(op),
-        assignments: stmt.assignments.clone(),
-    };
+    // Build chain of SET operations from items.
+    for item in &stmt.items {
+        op = match item {
+            SetItem::Property(a) => LogicalOp::SetProperty {
+                input: Box::new(op),
+                assignments: vec![a.clone()],
+            },
+            SetItem::Label { variable, labels } => LogicalOp::SetLabel {
+                input: Box::new(op),
+                variable: variable.clone(),
+                labels: labels.clone(),
+            },
+            SetItem::MapOverwrite { variable, value } => LogicalOp::SetProperties {
+                input: Box::new(op),
+                variable: variable.clone(),
+                value: value.clone(),
+                merge: false,
+            },
+            SetItem::MapMerge { variable, value } => LogicalOp::SetProperties {
+                input: Box::new(op),
+                variable: variable.clone(),
+                value: value.clone(),
+                merge: true,
+            },
+        };
+    }
+
+    // Apply intermediate clauses (WITH/MATCH after SET).
+    for clause in &stmt.intermediate_clauses {
+        match clause {
+            IntermediateClause::With(with) => {
+                op = plan_with(op, with)?;
+            }
+            IntermediateClause::Match(im) => {
+                op = plan_intermediate_match_with_scope(conn, op, im, &bound_vars)?;
+                bound_vars.extend(collect_pattern_variables(&im.patterns));
+            }
+            IntermediateClause::Unwind(unwind) => {
+                op = LogicalOp::Unwind {
+                    input: Box::new(op),
+                    expr: unwind.expr.clone(),
+                    alias: unwind.alias.clone(),
+                };
+            }
+        }
+    }
 
     if let Some(ref rc) = stmt.return_clause {
         op = apply_return_projection(op, rc, &stmt.order_by, stmt.skip, stmt.limit)?;
@@ -423,7 +469,8 @@ fn plan_remove(conn: &Connection, stmt: &RemoveStatement) -> crate::types::Resul
 
     // Optional MATCH clauses.
     for opt_match in &stmt.optional_patterns {
-        let (right, new_aliases, opt_filter) = plan_optional_match(conn, opt_match, &HashSet::new())?;
+        let (right, new_aliases, opt_filter) =
+            plan_optional_match(conn, opt_match, &HashSet::new())?;
         op = LogicalOp::LeftOuterJoin {
             input: Box::new(op),
             right: Box::new(right),

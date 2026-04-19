@@ -122,6 +122,21 @@ pub enum LogicalOp {
         assignments: Vec<Assignment>,
     },
 
+    /// Add labels to a node.
+    SetLabel {
+        input: Box<LogicalOp>,
+        variable: String,
+        labels: Vec<String>,
+    },
+
+    /// Set all properties on a node (overwrite or merge).
+    SetProperties {
+        input: Box<LogicalOp>,
+        variable: String,
+        value: Expr,
+        merge: bool,
+    },
+
     /// Remove properties/labels from nodes/edges.
     Remove {
         input: Box<LogicalOp>,

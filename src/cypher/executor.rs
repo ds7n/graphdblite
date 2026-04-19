@@ -60,6 +60,8 @@ fn is_bare_write(plan: &LogicalOp) -> bool {
             | LogicalOp::MatchCreate { .. }
             | LogicalOp::Delete { .. }
             | LogicalOp::SetProperty { .. }
+            | LogicalOp::SetLabel { .. }
+            | LogicalOp::SetProperties { .. }
             | LogicalOp::Remove { .. }
             | LogicalOp::Merge { .. }
             | LogicalOp::MatchMerge { .. }
@@ -118,6 +120,8 @@ fn is_read_only(plan: &LogicalOp) -> bool {
         | LogicalOp::MatchCreate { .. }
         | LogicalOp::Delete { .. }
         | LogicalOp::SetProperty { .. }
+        | LogicalOp::SetLabel { .. }
+        | LogicalOp::SetProperties { .. }
         | LogicalOp::Remove { .. }
         | LogicalOp::Merge { .. }
         | LogicalOp::MatchMerge { .. } => false,
@@ -222,6 +226,19 @@ fn exec(conn: &Connection, plan: &LogicalOp, ctx: &ExecContext) -> Result<Vec<Re
             exec_set_property(conn, input, assignments, ctx)
         }
 
+        LogicalOp::SetLabel {
+            input,
+            variable,
+            labels,
+        } => exec_set_label(conn, input, variable, labels, ctx),
+
+        LogicalOp::SetProperties {
+            input,
+            variable,
+            value,
+            merge,
+        } => exec_set_properties(conn, input, variable, value, *merge, ctx),
+
         LogicalOp::Remove { input, items } => exec_remove(conn, input, items, ctx),
 
         LogicalOp::Merge {
@@ -253,7 +270,14 @@ fn exec(conn: &Connection, plan: &LogicalOp, ctx: &ExecContext) -> Result<Vec<Re
             right,
             optional_aliases,
             opt_filter,
-        } => exec_left_outer_join(conn, input, right, optional_aliases, opt_filter.as_ref(), ctx),
+        } => exec_left_outer_join(
+            conn,
+            input,
+            right,
+            optional_aliases,
+            opt_filter.as_ref(),
+            ctx,
+        ),
 
         LogicalOp::ShortestPath {
             input,
@@ -407,10 +431,7 @@ fn exec_expand(
                             _ => (src_id, dst_id),
                         };
                         // Bind the relationship variable itself (for IS NULL checks, etc.).
-                        new_rec.set(
-                            r_alias.to_string(),
-                            Value::String(label.to_string()),
-                        );
+                        new_rec.set(r_alias.to_string(), Value::String(label.to_string()));
                         new_rec.set(format!("{r_alias}.__src"), Value::I64(edge_src.0 as i64));
                         new_rec.set(format!("{r_alias}.__dst"), Value::I64(edge_dst.0 as i64));
                         new_rec.set(
@@ -1219,6 +1240,139 @@ fn exec_set_property(
                 // Update record so downstream RETURN sees the new value.
                 let prop_key = format!("{var}.{}", assignment.property);
                 rec.set(prop_key, val);
+            }
+        }
+    }
+    Ok(records)
+}
+
+fn exec_set_label(
+    conn: &Connection,
+    input: &LogicalOp,
+    variable: &str,
+    labels: &[String],
+    ctx: &ExecContext,
+) -> Result<Vec<Record>> {
+    let mut records = exec(conn, input, ctx)?;
+    for rec in &mut records {
+        // Skip null variables (from OPTIONAL MATCH).
+        if let Some(Value::I64(id)) = rec.get(variable) {
+            let node_id = NodeId(*id as u64);
+            for label in labels {
+                node::add_node_label(conn, node_id, label)?;
+            }
+            // Update the labels in the record (__labels list and __label colon-joined string).
+            let labels_key = format!("{variable}.__labels");
+            if let Some(Value::List(current_labels)) = rec.get(&labels_key) {
+                let mut updated = current_labels.clone();
+                for label in labels {
+                    let val = Value::String(label.clone());
+                    if !updated.contains(&val) {
+                        updated.push(val);
+                    }
+                }
+                // Sort for consistency.
+                updated.sort_by(|a, b| {
+                    let sa = if let Value::String(s) = a {
+                        s.as_str()
+                    } else {
+                        ""
+                    };
+                    let sb = if let Value::String(s) = b {
+                        s.as_str()
+                    } else {
+                        ""
+                    };
+                    sa.cmp(sb)
+                });
+                // Update the colon-joined __label string.
+                let label_strs: Vec<&str> = updated
+                    .iter()
+                    .filter_map(|v| {
+                        if let Value::String(s) = v {
+                            Some(s.as_str())
+                        } else {
+                            None
+                        }
+                    })
+                    .collect();
+                let label_key = format!("{variable}.__label");
+                rec.set(label_key, Value::String(label_strs.join(":")));
+                rec.set(labels_key, Value::List(updated));
+            }
+        }
+    }
+    Ok(records)
+}
+
+fn exec_set_properties(
+    conn: &Connection,
+    input: &LogicalOp,
+    variable: &str,
+    value_expr: &crate::cypher::ast::Expr,
+    merge: bool,
+    ctx: &ExecContext,
+) -> Result<Vec<Record>> {
+    let mut records = exec(conn, input, ctx)?;
+    for rec in &mut records {
+        // Skip null variables (from OPTIONAL MATCH).
+        if let Some(Value::I64(id)) = rec.get(variable) {
+            let node_id = NodeId(*id as u64);
+            let map_val = eval_expr(value_expr, rec, conn)?;
+
+            // The map value must be a Map (or Null to skip).
+            let map = match &map_val {
+                Value::Map(m) => m,
+                Value::Null => continue,
+                _ => {
+                    return Err(GraphError::semantic("SET properties requires a map value"));
+                }
+            };
+
+            let old = node::get_node(conn, node_id)?;
+            let old_props = old.properties.clone();
+
+            let new_props: Properties = if merge {
+                // Merge: start from existing, overlay map, remove nulls.
+                let mut props = old.properties.clone();
+                for (k, v) in map {
+                    if *v == Value::Null {
+                        props.remove(k);
+                    } else {
+                        props.insert(k.clone(), v.clone());
+                    }
+                }
+                props
+            } else {
+                // Overwrite: start from empty, add non-null entries from map.
+                let mut props = Properties::new();
+                for (k, v) in map {
+                    if *v != Value::Null {
+                        props.insert(k.clone(), v.clone());
+                    }
+                }
+                props
+            };
+
+            node::set_all_node_properties(conn, node_id, new_props.clone())?;
+            index::update_indexes_for_node(
+                conn,
+                node_id,
+                old.labels.first().map(|s| s.as_str()).unwrap_or(""),
+                Some(&old_props),
+                &new_props,
+            )?;
+
+            // Update the record: remove old property keys, add new ones.
+            // First, remove all old flattened property keys.
+            for key in old_props.keys() {
+                let prop_key = format!("{variable}.{key}");
+                rec.remove(&prop_key);
+            }
+            // Add new property keys.
+            for (key, val) in &new_props {
+                let prop_key = format!("{variable}.{key}");
+                rec.set(prop_key, val.clone());
             }
         }
     }

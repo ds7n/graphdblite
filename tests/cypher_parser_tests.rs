@@ -184,9 +184,14 @@ fn parse_set() {
     let stmt = parse("MATCH (n:Person) WHERE n.name = 'Alice' SET n.age = 31").unwrap();
     match stmt {
         Statement::Set(s) => {
-            assert_eq!(s.assignments.len(), 1);
-            assert_eq!(s.assignments[0].variable, "n");
-            assert_eq!(s.assignments[0].property, "age");
+            assert_eq!(s.items.len(), 1);
+            match &s.items[0] {
+                graphdblite::cypher::ast::SetItem::Property(a) => {
+                    assert_eq!(a.variable, "n");
+                    assert_eq!(a.property, "age");
+                }
+                _ => panic!("expected Property set item"),
+            }
         }
         _ => panic!("expected Set"),
     }

@@ -98,17 +98,36 @@ pub struct DeleteStatement {
     pub limit: Option<u64>,
 }
 
-/// MATCH ... SET n.prop = value [RETURN ...]
+/// MATCH ... SET n.prop = value | n:Label | n = {map} | n += {map} [WITH ...] [RETURN ...]
 #[derive(Debug, Clone, PartialEq)]
 pub struct SetStatement {
     pub patterns: Vec<Pattern>,
     pub optional_patterns: Vec<OptionalMatch>,
     pub where_clause: Option<Expr>,
-    pub assignments: Vec<Assignment>,
+    pub items: Vec<SetItem>,
+    pub intermediate_clauses: Vec<IntermediateClause>,
     pub return_clause: Option<ReturnClause>,
     pub order_by: Vec<SortItem>,
     pub skip: Option<u64>,
     pub limit: Option<u64>,
+}
+
+/// A single SET clause item.
+#[derive(Debug, Clone, PartialEq)]
+pub enum SetItem {
+    Property(Assignment),
+    Label {
+        variable: String,
+        labels: Vec<String>,
+    },
+    MapOverwrite {
+        variable: String,
+        value: Expr,
+    },
+    MapMerge {
+        variable: String,
+        value: Expr,
+    },
 }
 
 /// MATCH ... REMOVE n.prop, n:Label [RETURN ...]

@@ -140,6 +140,43 @@ pub fn remove_node_label(conn: &Connection, id: NodeId, label: &str) -> Result<(
     Ok(())
 }
 
+/// Add a label to an existing node. No-op if already present.
+pub fn add_node_label(conn: &Connection, id: NodeId, label: &str) -> Result<()> {
+    let data =
+        kv::get(conn, kv::TABLE_NODES, &id.to_be_bytes())?.ok_or(GraphError::NodeNotFound(id))?;
+    let mut record: NodeRecord =
+        rmp_serde::from_slice(&data).map_err(|e| GraphError::Serialization(e.to_string()))?;
+    if record.labels.contains(&label.to_string()) {
+        return Ok(());
+    }
+    record.labels.push(label.to_string());
+    record.labels.sort();
+    let new_data =
+        rmp_serde::to_vec(&record).map_err(|e| GraphError::Serialization(e.to_string()))?;
+    let label_col = record.labels.join(":");
+    put_node(conn, &id.to_be_bytes(), &label_col, &new_data)?;
+    stats::increment_label_count(conn, label)?;
+    Ok(())
+}
+
+/// Replace all properties on an existing node.
+pub fn set_all_node_properties(
+    conn: &Connection,
+    id: NodeId,
+    properties: Properties,
+) -> Result<()> {
+    let data =
+        kv::get(conn, kv::TABLE_NODES, &id.to_be_bytes())?.ok_or(GraphError::NodeNotFound(id))?;
+    let mut record: NodeRecord =
+        rmp_serde::from_slice(&data).map_err(|e| GraphError::Serialization(e.to_string()))?;
+    record.properties = properties;
+    let new_data =
+        rmp_serde::to_vec(&record).map_err(|e| GraphError::Serialization(e.to_string()))?;
+    let label_col = record.labels.join(":");
+    put_node(conn, &id.to_be_bytes(), &label_col, &new_data)?;
+    Ok(())
+}
+
 /// Scan nodes by label using the indexed label column.
 ///
 /// When `label` is empty, returns all nodes.

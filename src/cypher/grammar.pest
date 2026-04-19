@@ -8,9 +8,55 @@ COMMENT = _{ "//" ~ (!"\n" ~ ANY)* }
 statement = { SOI ~ union_stmt ~ ";"? ~ EOI }
 union_stmt = { single_stmt ~ (union_op ~ single_stmt)* }
 union_op = { ^"UNION" ~ ^"ALL"? }
-single_stmt = { explain_stmt | match_create_stmt | match_merge_stmt | match_stmt | unwind_stmt | create_stmt | delete_stmt | set_stmt | remove_stmt | merge_stmt | return_stmt }
+single_stmt = { explain_stmt | multi_clause_stmt | match_stmt | unwind_stmt | match_create_stmt | match_merge_stmt | delete_stmt | set_stmt | remove_stmt | create_stmt | merge_stmt | return_stmt }
 
 explain_stmt = { ^"EXPLAIN" ~ (match_create_stmt | match_stmt | unwind_stmt) }
+
+// === Multi-clause statement (arbitrary sequences of updating + reading clauses) ===
+// Handles query forms that specialized rules cannot parse:
+//   CREATE...MERGE, MERGE...MERGE, MATCH...WITH...CREATE, etc.
+//
+// The rule requires at least one CREATE or MERGE, preceded or followed by
+// at least one other clause. This prevents it from stealing simple patterns
+// like MATCH...DELETE or MATCH...SET that have their own rules.
+
+multi_clause_stmt = {
+    // Pattern A: at least one non-write clause before CREATE/MERGE (handles MATCH...CREATE, MATCH...WITH...CREATE, etc.)
+    (multi_clause_non_write+ ~
+    (multi_create_clause | multi_merge_clause) ~
+    multi_clause_any* ~
+    (return_clause ~ order_by_clause? ~ skip_clause? ~ limit_clause?)?)
+    |
+    // Pattern B: CREATE/MERGE followed by at least one more clause (handles CREATE...MERGE, MERGE...MERGE, etc.)
+    ((multi_create_clause | multi_merge_clause) ~
+    multi_clause_any+ ~
+    (return_clause ~ order_by_clause? ~ skip_clause? ~ limit_clause?)?)
+}
+
+// Non-write clause (MATCH, WITH, UNWIND) — used for leading clauses.
+multi_clause_non_write = _{
+    with_clause | multi_match_clause | multi_unwind_clause
+}
+
+// Any clause type — used for trailing clauses after the first CREATE/MERGE.
+multi_clause_any = _{
+    with_clause |
+    multi_match_clause |
+    multi_create_clause |
+    multi_merge_clause |
+    multi_unwind_clause |
+    multi_set_clause |
+    multi_remove_clause |
+    multi_delete_clause
+}
+
+multi_match_clause = { ^"MATCH" ~ pattern_list ~ where_clause? ~ optional_match_clause* }
+multi_create_clause = { ^"CREATE" ~ create_pattern_list }
+multi_merge_clause = { ^"MERGE" ~ pattern ~ on_create_clause? ~ on_match_clause? }
+multi_unwind_clause = { ^"UNWIND" ~ expr ~ ^"AS" ~ ident }
+multi_set_clause = { ^"SET" ~ assignment_list }
+multi_remove_clause = { ^"REMOVE" ~ remove_item_list }
+multi_delete_clause = { detach_keyword? ~ ^"DELETE" ~ ident_list }
 
 // === Standalone RETURN (no preceding MATCH) ===
 

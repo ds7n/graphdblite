@@ -259,3 +259,47 @@ fn parse_error_on_invalid_input() {
     let result = parse("BANANA SPLIT");
     assert!(result.is_err());
 }
+
+#[test]
+fn parse_match_create_is_multi_clause() {
+    // MATCH...CREATE now falls through to multi_clause_stmt (more general).
+    let stmt = parse("MATCH (x:X), (y:Y) CREATE (x)-[:R]->(y)").unwrap();
+    assert!(
+        matches!(stmt, Statement::MultiClause(_)),
+        "expected MultiClause, got {:?}",
+        std::mem::discriminant(&stmt)
+    );
+}
+
+#[test]
+fn parse_create_merge_uses_multi_clause() {
+    let result = parse("CREATE (a), (b) MERGE (a)-[:X]->(b) RETURN count(a)");
+    match result {
+        Ok(stmt) => assert!(
+            matches!(stmt, Statement::MultiClause(_)),
+            "expected MultiClause, got {:?}",
+            std::mem::discriminant(&stmt)
+        ),
+        Err(e) => panic!("parse failed: {e}"),
+    }
+}
+
+#[test]
+fn parse_merge_merge_merge_uses_multi_clause() {
+    let stmt = parse("MERGE (a:A) MERGE (b:B) MERGE (a)-[:FOO]->(b)").unwrap();
+    assert!(
+        matches!(stmt, Statement::MultiClause(_)),
+        "expected MultiClause, got {:?}",
+        std::mem::discriminant(&stmt)
+    );
+}
+
+#[test]
+fn parse_match_create_with_create_uses_multi_clause() {
+    let stmt = parse("MATCH () CREATE () WITH * CREATE ()").unwrap();
+    assert!(
+        matches!(stmt, Statement::MultiClause(_)),
+        "expected MultiClause, got {:?}",
+        std::mem::discriminant(&stmt)
+    );
+}

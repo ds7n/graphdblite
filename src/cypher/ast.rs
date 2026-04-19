@@ -14,6 +14,8 @@ pub enum Statement {
     Unwind(UnwindStatement),
     /// Standalone RETURN (no preceding MATCH / CREATE).
     Return(ReturnStatement),
+    /// Multi-clause statement: arbitrary sequences of MATCH/CREATE/MERGE/WITH/UNWIND/SET/REMOVE/DELETE.
+    MultiClause(MultiClauseStatement),
     Explain(Box<Statement>),
     /// UNION [ALL] of multiple statements.
     Union {
@@ -21,6 +23,46 @@ pub enum Statement {
         /// true = UNION ALL (keep duplicates), false = UNION (deduplicate).
         all: bool,
     },
+}
+
+/// A clause in a multi-clause statement.
+#[derive(Debug, Clone, PartialEq)]
+pub enum Clause {
+    Match {
+        patterns: Vec<Pattern>,
+        optional_patterns: Vec<OptionalMatch>,
+        where_clause: Option<Expr>,
+    },
+    Create {
+        patterns: Vec<Pattern>,
+    },
+    Merge {
+        pattern: Pattern,
+        on_create: Vec<Assignment>,
+        on_match: Vec<Assignment>,
+    },
+    With(WithClause),
+    Unwind(UnwindClause),
+    Set {
+        items: Vec<SetItem>,
+    },
+    Remove {
+        items: Vec<RemoveItem>,
+    },
+    Delete {
+        variables: Vec<String>,
+        detach: bool,
+    },
+}
+
+/// Multi-clause statement: a sequence of arbitrary clauses with optional RETURN.
+#[derive(Debug, Clone, PartialEq)]
+pub struct MultiClauseStatement {
+    pub clauses: Vec<Clause>,
+    pub return_clause: Option<ReturnClause>,
+    pub order_by: Vec<SortItem>,
+    pub skip: Option<u64>,
+    pub limit: Option<u64>,
 }
 
 /// Standalone `RETURN expr [AS alias], ... [ORDER BY ...] [SKIP n] [LIMIT n]`

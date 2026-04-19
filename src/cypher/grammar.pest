@@ -114,15 +114,22 @@ detach_keyword = { ^"DETACH" }
 // === SET statement ===
 
 set_stmt = {
-    ^"MATCH" ~ pattern_list ~
-    optional_match_clause* ~
+    (^"MATCH" ~ pattern_list ~ optional_match_clause* | optional_match_clause+) ~
     where_clause? ~
     ^"SET" ~ assignment_list ~
+    (with_clause ~ match_part?)* ~
     (return_clause ~ order_by_clause? ~ skip_clause? ~ limit_clause?)?
 }
 
-assignment_list = { assignment ~ ("," ~ assignment)* }
+assignment_list = { set_item ~ ("," ~ set_item)* }
+set_item = { set_label | set_map_merge | set_map | assignment }
+set_label = { ident ~ label_spec }
+set_map_merge = { ident ~ "+=" ~ expr }
+set_map = { ident ~ "=" ~ expr }
 assignment = { property_access ~ "=" ~ expr }
+
+// Property-only assignment list (for MERGE ON CREATE/ON MATCH).
+property_assignment_list = { assignment ~ ("," ~ assignment)* }
 
 // === REMOVE statement ===
 
@@ -148,8 +155,8 @@ merge_stmt = {
     (return_clause ~ order_by_clause? ~ skip_clause? ~ limit_clause?)?
 }
 
-on_create_clause = { ^"ON" ~ ^"CREATE" ~ ^"SET" ~ assignment_list }
-on_match_clause = { ^"ON" ~ ^"MATCH" ~ ^"SET" ~ assignment_list }
+on_create_clause = { ^"ON" ~ ^"CREATE" ~ ^"SET" ~ property_assignment_list }
+on_match_clause = { ^"ON" ~ ^"MATCH" ~ ^"SET" ~ property_assignment_list }
 
 // === Patterns ===
 

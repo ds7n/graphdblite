@@ -25,6 +25,11 @@ impl Record {
     pub fn set(&mut self, key: String, value: Value) {
         self.fields.insert(key, value);
     }
+
+    /// Remove a key from the record.
+    pub fn remove(&mut self, key: &str) {
+        self.fields.swap_remove(key);
+    }
 }
 
 impl Default for Record {

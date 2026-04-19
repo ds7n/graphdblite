@@ -111,15 +111,16 @@ pub fn eval_expr(expr: &Expr, record: &Record, conn: &Connection) -> crate::type
             }
             let label_key = format!("{var}.__labels");
             if let Some(Value::List(node_labels)) = record.get(&label_key) {
-                let has_all = labels.iter().all(|lbl| {
-                    node_labels.contains(&Value::String(lbl.clone()))
-                });
+                let has_all = labels
+                    .iter()
+                    .all(|lbl| node_labels.contains(&Value::String(lbl.clone())));
                 Ok(Value::Bool(has_all))
             } else {
                 // Fallback: look up from database.
                 let id_key = format!("{var}.__id");
                 if let Some(Value::I64(id)) = record.get(&id_key) {
-                    if let Ok(node) = crate::node::get_node(conn, crate::types::NodeId(*id as u64)) {
+                    if let Ok(node) = crate::node::get_node(conn, crate::types::NodeId(*id as u64))
+                    {
                         let has_all = labels.iter().all(|lbl| node.labels.contains(lbl));
                         return Ok(Value::Bool(has_all));
                     }

@@ -333,14 +333,14 @@ fn parse_match_merge(
             Rule::pattern => merge_pattern = Some(parse_pattern(inner)?),
             Rule::on_create_clause => {
                 for child in inner.into_inner() {
-                    if child.as_rule() == Rule::assignment_list {
+                    if child.as_rule() == Rule::property_assignment_list {
                         on_create = parse_assignment_list(child)?;
                     }
                 }
             }
             Rule::on_match_clause => {
                 for child in inner.into_inner() {
-                    if child.as_rule() == Rule::assignment_list {
+                    if child.as_rule() == Rule::property_assignment_list {
                         on_match = parse_assignment_list(child)?;
                     }
                 }
@@ -418,20 +418,36 @@ fn parse_set(pair: pest::iterators::Pair<Rule>) -> crate::types::Result<SetState
     let mut patterns = Vec::new();
     let mut optional_patterns = Vec::new();
     let mut where_clause = None;
-    let mut assignments = Vec::new();
+    let mut items = Vec::new();
+    let mut intermediate_clauses = Vec::new();
     let mut return_clause = None;
     let mut order_by = Vec::new();
     let mut skip = None;
     let mut limit = None;
+    let mut seen_set = false;
 
     for inner in pair.into_inner() {
         match inner.as_rule() {
-            Rule::pattern_list => patterns = parse_pattern_list(inner)?,
-            Rule::optional_match_clause => {
+            Rule::pattern_list if !seen_set => patterns = parse_pattern_list(inner)?,
+            Rule::optional_match_clause if !seen_set => {
                 optional_patterns.push(parse_optional_match_clause(inner)?);
             }
-            Rule::where_clause => where_clause = Some(parse_where(inner)?),
-            Rule::assignment_list => assignments = parse_assignment_list(inner)?,
+            Rule::where_clause if !seen_set => where_clause = Some(parse_where(inner)?),
+            Rule::assignment_list => {
+                items = parse_set_item_list(inner)?;
+                seen_set = true;
+            }
+            Rule::with_clause => {
+                intermediate_clauses.push(IntermediateClause::With(parse_with(inner)?));
+            }
+            Rule::match_part => {
+                let (mp_patterns, mp_optional, mp_where) = parse_match_part(inner)?;
+                intermediate_clauses.push(IntermediateClause::Match(IntermediateMatch {
+                    patterns: mp_patterns,
+                    optional_patterns: mp_optional,
+                    where_clause: mp_where,
+                }));
+            }
             Rule::return_clause => return_clause = Some(parse_return(inner)?),
             Rule::order_by_clause => order_by = parse_order_by(inner)?,
             Rule::skip_clause => skip = Some(parse_skip(inner)?),
@@ -444,12 +460,91 @@ fn parse_set(pair: pest::iterators::Pair<Rule>) -> crate::types::Result<SetState
         patterns,
         optional_patterns,
         where_clause,
-        assignments,
+        items,
+        intermediate_clauses,
         return_clause,
         order_by,
         skip,
         limit,
     })
+}
+
+/// Parse the extended SET item list (labels, map overwrite, map merge, or property assignment).
+fn parse_set_item_list(pair: pest::iterators::Pair<Rule>) -> crate::types::Result<Vec<SetItem>> {
+    let mut items = Vec::new();
+    for child in pair.into_inner() {
+        if child.as_rule() == Rule::set_item {
+            let inner = child.into_inner().next().unwrap();
+            match inner.as_rule() {
+                Rule::set_label => {
+                    let mut variable = String::new();
+                    let mut labels = Vec::new();
+                    for part in inner.into_inner() {
+                        match part.as_rule() {
+                            Rule::ident => variable = part.as_str().to_string(),
+                            Rule::label_spec => {
+                                for label in part.into_inner() {
+                                    labels.push(label.as_str().to_string());
+                                }
+                            }
+                            _ => {}
+                        }
+                    }
+                    items.push(SetItem::Label { variable, labels });
+                }
+                Rule::set_map_merge => {
+                    let mut variable = String::new();
+                    let mut value = None;
+                    for part in inner.into_inner() {
+                        match part.as_rule() {
+                            Rule::ident => variable = part.as_str().to_string(),
+                            Rule::expr => value = Some(parse_expr(part)?),
+                            _ => {}
+                        }
+                    }
+                    items.push(SetItem::MapMerge {
+                        variable,
+                        value: value.unwrap(),
+                    });
+                }
+                Rule::set_map => {
+                    let mut variable = String::new();
+                    let mut value = None;
+                    for part in inner.into_inner() {
+                        match part.as_rule() {
+                            Rule::ident => variable = part.as_str().to_string(),
+                            Rule::expr => value = Some(parse_expr(part)?),
+                            _ => {}
+                        }
+                    }
+                    items.push(SetItem::MapOverwrite {
+                        variable,
+                        value: value.unwrap(),
+                    });
+                }
+                Rule::assignment => {
+                    let mut children = inner.into_inner();
+                    let prop_access = children.next().unwrap();
+                    let mut prop_parts = prop_access.into_inner();
+                    let variable = prop_parts.next().unwrap().as_str().to_string();
+                    let property = prop_parts.next().unwrap().as_str().to_string();
+                    let value = parse_expr(children.next().unwrap())?;
+                    items.push(SetItem::Property(Assignment {
+                        variable,
+                        property,
+                        value,
+                    }));
+                }
+                _ => {
+                    return Err(GraphError::Serialization(format!(
+                        "unexpected set item: {:?}",
+                        inner.as_rule()
+                    )));
+                }
+            }
+        }
+    }
+    Ok(items)
 }
 
 fn parse_remove(pair: pest::iterators::Pair<Rule>) -> crate::types::Result<RemoveStatement> {
@@ -543,14 +638,14 @@ fn parse_merge(pair: pest::iterators::Pair<Rule>) -> crate::types::Result<MergeS
             Rule::pattern => pattern = Some(parse_pattern(inner)?),
             Rule::on_create_clause => {
                 for child in inner.into_inner() {
-                    if child.as_rule() == Rule::assignment_list {
+                    if child.as_rule() == Rule::property_assignment_list {
                         on_create = parse_assignment_list(child)?;
                     }
                 }
             }
             Rule::on_match_clause => {
                 for child in inner.into_inner() {
-                    if child.as_rule() == Rule::assignment_list {
+                    if child.as_rule() == Rule::property_assignment_list {
                         on_match = parse_assignment_list(child)?;
                     }
                 }
@@ -1788,7 +1883,12 @@ fn humanize_rule_name(rule: &str) -> &str {
         "list_comprehension" => "a list comprehension like [x IN list | expr]",
         "comp_op" => "a comparison operator (=, <>, <, >)",
         "alias" => "an alias (AS name)",
-        "assignment" | "assignment_list" => "a property assignment like n.prop = value",
+        "assignment" | "assignment_list" | "property_assignment_list" => {
+            "a property assignment like n.prop = value"
+        }
+        "set_item" | "set_label" | "set_map" | "set_map_merge" => {
+            "a SET item (property, label, or map)"
+        }
         "detach_keyword" => "DETACH",
         "EOI" => "end of query",
         _ => rule,
@@ -2037,6 +2137,34 @@ fn resolve_assignments(
         .collect()
 }
 
+fn resolve_set_items(
+    items: &[SetItem],
+    params: &HashMap<String, Value>,
+) -> crate::types::Result<Vec<SetItem>> {
+    items
+        .iter()
+        .map(|item| match item {
+            SetItem::Property(a) => Ok(SetItem::Property(Assignment {
+                variable: a.variable.clone(),
+                property: a.property.clone(),
+                value: resolve_expr(&a.value, params)?,
+            })),
+            SetItem::Label { variable, labels } => Ok(SetItem::Label {
+                variable: variable.clone(),
+                labels: labels.clone(),
+            }),
+            SetItem::MapOverwrite { variable, value } => Ok(SetItem::MapOverwrite {
+                variable: variable.clone(),
+                value: resolve_expr(value, params)?,
+            }),
+            SetItem::MapMerge { variable, value } => Ok(SetItem::MapMerge {
+                variable: variable.clone(),
+                value: resolve_expr(value, params)?,
+            }),
+        })
+        .collect()
+}
+
 fn resolve_return_items(
     items: &[ReturnItem],
     params: &HashMap<String, Value>,
@@ -2258,7 +2386,11 @@ pub fn resolve_params(
                     .as_ref()
                     .map(|e| resolve_expr(e, params))
                     .transpose()?,
-                assignments: resolve_assignments(&s.assignments, params)?,
+                items: resolve_set_items(&s.items, params)?,
+                intermediate_clauses: resolve_intermediate_clauses(
+                    &s.intermediate_clauses,
+                    params,
+                )?,
                 return_clause,
                 order_by,
                 skip,

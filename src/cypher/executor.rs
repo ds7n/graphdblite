@@ -1153,7 +1153,7 @@ fn exec_delete(
             // Skip if value is Null (from OPTIONAL MATCH with no match).
         }
     }
-    Ok(vec![])
+    Ok(records)
 }
 
 fn exec_set_property(
@@ -1162,8 +1162,8 @@ fn exec_set_property(
     assignments: &[crate::cypher::ast::Assignment],
     ctx: &ExecContext,
 ) -> Result<Vec<Record>> {
-    let records = exec(conn, input, ctx)?;
-    for rec in &records {
+    let mut records = exec(conn, input, ctx)?;
+    for rec in &mut records {
         for assignment in assignments {
             let var = &assignment.variable;
             // Check if this is a relationship variable (has edge identity metadata).
@@ -1182,15 +1182,18 @@ fn exec_set_property(
                     NodeId(*dst as u64),
                     label,
                     &assignment.property,
-                    val,
+                    val.clone(),
                 )?;
+                // Update record so downstream RETURN sees the new value.
+                let prop_key = format!("{var}.{}", assignment.property);
+                rec.set(prop_key, val);
             } else if let Some(Value::I64(id)) = rec.get(var) {
                 let node_id = NodeId(*id as u64);
                 let old = node::get_node(conn, node_id)?;
                 let val = eval_expr(&assignment.value, rec, conn)?;
                 node::set_node_property(conn, node_id, &assignment.property, val.clone())?;
                 let mut new_props = old.properties.clone();
-                new_props.insert(assignment.property.clone(), val);
+                new_props.insert(assignment.property.clone(), val.clone());
                 index::update_indexes_for_node(
                     conn,
                     node_id,
@@ -1198,10 +1201,13 @@ fn exec_set_property(
                     Some(&old.properties),
                     &new_props,
                 )?;
+                // Update record so downstream RETURN sees the new value.
+                let prop_key = format!("{var}.{}", assignment.property);
+                rec.set(prop_key, val);
             }
         }
     }
-    Ok(vec![])
+    Ok(records)
 }
 
 fn exec_remove(

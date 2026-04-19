@@ -1,8 +1,8 @@
 # TCK Conformance Improvement Plan
 
-## Status: Phases 1-10 complete (2026-04-19)
+## Status: Phases 1-11 complete (2026-04-19)
 
-1404 scenarios passing, 929 skiplisted, 0 failures.
+1413 scenarios passing (60.6%), 920 skiplisted, 0 failures.
 
 ---
 
@@ -45,6 +45,22 @@ Three code fixes and a systematic skiplist sweep:
 - **CREATE dedup**: `CREATE (a), (a)-[:R]->(b)` no longer creates duplicate nodes. `plan_create_pattern` tracks `seen` named variables across patterns, skipping `CreateNode` for already-seen aliases.
 - **Batch unskip**: Removed 45 confirmed-passing skiplist entries (Create1-6, Comparison2, List3, Literals7-8, Merge2-3-5-7, Precedence2, Return3-6, TypeConversion4, WithOrderBy3).
 
+### Phase 11: Write-clause RETURN support for SET and DELETE ✓
+
+- Added optional RETURN clause to `set_stmt` and `delete_stmt` grammar rules
+- Extended `SetStatement`/`DeleteStatement` AST with return_clause, order_by, skip, limit, optional_patterns
+- Executor: `exec_set_property` returns modified records with updated properties; `exec_delete` returns input records
+- Planner: `apply_return_projection()` for SET/DELETE; optional_patterns LeftOuterJoin for SET
+- Result: 1404 → 1413 passing (+9), skiplist 929 → 920
+
+### Phase 10: Temporal sorting/arithmetic, UNWIND...CREATE...WITH ✓
+
+- Temporal types in `compare_values_for_sort` (Date, LocalTime, Time, DateTime, Duration)
+- Temporal arithmetic: Date/Time/DateTime ± Duration, Duration ± Duration, Duration × Number
+- Extended `unwind_create` grammar for intermediate WITH/MATCH/UNWIND clauses
+- Planner support for intermediate clauses in UnwindBody::Create
+- Result: 1393 → 1404 passing (+11), skiplist 940 → 929
+
 ### Phase 9: Aggregation, ORDER BY, IS NULL, Parameters (partial) ✓
 
 Five targeted fixes:
@@ -85,28 +101,43 @@ Three features and a batch unskip:
 
 Regenerate with: `uv run tests/tck/analyze_blockers.py`
 
-| Sole | Impact | Construct | Notes |
-|-----:|-------:|-----------|-------|
-| 141 | 298 | Write-clause RETURN side effects | Side-effect delta tracking |
-| 36 | 55 | Temporal types | datetime(), date(), duration() |
-| 13 | 27 | CREATE (no RETURN) side effects | Side-effect assertion gaps |
-| 13 | 20 | Quantifier predicates (remaining) | Map/node/rel items, invariants |
-| 10 | 12 | IN [list] | Remaining: null semantics |
-| 9 | 26 | IS NULL / IS NOT NULL | Property access on missing props |
-| 9 | 16 | Parameter $param | |
-| 8 | 24 | ORDER BY | WITH...ORDER BY interaction |
-| 6 | 34 | Aggregation (non-count) | sum/avg/min/max/collect |
-| 6 | 18 | List functions | range(), reverse(), tail(), etc. |
-| 6 | 18 | String functions | toString(), replace(), etc. |
-| 5 | 33 | MERGE | |
+| Sole | Impact | Construct |
+|-----:|-------:|-----------|
+| 139 | 294 | Write-clause RETURN side effects (CREATE/MERGE...RETURN) |
+| 30 | 49 | Temporal types |
+| 13 | 27 | CREATE (no RETURN) side effects |
+| 13 | 20 | Quantifier predicates (remaining) |
+| 10 | 12 | IN [list] |
+| 9 | 26 | IS NULL / IS NOT NULL |
+| 8 | 15 | Parameter $param |
+| 8 | 14 | ORDER BY |
+| 8 | 8 | List slicing [a..b] |
+| 6 | 18 | List functions |
+| 6 | 18 | String functions |
+| 5 | 33 | MERGE |
+| 5 | 10 | NOT prefix |
 
-### Recommended next phase
+### Recommended next phases
 
-**Write-clause RETURN side effects** (141 sole-blocker, 298 impact): The single largest blocker. CREATE/MERGE/SET/DELETE with RETURN need side-effect delta tracking.
+**Phase 12: Temporal types (remaining 30 sole-blockers, 49 impact)**
+Map construction with week/ordinal dates, named timezones, storage round-trip,
+rendering, duration computation, truncation. Extends Phase 8 work.
 
-**Aggregation functions** (6 sole-blocker, 34 impact): UNWIND + aggregation pipeline, GROUP BY with count/sum/avg/min/max/collect.
+**Phase 13: OPTIONAL MATCH** (1 sole-blocker, 45 high-impact)
+Null propagation for unmatched optional patterns. High co-occurrence with
+other blockers (IS NULL, DELETE, SET, MatchWhere).
 
-**REMOVE side-effect persistence** (13 remaining): OPTIONAL MATCH + REMOVE, WITH/aggregation after REMOVE.
+**Phase 14: SET property/label grammar** (1 sole-blocker, 31 impact)
+Remaining SET scenarios need SET n:Label, SET n = {map}, SET n += {map}
+assignment grammar extensions beyond simple property SET.
+
+**Phase 15: Aggregation + DISTINCT** (1+4 sole-blockers, 23+8 impact)
+Remaining aggregation gaps (sum overflow, percentiles, mixed-type min/max)
+and DISTINCT in RETURN/WITH contexts.
+
+**Phase 16: List operations** (list slicing [a..b], list indexing [n],
+range(), reverse(), tail(), list comprehension, pattern comprehension)
+Combined 20+ sole-blockers across list-related constructs.
 
 ## Critical files
 - `tests/tck_support/world.rs` — harness counts

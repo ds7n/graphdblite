@@ -358,6 +358,10 @@ fn parse_delete(pair: pest::iterators::Pair<Rule>) -> crate::types::Result<Delet
     let mut where_clause = None;
     let mut detach = false;
     let mut variables = Vec::new();
+    let mut return_clause = None;
+    let mut order_by = Vec::new();
+    let mut skip = None;
+    let mut limit = None;
 
     for inner in pair.into_inner() {
         match inner.as_rule() {
@@ -378,6 +382,10 @@ fn parse_delete(pair: pest::iterators::Pair<Rule>) -> crate::types::Result<Delet
                     }
                 }
             }
+            Rule::return_clause => return_clause = Some(parse_return(inner)?),
+            Rule::order_by_clause => order_by = parse_order_by(inner)?,
+            Rule::skip_clause => skip = Some(parse_skip(inner)?),
+            Rule::limit_clause => limit = Some(parse_limit(inner)?),
             _ => {}
         }
     }
@@ -388,27 +396,52 @@ fn parse_delete(pair: pest::iterators::Pair<Rule>) -> crate::types::Result<Delet
         where_clause,
         detach,
         variables,
+        return_clause,
+        order_by,
+        skip,
+        limit,
     })
 }
 
 fn parse_set(pair: pest::iterators::Pair<Rule>) -> crate::types::Result<SetStatement> {
     let mut patterns = Vec::new();
+    let mut optional_patterns = Vec::new();
     let mut where_clause = None;
     let mut assignments = Vec::new();
+    let mut return_clause = None;
+    let mut order_by = Vec::new();
+    let mut skip = None;
+    let mut limit = None;
 
     for inner in pair.into_inner() {
         match inner.as_rule() {
             Rule::pattern_list => patterns = parse_pattern_list(inner)?,
+            Rule::optional_match_clause => {
+                for child in inner.into_inner() {
+                    if child.as_rule() == Rule::pattern_list {
+                        optional_patterns.push(parse_pattern_list(child)?);
+                    }
+                }
+            }
             Rule::where_clause => where_clause = Some(parse_where(inner)?),
             Rule::assignment_list => assignments = parse_assignment_list(inner)?,
+            Rule::return_clause => return_clause = Some(parse_return(inner)?),
+            Rule::order_by_clause => order_by = parse_order_by(inner)?,
+            Rule::skip_clause => skip = Some(parse_skip(inner)?),
+            Rule::limit_clause => limit = Some(parse_limit(inner)?),
             _ => {}
         }
     }
 
     Ok(SetStatement {
         patterns,
+        optional_patterns,
         where_clause,
         assignments,
+        return_clause,
+        order_by,
+        skip,
+        limit,
     })
 }
 
@@ -2158,30 +2191,51 @@ pub fn resolve_params(
                 limit,
             }))
         }
-        Statement::Delete(d) => Ok(Statement::Delete(DeleteStatement {
-            patterns: resolve_patterns(&d.patterns, params)?,
-            optional_patterns: d
-                .optional_patterns
-                .iter()
-                .map(|ps| resolve_patterns(ps, params))
-                .collect::<crate::types::Result<Vec<_>>>()?,
-            where_clause: d
-                .where_clause
-                .as_ref()
-                .map(|e| resolve_expr(e, params))
-                .transpose()?,
-            detach: d.detach,
-            variables: d.variables.clone(),
-        })),
-        Statement::Set(s) => Ok(Statement::Set(SetStatement {
-            patterns: resolve_patterns(&s.patterns, params)?,
-            where_clause: s
-                .where_clause
-                .as_ref()
-                .map(|e| resolve_expr(e, params))
-                .transpose()?,
-            assignments: resolve_assignments(&s.assignments, params)?,
-        })),
+        Statement::Delete(d) => {
+            let (return_clause, order_by, skip, limit) =
+                resolve_optional_return(&d.return_clause, &d.order_by, d.skip, d.limit, params)?;
+            Ok(Statement::Delete(DeleteStatement {
+                patterns: resolve_patterns(&d.patterns, params)?,
+                optional_patterns: d
+                    .optional_patterns
+                    .iter()
+                    .map(|ps| resolve_patterns(ps, params))
+                    .collect::<crate::types::Result<Vec<_>>>()?,
+                where_clause: d
+                    .where_clause
+                    .as_ref()
+                    .map(|e| resolve_expr(e, params))
+                    .transpose()?,
+                detach: d.detach,
+                variables: d.variables.clone(),
+                return_clause,
+                order_by,
+                skip,
+                limit,
+            }))
+        }
+        Statement::Set(s) => {
+            let (return_clause, order_by, skip, limit) =
+                resolve_optional_return(&s.return_clause, &s.order_by, s.skip, s.limit, params)?;
+            Ok(Statement::Set(SetStatement {
+                patterns: resolve_patterns(&s.patterns, params)?,
+                optional_patterns: s
+                    .optional_patterns
+                    .iter()
+                    .map(|ps| resolve_patterns(ps, params))
+                    .collect::<crate::types::Result<Vec<_>>>()?,
+                where_clause: s
+                    .where_clause
+                    .as_ref()
+                    .map(|e| resolve_expr(e, params))
+                    .transpose()?,
+                assignments: resolve_assignments(&s.assignments, params)?,
+                return_clause,
+                order_by,
+                skip,
+                limit,
+            }))
+        }
         Statement::Remove(r) => {
             let (return_clause, order_by, skip, limit) =
                 resolve_optional_return(&r.return_clause, &r.order_by, r.skip, r.limit, params)?;

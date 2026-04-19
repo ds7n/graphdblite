@@ -8,7 +8,7 @@ COMMENT = _{ "//" ~ (!"\n" ~ ANY)* }
 statement = { SOI ~ union_stmt ~ ";"? ~ EOI }
 union_stmt = { single_stmt ~ (union_op ~ single_stmt)* }
 union_op = { ^"UNION" ~ ^"ALL"? }
-single_stmt = { explain_stmt | multi_clause_stmt | match_stmt | unwind_stmt | match_create_stmt | match_merge_stmt | delete_stmt | set_stmt | remove_stmt | create_stmt | merge_stmt | return_stmt }
+single_stmt = { explain_stmt | multi_clause_stmt | match_stmt | unwind_stmt | with_stmt | match_create_stmt | match_merge_stmt | delete_stmt | set_stmt | remove_stmt | create_stmt | merge_stmt | return_stmt }
 
 explain_stmt = { ^"EXPLAIN" ~ (match_create_stmt | match_stmt | unwind_stmt) }
 
@@ -61,6 +61,17 @@ multi_delete_clause = { detach_keyword? ~ ^"DELETE" ~ ident_list }
 // === Standalone RETURN (no preceding MATCH) ===
 
 return_stmt = {
+    return_clause ~
+    order_by_clause? ~
+    skip_clause? ~
+    limit_clause?
+}
+
+// === Standalone WITH...RETURN ===
+
+with_stmt = {
+    with_clause ~
+    ((with_clause ~ match_part?) | unwind_clause)* ~
     return_clause ~
     order_by_clause? ~
     skip_clause? ~
@@ -346,7 +357,7 @@ variable = { ident }
 star = { "*" }
 
 function_call = { function_name ~ "(" ~ function_args ~ ")" }
-function_name = @{ ^"count" | ^"sum" | ^"avg" | ^"min" | ^"max" | ^"collect" | ^"percentileDisc" | ^"percentileCont" | ^"stDev" | ^"stDevP" | ^"length" | ^"nodes" | ^"toLower" | ^"toUpper" | ^"toString" | ^"toInteger" | ^"toFloat" | ^"keys" | ^"labels" | ^"id" | ^"coalesce" | ^"type" | ^"head" | ^"tail" | ^"last" | ^"size" | ^"abs" | ^"substring" | ^"replace" | ^"split" | ^"trim" | ^"reverse" | ^"range" | ^"localdatetime" | ^"localtime" | ^"datetime" | ^"date" | ^"duration" | ^"time" }
+function_name = @{ ^"count" | ^"sum" | ^"avg" | ^"min" | ^"max" | ^"collect" | ^"percentileDisc" | ^"percentileCont" | ^"stDev" | ^"stDevP" | ^"length" | ^"nodes" | ^"relationships" | ^"toLower" | ^"toUpper" | ^"toBoolean" | ^"toString" | ^"toInteger" | ^"toFloat" | ^"keys" | ^"labels" | ^"id" | ^"coalesce" | ^"type" | ^"head" | ^"tail" | ^"last" | ^"size" | ^"abs" | ^"substring" | ^"replace" | ^"split" | ^"trim" | ^"reverse" | ^"range" | ^"properties" | ^"localdatetime" | ^"localtime" | ^"datetime" | ^"date" | ^"duration" | ^"time" }
 function_args = { star | distinct_keyword ~ expr_list | expr_list | "" }
 expr_list = { expr ~ ("," ~ expr)* }
 

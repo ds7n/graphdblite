@@ -1850,11 +1850,22 @@ fn get_last_alias(op: &Option<LogicalOp>) -> String {
 
 /// Returns true if the expression is an aggregate function call (count, sum, avg, etc.).
 fn is_aggregate_fn(expr: &Expr) -> bool {
-    matches!(
-        expr,
-        Expr::FunctionCall { name, .. }
-            if matches!(name.as_str(), "count" | "sum" | "avg" | "min" | "max" | "collect" | "percentiledisc" | "percentilecont" | "stdev" | "stdevp")
-    )
+    match expr {
+        Expr::FunctionCall { name, .. } => matches!(
+            name.to_ascii_lowercase().as_str(),
+            "count"
+                | "sum"
+                | "avg"
+                | "min"
+                | "max"
+                | "collect"
+                | "percentiledisc"
+                | "percentilecont"
+                | "stdev"
+                | "stdevp"
+        ),
+        _ => false,
+    }
 }
 
 /// Split RETURN/WITH items into group keys (non-aggregate) and aggregate expressions.
@@ -1869,7 +1880,7 @@ fn split_aggregates(items: &[ReturnItem]) -> crate::types::Result<(Vec<Expr>, Ve
                 args,
                 distinct,
             } => {
-                let function = match name.as_str() {
+                let function = match name.to_ascii_lowercase().as_str() {
                     "count" => Some(AggregateFunction::Count),
                     "sum" => Some(AggregateFunction::Sum),
                     "avg" => Some(AggregateFunction::Avg),
@@ -1891,6 +1902,7 @@ fn split_aggregates(items: &[ReturnItem]) -> crate::types::Result<(Vec<Expr>, Ve
                         alias: item.alias.clone(),
                         distinct: *distinct,
                         extra_arg,
+                        original_name: name.clone(),
                     });
                 } else {
                     group_keys.push(item.expr.clone());

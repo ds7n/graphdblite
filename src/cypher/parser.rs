@@ -1375,32 +1375,28 @@ fn parse_bool_term(pair: pest::iterators::Pair<Rule>) -> crate::types::Result<Ex
 }
 
 fn parse_bool_factor(pair: pest::iterators::Pair<Rule>) -> crate::types::Result<Expr> {
-    // bool_factor = { not_op? ~ bool_primary }
-    let mut negated = false;
+    // bool_factor = { not_op* ~ bool_primary }
+    let mut not_count = 0;
     let mut primary = None;
 
     for inner in pair.into_inner() {
         match inner.as_rule() {
-            Rule::not_op => negated = true,
+            Rule::not_op => not_count += 1,
             Rule::bool_primary => primary = Some(inner),
             _ => {}
         }
     }
 
-    let expr = parse_bool_primary(primary.unwrap())?;
-    if negated {
-        Ok(Expr::Not(Box::new(expr)))
-    } else {
-        Ok(expr)
+    let mut expr = parse_bool_primary(primary.unwrap())?;
+    for _ in 0..not_count {
+        expr = Expr::Not(Box::new(expr));
     }
+    Ok(expr)
 }
 
 fn parse_bool_primary(pair: pest::iterators::Pair<Rule>) -> crate::types::Result<Expr> {
     let inner = pair.into_inner().next().unwrap();
     match inner.as_rule() {
-        Rule::case_expr => parse_case_expr(inner),
-        Rule::exists_subquery => parse_exists_subquery(inner),
-        Rule::expr => parse_expr(inner),
         Rule::cmp_or_value => parse_cmp_or_value(inner),
         _ => Err(GraphError::Serialization(format!(
             "unexpected bool primary: {:?}",
@@ -1410,10 +1406,68 @@ fn parse_bool_primary(pair: pest::iterators::Pair<Rule>) -> crate::types::Result
 }
 
 fn parse_cmp_or_value(pair: pest::iterators::Pair<Rule>) -> crate::types::Result<Expr> {
-    let mut children = pair.into_inner();
-    let left = parse_add_expr(children.next().unwrap())?;
+    let mut children: Vec<_> = pair.into_inner().collect();
 
-    // Check for optional suffix (IS NOT NULL, IS NULL, IN, comparison)
+    // First child is always a predicate_expr.
+    let first = parse_predicate_expr(children.remove(0))?;
+
+    if children.is_empty() {
+        return Ok(first);
+    }
+
+    // Parse comparison suffixes. For chained comparisons like `a < b < c`,
+    // desugar into `a < b AND b < c`.
+    let mut comparisons = Vec::new();
+    let mut prev = first;
+
+    for suffix in children {
+        let mut inner = suffix.into_inner();
+        let op = parse_comp_op(inner.next().unwrap())?;
+        let right = parse_predicate_expr(inner.next().unwrap())?;
+        comparisons.push(Expr::BinaryOp {
+            left: Box::new(prev.clone()),
+            op,
+            right: Box::new(right.clone()),
+        });
+        prev = right;
+    }
+
+    if comparisons.len() == 1 {
+        Ok(comparisons.into_iter().next().unwrap())
+    } else {
+        // Chain with AND: (a < b) AND (b < c) AND ...
+        let mut result = comparisons.remove(0);
+        for cmp in comparisons {
+            result = Expr::BinaryOp {
+                left: Box::new(result),
+                op: BinOp::And,
+                right: Box::new(cmp),
+            };
+        }
+        Ok(result)
+    }
+}
+
+/// Parse a cmp_primary: case_expr | exists_subquery | "(" expr ")" | add_expr.
+fn parse_cmp_primary(pair: pest::iterators::Pair<Rule>) -> crate::types::Result<Expr> {
+    let inner = pair.into_inner().next().unwrap();
+    match inner.as_rule() {
+        Rule::case_expr => parse_case_expr(inner),
+        Rule::exists_subquery => parse_exists_subquery(inner),
+        Rule::expr => parse_expr(inner),
+        Rule::add_expr => parse_add_expr(inner),
+        _ => Err(GraphError::Serialization(format!(
+            "unexpected cmp_primary: {:?}",
+            inner.as_rule()
+        ))),
+    }
+}
+
+/// Parse a predicate expression: cmp_primary with optional IS NULL / IS NOT NULL / IN / string predicate suffix.
+fn parse_predicate_expr(pair: pest::iterators::Pair<Rule>) -> crate::types::Result<Expr> {
+    let mut children = pair.into_inner();
+    let left = parse_cmp_primary(children.next().unwrap())?;
+
     match children.next() {
         None => Ok(left),
         Some(suffix) => match suffix.as_rule() {
@@ -1431,9 +1485,10 @@ fn parse_cmp_or_value(pair: pest::iterators::Pair<Rule>) -> crate::types::Result
                     right: Box::new(right),
                 })
             }
-            Rule::comp_suffix => {
+            Rule::string_pred_suffix => {
                 let mut inner = suffix.into_inner();
-                let op = parse_comp_op(inner.next().unwrap())?;
+                let op_pair = inner.next().unwrap();
+                let op = parse_string_pred_op(op_pair)?;
                 let right = parse_add_expr(inner.next().unwrap())?;
                 Ok(Expr::BinaryOp {
                     left: Box::new(left),
@@ -1442,10 +1497,24 @@ fn parse_cmp_or_value(pair: pest::iterators::Pair<Rule>) -> crate::types::Result
                 })
             }
             _ => Err(GraphError::Serialization(format!(
-                "unexpected cmp_or_value suffix: {:?}",
+                "unexpected predicate_expr suffix: {:?}",
                 suffix.as_rule()
             ))),
         },
+    }
+}
+
+/// Parse a string predicate operator (STARTS WITH, ENDS WITH, CONTAINS).
+fn parse_string_pred_op(pair: pest::iterators::Pair<Rule>) -> crate::types::Result<BinOp> {
+    let inner = pair.into_inner().next().unwrap();
+    match inner.as_rule() {
+        Rule::starts_with_op => Ok(BinOp::StartsWith),
+        Rule::ends_with_op => Ok(BinOp::EndsWith),
+        Rule::contains_op => Ok(BinOp::Contains),
+        _ => Err(GraphError::Serialization(format!(
+            "unexpected string pred op: {:?}",
+            inner.as_rule()
+        ))),
     }
 }
 
@@ -1603,10 +1672,10 @@ fn parse_add_expr(pair: pest::iterators::Pair<Rule>) -> crate::types::Result<Exp
 fn parse_mul_expr(pair: pest::iterators::Pair<Rule>) -> crate::types::Result<Expr> {
     let mut children: Vec<_> = pair.into_inner().collect();
     if children.len() == 1 {
-        return parse_atom_expr(children.remove(0));
+        return parse_exp_expr(children.remove(0));
     }
     let mut iter = children.into_iter();
-    let mut left = parse_atom_expr(iter.next().unwrap())?;
+    let mut left = parse_exp_expr(iter.next().unwrap())?;
     while let Some(op_pair) = iter.next() {
         let op = match op_pair.as_str() {
             "*" => BinOp::Mul,
@@ -1619,12 +1688,33 @@ fn parse_mul_expr(pair: pest::iterators::Pair<Rule>) -> crate::types::Result<Exp
                 )))
             }
         };
-        let right = parse_atom_expr(iter.next().unwrap())?;
+        let right = parse_exp_expr(iter.next().unwrap())?;
         left = Expr::BinaryOp {
             left: Box::new(left),
             op,
             right: Box::new(right),
         };
+    }
+    Ok(left)
+}
+
+/// Parse exponentiation: atom_expr (^ atom_expr)*
+fn parse_exp_expr(pair: pest::iterators::Pair<Rule>) -> crate::types::Result<Expr> {
+    let mut children: Vec<_> = pair.into_inner().collect();
+    if children.len() == 1 {
+        return parse_atom_expr(children.remove(0));
+    }
+    let mut iter = children.into_iter();
+    let mut left = parse_atom_expr(iter.next().unwrap())?;
+    while let Some(op_pair) = iter.next() {
+        if op_pair.as_rule() == Rule::exp_op {
+            let right = parse_atom_expr(iter.next().unwrap())?;
+            left = Expr::BinaryOp {
+                left: Box::new(left),
+                op: BinOp::Pow,
+                right: Box::new(right),
+            };
+        }
     }
     Ok(left)
 }
@@ -1698,6 +1788,16 @@ fn parse_atom_expr(pair: pest::iterators::Pair<Rule>) -> crate::types::Result<Ex
         Rule::in_expr => parse_in_expr(pair),
         Rule::add_expr => parse_add_expr(pair),
         Rule::mul_expr => parse_mul_expr(pair),
+        Rule::exp_expr => parse_exp_expr(pair),
+        Rule::unary_minus_expr => {
+            let inner = pair.into_inner().next().unwrap();
+            let expr = parse_atom_expr(inner)?;
+            Ok(Expr::BinaryOp {
+                left: Box::new(Expr::Literal(LiteralValue::I64(0))),
+                op: BinOp::Sub,
+                right: Box::new(expr),
+            })
+        }
         _ => Err(GraphError::Serialization(format!(
             "unexpected expr: {:?}",
             pair.as_rule()

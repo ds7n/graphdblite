@@ -460,4 +460,5 @@ pub enum BinOp {
     Mul,
     Div,
     Mod,
+    Pow,
 }

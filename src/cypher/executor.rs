@@ -252,7 +252,8 @@ fn exec(conn: &Connection, plan: &LogicalOp, ctx: &ExecContext) -> Result<Vec<Re
             input,
             right,
             optional_aliases,
-        } => exec_left_outer_join(conn, input, right, optional_aliases, ctx),
+            opt_filter,
+        } => exec_left_outer_join(conn, input, right, optional_aliases, opt_filter.as_ref(), ctx),
 
         LogicalOp::ShortestPath {
             input,
@@ -405,6 +406,11 @@ fn exec_expand(
                             Direction::Incoming => (dst_id, src_id),
                             _ => (src_id, dst_id),
                         };
+                        // Bind the relationship variable itself (for IS NULL checks, etc.).
+                        new_rec.set(
+                            r_alias.to_string(),
+                            Value::String(label.to_string()),
+                        );
                         new_rec.set(format!("{r_alias}.__src"), Value::I64(edge_src.0 as i64));
                         new_rec.set(format!("{r_alias}.__dst"), Value::I64(edge_dst.0 as i64));
                         new_rec.set(
@@ -669,6 +675,7 @@ fn exec_project(
                         .alias
                         .clone()
                         .unwrap_or_else(|| expr_to_column_name(&item.expr));
+                    let expr_col = expr_to_column_name(&item.expr);
                     // Check if the col_name collides with a MATCH variable binding
                     // (which stores raw node IDs). MATCH variables always have
                     // accompanying `var.__id` metadata; aggregate results don't.
@@ -676,6 +683,14 @@ fn exec_project(
                     let val = if !is_match_binding {
                         if let Some(existing) = rec.get(&col_name) {
                             existing.clone()
+                        } else if item.alias.is_some() {
+                            // When an alias is used, also check the expression's
+                            // natural column name (e.g. from aggregation group keys).
+                            if let Some(existing) = rec.get(&expr_col) {
+                                existing.clone()
+                            } else {
+                                eval_expr(&item.expr, rec, conn)?
+                            }
                         } else {
                             eval_expr(&item.expr, rec, conn)?
                         }
@@ -1682,8 +1697,15 @@ fn exec_materialize_path(
     let mut results = Vec::new();
 
     for rec in records {
+        // If any node alias is Null (from unmatched OPTIONAL MATCH),
+        // the entire path is Null.
+        let mut has_null = false;
         let mut nodes = Vec::new();
         for alias in node_aliases {
+            if rec.get(alias) == Some(&Value::Null) {
+                has_null = true;
+                break;
+            }
             if let Some(Value::I64(id)) = rec.get(&format!("{alias}.__id")) {
                 match node::get_node(conn, NodeId(*id as u64)) {
                     Ok(n) => nodes.push(n),
@@ -1695,7 +1717,9 @@ fn exec_materialize_path(
         let _ = rel_aliases; // suppress warning
 
         let mut new_rec = rec;
-        if !nodes.is_empty() {
+        if has_null {
+            new_rec.set(path_alias.to_string(), Value::Null);
+        } else if !nodes.is_empty() {
             new_rec.set(
                 path_alias.to_string(),
                 Value::Path(PathValue { nodes, edges }),
@@ -1741,6 +1765,7 @@ fn exec_left_outer_join(
     input: &LogicalOp,
     right: &LogicalOp,
     optional_aliases: &[String],
+    opt_filter: Option<&Expr>,
     ctx: &ExecContext,
 ) -> Result<Vec<Record>> {
     let left_records = exec(conn, input, ctx)?;
@@ -1751,14 +1776,20 @@ fn exec_left_outer_join(
         let right_records = exec_correlated(conn, right, l_rec, ctx)?;
 
         if right_records.is_empty() {
-            // No match — emit left record with NULLs for optional aliases.
+            // No match — emit left record with NULLs for optional aliases
+            // and their flattened metadata keys so downstream operators
+            // (property access, labels(), type(), etc.) see Null properly.
             let mut rec = l_rec.clone();
             for alias in optional_aliases {
                 rec.set(alias.clone(), Value::Null);
+                for suffix in &["__id", "__labels", "__src", "__dst", "__type"] {
+                    rec.set(format!("{alias}.{suffix}"), Value::Null);
+                }
             }
             results.push(rec);
         } else {
             // Merge each right record into the left record.
+            let mut any_passed = false;
             for r_rec in &right_records {
                 let mut combined = l_rec.clone();
                 for (key, val) in &r_rec.fields {
@@ -1766,7 +1797,27 @@ fn exec_left_outer_join(
                         combined.set(key.clone(), val.clone());
                     }
                 }
+                // If there's a WHERE clause on the OPTIONAL MATCH, check it.
+                // Rows that fail the predicate are discarded; if ALL rows fail,
+                // the left record is null-filled.
+                if let Some(filter) = opt_filter {
+                    if !eval_predicate(filter, &combined, conn)? {
+                        continue;
+                    }
+                }
+                any_passed = true;
                 results.push(combined);
+            }
+            // If no right row passed the filter, null-fill.
+            if !any_passed {
+                let mut rec = l_rec.clone();
+                for alias in optional_aliases {
+                    rec.set(alias.clone(), Value::Null);
+                    for suffix in &["__id", "__labels", "__src", "__dst", "__type"] {
+                        rec.set(format!("{alias}.{suffix}"), Value::Null);
+                    }
+                }
+                results.push(rec);
             }
         }
     }
@@ -1795,6 +1846,9 @@ fn exec_correlated(
                     return Ok(vec![]);
                 }
                 Ok(vec![node_to_record(&node, alias)])
+            } else if outer.get(alias) == Some(&Value::Null) {
+                // Variable is bound to null (e.g. from OPTIONAL MATCH) — no match.
+                Ok(vec![])
             } else {
                 exec_scan(conn, label, alias, ctx)
             }
@@ -1926,6 +1980,7 @@ fn exec_correlated(
                     );
                     new_rec.set(format!("{dst_alias}.__id"), Value::I64(dst_id.0 as i64));
                     if let Some(r_alias) = rel_alias {
+                        new_rec.set(r_alias.to_string(), Value::String(rel_type.clone()));
                         new_rec.set(format!("{r_alias}.__src"), Value::I64(rel_src.0 as i64));
                         new_rec.set(format!("{r_alias}.__dst"), Value::I64(rel_dst.0 as i64));
                         new_rec.set(format!("{r_alias}.__type"), Value::String(rel_type.clone()));
@@ -1973,6 +2028,7 @@ fn exec_correlated(
                                 Direction::Incoming => (dst_id, src_id),
                                 _ => (src_id, dst_id),
                             };
+                            new_rec.set(r_alias.to_string(), Value::String(label.to_string()));
                             new_rec.set(format!("{r_alias}.__src"), Value::I64(edge_src.0 as i64));
                             new_rec.set(format!("{r_alias}.__dst"), Value::I64(edge_dst.0 as i64));
                             new_rec.set(

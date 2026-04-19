@@ -106,12 +106,13 @@ fn plan_match(conn: &Connection, stmt: &MatchStatement) -> crate::types::Result<
     let mut bound_vars = collect_pattern_variables(&stmt.patterns);
 
     // Apply OPTIONAL MATCH clauses as LeftOuterJoins.
-    for opt_patterns in &stmt.optional_patterns {
-        let (right, new_aliases) = plan_optional_patterns(conn, opt_patterns, &bound_vars)?;
+    for opt_match in &stmt.optional_patterns {
+        let (right, new_aliases, opt_filter) = plan_optional_match(conn, opt_match, &bound_vars)?;
         op = LogicalOp::LeftOuterJoin {
             input: Box::new(op),
             right: Box::new(right),
             optional_aliases: new_aliases.clone(),
+            opt_filter,
         };
         // Each OPTIONAL MATCH introduces new variables that become bound for
         // subsequent OPTIONAL MATCH clauses.
@@ -170,10 +171,10 @@ fn plan_match(conn: &Connection, stmt: &MatchStatement) -> crate::types::Result<
                 scope_vars.insert(unwind.alias.clone());
             }
             IntermediateClause::Match(im) => {
-                op = plan_intermediate_match(conn, op, im)?;
+                op = plan_intermediate_match_with_scope(conn, op, im, &scope_vars)?;
                 scope_vars.extend(collect_pattern_variables(&im.patterns));
                 for opt in &im.optional_patterns {
-                    scope_vars.extend(collect_pattern_variables(opt));
+                    scope_vars.extend(collect_pattern_variables(&opt.patterns));
                 }
             }
         }
@@ -351,12 +352,13 @@ fn plan_delete(conn: &Connection, stmt: &DeleteStatement) -> crate::types::Resul
     let mut op = plan_patterns(conn, &stmt.patterns)?;
 
     let mut bound_vars = collect_pattern_variables(&stmt.patterns);
-    for opt_patterns in &stmt.optional_patterns {
-        let (right, new_aliases) = plan_optional_patterns(conn, opt_patterns, &bound_vars)?;
+    for opt_match in &stmt.optional_patterns {
+        let (right, new_aliases, opt_filter) = plan_optional_match(conn, opt_match, &bound_vars)?;
         op = LogicalOp::LeftOuterJoin {
             input: Box::new(op),
             right: Box::new(right),
             optional_aliases: new_aliases.clone(),
+            opt_filter,
         };
         bound_vars.extend(new_aliases);
     }
@@ -386,12 +388,13 @@ fn plan_set(conn: &Connection, stmt: &SetStatement) -> crate::types::Result<Logi
 
     // Optional MATCH clauses.
     let mut bound_vars = collect_pattern_variables(&stmt.patterns);
-    for opt_patterns in &stmt.optional_patterns {
-        let (right, new_aliases) = plan_optional_patterns(conn, opt_patterns, &bound_vars)?;
+    for opt_match in &stmt.optional_patterns {
+        let (right, new_aliases, opt_filter) = plan_optional_match(conn, opt_match, &bound_vars)?;
         op = LogicalOp::LeftOuterJoin {
             input: Box::new(op),
             right: Box::new(right),
             optional_aliases: new_aliases.clone(),
+            opt_filter,
         };
         bound_vars.extend(new_aliases);
     }
@@ -419,13 +422,13 @@ fn plan_remove(conn: &Connection, stmt: &RemoveStatement) -> crate::types::Resul
     let mut op = plan_patterns(conn, &stmt.patterns)?;
 
     // Optional MATCH clauses.
-    for opt_pats in &stmt.optional_patterns {
-        let right = plan_patterns(conn, opt_pats)?;
-        let optional_aliases = collect_pattern_variables(opt_pats).into_iter().collect();
+    for opt_match in &stmt.optional_patterns {
+        let (right, new_aliases, opt_filter) = plan_optional_match(conn, opt_match, &HashSet::new())?;
         op = LogicalOp::LeftOuterJoin {
             input: Box::new(op),
             right: Box::new(right),
-            optional_aliases,
+            optional_aliases: new_aliases,
+            opt_filter,
         };
     }
 
@@ -472,10 +475,20 @@ fn plan_unwind(conn: &Connection, stmt: &UnwindStatement) -> crate::types::Resul
             }
 
             // Apply intermediate clauses (WITH/UNWIND/MATCH).
+            let mut scope_vars: HashSet<String> = HashSet::new();
+            scope_vars.insert(stmt.alias.clone());
             for clause in intermediate_clauses {
                 match clause {
                     IntermediateClause::With(with) => {
                         op = plan_with(op, with)?;
+                        scope_vars.clear();
+                        for item in &with.items {
+                            if let Some(ref alias) = item.alias {
+                                scope_vars.insert(alias.clone());
+                            } else if let Expr::Variable(var) = &item.expr {
+                                scope_vars.insert(var.clone());
+                            }
+                        }
                     }
                     IntermediateClause::Unwind(unwind) => {
                         op = LogicalOp::Unwind {
@@ -483,9 +496,14 @@ fn plan_unwind(conn: &Connection, stmt: &UnwindStatement) -> crate::types::Resul
                             expr: unwind.expr.clone(),
                             alias: unwind.alias.clone(),
                         };
+                        scope_vars.insert(unwind.alias.clone());
                     }
                     IntermediateClause::Match(im) => {
-                        op = plan_intermediate_match(conn, op, im)?;
+                        op = plan_intermediate_match_with_scope(conn, op, im, &scope_vars)?;
+                        scope_vars.extend(collect_pattern_variables(&im.patterns));
+                        for opt in &im.optional_patterns {
+                            scope_vars.extend(collect_pattern_variables(&opt.patterns));
+                        }
                     }
                 }
             }
@@ -556,10 +574,20 @@ fn plan_unwind(conn: &Connection, stmt: &UnwindStatement) -> crate::types::Resul
             };
 
             // Apply intermediate clauses (WITH/MATCH/UNWIND after CREATE).
+            let mut scope_vars2: HashSet<String> = HashSet::new();
+            scope_vars2.insert(stmt.alias.clone());
             for clause in intermediate_clauses {
                 match clause {
                     IntermediateClause::With(with) => {
                         op = plan_with(op, with)?;
+                        scope_vars2.clear();
+                        for item in &with.items {
+                            if let Some(ref alias) = item.alias {
+                                scope_vars2.insert(alias.clone());
+                            } else if let Expr::Variable(var) = &item.expr {
+                                scope_vars2.insert(var.clone());
+                            }
+                        }
                     }
                     IntermediateClause::Unwind(unwind) => {
                         op = LogicalOp::Unwind {
@@ -567,9 +595,14 @@ fn plan_unwind(conn: &Connection, stmt: &UnwindStatement) -> crate::types::Resul
                             expr: unwind.expr.clone(),
                             alias: unwind.alias.clone(),
                         };
+                        scope_vars2.insert(unwind.alias.clone());
                     }
                     IntermediateClause::Match(im) => {
-                        op = plan_intermediate_match(conn, op, im)?;
+                        op = plan_intermediate_match_with_scope(conn, op, im, &scope_vars2)?;
+                        scope_vars2.extend(collect_pattern_variables(&im.patterns));
+                        for opt in &im.optional_patterns {
+                            scope_vars2.extend(collect_pattern_variables(&opt.patterns));
+                        }
                     }
                 }
             }
@@ -720,11 +753,12 @@ fn plan_with(input: LogicalOp, with: &WithClause) -> crate::types::Result<Logica
     Ok(op)
 }
 
-/// Plan an intermediate MATCH clause (after WITH) using correlated join.
-fn plan_intermediate_match(
+/// Plan an intermediate MATCH clause with an explicit set of already-bound variables.
+fn plan_intermediate_match_with_scope(
     conn: &Connection,
     input: LogicalOp,
     im: &IntermediateMatch,
+    upstream_vars: &HashSet<String>,
 ) -> crate::types::Result<LogicalOp> {
     let mut op = input;
 
@@ -737,14 +771,17 @@ fn plan_intermediate_match(
     }
 
     // Collect variables bound so far for optional patterns.
-    let mut bound_vars = collect_pattern_variables(&im.patterns);
+    // Include both upstream (from WITH) and intermediate MATCH patterns.
+    let mut bound_vars = upstream_vars.clone();
+    bound_vars.extend(collect_pattern_variables(&im.patterns));
 
-    for opt_patterns in &im.optional_patterns {
-        let (right, new_aliases) = plan_optional_patterns(conn, opt_patterns, &bound_vars)?;
+    for opt_match in &im.optional_patterns {
+        let (right, new_aliases, opt_filter) = plan_optional_match(conn, opt_match, &bound_vars)?;
         op = LogicalOp::LeftOuterJoin {
             input: Box::new(op),
             right: Box::new(right),
             optional_aliases: new_aliases.clone(),
+            opt_filter,
         };
         bound_vars.extend(new_aliases);
     }
@@ -993,6 +1030,11 @@ fn check_expr_variables(expr: &Expr, scope: &HashSet<String>) -> crate::types::R
             check_expr_variables(list_expr, scope)?;
         }
         Expr::Exists { .. } => {}
+        Expr::HasLabel(var, _) => {
+            if !scope.contains(var) {
+                return Err(GraphError::syntax(format!("UndefinedVariable: {var}")));
+            }
+        }
     }
     Ok(())
 }
@@ -1106,15 +1148,21 @@ fn validate_variable_types(patterns: &[Pattern]) -> crate::types::Result<()> {
 /// `bound_vars` contains variables already established by prior MATCH / OPTIONAL
 /// MATCH clauses. Any node variable NOT in `bound_vars` is new and will be
 /// NULL-filled on no match.
-fn plan_optional_patterns(
+fn plan_optional_match(
     conn: &Connection,
-    patterns: &[Pattern],
+    opt_match: &OptionalMatch,
     bound_vars: &HashSet<String>,
-) -> crate::types::Result<(LogicalOp, Vec<String>)> {
+) -> crate::types::Result<(LogicalOp, Vec<String>, Option<Expr>)> {
     let mut new_aliases = Vec::new();
-    let op = plan_patterns(conn, patterns)?;
+    let op = plan_patterns(conn, &opt_match.patterns)?;
 
-    for pattern in patterns {
+    for pattern in &opt_match.patterns {
+        // Include path variable (p = ...) in optional aliases so it gets null-filled.
+        if let Some(ref path_var) = pattern.path_variable {
+            if !bound_vars.contains(path_var) && !new_aliases.contains(path_var) {
+                new_aliases.push(path_var.clone());
+            }
+        }
         for elem in &pattern.elements {
             let var = match elem {
                 PatternElement::Node(n) => n.variable.as_ref(),
@@ -1128,7 +1176,7 @@ fn plan_optional_patterns(
         }
     }
 
-    Ok((op, new_aliases))
+    Ok((op, new_aliases, opt_match.where_clause.clone()))
 }
 
 /// Plan a single pattern: (a:Label)-[:TYPE]->(b:Label)
@@ -1381,6 +1429,13 @@ fn plan_create_pattern(
                 // Only dedup named variables; anonymous nodes are always new.
                 let already_seen =
                     is_named && alias.as_ref().is_some_and(|n| !seen.insert(n.clone()));
+                if already_seen && !node.labels.is_empty() {
+                    // Rebinding a variable with new labels is a VariableAlreadyBound error.
+                    return Err(GraphError::syntax(format!(
+                        "VariableAlreadyBound: variable `{}` already bound",
+                        alias.as_deref().unwrap_or("?")
+                    )));
+                }
                 if !already_seen {
                     ops.push(LogicalOp::CreateNode {
                         labels: node.labels.clone(),
@@ -1408,6 +1463,12 @@ fn plan_create_pattern(
                 });
                 let dst_already_seen =
                     dst_is_named && dst_alias.as_ref().is_some_and(|n| !seen.insert(n.clone()));
+                if dst_already_seen && !dst_node.labels.is_empty() {
+                    return Err(GraphError::syntax(format!(
+                        "VariableAlreadyBound: variable `{}` already bound",
+                        dst_alias.as_deref().unwrap_or("?")
+                    )));
+                }
                 if !dst_already_seen {
                     ops.push(LogicalOp::CreateNode {
                         labels: dst_node.labels.clone(),

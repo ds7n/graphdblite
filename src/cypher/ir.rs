@@ -167,6 +167,9 @@ pub enum LogicalOp {
         right: Box<LogicalOp>,
         /// Aliases from the optional pattern that should be NULL-filled on no match.
         optional_aliases: Vec<String>,
+        /// Optional WHERE clause applied after joining but before null-filling.
+        /// If the predicate fails on a joined row, that row is null-filled instead.
+        opt_filter: Option<Expr>,
     },
 
     /// Unwind a list expression into one record per element.

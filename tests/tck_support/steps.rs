@@ -79,7 +79,13 @@ fn split_setup_statements(script: &str) -> Vec<String> {
             trimmed.starts_with(kw)
                 && trimmed[kw.len()..].starts_with(|c: char| c.is_whitespace() || c == '(')
         });
-        if is_keyword_start && !current.is_empty() {
+        // Don't split when a CREATE follows another CREATE — the grammar
+        // supports multi-clause CREATE natively (e.g. CREATE (a) CREATE (a)-[:R]->(b)).
+        let current_starts_with_create = current.trim_start().starts_with("CREATE");
+        let line_starts_with_create = trimmed.starts_with("CREATE");
+        let should_split =
+            is_keyword_start && !current.is_empty() && !(current_starts_with_create && line_starts_with_create);
+        if should_split {
             stmts.push(current.clone());
             current.clear();
         }

@@ -300,24 +300,18 @@ Match6 - Match named paths scenarios::[6] Handling direction of named paths
 Match6 - Match named paths scenarios::[7] Respecting direction when matching existing path
 Match6 - Match named paths scenarios::[8] Respecting direction when matching non-existent path with multiple directions
 Match6 - Match named paths scenarios::[9] Longer path query should return results in written order
+# BLOCKER: undirected relationship binding in OPTIONAL MATCH context
 Match7 - Optional match::[11] Return two subgraphs with bound undirected relationship and optional relationship
+# BLOCKER: variable-length pattern expansion in OPTIONAL MATCH
 Match7 - Optional match::[12] Variable length optional relationships
-Match7 - Optional match::[16] Optionally matching named paths - null result
+# BLOCKER: variable-length pattern traversal returns wrong results (self-loop reuse)
+Match7 - Optional match::[14] Variable length optional relationships with length predicates
+# BLOCKER: MaterializePath does not populate edge data for named paths
 Match7 - Optional match::[17] Optionally matching named paths - existing result
-Match7 - Optional match::[18] Named paths inside optional matches with node predicates
-Match7 - Optional match::[19] Optionally matching named paths with single and variable length patterns
+# BLOCKER: variable-length optional relationships with bound nodes
 Match7 - Optional match::[20] Variable length optional relationships with bound nodes, no matches
-Match7 - Optional match::[22] MATCH after OPTIONAL MATCH
-Match7 - Optional match::[23] OPTIONAL MATCH with labels on the optional end node
+# BLOCKER: self-loop matching in undirected patterns
 Match7 - Optional match::[24] Optionally matching self-loops
-Match7 - Optional match::[25] Optionally matching self-loops without matches
-Match7 - Optional match::[26] Handling correlated optional matches; first does not match implies second does not match
-Match7 - Optional match::[29] Satisfies the open world assumption, relationships between same nodes
-Match7 - Optional match::[30] Satisfies the open world assumption, single relationship
-Match7 - Optional match::[31] Satisfies the open world assumption, relationships between different nodes
-Match7 - Optional match::[3] OPTIONAL MATCH and bound nodes
-Match7 - Optional match::[7] MATCH with OPTIONAL MATCH in longer pattern
-Match7 - Optional match::[9] Longer pattern with bound nodes
 Match8 - Match clause interoperation with other clauses::[2] Counting rows after MATCH, MERGE, OPTIONAL MATCH
 Match8 - Match clause interoperation with other clauses::[3] Matching and disregarding output, then matching again
 Match9 - Match deprecated scenarios::[1] Variable length relationship variables are lists of relationships
@@ -343,14 +337,6 @@ MatchWhere5 - Filter on predicate resulting in null::[1] Filter out on null
 MatchWhere5 - Filter on predicate resulting in null::[2] Filter out on null if the AND'd predicate evaluates to false
 MatchWhere5 - Filter on predicate resulting in null::[3] Filter out on null if the AND'd predicate evaluates to true
 MatchWhere5 - Filter on predicate resulting in null::[4] Do not filter out on null if the OR'd predicate evaluates to true
-MatchWhere6 - Filter optional matches::[1] Filter node with node label predicate on multi variables with multiple bindings after MATCH and OPTIONAL MATCH
-MatchWhere6 - Filter optional matches::[2] Filter node with false node label predicate after OPTIONAL MATCH
-MatchWhere6 - Filter optional matches::[3] Filter node with property predicate on multi variables with multiple bindings after OPTIONAL MATCH
-MatchWhere6 - Filter optional matches::[4] Do not fail when predicates on optionally matched and missed nodes are invalid
-MatchWhere6 - Filter optional matches::[5] Matching and optionally matching with unbound nodes and equality predicate in reverse direction
-MatchWhere6 - Filter optional matches::[6] Join nodes on non-equality of properties – OPTIONAL MATCH and WHERE
-MatchWhere6 - Filter optional matches::[7] Join nodes on non-equality of properties – OPTIONAL MATCH on two relationships and WHERE
-MatchWhere6 - Filter optional matches::[8] Join nodes on non-equality of properties – Two OPTIONAL MATCH clauses and WHERE
 Mathematical13 - Square root::[1] `sqrt()` returning float values
 Mathematical2 - Addition::[1] Allow addition
 Mathematical8 - Arithmetic precedence::[1] Arithmetic precedence test
@@ -406,11 +392,9 @@ Merge9 - Merge clause interoperation with other clauses::[2] UNWIND with multipl
 Merge9 - Merge clause interoperation with other clauses::[3] Mixing MERGE with CREATE
 Merge9 - Merge clause interoperation with other clauses::[4] MERGE after WITH with predicate and WITH with aggregation
 Null1 - IS NULL validation::[1] Property null check on non-null node
-Null1 - IS NULL validation::[2] Property null check on optional non-null node
 Null1 - IS NULL validation::[3] Property null check on null node
 Null1 - IS NULL validation::[5] IS NULL on a map
 Null2 - IS NOT NULL validation::[1] Property not null check on non-null node
-Null2 - IS NOT NULL validation::[2] Property not null check on optional non-null node
 Null2 - IS NOT NULL validation::[3] Property not null check on null node
 Null2 - IS NOT NULL validation::[5] IS NOT NULL on a map
 Path1 - Nodes of a path::[1] `nodes()` on null path
@@ -532,6 +516,8 @@ Quantifier9 - None quantifier invariants::[3] None quantifier is always equal th
 Quantifier9 - None quantifier invariants::[4] None quantifier is always equal the all quantifier on the boolean negative of the predicate
 Quantifier9 - None quantifier invariants::[5] None quantifier is always equal whether the size of the list filtered with same the predicate is zero
 Remove1 - Remove a Property::[4] Remove multiple relationship properties
+# BLOCKER: REMOVE on null relationship from OPTIONAL MATCH
+Remove1 - Remove a Property::[6] Ignore null when removing property from a relationship
 Remove1 - Remove a Property::[5] Ignore null when removing property from a node
 Remove2 - Remove a Label::[5] Ignore null when removing a node label
 Remove3 - Persistence of remove clause side effects::[12] Filtering after removing a label from nodes affects the result set but not the side effects

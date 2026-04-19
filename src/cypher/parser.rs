@@ -119,7 +119,7 @@ fn parse_explain(pair: pest::iterators::Pair<Rule>) -> crate::types::Result<Stat
 }
 
 /// Parsed output of a MATCH clause: required patterns, optional pattern groups, and WHERE filter.
-type MatchParts = (Vec<Pattern>, Vec<Vec<Pattern>>, Option<Expr>);
+type MatchParts = (Vec<Pattern>, Vec<OptionalMatch>, Option<Expr>);
 
 /// Extract patterns, optional patterns, and WHERE from a `match_part` rule.
 fn parse_match_part(pair: pest::iterators::Pair<Rule>) -> crate::types::Result<MatchParts> {
@@ -131,11 +131,7 @@ fn parse_match_part(pair: pest::iterators::Pair<Rule>) -> crate::types::Result<M
         match inner.as_rule() {
             Rule::pattern_list => patterns = parse_pattern_list(inner)?,
             Rule::optional_match_clause => {
-                for child in inner.into_inner() {
-                    if child.as_rule() == Rule::pattern_list {
-                        optional_patterns.push(parse_pattern_list(child)?);
-                    }
-                }
+                optional_patterns.push(parse_optional_match_clause(inner)?);
             }
             Rule::where_clause => where_clause = Some(parse_where(inner)?),
             _ => {}
@@ -143,6 +139,25 @@ fn parse_match_part(pair: pest::iterators::Pair<Rule>) -> crate::types::Result<M
     }
 
     Ok((patterns, optional_patterns, where_clause))
+}
+
+/// Parse an optional_match_clause into an OptionalMatch with patterns and optional WHERE.
+fn parse_optional_match_clause(
+    pair: pest::iterators::Pair<Rule>,
+) -> crate::types::Result<OptionalMatch> {
+    let mut opt_patterns = Vec::new();
+    let mut opt_where = None;
+    for child in pair.into_inner() {
+        match child.as_rule() {
+            Rule::pattern_list => opt_patterns = parse_pattern_list(child)?,
+            Rule::where_clause => opt_where = Some(parse_where(child)?),
+            _ => {}
+        }
+    }
+    Ok(OptionalMatch {
+        patterns: opt_patterns,
+        where_clause: opt_where,
+    })
 }
 
 fn parse_match(pair: pest::iterators::Pair<Rule>) -> crate::types::Result<MatchStatement> {
@@ -367,11 +382,7 @@ fn parse_delete(pair: pest::iterators::Pair<Rule>) -> crate::types::Result<Delet
         match inner.as_rule() {
             Rule::pattern_list => patterns = parse_pattern_list(inner)?,
             Rule::optional_match_clause => {
-                for child in inner.into_inner() {
-                    if child.as_rule() == Rule::pattern_list {
-                        optional_patterns.push(parse_pattern_list(child)?);
-                    }
-                }
+                optional_patterns.push(parse_optional_match_clause(inner)?);
             }
             Rule::where_clause => where_clause = Some(parse_where(inner)?),
             Rule::detach_keyword => detach = true,
@@ -417,11 +428,7 @@ fn parse_set(pair: pest::iterators::Pair<Rule>) -> crate::types::Result<SetState
         match inner.as_rule() {
             Rule::pattern_list => patterns = parse_pattern_list(inner)?,
             Rule::optional_match_clause => {
-                for child in inner.into_inner() {
-                    if child.as_rule() == Rule::pattern_list {
-                        optional_patterns.push(parse_pattern_list(child)?);
-                    }
-                }
+                optional_patterns.push(parse_optional_match_clause(inner)?);
             }
             Rule::where_clause => where_clause = Some(parse_where(inner)?),
             Rule::assignment_list => assignments = parse_assignment_list(inner)?,
@@ -459,11 +466,7 @@ fn parse_remove(pair: pest::iterators::Pair<Rule>) -> crate::types::Result<Remov
         match inner.as_rule() {
             Rule::pattern_list => patterns = parse_pattern_list(inner)?,
             Rule::optional_match_clause => {
-                for child in inner.into_inner() {
-                    if child.as_rule() == Rule::pattern_list {
-                        optional_patterns.push(parse_pattern_list(child)?);
-                    }
-                }
+                optional_patterns.push(parse_optional_match_clause(inner)?);
             }
             Rule::where_clause => where_clause = Some(parse_where(inner)?),
             Rule::remove_item_list => {
@@ -1415,6 +1418,16 @@ fn parse_atom_expr(pair: pest::iterators::Pair<Rule>) -> crate::types::Result<Ex
             let prop = parts.next().unwrap().as_str().to_string();
             Ok(Expr::Property(var, prop))
         }
+        Rule::has_label_expr => {
+            let mut parts = pair.into_inner();
+            let var = parts.next().unwrap().as_str().to_string();
+            let label_spec = parts.next().unwrap();
+            let labels: Vec<String> = label_spec
+                .into_inner()
+                .map(|p| p.as_str().to_string())
+                .collect();
+            Ok(Expr::HasLabel(var, labels))
+        }
         Rule::literal => parse_literal(pair),
         Rule::list_comprehension => parse_list_comprehension(pair),
         Rule::list_literal => {
@@ -1937,9 +1950,11 @@ fn resolve_expr(expr: &Expr, params: &HashMap<String, Value>) -> crate::types::R
                 .transpose()?,
         }),
         // Leaf nodes that contain no sub-expressions.
-        Expr::Literal(_) | Expr::Property(_, _) | Expr::Variable(_) | Expr::Star => {
-            Ok(expr.clone())
-        }
+        Expr::Literal(_)
+        | Expr::Property(_, _)
+        | Expr::Variable(_)
+        | Expr::HasLabel(_, _)
+        | Expr::Star => Ok(expr.clone()),
     }
 }
 
@@ -1990,6 +2005,20 @@ fn resolve_patterns(
         .iter()
         .map(|p| resolve_pattern(p, params))
         .collect()
+}
+
+fn resolve_optional_match(
+    om: &OptionalMatch,
+    params: &HashMap<String, Value>,
+) -> crate::types::Result<OptionalMatch> {
+    Ok(OptionalMatch {
+        patterns: resolve_patterns(&om.patterns, params)?,
+        where_clause: om
+            .where_clause
+            .as_ref()
+            .map(|e| resolve_expr(e, params))
+            .transpose()?,
+    })
 }
 
 fn resolve_assignments(
@@ -2065,7 +2094,7 @@ fn resolve_intermediate_clauses(
                 optional_patterns: m
                     .optional_patterns
                     .iter()
-                    .map(|ps| resolve_patterns(ps, params))
+                    .map(|om| resolve_optional_match(om, params))
                     .collect::<crate::types::Result<Vec<_>>>()?,
                 where_clause: m
                     .where_clause
@@ -2118,7 +2147,7 @@ pub fn resolve_params(
             optional_patterns: m
                 .optional_patterns
                 .iter()
-                .map(|ps| resolve_patterns(ps, params))
+                .map(|om| resolve_optional_match(om, params))
                 .collect::<crate::types::Result<Vec<_>>>()?,
             where_clause: m
                 .where_clause
@@ -2199,7 +2228,7 @@ pub fn resolve_params(
                 optional_patterns: d
                     .optional_patterns
                     .iter()
-                    .map(|ps| resolve_patterns(ps, params))
+                    .map(|om| resolve_optional_match(om, params))
                     .collect::<crate::types::Result<Vec<_>>>()?,
                 where_clause: d
                     .where_clause
@@ -2222,7 +2251,7 @@ pub fn resolve_params(
                 optional_patterns: s
                     .optional_patterns
                     .iter()
-                    .map(|ps| resolve_patterns(ps, params))
+                    .map(|om| resolve_optional_match(om, params))
                     .collect::<crate::types::Result<Vec<_>>>()?,
                 where_clause: s
                     .where_clause
@@ -2244,7 +2273,7 @@ pub fn resolve_params(
                 optional_patterns: r
                     .optional_patterns
                     .iter()
-                    .map(|ps| resolve_patterns(ps, params))
+                    .map(|om| resolve_optional_match(om, params))
                     .collect::<crate::types::Result<Vec<_>>>()?,
                 where_clause: r
                     .where_clause

@@ -32,11 +32,18 @@ pub struct ReturnStatement {
     pub limit: Option<u64>,
 }
 
+/// An OPTIONAL MATCH clause with its patterns and optional WHERE filter.
+#[derive(Debug, Clone, PartialEq)]
+pub struct OptionalMatch {
+    pub patterns: Vec<Pattern>,
+    pub where_clause: Option<Expr>,
+}
+
 /// MATCH ... WHERE ... WITH ... RETURN ... ORDER BY ... LIMIT
 #[derive(Debug, Clone, PartialEq)]
 pub struct MatchStatement {
     pub patterns: Vec<Pattern>,
-    pub optional_patterns: Vec<Vec<Pattern>>,
+    pub optional_patterns: Vec<OptionalMatch>,
     pub where_clause: Option<Expr>,
     pub intermediate_clauses: Vec<IntermediateClause>,
     pub return_clause: ReturnClause,
@@ -81,7 +88,7 @@ pub struct MatchCreateStatement {
 #[derive(Debug, Clone, PartialEq)]
 pub struct DeleteStatement {
     pub patterns: Vec<Pattern>,
-    pub optional_patterns: Vec<Vec<Pattern>>,
+    pub optional_patterns: Vec<OptionalMatch>,
     pub where_clause: Option<Expr>,
     pub detach: bool,
     pub variables: Vec<String>,
@@ -95,7 +102,7 @@ pub struct DeleteStatement {
 #[derive(Debug, Clone, PartialEq)]
 pub struct SetStatement {
     pub patterns: Vec<Pattern>,
-    pub optional_patterns: Vec<Vec<Pattern>>,
+    pub optional_patterns: Vec<OptionalMatch>,
     pub where_clause: Option<Expr>,
     pub assignments: Vec<Assignment>,
     pub return_clause: Option<ReturnClause>,
@@ -108,7 +115,7 @@ pub struct SetStatement {
 #[derive(Debug, Clone, PartialEq)]
 pub struct RemoveStatement {
     pub patterns: Vec<Pattern>,
-    pub optional_patterns: Vec<Vec<Pattern>>,
+    pub optional_patterns: Vec<OptionalMatch>,
     pub where_clause: Option<Expr>,
     pub items: Vec<RemoveItem>,
     pub return_clause: Option<ReturnClause>,
@@ -197,7 +204,7 @@ pub enum IntermediateClause {
 #[derive(Debug, Clone, PartialEq)]
 pub struct IntermediateMatch {
     pub patterns: Vec<Pattern>,
-    pub optional_patterns: Vec<Vec<Pattern>>,
+    pub optional_patterns: Vec<OptionalMatch>,
     pub where_clause: Option<Expr>,
 }
 
@@ -344,6 +351,8 @@ pub enum Expr {
         list_expr: Box<Expr>,
         predicate: Box<Expr>,
     },
+    /// Label predicate: n:Label (true if node has all specified labels).
+    HasLabel(String, Vec<String>),
     /// Wildcard * (used in count(*) and RETURN *)
     Star,
 }

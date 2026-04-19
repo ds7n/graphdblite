@@ -30,6 +30,12 @@ pub fn eval_expr(expr: &Expr, record: &Record, conn: &Connection) -> crate::type
                     return Ok(node.properties.get(prop).cloned().unwrap_or(Value::Null));
                 }
             }
+            // Temporal component accessor: d.year, d.month, etc.
+            if let Some(val) = record.get(var) {
+                if let Some(result) = temporal_accessor(val, prop) {
+                    return Ok(result);
+                }
+            }
             Ok(Value::Null)
         }
         Expr::List(items) => {
@@ -497,7 +503,92 @@ fn eval_function_call(
                 _ => Ok(Value::Null),
             }
         }
+        // Temporal constructor functions.
+        "date" => eval_temporal_constructor(
+            args,
+            record,
+            conn,
+            |s| crate::temporal::CypherDate::from_iso_string(s).map(Value::Date),
+            |m| crate::temporal::CypherDate::from_map(m).map(Value::Date),
+        ),
+        "localtime" => eval_temporal_constructor(
+            args,
+            record,
+            conn,
+            |s| crate::temporal::CypherLocalTime::from_iso_string(s).map(Value::LocalTime),
+            |m| crate::temporal::CypherLocalTime::from_map(m).map(Value::LocalTime),
+        ),
+        "time" => eval_temporal_constructor(
+            args,
+            record,
+            conn,
+            |s| crate::temporal::CypherTime::from_iso_string(s).map(Value::Time),
+            |m| crate::temporal::CypherTime::from_map(m).map(Value::Time),
+        ),
+        "localdatetime" => eval_temporal_constructor(
+            args,
+            record,
+            conn,
+            |s| crate::temporal::CypherLocalDateTime::from_iso_string(s).map(Value::LocalDateTime),
+            |m| crate::temporal::CypherLocalDateTime::from_map(m).map(Value::LocalDateTime),
+        ),
+        "datetime" => eval_temporal_constructor(
+            args,
+            record,
+            conn,
+            |s| crate::temporal::CypherDateTime::from_iso_string(s).map(Value::DateTime),
+            |m| crate::temporal::CypherDateTime::from_map(m).map(Value::DateTime),
+        ),
+        "duration" => eval_temporal_constructor(
+            args,
+            record,
+            conn,
+            |s| crate::temporal::CypherDuration::from_iso_string(s).map(Value::Duration),
+            |m| crate::temporal::CypherDuration::from_map(m).map(Value::Duration),
+        ),
+        "datetime.fromepoch" => {
+            let secs = eval_single_arg(args, record, conn)?;
+            let nanos = args
+                .get(1)
+                .map(|a| eval_expr(a, record, conn))
+                .transpose()?;
+            match (secs, nanos) {
+                (Value::I64(s), Some(Value::I64(n))) => Ok(Value::DateTime(
+                    crate::temporal::CypherDateTime::from_epoch(s, n),
+                )),
+                (Value::I64(s), None) => Ok(Value::DateTime(
+                    crate::temporal::CypherDateTime::from_epoch(s, 0),
+                )),
+                _ => Ok(Value::Null),
+            }
+        }
+        "datetime.fromepochmillis" => {
+            let millis = eval_single_arg(args, record, conn)?;
+            match millis {
+                Value::I64(ms) => Ok(Value::DateTime(
+                    crate::temporal::CypherDateTime::from_epoch_millis(ms),
+                )),
+                _ => Ok(Value::Null),
+            }
+        }
         // Aggregate functions are handled by the Aggregate operator.
+        _ => Ok(Value::Null),
+    }
+}
+
+/// Helper for temporal constructor dispatch: string arg → parse, map arg → construct.
+fn eval_temporal_constructor(
+    args: &[Expr],
+    record: &Record,
+    conn: &Connection,
+    from_str: impl Fn(&str) -> crate::types::Result<Value>,
+    from_map: impl Fn(&std::collections::BTreeMap<String, Value>) -> crate::types::Result<Value>,
+) -> crate::types::Result<Value> {
+    let arg = eval_single_arg(args, record, conn)?;
+    match arg {
+        Value::String(s) => from_str(&s),
+        Value::Map(m) => from_map(&m),
+        Value::Null => Ok(Value::Null),
         _ => Ok(Value::Null),
     }
 }
@@ -864,6 +955,12 @@ fn values_equal(a: &Value, b: &Value) -> Value {
         (Value::String(a), Value::String(b)) => a == b,
         (Value::List(a), Value::List(b)) => a == b,
         (Value::Map(a), Value::Map(b)) => a == b,
+        (Value::Date(a), Value::Date(b)) => a == b,
+        (Value::LocalTime(a), Value::LocalTime(b)) => a == b,
+        (Value::Time(a), Value::Time(b)) => a == b,
+        (Value::LocalDateTime(a), Value::LocalDateTime(b)) => a == b,
+        (Value::DateTime(a), Value::DateTime(b)) => a == b,
+        (Value::Duration(a), Value::Duration(b)) => a == b,
         _ => false,
     };
     Value::Bool(eq)
@@ -887,6 +984,21 @@ fn compare_values(a: &Value, b: &Value) -> Option<std::cmp::Ordering> {
         (Value::I64(a), Value::F64(b)) => (*a as f64).partial_cmp(b),
         (Value::F64(a), Value::I64(b)) => a.partial_cmp(&(*b as f64)),
         (Value::String(a), Value::String(b)) => Some(a.cmp(b)),
+        (Value::Date(a), Value::Date(b)) => Some(a.0.cmp(&b.0)),
+        (Value::LocalTime(a), Value::LocalTime(b)) => Some(a.0.cmp(&b.0)),
+        (Value::Time(a), Value::Time(b)) => {
+            // Compare by converting to UTC.
+            let a_utc = a.0 - a.1;
+            let b_utc = b.0 - b.1;
+            Some(a_utc.cmp(&b_utc))
+        }
+        (Value::LocalDateTime(a), Value::LocalDateTime(b)) => Some(a.0.cmp(&b.0)),
+        (Value::DateTime(a), Value::DateTime(b)) => {
+            let a_utc = a.0 - a.1;
+            let b_utc = b.0 - b.1;
+            Some(a_utc.cmp(&b_utc))
+        }
+        // Duration is NOT orderable per Cypher spec.
         _ => None,
     }
 }
@@ -945,5 +1057,90 @@ pub fn expr_to_column_name(expr: &Expr) -> String {
             format!("{}[{}..{}]", expr_to_column_name(expr), s, e)
         }
         _ => "_expr".to_string(),
+    }
+}
+
+/// Extract a temporal component accessor (e.g., `d.year`, `t.hour`).
+/// Returns None if the value is not temporal or the property is not a known accessor.
+fn temporal_accessor(val: &Value, prop: &str) -> Option<Value> {
+    use chrono::{Datelike, Timelike};
+
+    match val {
+        Value::Date(d) => match prop {
+            "year" => Some(Value::I64(d.0.year() as i64)),
+            "month" => Some(Value::I64(d.0.month() as i64)),
+            "day" => Some(Value::I64(d.0.day() as i64)),
+            "ordinalDay" => Some(Value::I64(d.0.ordinal() as i64)),
+            "weekYear" | "week" => Some(Value::I64(d.0.iso_week().week() as i64)),
+            "dayOfWeek" => Some(Value::I64(d.0.weekday().num_days_from_monday() as i64 + 1)),
+            "quarter" => Some(Value::I64(((d.0.month() - 1) / 3 + 1) as i64)),
+            _ => None,
+        },
+        Value::LocalTime(lt) => {
+            let t = &lt.0;
+            match prop {
+                "hour" => Some(Value::I64(t.hour() as i64)),
+                "minute" => Some(Value::I64(t.minute() as i64)),
+                "second" => Some(Value::I64(t.second() as i64)),
+                "nanosecond" => Some(Value::I64(t.nanosecond() as i64 % 1_000_000_000)),
+                "microsecond" => Some(Value::I64((t.nanosecond() as i64 % 1_000_000_000) / 1_000)),
+                "millisecond" => Some(Value::I64(
+                    (t.nanosecond() as i64 % 1_000_000_000) / 1_000_000,
+                )),
+                _ => None,
+            }
+        }
+        Value::Time(ct) => {
+            let t = &ct.0;
+            match prop {
+                "hour" => Some(Value::I64(t.hour() as i64)),
+                "minute" => Some(Value::I64(t.minute() as i64)),
+                "second" => Some(Value::I64(t.second() as i64)),
+                "nanosecond" => Some(Value::I64(t.nanosecond() as i64 % 1_000_000_000)),
+                "microsecond" => Some(Value::I64((t.nanosecond() as i64 % 1_000_000_000) / 1_000)),
+                "millisecond" => Some(Value::I64(
+                    (t.nanosecond() as i64 % 1_000_000_000) / 1_000_000,
+                )),
+                "offset" => Some(Value::String(crate::temporal::fmt_offset_public(&ct.1))),
+                "offsetMinutes" => Some(Value::I64(ct.1.local_minus_utc() as i64 / 60)),
+                "offsetSeconds" => Some(Value::I64(ct.1.local_minus_utc() as i64)),
+                _ => None,
+            }
+        }
+        Value::LocalDateTime(dt) => {
+            // Try date accessors first, then time accessors.
+            let date_val = Value::Date(crate::temporal::CypherDate(dt.0.date()));
+            if let Some(v) = temporal_accessor(&date_val, prop) {
+                return Some(v);
+            }
+            let time_val = Value::LocalTime(crate::temporal::CypherLocalTime(dt.0.time()));
+            temporal_accessor(&time_val, prop)
+        }
+        Value::DateTime(dt) => {
+            // Try date accessors, then time accessors, then offset accessors.
+            let date_val = Value::Date(crate::temporal::CypherDate(dt.0.date()));
+            if let Some(v) = temporal_accessor(&date_val, prop) {
+                return Some(v);
+            }
+            let time_val = Value::Time(crate::temporal::CypherTime(dt.0.time(), dt.1));
+            temporal_accessor(&time_val, prop)
+        }
+        Value::Duration(d) => match prop {
+            "years" => Some(Value::I64(d.months / 12)),
+            "months" => Some(Value::I64(d.months)),
+            "monthsOfYear" => Some(Value::I64(d.months % 12)),
+            "days" => Some(Value::I64(d.days)),
+            "hours" => Some(Value::I64(d.seconds / 3600)),
+            "minutes" => Some(Value::I64(d.seconds / 60)),
+            "seconds" => Some(Value::I64(d.seconds)),
+            "nanoseconds" => Some(Value::I64(d.seconds * 1_000_000_000 + d.nanos)),
+            "nanosecondsOfSecond" => Some(Value::I64(d.nanos)),
+            "milliseconds" => Some(Value::I64(d.seconds * 1_000 + d.nanos / 1_000_000)),
+            "microseconds" => Some(Value::I64(d.seconds * 1_000_000 + d.nanos / 1_000)),
+            "minutesOfHour" => Some(Value::I64((d.seconds / 60) % 60)),
+            "secondsOfMinute" => Some(Value::I64(d.seconds % 60)),
+            _ => None,
+        },
+        _ => None,
     }
 }

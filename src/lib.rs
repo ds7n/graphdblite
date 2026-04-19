@@ -7,6 +7,7 @@ pub mod node;
 mod schema;
 pub(crate) mod stats;
 pub mod storage;
+pub mod temporal;
 mod transaction;
 pub mod types;
 

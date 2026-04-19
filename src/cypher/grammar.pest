@@ -235,7 +235,15 @@ mul_expr = { atom_expr ~ (mul_op ~ atom_expr)* }
 add_op = { "+" | "-" }
 mul_op = { "*" | "/" | "%" }
 atom_expr = { atom_primary ~ subscript* }
-atom_primary = _{ case_expr | quantifier_expr | function_call | property_access | literal | list_comprehension | list_literal | map_literal | star | parameter | "(" ~ expr ~ ")" | variable }
+atom_primary = _{ case_expr | quantifier_expr | dotted_function_call | function_call | property_access | literal | list_comprehension | list_literal | map_literal | star | parameter | "(" ~ expr ~ ")" | variable }
+
+dotted_function_call = { dotted_function_name ~ "(" ~ function_args ~ ")" }
+dotted_function_name = @{
+    ^"datetime.fromepochmillis" | ^"datetime.fromepoch" |
+    ^"date.truncate" | ^"localtime.truncate" | ^"time.truncate" |
+    ^"localdatetime.truncate" | ^"datetime.truncate" |
+    ^"duration.between" | ^"duration.inMonths" | ^"duration.inDays" | ^"duration.inSeconds"
+}
 
 quantifier_expr = { quantifier_name ~ "(" ~ ident ~ in_kw ~ expr ~ where_clause ~ ")" }
 quantifier_name = @{ (^"none" | ^"single" | ^"any" | ^"all") ~ !(ASCII_ALPHANUMERIC | "_") }
@@ -264,7 +272,7 @@ variable = { ident }
 star = { "*" }
 
 function_call = { function_name ~ "(" ~ function_args ~ ")" }
-function_name = @{ ^"count" | ^"sum" | ^"avg" | ^"min" | ^"max" | ^"collect" | ^"length" | ^"nodes" | ^"toLower" | ^"toUpper" | ^"toString" | ^"toInteger" | ^"toFloat" | ^"keys" | ^"labels" | ^"id" | ^"coalesce" | ^"type" | ^"head" | ^"tail" | ^"last" | ^"size" | ^"abs" | ^"substring" | ^"replace" | ^"split" | ^"trim" | ^"reverse" | ^"range" }
+function_name = @{ ^"count" | ^"sum" | ^"avg" | ^"min" | ^"max" | ^"collect" | ^"length" | ^"nodes" | ^"toLower" | ^"toUpper" | ^"toString" | ^"toInteger" | ^"toFloat" | ^"keys" | ^"labels" | ^"id" | ^"coalesce" | ^"type" | ^"head" | ^"tail" | ^"last" | ^"size" | ^"abs" | ^"substring" | ^"replace" | ^"split" | ^"trim" | ^"reverse" | ^"range" | ^"localdatetime" | ^"localtime" | ^"datetime" | ^"date" | ^"duration" | ^"time" }
 function_args = { star | expr_list | "" }
 expr_list = { expr ~ ("," ~ expr)* }
 

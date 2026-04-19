@@ -50,6 +50,13 @@ pub enum Value {
     /// Ordered string-keyed map (BTreeMap gives deterministic iteration and
     /// hashing regardless of insertion order).
     Map(BTreeMap<String, Value>),
+    /// Temporal types.
+    Date(crate::temporal::CypherDate),
+    LocalTime(crate::temporal::CypherLocalTime),
+    Time(crate::temporal::CypherTime),
+    LocalDateTime(crate::temporal::CypherLocalDateTime),
+    DateTime(crate::temporal::CypherDateTime),
+    Duration(crate::temporal::CypherDuration),
 }
 
 /// NaN-safe equality: two NaN values are considered equal (bit-equal comparison).
@@ -67,6 +74,12 @@ impl PartialEq for Value {
             (Value::Edge(a), Value::Edge(b)) => a == b,
             (Value::Path(a), Value::Path(b)) => a == b,
             (Value::Map(a), Value::Map(b)) => a == b,
+            (Value::Date(a), Value::Date(b)) => a == b,
+            (Value::LocalTime(a), Value::LocalTime(b)) => a == b,
+            (Value::Time(a), Value::Time(b)) => a == b,
+            (Value::LocalDateTime(a), Value::LocalDateTime(b)) => a == b,
+            (Value::DateTime(a), Value::DateTime(b)) => a == b,
+            (Value::Duration(a), Value::Duration(b)) => a == b,
             _ => false,
         }
     }
@@ -127,6 +140,12 @@ impl Hash for Value {
                     v.hash(state);
                 }
             }
+            Value::Date(d) => d.hash(state),
+            Value::LocalTime(t) => t.hash(state),
+            Value::Time(t) => t.hash(state),
+            Value::LocalDateTime(dt) => dt.hash(state),
+            Value::DateTime(dt) => dt.hash(state),
+            Value::Duration(d) => d.hash(state),
         }
     }
 }
@@ -207,6 +226,12 @@ impl fmt::Display for Value {
                 }
                 write!(f, "}}")
             }
+            Value::Date(d) => write!(f, "{d}"),
+            Value::LocalTime(t) => write!(f, "{t}"),
+            Value::Time(t) => write!(f, "{t}"),
+            Value::LocalDateTime(dt) => write!(f, "{dt}"),
+            Value::DateTime(dt) => write!(f, "{dt}"),
+            Value::Duration(d) => write!(f, "{d}"),
         }
     }
 }
@@ -527,6 +552,12 @@ fn value_byte_size(val: &Value) -> usize {
                 + p.edges.iter().map(edge_byte_size).sum::<usize>()
         }
         Value::Map(map) => map.iter().map(|(k, v)| k.len() + value_byte_size(v)).sum(),
+        Value::Date(_) => 12,
+        Value::LocalTime(_) => 16,
+        Value::Time(_) => 20,
+        Value::LocalDateTime(_) => 20,
+        Value::DateTime(_) => 28,
+        Value::Duration(_) => 32,
     }
 }
 

@@ -62,6 +62,22 @@ CountingSubgraphMatches1 - Matching subgraph patterns and count the number of ma
 CountingSubgraphMatches1 - Matching subgraph patterns and count the number of matches::[6] Counting undirected self-relationships in self-relationship graph
 CountingSubgraphMatches1 - Matching subgraph patterns and count the number of matches::[7] Counting distinct undirected self-relationships in self-relationship graph
 CountingSubgraphMatches1 - Matching subgraph patterns and count the number of matches::[9] Counting directed self-relationships
+# BLOCKER: UndefinedVariable validation not implemented for CREATE patterns
+Create1 - Creating nodes::[20] Fail when creating a node using undefined variable in pattern
+# BLOCKER: NoSingleRelationshipType / RequiresDirectedRelationship validation in CREATE
+Create2 - Creating relationships::[18] Fail when creating a relationship without a type
+Create2 - Creating relationships::[19] Fail when creating a relationship without a direction
+Create2 - Creating relationships::[24] Fail when creating a relationship using undefined variable in pattern
+# BLOCKER: multi-clause side-effect counting with MATCH...CREATE...WITH...CREATE
+Create3 - Interoperation with other clauses::[3] MATCH-CREATE-WITH-CREATE
+Create3 - Interoperation with other clauses::[7] WITH-CREATE: Nodes are not created when aliases are applied to variable names multiple times
+# BLOCKER: large multi-CREATE with list property values
+Create4 - Large Create Query::[1] Generate the movie graph
+# BLOCKER: aggregation in RETURN/WITH after multi-clause CREATE
+Create6 - Persistence of create clause side effects::[6] Aggregating in `RETURN` after creating nodes affects the result set but not the side effects
+Create6 - Persistence of create clause side effects::[7] Aggregating in `WITH` after creating nodes affects the result set but not the side effects
+Create6 - Persistence of create clause side effects::[13] Aggregating in `RETURN` after creating relationships affects the result set but not the side effects
+Create6 - Persistence of create clause side effects::[14] Aggregating in `WITH` after creating relationships affects the result set but not the side effects
 Delete1 - Deleting nodes::[3] Detach deleting connected nodes and relationships
 Delete1 - Deleting nodes::[4] Delete on null node
 Delete1 - Deleting nodes::[5] Ignore null when deleting node
@@ -294,6 +310,56 @@ MatchWhere5 - Filter on predicate resulting in null::[1] Filter out on null
 MatchWhere5 - Filter on predicate resulting in null::[2] Filter out on null if the AND'd predicate evaluates to false
 MatchWhere5 - Filter on predicate resulting in null::[3] Filter out on null if the AND'd predicate evaluates to true
 MatchWhere5 - Filter on predicate resulting in null::[4] Do not filter out on null if the OR'd predicate evaluates to true
+# BLOCKER: MERGE side-effect counting with multiple labels
+Merge1 - Merge node::[11] Merge should be able to merge using property of bound node
+# BLOCKER: MERGE path binding (p = pattern)
+Merge1 - Merge node::[13] Merge should bind a path
+# BLOCKER: MERGE must not match deleted nodes (snapshot isolation)
+Merge1 - Merge node::[14] Merges should not be able to match on deleted nodes
+# BLOCKER: VariableAlreadyBound validation for MERGE
+Merge1 - Merge node::[15] Fail when merge a node that is already bound
+# BLOCKER: MergeReadOwnWrites semantic error for null properties
+Merge1 - Merge node::[17] Fail on merging node with null property
+# BLOCKER: MERGE ON CREATE/ON MATCH with map property copying
+Merge1 - Merge node::[9] Merge should support updates while merging
+# BLOCKER: UndefinedVariable validation in ON CREATE
+Merge2 - Merge node - on create::[6] Fail when using undefined variable in ON CREATE
+# BLOCKER: ON MATCH SET with label assignment (grammar + AST)
+Merge3 - Merge node - on match::[1] Merge should be able to set labels on match
+# BLOCKER: UndefinedVariable validation in ON MATCH
+Merge3 - Merge node - on match::[5] Fail when using undefined variable in ON MATCH
+# BLOCKER: ON MATCH/ON CREATE SET with label assignment
+Merge4 - Merge node - on match and on create::[1] Merge should be able to set labels on match and on create
+Merge4 - Merge node - on match and on create::[2] Merge should be able to use properties of bound node in ON MATCH and ON CREATE
+# BLOCKER: MERGE path binding for relationships
+Merge5 - Merge relationships::[10] Merge should bind a path
+# BLOCKER: MERGE with undirected relationships
+Merge5 - Merge relationships::[11] Use outgoing direction when unspecified
+Merge5 - Merge relationships::[12] Match outgoing relationship when direction unspecified
+Merge5 - Merge relationships::[13] Match both incoming and outgoing relationships when direction unspecified
+# BLOCKER: MERGE must not match deleted entities
+Merge5 - Merge relationships::[20] Do not match on deleted entities
+Merge5 - Merge relationships::[21] Do not match on deleted relationships
+# BLOCKER: VariableAlreadyBound validation for MERGE relationship
+Merge5 - Merge relationships::[22] Fail when imposing new predicates on a variable that is already bound
+# BLOCKER: NoSingleRelationshipType validation for MERGE
+Merge5 - Merge relationships::[23] Fail when merging relationship without type
+Merge5 - Merge relationships::[24] Fail when merging relationship without type, no colon
+# BLOCKER: VariableAlreadyBound validation for MERGE relationship
+Merge5 - Merge relationships::[26] Fail when merging relationship that is already bound
+# BLOCKER: MergeReadOwnWrites semantic error for null properties
+Merge5 - Merge relationships::[29] Fail on merging relationship with null property
+# BLOCKER: MERGE relationship property filtering (edge_exists with props)
+Merge5 - Merge relationships::[3] Matching two relationships
+Merge5 - Merge relationships::[6] Creating relationship when all matches filtered out
+# BLOCKER: ON CREATE with property copying from bound nodes
+Merge6 - Merge relationships - on create::[6] Copying properties from node with ON CREATE
+Merge6 - Merge relationships - on create::[7] Copying properties from literal map with ON CREATE
+# BLOCKER: ON MATCH with property copying from bound nodes
+Merge7 - Merge relationships - on match::[4] Copying properties from node with ON MATCH
+Merge7 - Merge relationships - on match::[5] Copying properties from literal map with ON MATCH
+# BLOCKER: MERGE after WITH with aggregation
+Merge9 - Merge clause interoperation with other clauses::[4] MERGE after WITH with predicate and WITH with aggregation
 Mathematical13 - Square root::[1] `sqrt()` returning float values
 Mathematical2 - Addition::[1] Allow addition
 Mathematical8 - Arithmetic precedence::[1] Arithmetic precedence test

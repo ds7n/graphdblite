@@ -73,6 +73,8 @@ fn value_to_py(py: Python, val: &Value) -> PyObject {
             }
             dict.to_object(py)
         }
+        // Temporal types — expose as ISO string.
+        other => format!("{other}").to_object(py),
     }
 }
 

@@ -762,6 +762,17 @@ fn eval_function_call(
                 _ => Ok(Value::Null),
             }
         }
+        "rand" => {
+            // rand() — returns a random float in [0, 1).
+            use std::collections::hash_map::RandomState;
+            use std::hash::{BuildHasher, Hasher};
+            let mut hasher = RandomState::new().build_hasher();
+            hasher.write_u64(0);
+            let bits = hasher.finish();
+            // Convert to f64 in [0, 1)
+            let val = (bits >> 11) as f64 / (1u64 << 53) as f64;
+            Ok(Value::F64(val))
+        }
         // Temporal constructor functions.
         "date" => eval_temporal_constructor(
             args,

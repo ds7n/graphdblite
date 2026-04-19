@@ -703,12 +703,33 @@ fn exec_project(
                     // accompanying `var.__id` metadata; aggregate results don't.
                     let is_match_binding = rec.get(&format!("{col_name}.__id")).is_some();
                     let val = if !is_match_binding {
-                        if let Some(existing) = rec.get(&col_name) {
+                        // First try the expression's natural column name — this
+                        // is the key used by the Aggregate operator for group
+                        // keys and the only safe name to match (it can never
+                        // collide with an upstream variable).
+                        if let Some(existing) = rec.get(&expr_col) {
                             existing.clone()
-                        } else if item.alias.is_some() {
-                            // When an alias is used, also check the expression's
-                            // natural column name (e.g. from aggregation group keys).
-                            if let Some(existing) = rec.get(&expr_col) {
+                        } else if col_name == expr_col {
+                            // No alias rename — safe to check col_name too
+                            // (already checked above, so this is a miss → eval).
+                            eval_expr(&item.expr, rec, conn)?
+                        } else if let Some(existing) = rec.get(&col_name) {
+                            // Alias differs from expression name. The col_name
+                            // value in the record may be a pre-computed aggregate
+                            // result (stored under alias by agg_col_name) or a
+                            // stale upstream variable. Aggregate results are
+                            // stored under the alias, so check for that.
+                            // Heuristic: if the expression is an aggregate
+                            // function, trust the cached value; otherwise
+                            // evaluate to avoid shadowing bugs.
+                            let is_agg = matches!(
+                                &item.expr,
+                                Expr::FunctionCall { name, .. }
+                                    if matches!(name.to_ascii_lowercase().as_str(),
+                                        "count" | "sum" | "avg" | "min" | "max" | "collect"
+                                        | "percentiledisc" | "percentilecont" | "stdev" | "stdevp")
+                            );
+                            if is_agg {
                                 existing.clone()
                             } else {
                                 eval_expr(&item.expr, rec, conn)?

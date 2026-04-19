@@ -1,5 +1,5 @@
 [workspace]
-members = [".", "crates/python", "crates/ffi", "crates/node"]
+members = [".", "bindings/python", "bindings/ffi", "bindings/node"]
 resolver = "2"
 
 [package]

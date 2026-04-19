@@ -20,7 +20,7 @@ sha256sum "/dist/cli/graphdblite-${TARGET}.zip" \
 echo "==> Building FFI ($TARGET)"
 cargo xwin build --release -p graphdblite-ffi --target "$TARGET"
 staging=$(mktemp -d)
-cp crates/ffi/graphdblite.h "$staging/"
+cp bindings/ffi/graphdblite.h "$staging/"
 cp "target/${TARGET}/release"/graphdblite_ffi.{dll,dll.lib,lib} "$staging/" 2>/dev/null || true
 (cd "$staging" && zip -q "/dist/ffi/graphdblite-ffi-${TARGET}.zip" ./*)
 sha256sum "/dist/ffi/graphdblite-ffi-${TARGET}.zip" \
@@ -36,7 +36,7 @@ cp "target/${TARGET}/release/graphdblite_node.dll" \
 # Python wheel
 echo "==> Building wheel ($TARGET)"
 maturin build --release --out /dist/wheels \
-    --manifest-path crates/python/Cargo.toml \
+    --manifest-path bindings/python/Cargo.toml \
     --target "$TARGET"
 
 echo "==> Done (xwin)"

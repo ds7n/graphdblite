@@ -135,7 +135,7 @@ jobs:
         shell: bash
         run: |
           mkdir -p staging
-          cp crates/ffi/graphdblite.h staging/
+          cp bindings/ffi/graphdblite.h staging/
           cp target/${{ matrix.target }}/release/libgraphdblite_ffi.a staging/ 2>/dev/null || true
           cp target/${{ matrix.target }}/release/libgraphdblite_ffi.so staging/ 2>/dev/null || true
           cp target/${{ matrix.target }}/release/libgraphdblite_ffi.dylib staging/ 2>/dev/null || true
@@ -186,7 +186,7 @@ jobs:
     runs-on: ${{ matrix.os }}
     defaults:
       run:
-        working-directory: crates/node
+        working-directory: bindings/node
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -213,7 +213,7 @@ jobs:
       - uses: actions/upload-artifact@v4
         with:
           name: node-${{ matrix.target }}
-          path: crates/node/*.node
+          path: bindings/node/*.node
 
   build-wheels:
     needs: [test, lint-workflows]
@@ -253,7 +253,7 @@ jobs:
         uses: PyO3/maturin-action@v1
         with:
           target: ${{ matrix.target }}
-          args: --release --out dist --manifest-path crates/python/Cargo.toml
+          args: --release --out dist --manifest-path bindings/python/Cargo.toml
           manylinux: ${{ matrix.manylinux }}
 
       - uses: actions/upload-artifact@v4

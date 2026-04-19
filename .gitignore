@@ -15,13 +15,13 @@ staging/
 *.whl
 
 # Generated C header (regenerated on build)
-crates/ffi/graphdblite.h
+bindings/ffi/graphdblite.h
 
 # Node.js
-crates/node/node_modules/
-crates/node/*.node
+bindings/node/node_modules/
+bindings/node/*.node
 
 # Python compiled extensions
-crates/python/python/graphdblite/*.so
-crates/python/python/graphdblite/*.dylib
-crates/python/python/graphdblite/__pycache__/
+bindings/python/python/graphdblite/*.so
+bindings/python/python/graphdblite/*.dylib
+bindings/python/python/graphdblite/__pycache__/

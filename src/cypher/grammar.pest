@@ -275,7 +275,7 @@ comp_suffix = { comp_op ~ predicate_expr }
 
 // Predicate expressions: cmp_primary with optional IS NULL / IS NOT NULL / IN / string predicate suffix.
 predicate_expr = { cmp_primary ~ (is_not_null_suffix | is_null_suffix | in_suffix | string_pred_suffix)? }
-cmp_primary = { case_expr | exists_subquery | add_expr | "(" ~ expr ~ ")" }
+cmp_primary = { exists_subquery | add_expr | "(" ~ expr ~ ")" }
 is_not_null_suffix = { is_kw ~ not_kw ~ null_kw }
 is_null_suffix = { is_kw ~ null_kw }
 in_suffix = { in_kw ~ add_expr }
@@ -357,7 +357,7 @@ variable = { ident }
 star = { "*" }
 
 function_call = { function_name ~ "(" ~ function_args ~ ")" }
-function_name = @{ ^"count" | ^"sum" | ^"avg" | ^"min" | ^"max" | ^"collect" | ^"percentileDisc" | ^"percentileCont" | ^"stDev" | ^"stDevP" | ^"length" | ^"nodes" | ^"relationships" | ^"toLower" | ^"toUpper" | ^"toBoolean" | ^"toString" | ^"toInteger" | ^"toFloat" | ^"keys" | ^"labels" | ^"id" | ^"coalesce" | ^"type" | ^"head" | ^"tail" | ^"last" | ^"size" | ^"abs" | ^"substring" | ^"replace" | ^"split" | ^"trim" | ^"reverse" | ^"range" | ^"properties" | ^"localdatetime" | ^"localtime" | ^"datetime" | ^"date" | ^"duration" | ^"time" }
+function_name = @{ ^"count" | ^"sum" | ^"avg" | ^"min" | ^"max" | ^"collect" | ^"percentileDisc" | ^"percentileCont" | ^"stDev" | ^"stDevP" | ^"length" | ^"nodes" | ^"relationships" | ^"toLower" | ^"toUpper" | ^"toBoolean" | ^"toString" | ^"toInteger" | ^"toFloat" | ^"keys" | ^"labels" | ^"id" | ^"coalesce" | ^"type" | ^"head" | ^"tail" | ^"last" | ^"size" | ^"abs" | ^"substring" | ^"replace" | ^"split" | ^"trim" | ^"reverse" | ^"range" | ^"rand" | ^"properties" | ^"localdatetime" | ^"localtime" | ^"datetime" | ^"date" | ^"duration" | ^"time" }
 function_args = { star | distinct_keyword ~ expr_list | expr_list | "" }
 expr_list = { expr ~ ("," ~ expr)* }
 

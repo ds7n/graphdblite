@@ -372,47 +372,22 @@ Pattern2 - Pattern Comprehension::[6] Aggregate on a pattern comprehension
 Pattern2 - Pattern Comprehension::[7] Use a pattern comprehension inside a list comprehension
 Pattern2 - Pattern Comprehension::[8] Use a pattern comprehension in WITH
 Pattern2 - Pattern Comprehension::[9] Use a variable-length pattern comprehension in WITH
-Quantifier1 - None quantifier::[15] Fail none quantifier on type mismatch between list elements and predicate
-Quantifier1 - None quantifier::[7] None quantifier on list literal containing maps
+# BLOCKER: quantifier tests on node/relationship lists need VLP [*0..N] fixes and `nodes` keyword-as-variable
 Quantifier1 - None quantifier::[8] None quantifier on list containing nodes
 Quantifier1 - None quantifier::[9] None quantifier on list containing relationships
-Quantifier10 - Single quantifier invariants::[1] Single quantifier is always false if the predicate is statically false and the list is not empty
-Quantifier10 - Single quantifier invariants::[2] Single quantifier is always false if the predicate is statically true and the list has more than one element
-Quantifier10 - Single quantifier invariants::[3] Single quantifier is always true if the predicate is statically true and the list has exactly one non-null element
-Quantifier10 - Single quantifier invariants::[4] Single quantifier is always equal whether the size of the list filtered with same the predicate is one
-Quantifier11 - Any quantifier invariants::[1] Any quantifier is always false if the predicate is statically false and the list is not empty
-Quantifier11 - Any quantifier invariants::[2] Any quantifier is always true if the predicate is statically true and the list is not empty
-Quantifier11 - Any quantifier invariants::[3] Any quantifier is always true if the single or the all quantifier is true
-Quantifier11 - Any quantifier invariants::[4] Any quantifier is always equal the boolean negative of the none quantifier
-Quantifier11 - Any quantifier invariants::[5] Any quantifier is always equal the boolean negative of the all quantifier on the boolean negative of the predicate
-Quantifier11 - Any quantifier invariants::[6] Any quantifier is always equal whether the size of the list filtered with same the predicate is grater zero
-Quantifier12 - All quantifier invariants::[1] All quantifier is always false if the predicate is statically false and the list is not empty
-Quantifier12 - All quantifier invariants::[2] All quantifier is always true if the predicate is statically true and the list is not empty
-Quantifier12 - All quantifier invariants::[3] All quantifier is always equal the none quantifier on the boolean negative of the predicate
-Quantifier12 - All quantifier invariants::[4] All quantifier is always equal the boolean negative of the any quantifier on the boolean negative of the predicate
-Quantifier12 - All quantifier invariants::[5] All quantifier is always equal whether the size of the list filtered with same the predicate is equal the size of the unfiltered list
-Quantifier2 - Single quantifier::[16] Fail single quantifier on type mismatch between list elements and predicate
-Quantifier2 - Single quantifier::[7] Single quantifier on list literal containing maps
 Quantifier2 - Single quantifier::[8] Single quantifier on list containing nodes
 Quantifier2 - Single quantifier::[9] Single quantifier on list containing relationships
-Quantifier3 - Any quantifier::[15] Fail any quantifier on type mismatch between list elements and predicate
-Quantifier3 - Any quantifier::[7] Any quantifier on list literal containing maps
 Quantifier3 - Any quantifier::[8] Any quantifier on list containing nodes
 Quantifier3 - Any quantifier::[9] Any quantifier on list containing relationships
-Quantifier4 - All quantifier::[15] Fail all quantifier on type mismatch between list elements and predicate
-Quantifier4 - All quantifier::[7] All quantifier on list literal containing maps
 Quantifier4 - All quantifier::[8] All quantifier on list containing nodes
 Quantifier4 - All quantifier::[9] All quantifier on list containing relationships
-Quantifier5 - None quantifier interop::[2] None quantifier can nest itself and other quantifiers on the same list
-Quantifier6 - Single quantifier interop::[2] Single quantifier can nest itself and other quantifiers on the same list
-Quantifier7 - Any quantifier interop::[2] Any quantifier can nest itself and other quantifiers on the same list
-Quantifier7 - Any quantifier interop::[3] Any quantifier is true if the single or the all quantifier is true
-Quantifier8 - All quantifier interop::[2] All quantifier can nest itself and other quantifiers on the same list
-Quantifier9 - None quantifier invariants::[1] None quantifier is always true if the predicate is statically false and the list is not empty
-Quantifier9 - None quantifier invariants::[2] None quantifier is always false if the predicate is statically true and the list is not empty
-Quantifier9 - None quantifier invariants::[3] None quantifier is always equal the boolean negative of the any quantifier
-Quantifier9 - None quantifier invariants::[4] None quantifier is always equal the all quantifier on the boolean negative of the predicate
-Quantifier9 - None quantifier invariants::[5] None quantifier is always equal whether the size of the list filtered with same the predicate is zero
+# BLOCKER: compile-time type checking for quantifier predicates not implemented
+Quantifier1 - None quantifier::[15] Fail none quantifier on type mismatch between list elements and predicate
+Quantifier2 - Single quantifier::[16] Fail single quantifier on type mismatch between list elements and predicate
+Quantifier3 - Any quantifier::[15] Fail any quantifier on type mismatch between list elements and predicate
+Quantifier4 - All quantifier::[15] Fail all quantifier on type mismatch between list elements and predicate
+# BLOCKER: rand() in aggregation context should raise NonConstantExpression (no compile-time validation)
+Return6 - Implicit grouping with aggregates::[15] Using `rand()` in aggregations
 Remove1 - Remove a Property::[4] Remove multiple relationship properties
 # BLOCKER: REMOVE on null relationship from OPTIONAL MATCH
 Remove1 - Remove a Property::[6] Ignore null when removing property from a relationship

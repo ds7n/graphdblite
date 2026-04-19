@@ -515,6 +515,7 @@ fn plan_unwind(conn: &Connection, stmt: &UnwindStatement) -> crate::types::Resul
         }
         UnwindBody::Create {
             patterns,
+            intermediate_clauses,
             return_clause,
             order_by,
             skip,
@@ -529,6 +530,26 @@ fn plan_unwind(conn: &Connection, stmt: &UnwindStatement) -> crate::types::Resul
                 input: Box::new(op),
                 create_ops,
             };
+
+            // Apply intermediate clauses (WITH/MATCH/UNWIND after CREATE).
+            for clause in intermediate_clauses {
+                match clause {
+                    IntermediateClause::With(with) => {
+                        op = plan_with(op, with)?;
+                    }
+                    IntermediateClause::Unwind(unwind) => {
+                        op = LogicalOp::Unwind {
+                            input: Box::new(op),
+                            expr: unwind.expr.clone(),
+                            alias: unwind.alias.clone(),
+                        };
+                    }
+                    IntermediateClause::Match(im) => {
+                        op = plan_intermediate_match(conn, op, im)?;
+                    }
+                }
+            }
+
             if let Some(rc) = return_clause {
                 op = apply_return_projection(op, rc, order_by, *skip, *limit)?;
             }

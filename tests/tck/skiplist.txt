@@ -103,7 +103,6 @@ Create6 - Persistence of create clause side effects::[11] Skipping zero result a
 Create6 - Persistence of create clause side effects::[12] Filtering after creating relationships affects the result set but not the side effects
 Create6 - Persistence of create clause side effects::[13] Aggregating in `RETURN` after creating relationships affects the result set but not the side effects
 Create6 - Persistence of create clause side effects::[14] Aggregating in `WITH` after creating relationships affects the result set but not the side effects
-Create6 - Persistence of create clause side effects::[5] Filtering after creating nodes affects the result set but not the side effects
 Create6 - Persistence of create clause side effects::[6] Aggregating in `RETURN` after creating nodes affects the result set but not the side effects
 Create6 - Persistence of create clause side effects::[7] Aggregating in `WITH` after creating nodes affects the result set but not the side effects
 Delete1 - Deleting nodes::[3] Detach deleting connected nodes and relationships
@@ -829,16 +828,6 @@ With6 - Implicit grouping with aggregates::[5] Handle constants and parameters i
 With6 - Implicit grouping with aggregates::[8] Fail if not projected variables are used inside an expression which contains an aggregation expression
 With6 - Implicit grouping with aggregates::[9] Fail if more complex expression, even if projected, are used inside expression which contains an aggregation expression
 With7 - WITH on WITH::[2] Multiple WITHs using a predicate and aggregation
-WithOrderBy1 - Order by a single variable::[11] Sort dates in ascending order
-WithOrderBy1 - Order by a single variable::[12] Sort dates in descending order
-WithOrderBy1 - Order by a single variable::[13] Sort local times in ascending order
-WithOrderBy1 - Order by a single variable::[14] Sort local times in descending order
-WithOrderBy1 - Order by a single variable::[15] Sort times in ascending order
-WithOrderBy1 - Order by a single variable::[16] Sort times in descending order
-WithOrderBy1 - Order by a single variable::[17] Sort local date times in ascending order
-WithOrderBy1 - Order by a single variable::[18] Sort local date times in descending order
-WithOrderBy1 - Order by a single variable::[19] Sort date times in ascending order
-WithOrderBy1 - Order by a single variable::[20] Sort date times in descending order
 WithOrderBy1 - Order by a single variable::[21] Sort distinct types in ascending order
 WithOrderBy1 - Order by a single variable::[22] Sort distinct types in descending order
 WithOrderBy1 - Order by a single variable::[23] Sort by a boolean variable projected from a node property in ascending order

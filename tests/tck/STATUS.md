@@ -8,12 +8,12 @@ Full openCypher TCK vendored (220 feature files, commit `677cbaf`).
 
 ```
 129 features parsed (1 parse error: Match5.feature)
-1474 total scenario instances running
-1393 passed
+1485 total scenario instances running
+1404 passed
   81 skipped (cucumber-level)
- 940 skiplisted (known failures)
+ 929 skiplisted (known failures)
  ────
-1393/2414 unique scenarios passing (57.7%)
+1404/2414 unique scenarios passing (58.2%)
 ```
 
 ## Pass rate by area
@@ -89,6 +89,14 @@ The harness filters these out and exits non-zero only if a *non-skiplisted*
 scenario fails — making the TCK a regression gate.
 
 ## History
+
+### Phase 10 — Temporal sorting/arithmetic, UNWIND...CREATE...WITH (2026-04-19)
+
+- [x] Add temporal types to `compare_values_for_sort` (Date, LocalTime, Time, DateTime, Duration)
+- [x] Implement temporal arithmetic: Date/Time/DateTime ± Duration, Duration ± Duration, Duration * Number
+- [x] Extend `unwind_create` grammar for intermediate WITH/MATCH/UNWIND clauses
+- [x] Planner support for intermediate clauses in UnwindBody::Create
+- Result: 1393 → 1404 passing scenarios (+11), skiplist 940 → 929
 
 ### Phase 9 — Aggregation, ORDER BY, IS NULL, Parameters (2026-04-19)
 

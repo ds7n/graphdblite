@@ -611,12 +611,10 @@ fn eval_quantifier(
         QuantifierKind::Single => {
             if true_count == 1 && null_count == 0 {
                 Ok(Value::Bool(true))
-            } else if true_count > 1 {
-                Ok(Value::Bool(false))
-            } else if true_count == 0 && null_count == 0 {
-                Ok(Value::Bool(false))
-            } else {
+            } else if null_count > 0 && true_count <= 1 {
                 Ok(Value::Null)
+            } else {
+                Ok(Value::Bool(false))
             }
         }
     }

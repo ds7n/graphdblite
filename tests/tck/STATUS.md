@@ -21,35 +21,35 @@ Full openCypher TCK vendored (220 feature files, commit `677cbaf`).
 Regenerate with: `cargo test --test tck 2>&1 > /tmp/tck_output.txt && uv run tests/tck/analyze.py /tmp/tck_output.txt`
 
 All running scenarios pass at 100%. The table below shows running
-scenarios per area (979 total running, 651 skiplisted):
+scenarios per area (1015 total running, 615 skiplisted):
 
 | Area | Running |
 |------|--------:|
-| Literals | 128 |
+| Literals | 129 |
 | Quantifier | 88 |
-| Match | 68 |
+| List | 69 |
+| Match | 69 |
 | Create | 67 |
-| List | 50 |
 | Merge | 46 |
 | Precedence | 43 |
+| Graph | 43 |
 | TypeConversion | 40 |
 | Call | 39 |
-| Graph | 38 |
 | Boolean | 36 |
+| Return | 29 |
 | String | 29 |
 | WithOrderBy | 29 |
-| Comparison | 26 |
-| Return | 26 |
+| Comparison | 27 |
 | ReturnSkipLimit | 24 |
 | Aggregation | 22 |
 | Set | 22 |
 | ReturnOrderBy | 21 |
 | Remove | 20 |
-| MatchWhere | 18 |
-| With | 15 |
+| MatchWhere | 19 |
+| With | 17 |
 | Delete | 15 |
+| Map | 10 |
 | Null | 10 |
-| Map | 9 |
 | Temporal | 9 |
 | Unwind | 9 |
 | Union | 8 |
@@ -59,6 +59,7 @@ scenarios per area (979 total running, 651 skiplisted):
 | ExistentialSubquery | 4 |
 | CountingSubgraphMatches | 4 |
 | Pattern | 3 |
+| Path | 2 |
 | TriadicSelection | 1 |
 
 ## Highest-impact work items
@@ -70,11 +71,11 @@ Regenerate with: `uv run tests/tck/analyze_blockers.py`
 | Sole | Impact | Construct |
 |-----:|-------:|-----------|
 | 111 | 214 | write-result (CREATE/MERGE ... RETURN) |
-| 35 | 77 | error validation |
 | 29 | 46 | temporal types |
+| 8 | 41 | error validation |
 | 8 | 9 | duration.between/inX |
 | 7 | 7 | list slicing [a..b] |
-| 5 | 23 | parameter $param |
+| 5 | 14 | parameter $param |
 | 5 | 5 | temporal truncation |
 | 4 | 6 | pattern comprehension |
 | 4 | 5 | IN [list] |
@@ -92,13 +93,13 @@ Regenerate with: `uv run tests/tck/analyze_blockers.py`
 | Impact | Construct |
 |-------:|-----------|
 | 214 | write-result (CREATE/MERGE ... RETURN) |
-| 77 | error validation |
 | 46 | temporal types |
+| 41 | error validation |
 | 23 | OPTIONAL MATCH |
-| 23 | parameter $param |
 | 22 | var-length rel `*` |
 | 18 | DELETE/DETACH DELETE |
 | 16 | ORDER BY |
+| 14 | parameter $param |
 | 14 | SET property/label |
 | 13 | aggregation (non-count) |
 | 13 | IS NULL / IS NOT NULL |

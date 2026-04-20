@@ -174,11 +174,11 @@ Regenerate with: `uv run tests/tck/analyze_blockers.py`
 | Sole | Impact | Construct |
 |-----:|-------:|-----------|
 | 111 | 214 | write-result (CREATE/MERGE ... RETURN) |
-| 35 | 77 | error validation |
 | 29 | 46 | temporal types |
+| 8 | 41 | error validation |
 | 8 | 9 | duration.between/inX |
 | 7 | 7 | list slicing [a..b] |
-| 5 | 23 | parameter $param |
+| 5 | 14 | parameter $param |
 | 5 | 5 | temporal truncation |
 | 4 | 6 | pattern comprehension |
 | 4 | 5 | IN [list] |
@@ -192,17 +192,6 @@ Regenerate with: `uv run tests/tck/analyze_blockers.py`
 | 1 | 13 | IS NULL / IS NOT NULL |
 
 ### Recommended next phases
-
-**Phase 19: Error validation (35 sole-blockers, 77 impact)**
-Scenarios expecting SyntaxError/TypeError/SemanticError. Many need:
-- `type()` on non-relationship → TypeError
-- `properties()` on non-entity → TypeError
-- `length()` on non-path → TypeError
-- Undefined variable detection (`WHERE s.name = undefinedVariable`)
-- Aggregate-in-aggregate rejection (`count(count(*))`)
-- Duplicate column name detection (`RETURN 1 AS a, 2 AS a`)
-- `RETURN *` with no variables in scope
-- Invalid list index type (float/string/map → TypeError)
 
 **Phase 20: Temporal extensions (29+8+5 = 42 sole-blockers, ~60 impact)**
 - `duration.between()`, `duration.inMonths()`, `duration.inDays()`, `duration.inSeconds()`

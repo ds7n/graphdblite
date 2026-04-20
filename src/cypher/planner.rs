@@ -1,4 +1,4 @@
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use rusqlite::Connection;
 
@@ -93,7 +93,12 @@ pub fn plan(conn: &Connection, stmt: &Statement) -> crate::types::Result<Logical
 
 fn plan_match(conn: &Connection, stmt: &MatchStatement) -> crate::types::Result<LogicalOp> {
     // Validate variable-type consistency across patterns before planning.
-    validate_variable_types(&stmt.patterns)?;
+    let var_types = validate_variable_types(&stmt.patterns)?;
+
+    // Validate function argument types against known variable kinds.
+    for item in &stmt.return_clause.items {
+        validate_expr_types(&item.expr, &var_types)?;
+    }
 
     // Build scan + expand chain from patterns.
     let mut op = if stmt.patterns.is_empty() {
@@ -120,13 +125,14 @@ fn plan_match(conn: &Connection, stmt: &MatchStatement) -> crate::types::Result<
         bound_vars.extend(new_aliases);
     }
 
-    // Reject aggregation functions in WHERE clause.
+    // Reject aggregation functions in WHERE clause and validate variables.
     if let Some(ref predicate) = stmt.where_clause {
         if is_aggregate_fn(predicate) {
             return Err(GraphError::syntax(
                 "InvalidAggregation: aggregation functions are not allowed in WHERE".to_string(),
             ));
         }
+        check_expr_variables(predicate, &bound_vars)?;
     }
 
     // Apply WHERE filter with predicate pushdown.
@@ -1004,6 +1010,20 @@ fn plan_with(input: LogicalOp, with: &WithClause) -> crate::types::Result<Logica
 
     check_duplicate_columns(&with.items)?;
 
+    // WITH requires aliases on non-variable expressions.
+    for item in &with.items {
+        if item.alias.is_none()
+            && !matches!(
+                item.expr,
+                Expr::Variable(_) | Expr::Star | Expr::Property(_, _)
+            )
+        {
+            return Err(GraphError::syntax(
+                "NoExpressionAlias: expression in WITH must be aliased (use AS)".to_string(),
+            ));
+        }
+    }
+
     // Check if WITH items contain aggregates.
     let has_aggregates = with.items.iter().any(|item| is_aggregate_fn(&item.expr));
 
@@ -1294,6 +1314,58 @@ fn check_duplicate_columns(items: &[ReturnItem]) -> crate::types::Result<()> {
     Ok(())
 }
 
+/// Validate function argument types at compile time using known variable kinds.
+fn validate_expr_types(
+    expr: &Expr,
+    var_types: &HashMap<String, VarKind>,
+) -> crate::types::Result<()> {
+    match expr {
+        Expr::FunctionCall { name, args, .. } => {
+            let name_lower = name.to_ascii_lowercase();
+            if let Some(Expr::Variable(var)) = args.first() {
+                if let Some(kind) = var_types.get(var) {
+                    match name_lower.as_str() {
+                        "type" if *kind == VarKind::Node => {
+                            return Err(GraphError::type_error(
+                                crate::types::QueryPhase::SemanticAnalysis,
+                                "InvalidArgumentType: type() requires a relationship".to_string(),
+                            ));
+                        }
+                        "length" if *kind == VarKind::Node || *kind == VarKind::Relationship => {
+                            return Err(GraphError::type_error(
+                                crate::types::QueryPhase::SemanticAnalysis,
+                                "InvalidArgumentType: length() requires a path, string, or list"
+                                    .to_string(),
+                            ));
+                        }
+                        "toboolean" | "tointeger" | "tofloat" | "tostring"
+                            if *kind == VarKind::Node || *kind == VarKind::Relationship =>
+                        {
+                            return Err(GraphError::type_error(
+                                crate::types::QueryPhase::SemanticAnalysis,
+                                format!("InvalidArgumentValue: {name}() cannot convert a {kind:?}"),
+                            ));
+                        }
+                        _ => {}
+                    }
+                }
+            }
+            for arg in args {
+                validate_expr_types(arg, var_types)?;
+            }
+        }
+        Expr::BinaryOp { left, right, .. } => {
+            validate_expr_types(left, var_types)?;
+            validate_expr_types(right, var_types)?;
+        }
+        Expr::Not(inner) | Expr::IsNull(inner) | Expr::IsNotNull(inner) => {
+            validate_expr_types(inner, var_types)?;
+        }
+        _ => {}
+    }
+    Ok(())
+}
+
 /// Check that every variable reference in an expression is present in `scope`.
 fn check_expr_variables(expr: &Expr, scope: &HashSet<String>) -> crate::types::Result<()> {
     match expr {
@@ -1409,9 +1481,10 @@ enum VarKind {
 /// Validate that no variable is used as more than one type (node, relationship,
 /// path) within the same MATCH statement's patterns. Raises `SyntaxError` on
 /// conflicts — e.g. `MATCH ()-[r]-(r)` uses `r` as both relationship and node.
-fn validate_variable_types(patterns: &[Pattern]) -> crate::types::Result<()> {
-    let mut types: std::collections::HashMap<String, VarKind> = std::collections::HashMap::new();
-    validate_variable_types_with_map(patterns, &mut types)
+fn validate_variable_types(patterns: &[Pattern]) -> crate::types::Result<HashMap<String, VarKind>> {
+    let mut types: HashMap<String, VarKind> = HashMap::new();
+    validate_variable_types_with_map(patterns, &mut types)?;
+    Ok(types)
 }
 
 /// Validate variable types against a persistent type map across clauses.

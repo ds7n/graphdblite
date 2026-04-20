@@ -12,7 +12,6 @@ Comparison1 - Equality::[5] Comparing relationships to relationships
 # BLOCKER: path equality with self-loop and named path patterns
 Comparison1 - Equality::[14] Direction of traversed relationship is not significant for path equality, simple
 # BLOCKER: UndefinedVariable semantic validation not implemented
-Comparison1 - Equality::[17] Failing when comparing to an undefined variable
 # BLOCKER: complex multi-clause query with path patterns, range(), size(), subscript
 Comparison2 - Half-bounded Range::[3] Comparing across types yields null, except numbers
 Call1 - Basic procedure calling::[13] Standalone call to unknown procedure should fail
@@ -79,7 +78,6 @@ Graph3 - Node labels::[8] `labels()` failing on a path
 # BLOCKER: type() accepts String values from flat record bindings; cannot distinguish '' from rel type
 Graph4 - Edge relationship type::[6] `type()` failing on invalid arguments
 # BLOCKER: compile-time type checking for type() on node variables
-Graph4 - Edge relationship type::[7] Failing when using `type()` on a node
 # BLOCKER: label expression on relationships (r:T2 syntax not supported)
 Graph5 - Node and edge label expressions::[2] Single-labels expression on relationships
 # BLOCKER: (expr).property grammar not supported
@@ -125,7 +123,6 @@ List5 - List Membership Validation - IN Operator::[29] IN should return null if 
 List5 - List Membership Validation - IN Operator::[31] IN should return null when comparing two so-called identical lists where one element is null
 List5 - List Membership Validation - IN Operator::[34] IN should return null if comparison with null is required, list version 2
 List5 - List Membership Validation - IN Operator::[3] IN should work with list slices
-List5 - List Membership Validation - IN Operator::[42] Failing when using IN on a non-list literal
 List6 - List size::[10] Get node degree via size of pattern comprehension that specifies multiple relationship types
 List6 - List size::[2] Setting and returning the size of a list property
 List6 - List size::[3] Concatenating and returning the size of literal lists
@@ -293,8 +290,6 @@ Path2 - Relationships of a path::[1] Return relationships by fetching them from 
 Path2 - Relationships of a path::[2] Return relationships by fetching them from the path - starting from the end
 Path2 - Relationships of a path::[3] `relationships()` on null path
 Path3 - Length of a path::[1] Return a var length path of length zero
-Path3 - Length of a path::[2] Failing when using `length()` on a node
-Path3 - Length of a path::[3] Failing when using `length()` on a relationship
 Pattern1 - Pattern predicate::[10] Fail on introducing unbounded variables in pattern
 Pattern1 - Pattern predicate::[10] Matching on a specific type of undirected connection with length 2
 Pattern1 - Pattern predicate::[11] Fail on checking self pattern
@@ -559,7 +554,6 @@ Unwind1::[6] Creating nodes from an unwound parameter list
 With2 - Forward single expression::[1] Forwarding a property to express a join
 With4 - Variable aliasing::[2] Aliasing expression to new variable name
 # BLOCKER: ColumnNameConflict validation not implemented for WITH
-With4 - Variable aliasing::[5] Fail when not aliasing expressions in WITH
 With4 - Variable aliasing::[6] Reusing variable names in WITH
 With4 - Variable aliasing::[7] Multiple aliasing and backreferencing
 With5 - Implicit grouping with DISTINCT::[1] DISTINCT on an expression

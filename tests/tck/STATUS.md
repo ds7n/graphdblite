@@ -7,62 +7,59 @@ Last updated: 2026-04-19
 Full openCypher TCK vendored (220 feature files, commit `677cbaf`).
 
 ```
-130 features parsed (1 parse error: Match5.feature)
-2034 total scenario instances running
-1952 passed
+158 features parsed (1 parse error: Match5.feature)
+2089 total scenario instances running
+2007 passed
   82 skipped (cucumber-level)
- 678 skiplisted (known failures)
+ 651 skiplisted (known failures)
  ────
-1952/2630 unique scenarios passing (74.2%)
+2007/2658 unique scenarios passing (75.5%)
 ```
 
 ## Pass rate by area
 
 Regenerate with: `cargo test --test tck 2>&1 > /tmp/tck_output.txt && uv run tests/tck/analyze.py /tmp/tck_output.txt`
 
-All running scenarios pass at 100%. The table below shows total scenarios
-(running + skiplisted) per area:
+All running scenarios pass at 100%. The table below shows running
+scenarios per area (979 total running, 651 skiplisted):
 
-| Area | Running | Skiplisted | Total |
-|------|--------:|-----------:|------:|
-| Literals | 122 | 0 | 122 |
-| Match | 68 | 52 | 120 |
-| Quantifier | 88 | 13 | 101 |
-| WithOrderBy | 29 | 74 | 103 |
-| List | 46 | 49 | 95 |
-| Temporal | 8 | 81 | 89 |
-| Create | 67 | 10 | 77 |
-| Merge | 46 | 27 | 73 |
-| Precedence | 43 | 0 | 43 |
-| Return | 24 | 28 | 52 |
-| TypeConversion | 40 | 8 | 48 |
-| Graph | 38 | 10 | 48 |
-| Call | 39 | 2 | 41 |
-| Set | 22 | 28 | 50 |
-| Boolean | 36 | 0 | 36 |
-| Pattern | 3 | 33 | 36 |
-| Delete | 15 | 18 | 33 |
-| String | 29 | 3 | 32 |
-| Remove | 20 | 12 | 32 |
-| ReturnSkipLimit | 24 | 7 | 31 |
-| Comparison | 26 | 0 | 26 |
-| ReturnOrderBy | 21 | 8 | 29 |
-| Aggregation | 22 | 5 | 27 |
-| With | 14 | 13 | 27 |
-| MatchWhere | 18 | 12 | 30 |
-| TriadicSelection | 0 | 19 | 19 |
-| Map | 3 | 13 | 16 |
-| WithWhere | 4 | 15 | 19 |
-| Null | 10 | 6 | 16 |
-| Unwind | 5 | 9 | 14 |
-| Union | 8 | 4 | 12 |
-| CountingSubgraphMatches | 4 | 7 | 11 |
-| ExistentialSubquery | 4 | 6 | 10 |
-| WithSkipLimit | 4 | 5 | 9 |
-| Path | 0 | 7 | 7 |
-| Mathematical | 2 | 3 | 5 |
-| Conditional | 0 | 2 | 2 |
-| **Total** | **952** | **678** | **1630** |
+| Area | Running |
+|------|--------:|
+| Literals | 128 |
+| Quantifier | 88 |
+| Match | 68 |
+| Create | 67 |
+| List | 50 |
+| Merge | 46 |
+| Precedence | 43 |
+| TypeConversion | 40 |
+| Call | 39 |
+| Graph | 38 |
+| Boolean | 36 |
+| String | 29 |
+| WithOrderBy | 29 |
+| Comparison | 26 |
+| Return | 26 |
+| ReturnSkipLimit | 24 |
+| Aggregation | 22 |
+| Set | 22 |
+| ReturnOrderBy | 21 |
+| Remove | 20 |
+| MatchWhere | 18 |
+| With | 15 |
+| Delete | 15 |
+| Null | 10 |
+| Map | 9 |
+| Temporal | 9 |
+| Unwind | 9 |
+| Union | 8 |
+| Mathematical | 4 |
+| WithSkipLimit | 4 |
+| WithWhere | 4 |
+| ExistentialSubquery | 4 |
+| CountingSubgraphMatches | 4 |
+| Pattern | 3 |
+| TriadicSelection | 1 |
 
 ## Highest-impact work items
 
@@ -72,50 +69,71 @@ Regenerate with: `uv run tests/tck/analyze_blockers.py`
 
 | Sole | Impact | Construct |
 |-----:|-------:|-----------|
-| 113 | 218 | write-result (CREATE/MERGE ... RETURN) |
-| 30 | 49 | temporal types |
-| 8 | 14 | ORDER BY |
-| 8 | 14 | parameter $param |
+| 111 | 214 | write-result (CREATE/MERGE ... RETURN) |
+| 35 | 77 | error validation |
+| 29 | 46 | temporal types |
+| 8 | 9 | duration.between/inX |
 | 7 | 7 | list slicing [a..b] |
-| 6 | 14 | list functions |
-| 5 | 6 | IN [list] |
-| 4 | 16 | MERGE |
-| 4 | 4 | UNION |
+| 5 | 23 | parameter $param |
+| 5 | 5 | temporal truncation |
 | 4 | 6 | pattern comprehension |
-| 4 | 4 | single()/none()/any()/all() |
-| 3 | 13 | CREATE (no RETURN) |
+| 4 | 5 | IN [list] |
+| 3 | 16 | ORDER BY |
+| 3 | 12 | list functions |
 | 2 | 4 | list indexing [n] |
-| 1 | 18 | DELETE/DETACH DELETE |
-| 1 | 18 | SET property/label |
-| 1 | 14 | aggregation (non-count) |
-| 1 | 13 | IS NULL / IS NOT NULL |
-| 1 | 4 | float literal |
-| 1 | 2 | math functions |
+| 1 | 9 | CREATE (no RETURN) |
+| 1 | 13 | aggregation (non-count) |
 | 1 | 1 | CASE/WHEN |
+| 1 | 3 | float literal |
+| 1 | 13 | IS NULL / IS NOT NULL |
 
 ### High-impact (in scenarios with ≤2 missing constructs)
 
 | Impact | Construct |
 |-------:|-----------|
-| 218 | write-result (CREATE/MERGE ... RETURN) |
-| 49 | temporal types |
+| 214 | write-result (CREATE/MERGE ... RETURN) |
+| 77 | error validation |
+| 46 | temporal types |
 | 23 | OPTIONAL MATCH |
-| 23 | var-length rel `*` |
+| 23 | parameter $param |
+| 22 | var-length rel `*` |
 | 18 | DELETE/DETACH DELETE |
-| 18 | SET property/label |
-| 16 | MERGE |
-| 14 | aggregation (non-count) |
-| 14 | parameter $param |
-| 14 | ORDER BY |
-| 14 | list functions |
+| 16 | ORDER BY |
+| 14 | SET property/label |
+| 13 | aggregation (non-count) |
+| 13 | IS NULL / IS NOT NULL |
+| 12 | MERGE |
+| 12 | list functions |
+| 9 | duration.between/inX |
+
+### Zero-blocker scenarios (3)
+
+- Temporal1::[13]: timezone offset with second precision (`+02:05:59`)
+- Temporal1::[13] variants: require `chrono` second-precision FixedOffset
 
 ## Skiplist
 
-`skiplist.txt` lists 678 known-failing `Feature::Scenario` pairs.
+`skiplist.txt` lists 651 known-failing `Feature::Scenario` pairs.
 The harness filters these out and exits non-zero only if a *non-skiplisted*
 scenario fails — making the TCK a regression gate.
 
 ## History
+
+### Phase 18 — Edge-case bug fixes, string/grammar improvements (2026-04-20)
+
+- [x] Fix `RETURN *` with scalar keys from WITH/UNWIND (bare keys hidden by `is_user_visible_field`)
+- [x] Add double-quoted string support (`"hello"`) to grammar
+- [x] Add string escape sequences: `\b`, `\f`, `\"`, `\/`, `\uXXXX` unicode escapes
+- [x] Add Gherkin data-table cell unescaping in TCK harness (`\\` → `\`)
+- [x] Normalize negative zero (`-.0` → `0.0`) in float literal parser
+- [x] Add backtick-delimited identifiers (`` `name` ``) to grammar for ident, property_key, map_key
+- [x] Allow keywords as map literal keys (`{null: 'x'}`) via `map_key` rule using `symbolic_name`
+- [x] Add precedence-aware parenthesization in `expr_to_column_name`
+- [x] Fix `count(a) > 0` over empty graph: recursive aggregate detection in `is_aggregate_fn` and `split_aggregates`, plus pre-computed aggregate lookup in `eval_function_call`
+- [x] Add chained property access (`m.a.b`) via `DotAccess` AST node and `dot_access` grammar rule
+- [x] Add temporal `.transaction`/`.statement`/`.realtime` dotted function variants
+- [x] Unskip 14 already-passing scenarios (Map1/2, List3/4, Math8, Return2, Unwind1, TriadicSelection1)
+- Result: 1952 → 2007 passing scenarios (+55), skiplist 678 → 651
 
 ### Phase 17 — Quantifier edge cases, rand(), CASE+operator fix (2026-04-19)
 

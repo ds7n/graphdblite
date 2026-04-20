@@ -403,6 +403,8 @@ pub enum Expr {
     MapLiteral(Vec<(String, Expr)>),
     /// List index: expr[index]
     Index { expr: Box<Expr>, index: Box<Expr> },
+    /// Chained property access: expr.key (for m.a.b patterns)
+    DotAccess { expr: Box<Expr>, key: String },
     /// List slice: expr[start..end] (either bound may be None)
     Slice {
         expr: Box<Expr>,

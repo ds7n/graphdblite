@@ -316,7 +316,8 @@ exp_expr = { atom_expr ~ (exp_op ~ atom_expr)* }
 exp_op = { "^" }
 add_op = { "+" | "-" }
 mul_op = { "*" | "/" | "%" }
-atom_expr = { atom_primary ~ subscript* }
+atom_expr = { atom_primary ~ (subscript | dot_access)* }
+dot_access = { "." ~ property_key }
 atom_primary = _{ case_expr | quantifier_expr | dotted_function_call | function_call | property_access | has_label_expr | literal | list_comprehension | list_literal | map_literal | star | parameter | unary_minus_expr | "(" ~ expr ~ ")" | variable }
 unary_minus_expr = { "-" ~ atom_expr }
 
@@ -327,7 +328,12 @@ dotted_function_name = @{
     ^"datetime.fromepochmillis" | ^"datetime.fromepoch" |
     ^"date.truncate" | ^"localtime.truncate" | ^"time.truncate" |
     ^"localdatetime.truncate" | ^"datetime.truncate" |
-    ^"duration.between" | ^"duration.inMonths" | ^"duration.inDays" | ^"duration.inSeconds"
+    ^"duration.between" | ^"duration.inMonths" | ^"duration.inDays" | ^"duration.inSeconds" |
+    ^"date.transaction" | ^"date.statement" | ^"date.realtime" |
+    ^"localtime.transaction" | ^"localtime.statement" | ^"localtime.realtime" |
+    ^"time.transaction" | ^"time.statement" | ^"time.realtime" |
+    ^"localdatetime.transaction" | ^"localdatetime.statement" | ^"localdatetime.realtime" |
+    ^"datetime.transaction" | ^"datetime.statement" | ^"datetime.realtime"
 }
 
 quantifier_expr = { quantifier_name ~ "(" ~ ident ~ in_kw ~ expr ~ where_clause ~ ")" }
@@ -350,7 +356,8 @@ list_literal = { "[" ~ (expr ~ ("," ~ expr)*)? ~ "]" }
 // rule names from `property_map` (which is used in node/edge patterns with
 // slightly different semantics and requires at least one pair).
 map_literal = { "{" ~ (map_pair ~ ("," ~ map_pair)*)? ~ "}" }
-map_pair = { ident ~ ":" ~ expr }
+map_pair = { map_key ~ ":" ~ expr }
+map_key = @{ backtick_ident | symbolic_name }
 
 property_access = { ident ~ "." ~ property_key }
 variable = { ident }
@@ -368,13 +375,15 @@ property_pair = { property_key ~ ":" ~ expr }
 
 // Property keys allow keywords (e.g. {exists: 42}) since the colon provides
 // unambiguous context, similar to label_spec using symbolic_name.
-property_key = @{ (ASCII_ALPHA | "_") ~ (ASCII_ALPHANUMERIC | "_")* }
+property_key = @{ backtick_ident | ((ASCII_ALPHA | "_") ~ (ASCII_ALPHANUMERIC | "_")*) }
 
 // === Identifiers and literals ===
 
 ident_list = { ident ~ ("," ~ ident)* }
 
-ident = @{ !keyword ~ (ASCII_ALPHA | "_") ~ (ASCII_ALPHANUMERIC | "_")* }
+ident = @{ backtick_ident | plain_ident }
+plain_ident = @{ !keyword ~ (ASCII_ALPHA | "_") ~ (ASCII_ALPHANUMERIC | "_")* }
+backtick_ident = @{ "`" ~ (!"`" ~ ANY)+ ~ "`" }
 
 // Like ident but allows keywords — used for labels and relationship types
 // where the leading ":" provides unambiguous context.
@@ -405,8 +414,11 @@ float_literal = @{
     )
 }
 exponent = { ("e" | "E") ~ ("+" | "-")? ~ ASCII_DIGIT+ }
-string_literal = ${ "'" ~ string_inner ~ "'" }
-string_inner = @{ (!"'" ~ !"\\" ~ ANY | "\\" ~ ANY)* }
+string_literal = ${ single_quoted_string | double_quoted_string }
+single_quoted_string = ${ "'" ~ string_inner_sq ~ "'" }
+double_quoted_string = ${ "\"" ~ string_inner_dq ~ "\"" }
+string_inner_sq = @{ (!"'" ~ !"\\" ~ ANY | "\\" ~ ANY)* }
+string_inner_dq = @{ (!"\"" ~ !"\\" ~ ANY | "\\" ~ ANY)* }
 bool_literal = { ^"TRUE" | ^"FALSE" }
 null_literal = { ^"NULL" }
 

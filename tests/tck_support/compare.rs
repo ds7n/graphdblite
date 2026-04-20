@@ -26,10 +26,42 @@ use graphdblite::{Record, Value};
 
 // ------------------------------ public API --------------------------------
 
+/// Unescape Gherkin data-table cell text.
+///
+/// The Gherkin spec requires `\\` → `\`, `\|` → `|`, and `\n` → newline in
+/// table cells, but the `gherkin` Rust crate passes cells through raw.
+fn gherkin_unescape(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let mut chars = s.chars().peekable();
+    while let Some(c) = chars.next() {
+        if c == '\\' {
+            match chars.peek() {
+                Some('\\') => {
+                    out.push('\\');
+                    chars.next();
+                }
+                Some('|') => {
+                    out.push('|');
+                    chars.next();
+                }
+                Some('n') => {
+                    out.push('\n');
+                    chars.next();
+                }
+                _ => out.push(c),
+            }
+        } else {
+            out.push(c);
+        }
+    }
+    out
+}
+
 /// Parse a single expected cell (a Gherkin table value) into a graphdblite
 /// `Value` for comparison.
 pub fn parse_expected(cell: &str) -> Result<Value> {
-    let mut p = Parser::new(cell.trim());
+    let unescaped = gherkin_unescape(cell.trim());
+    let mut p = Parser::new(&unescaped);
     let v = p.parse_value()?;
     p.skip_ws();
     if !p.at_end() {

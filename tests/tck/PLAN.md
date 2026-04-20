@@ -1,8 +1,8 @@
 # TCK Conformance Improvement Plan
 
-## Status: Phases 1-17 complete (2026-04-19)
+## Status: Phases 1-18 complete (2026-04-20)
 
-1952 scenarios passing (74.2%), 678 skiplisted, 0 failures.
+2007 scenarios passing (75.5%), 651 skiplisted, 0 failures.
 
 ---
 
@@ -44,6 +44,21 @@ Three code fixes and a systematic skiplist sweep:
 - **Null property filtering**: `CREATE ({p: null})` no longer stores `p`. Added null check in `exec_create_sequence` and `exec_match_create` property loops.
 - **CREATE dedup**: `CREATE (a), (a)-[:R]->(b)` no longer creates duplicate nodes. `plan_create_pattern` tracks `seen` named variables across patterns, skipping `CreateNode` for already-seen aliases.
 - **Batch unskip**: Removed 45 confirmed-passing skiplist entries (Create1-6, Comparison2, List3, Literals7-8, Merge2-3-5-7, Precedence2, Return3-6, TypeConversion4, WithOrderBy3).
+
+### Phase 18: Edge-case bug fixes, string/grammar improvements ✓
+
+Targeted fixes for 28 zero-blocker scenarios (no new major constructs):
+- Double-quoted strings, unicode escapes (`\uXXXX`), `\b`/`\f`/`\"`/`\/` escapes
+- Gherkin data-table cell unescaping (`\\` → `\`) in TCK harness
+- Backtick-delimited identifiers (`` `name` ``), keywords as map keys (`{null: 'x'}`)
+- RETURN * with scalar WITH/UNWIND variables
+- Chained property access (`m.a.b`) via new `DotAccess` AST node
+- Negative zero normalization (`-.0` → `0.0`)
+- Precedence-aware parentheses in column names (`12 / 4 * (3 - 2 * 4)`)
+- Nested aggregate detection (`count(a) > 0` over empty graph)
+- Temporal `.transaction`/`.statement`/`.realtime` dotted function aliases
+- 14 already-passing scenarios unskipped
+- Result: 1952 → 2007 passing (+55), skiplist 678 → 651
 
 ### Phase 17: Quantifier edge cases, rand(), CASE+operator fix ✓
 
@@ -144,41 +159,66 @@ Regenerate with: `uv run tests/tck/analyze_blockers.py`
 
 | Sole | Impact | Construct |
 |-----:|-------:|-----------|
-| 113 | 218 | write-result (CREATE/MERGE ... RETURN) |
-| 30 | 49 | temporal types |
-| 8 | 14 | ORDER BY |
-| 8 | 14 | parameter $param |
+| 111 | 214 | write-result (CREATE/MERGE ... RETURN) |
+| 35 | 77 | error validation |
+| 29 | 46 | temporal types |
+| 8 | 9 | duration.between/inX |
 | 7 | 7 | list slicing [a..b] |
-| 6 | 14 | list functions |
-| 5 | 6 | IN [list] |
-| 4 | 16 | MERGE |
+| 5 | 23 | parameter $param |
+| 5 | 5 | temporal truncation |
 | 4 | 6 | pattern comprehension |
-| 3 | 13 | CREATE (no RETURN) |
-| 1 | 18 | DELETE/DETACH DELETE |
-| 1 | 18 | SET property/label |
-| 1 | 14 | aggregation (non-count) |
+| 4 | 5 | IN [list] |
+| 3 | 16 | ORDER BY |
+| 3 | 12 | list functions |
+| 2 | 4 | list indexing [n] |
+| 1 | 9 | CREATE (no RETURN) |
+| 1 | 13 | aggregation (non-count) |
+| 1 | 1 | CASE/WHEN |
+| 1 | 3 | float literal |
+| 1 | 13 | IS NULL / IS NOT NULL |
 
 ### Recommended next phases
 
-**Phase 18: Temporal types (remaining 30 sole-blockers, 49 impact)**
-Map construction with week/ordinal dates, named timezones, storage round-trip,
-rendering, duration computation, truncation. Extends Phase 8 work.
+**Phase 19: Error validation (35 sole-blockers, 77 impact)**
+Scenarios expecting SyntaxError/TypeError/SemanticError. Many need:
+- `type()` on non-relationship → TypeError
+- `properties()` on non-entity → TypeError
+- `length()` on non-path → TypeError
+- Undefined variable detection (`WHERE s.name = undefinedVariable`)
+- Aggregate-in-aggregate rejection (`count(count(*))`)
+- Duplicate column name detection (`RETURN 1 AS a, 2 AS a`)
+- `RETURN *` with no variables in scope
+- Invalid list index type (float/string/map → TypeError)
 
-**Phase 19: WithOrderBy/ORDER BY (74 skiplisted, 14 sole-blockers)**
-ORDER BY in WITH clauses — temporal sorting, mixed-type sorting, aggregation
-in WITH context, node/relationship sorting.
+**Phase 20: Temporal extensions (29+8+5 = 42 sole-blockers, ~60 impact)**
+- `duration.between()`, `duration.inMonths()`, `duration.inDays()`, `duration.inSeconds()`
+- Temporal truncation: `date.truncate()`, `datetime.truncate()`, etc.
+- Remaining map construction: week/ordinal dates, named timezones
+- Storage round-trip, rendering
+- `temporal(null)` → null propagation
 
-**Phase 20: List operations (49 skiplisted)**
-List slicing [a..b], list indexing error handling, list functions
-(range, reverse, tail), list/pattern comprehension.
+**Phase 21: Write-result / side-effect issues (111 sole-blockers, 214 impact)**
+Largest single category. Many are harness categorization artifacts. Real blockers:
+- ON CREATE/ON MATCH SET with labels
+- MERGE path binding
+- Snapshot isolation (read-before-write semantics)
+- Multi-clause aggregation
+- CREATE/MERGE side-effect count verification
 
-**Phase 21: Remaining write-result / side-effect issues (113 sole-blockers)**
-Many are harness categorization artifacts. Remaining real blockers:
-ON CREATE/ON MATCH SET with labels, MERGE path binding, snapshot isolation,
-multi-clause aggregation.
+**Phase 22: List operations (~20 scenarios)**
+- List slicing `[a..b]`
+- List indexing error handling
+- List functions (range, reverse, tail)
+- Pattern comprehension
+- `IN [list]` edge cases
 
-**Phase 22: Pattern features (33 skiplisted)**
-Pattern comprehension, pattern predicates. Requires deeper planner work.
+**Phase 23: Variable-length relationships (22 impact)**
+`[*]`, `[*2..5]` — requires BFS/DFS path expansion in the planner.
+Unlocks TriadicSelection, Path, and some Match/MatchWhere scenarios.
+
+**Phase 24: Parameter support (5 sole-blockers, 23 impact)**
+`$param` in WHERE/property access/UNWIND contexts. Mostly `n[$param]`
+dynamic property access where the index comes from a parameter.
 
 ## Critical files
 - `tests/tck_support/world.rs` — harness counts
@@ -189,3 +229,5 @@ Pattern comprehension, pattern predicates. Requires deeper planner work.
 - `src/cypher/eval.rs` — expression evaluator
 - `src/edge.rs` — edge storage
 - `tests/tck/skiplist.txt` — known failures
+- `tests/tck/analyze.py` — pass-rate breakdown by area
+- `tests/tck/analyze_blockers.py` — blocker classification and impact analysis

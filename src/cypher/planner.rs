@@ -1323,6 +1323,9 @@ fn check_expr_variables(expr: &Expr, scope: &HashSet<String>) -> crate::types::R
             check_expr_variables(list_expr, scope)?;
         }
         Expr::Exists { .. } => {}
+        Expr::DotAccess { expr, .. } => {
+            check_expr_variables(expr, scope)?;
+        }
         Expr::HasLabel(var, _) => {
             if !scope.contains(var) {
                 return Err(GraphError::syntax(format!("UndefinedVariable: {var}")));
@@ -1864,6 +1867,11 @@ fn is_aggregate_fn(expr: &Expr) -> bool {
                 | "stdev"
                 | "stdevp"
         ),
+        // Recursively check sub-expressions (e.g. `count(a) > 0`).
+        Expr::BinaryOp { left, right, .. } => is_aggregate_fn(left) || is_aggregate_fn(right),
+        Expr::Not(inner) | Expr::IsNull(inner) | Expr::IsNotNull(inner) => {
+            is_aggregate_fn(inner)
+        }
         _ => false,
     }
 }
@@ -1874,45 +1882,87 @@ fn split_aggregates(items: &[ReturnItem]) -> crate::types::Result<(Vec<Expr>, Ve
     let mut aggregates = Vec::new();
 
     for item in items {
-        match &item.expr {
-            Expr::FunctionCall {
-                name,
-                args,
-                distinct,
-            } => {
-                let function = match name.to_ascii_lowercase().as_str() {
-                    "count" => Some(AggregateFunction::Count),
-                    "sum" => Some(AggregateFunction::Sum),
-                    "avg" => Some(AggregateFunction::Avg),
-                    "min" => Some(AggregateFunction::Min),
-                    "max" => Some(AggregateFunction::Max),
-                    "collect" => Some(AggregateFunction::Collect),
-                    "percentiledisc" => Some(AggregateFunction::PercentileDisc),
-                    "percentilecont" => Some(AggregateFunction::PercentileCont),
-                    "stdev" => Some(AggregateFunction::StDev),
-                    "stdevp" => Some(AggregateFunction::StDevP),
-                    _ => None, // Scalar function — treat as regular expression.
-                };
-                if let Some(function) = function {
-                    let input = args.first().cloned().unwrap_or(Expr::Star);
-                    let extra_arg = args.get(1).cloned();
-                    aggregates.push(AggregateExpr {
-                        function,
-                        input,
-                        alias: item.alias.clone(),
-                        distinct: *distinct,
-                        extra_arg,
-                        original_name: name.clone(),
-                    });
-                } else {
-                    group_keys.push(item.expr.clone());
-                }
+        if let Expr::FunctionCall {
+            name,
+            args,
+            distinct,
+        } = &item.expr
+        {
+            if let Some(function) = parse_agg_name(name) {
+                let input = args.first().cloned().unwrap_or(Expr::Star);
+                let extra_arg = args.get(1).cloned();
+                aggregates.push(AggregateExpr {
+                    function,
+                    input,
+                    alias: item.alias.clone(),
+                    distinct: *distinct,
+                    extra_arg,
+                    original_name: name.clone(),
+                });
+                continue;
             }
-            _ => group_keys.push(item.expr.clone()),
+        }
+        // For non-aggregate expressions, extract any nested aggregates.
+        extract_nested_aggregates(&item.expr, &mut aggregates);
+        if !is_aggregate_fn(&item.expr) {
+            group_keys.push(item.expr.clone());
         }
     }
 
     Ok((group_keys, aggregates))
+}
+
+/// Parse aggregate function name to enum.
+fn parse_agg_name(name: &str) -> Option<AggregateFunction> {
+    match name.to_ascii_lowercase().as_str() {
+        "count" => Some(AggregateFunction::Count),
+        "sum" => Some(AggregateFunction::Sum),
+        "avg" => Some(AggregateFunction::Avg),
+        "min" => Some(AggregateFunction::Min),
+        "max" => Some(AggregateFunction::Max),
+        "collect" => Some(AggregateFunction::Collect),
+        "percentiledisc" => Some(AggregateFunction::PercentileDisc),
+        "percentilecont" => Some(AggregateFunction::PercentileCont),
+        "stdev" => Some(AggregateFunction::StDev),
+        "stdevp" => Some(AggregateFunction::StDevP),
+        _ => None,
+    }
+}
+
+/// Walk an expression tree and extract aggregate function calls into the list.
+fn extract_nested_aggregates(expr: &Expr, aggregates: &mut Vec<AggregateExpr>) {
+    match expr {
+        Expr::FunctionCall {
+            name,
+            args,
+            distinct,
+        } => {
+            if let Some(function) = parse_agg_name(name) {
+                let input = args.first().cloned().unwrap_or(Expr::Star);
+                let extra_arg = args.get(1).cloned();
+                aggregates.push(AggregateExpr {
+                    function,
+                    input,
+                    alias: None,
+                    distinct: *distinct,
+                    extra_arg,
+                    original_name: name.clone(),
+                });
+                return; // Don't recurse into aggregate arguments.
+            }
+            for arg in args {
+                extract_nested_aggregates(arg, aggregates);
+            }
+        }
+        Expr::BinaryOp { left, right, .. } => {
+            extract_nested_aggregates(left, aggregates);
+            extract_nested_aggregates(right, aggregates);
+        }
+        Expr::Not(inner) | Expr::IsNull(inner) | Expr::IsNotNull(inner) => {
+            extract_nested_aggregates(inner, aggregates);
+        }
+        _ => {}
+    }
 }
 
 // ── Predicate pushdown helpers ──────────────────────────────────────────

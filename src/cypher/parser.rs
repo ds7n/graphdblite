@@ -10,6 +10,11 @@ use crate::types::GraphError;
 #[grammar = "cypher/grammar.pest"]
 struct CypherParser;
 
+/// Strip backticks from a delimited identifier.
+fn strip_backticks(s: &str) -> &str {
+    s.strip_prefix('`').and_then(|s| s.strip_suffix('`')).unwrap_or(s)
+}
+
 /// Process backslash escape sequences in a string literal.
 fn unescape_string(raw: &str) -> String {
     let mut out = String::with_capacity(raw.len());
@@ -20,8 +25,32 @@ fn unescape_string(raw: &str) -> String {
                 Some('n') => out.push('\n'),
                 Some('t') => out.push('\t'),
                 Some('r') => out.push('\r'),
+                Some('b') => out.push('\u{0008}'), // backspace
+                Some('f') => out.push('\u{000C}'), // form feed
                 Some('\\') => out.push('\\'),
                 Some('\'') => out.push('\''),
+                Some('"') => out.push('"'),
+                Some('/') => out.push('/'),
+                Some('u') => {
+                    // \uXXXX unicode escape
+                    let hex: String = chars.by_ref().take(4).collect();
+                    if hex.len() == 4 {
+                        if let Ok(cp) = u32::from_str_radix(&hex, 16) {
+                            if let Some(c) = char::from_u32(cp) {
+                                out.push(c);
+                            } else {
+                                out.push_str("\\u");
+                                out.push_str(&hex);
+                            }
+                        } else {
+                            out.push_str("\\u");
+                            out.push_str(&hex);
+                        }
+                    } else {
+                        out.push_str("\\u");
+                        out.push_str(&hex);
+                    }
+                }
                 Some(other) => {
                     out.push('\\');
                     out.push(other);
@@ -390,7 +419,7 @@ fn parse_multi_clause(
                         Rule::ident_list => {
                             for id in child.into_inner() {
                                 if id.as_rule() == Rule::ident {
-                                    variables.push(id.as_str().to_string());
+                                    variables.push(strip_backticks(id.as_str()).to_string());
                                 }
                             }
                         }
@@ -565,7 +594,7 @@ fn parse_delete(pair: pest::iterators::Pair<Rule>) -> crate::types::Result<Delet
             Rule::ident_list => {
                 for id in inner.into_inner() {
                     if id.as_rule() == Rule::ident {
-                        variables.push(id.as_str().to_string());
+                        variables.push(strip_backticks(id.as_str()).to_string());
                     }
                 }
             }
@@ -657,7 +686,7 @@ fn parse_set_item_list(pair: pest::iterators::Pair<Rule>) -> crate::types::Resul
                     let mut labels = Vec::new();
                     for part in inner.into_inner() {
                         match part.as_rule() {
-                            Rule::ident => variable = part.as_str().to_string(),
+                            Rule::ident => variable = strip_backticks(part.as_str()).to_string(),
                             Rule::label_spec => {
                                 for label in part.into_inner() {
                                     labels.push(label.as_str().to_string());
@@ -673,7 +702,7 @@ fn parse_set_item_list(pair: pest::iterators::Pair<Rule>) -> crate::types::Resul
                     let mut value = None;
                     for part in inner.into_inner() {
                         match part.as_rule() {
-                            Rule::ident => variable = part.as_str().to_string(),
+                            Rule::ident => variable = strip_backticks(part.as_str()).to_string(),
                             Rule::expr => value = Some(parse_expr(part)?),
                             _ => {}
                         }
@@ -688,7 +717,7 @@ fn parse_set_item_list(pair: pest::iterators::Pair<Rule>) -> crate::types::Resul
                     let mut value = None;
                     for part in inner.into_inner() {
                         match part.as_rule() {
-                            Rule::ident => variable = part.as_str().to_string(),
+                            Rule::ident => variable = strip_backticks(part.as_str()).to_string(),
                             Rule::expr => value = Some(parse_expr(part)?),
                             _ => {}
                         }
@@ -795,7 +824,7 @@ fn parse_remove_item(pair: pest::iterators::Pair<Rule>) -> crate::types::Result<
             let mut labels = Vec::new();
             for child in inner.into_inner() {
                 match child.as_rule() {
-                    Rule::ident => variable = child.as_str().to_string(),
+                    Rule::ident => variable = strip_backticks(child.as_str()).to_string(),
                     Rule::label_spec => {
                         for label in child.into_inner() {
                             labels.push(label.as_str().to_string());
@@ -887,7 +916,7 @@ fn parse_path_pattern(pair: pest::iterators::Pair<Rule>) -> crate::types::Result
 
     for inner in pair.into_inner() {
         match inner.as_rule() {
-            Rule::ident => path_variable = Some(inner.as_str().to_string()),
+            Rule::ident => path_variable = Some(strip_backticks(inner.as_str()).to_string()),
             Rule::shortest_path_fn => {
                 mode = ShortestPathMode::Single;
                 for child in inner.into_inner() {
@@ -948,7 +977,7 @@ fn parse_node_pattern(pair: pest::iterators::Pair<Rule>) -> crate::types::Result
 
     for inner in pair.into_inner() {
         match inner.as_rule() {
-            Rule::ident => variable = Some(inner.as_str().to_string()),
+            Rule::ident => variable = Some(strip_backticks(inner.as_str()).to_string()),
             Rule::label_spec => {
                 for child in inner.into_inner() {
                     if child.as_rule() == Rule::symbolic_name {
@@ -986,7 +1015,7 @@ fn parse_rel_pattern(pair: pest::iterators::Pair<Rule>) -> crate::types::Result<
         if child.as_rule() == Rule::rel_detail {
             for detail in child.into_inner() {
                 match detail.as_rule() {
-                    Rule::ident => variable = Some(detail.as_str().to_string()),
+                    Rule::ident => variable = Some(strip_backticks(detail.as_str()).to_string()),
                     Rule::rel_type_spec => {
                         for rt in detail.into_inner() {
                             if rt.as_rule() == Rule::symbolic_name {
@@ -1042,7 +1071,7 @@ fn parse_property_map(
     for inner in pair.into_inner() {
         if inner.as_rule() == Rule::property_pair {
             let mut children = inner.into_inner();
-            let key = children.next().unwrap().as_str().to_string();
+            let key = strip_backticks(children.next().unwrap().as_str()).to_string();
             let value = parse_expr(children.next().unwrap())?;
             map.insert(key, value);
         }
@@ -1082,7 +1111,7 @@ fn parse_with(pair: pest::iterators::Pair<Rule>) -> crate::types::Result<WithCla
                                 Rule::alias => {
                                     for a in child.into_inner() {
                                         if a.as_rule() == Rule::ident {
-                                            alias = Some(a.as_str().to_string());
+                                            alias = Some(strip_backticks(a.as_str()).to_string());
                                         }
                                     }
                                 }
@@ -1121,7 +1150,7 @@ fn parse_unwind(pair: pest::iterators::Pair<Rule>) -> crate::types::Result<Unwin
     for inner in pair.into_inner() {
         match inner.as_rule() {
             Rule::expr => expr = Some(parse_expr(inner)?),
-            Rule::ident => alias = Some(inner.as_str().to_string()),
+            Rule::ident => alias = Some(strip_backticks(inner.as_str()).to_string()),
             Rule::unwind_return => {
                 let mut where_clause = None;
                 let mut intermediate_clauses = Vec::new();
@@ -1236,7 +1265,7 @@ fn parse_unwind_clause(pair: pest::iterators::Pair<Rule>) -> crate::types::Resul
     for inner in pair.into_inner() {
         match inner.as_rule() {
             Rule::expr => expr = Some(parse_expr(inner)?),
-            Rule::ident => alias = Some(inner.as_str().to_string()),
+            Rule::ident => alias = Some(strip_backticks(inner.as_str()).to_string()),
             _ => {}
         }
     }
@@ -1271,7 +1300,7 @@ fn parse_return(pair: pest::iterators::Pair<Rule>) -> crate::types::Result<Retur
                     Rule::alias => {
                         for child in inner.into_inner() {
                             if child.as_rule() == Rule::ident {
-                                alias = Some(child.as_str().to_string());
+                                alias = Some(strip_backticks(child.as_str()).to_string());
                             }
                         }
                     }
@@ -1774,10 +1803,18 @@ fn parse_atom_expr(pair: pest::iterators::Pair<Rule>) -> crate::types::Result<Ex
             let mut children = pair.into_inner();
             let primary = children.next().unwrap();
             let mut expr = parse_atom_expr(primary)?;
-            // Apply postfix subscript/slice operators.
+            // Apply postfix subscript/slice/dot operators.
             for sub in children {
                 if sub.as_rule() == Rule::subscript {
                     expr = parse_subscript(expr, sub)?;
+                } else if sub.as_rule() == Rule::dot_access {
+                    let prop = strip_backticks(sub.into_inner().next().unwrap().as_str()).to_string();
+                    // Chained dot access: wrap as DotAccess for correct column
+                    // naming (m.a.b → "m.a.b" not "m.a['b']").
+                    expr = Expr::DotAccess {
+                        expr: Box::new(expr),
+                        key: prop,
+                    };
                 }
             }
             Ok(expr)
@@ -1788,8 +1825,8 @@ fn parse_atom_expr(pair: pest::iterators::Pair<Rule>) -> crate::types::Result<Ex
         Rule::function_call => parse_function_call(pair),
         Rule::property_access => {
             let mut parts = pair.into_inner();
-            let var = parts.next().unwrap().as_str().to_string();
-            let prop = parts.next().unwrap().as_str().to_string();
+            let var = strip_backticks(parts.next().unwrap().as_str()).to_string();
+            let prop = strip_backticks(parts.next().unwrap().as_str()).to_string();
             Ok(Expr::Property(var, prop))
         }
         Rule::has_label_expr => {
@@ -1817,7 +1854,7 @@ fn parse_atom_expr(pair: pest::iterators::Pair<Rule>) -> crate::types::Result<Ex
             for p in pair.into_inner() {
                 if p.as_rule() == Rule::map_pair {
                     let mut parts = p.into_inner();
-                    let key = parts.next().unwrap().as_str().to_string();
+                    let key = strip_backticks(parts.next().unwrap().as_str()).to_string();
                     let value_pair = parts.next().unwrap();
                     let value = parse_expr(value_pair)?;
                     pairs.push((key, value));
@@ -2027,7 +2064,7 @@ fn parse_literal(pair: pest::iterators::Pair<Rule>) -> crate::types::Result<Expr
             Ok(Expr::Literal(LiteralValue::I64(n)))
         }
         Rule::float_literal => {
-            let n: f64 = inner
+            let mut n: f64 = inner
                 .as_str()
                 .parse()
                 .map_err(|e| GraphError::Serialization(format!("invalid float: {e}")))?;
@@ -2036,12 +2073,17 @@ fn parse_literal(pair: pest::iterators::Pair<Rule>) -> crate::types::Result<Expr
                     "floating point value overflow".to_string(),
                 ));
             }
+            // Normalize negative zero to positive zero.
+            if n == 0.0 && n.is_sign_negative() {
+                n = 0.0;
+            }
             Ok(Expr::Literal(LiteralValue::F64(n)))
         }
         Rule::string_literal => {
-            let raw = inner
+            let quoted = inner.into_inner().next().unwrap();
+            let raw = quoted
                 .into_inner()
-                .find(|p| p.as_rule() == Rule::string_inner)
+                .next()
                 .unwrap()
                 .as_str();
             Ok(Expr::Literal(LiteralValue::String(unescape_string(raw))))
@@ -2066,7 +2108,7 @@ fn parse_list_comprehension(pair: pest::iterators::Pair<Rule>) -> crate::types::
 
     for inner in pair.into_inner() {
         match inner.as_rule() {
-            Rule::ident => variable = Some(inner.as_str().to_string()),
+            Rule::ident => variable = Some(strip_backticks(inner.as_str()).to_string()),
             Rule::expr => list_expr = Some(Box::new(parse_expr(inner)?)),
             Rule::list_comp_where => {
                 let bool_expr = inner.into_inner().next().unwrap();
@@ -2114,7 +2156,7 @@ fn parse_quantifier_expr(pair: pest::iterators::Pair<Rule>) -> crate::types::Res
                     }
                 });
             }
-            Rule::ident => variable = Some(inner.as_str().to_string()),
+            Rule::ident => variable = Some(strip_backticks(inner.as_str()).to_string()),
             Rule::expr => list_expr = Some(Box::new(parse_expr(inner)?)),
             Rule::where_clause => predicate = Some(Box::new(parse_where(inner)?)),
             _ => {}
@@ -2337,6 +2379,10 @@ fn resolve_expr(expr: &Expr, params: &HashMap<String, Value>) -> crate::types::R
         Expr::Index { expr: e, index } => Ok(Expr::Index {
             expr: Box::new(resolve_expr(e, params)?),
             index: Box::new(resolve_expr(index, params)?),
+        }),
+        Expr::DotAccess { expr: e, key } => Ok(Expr::DotAccess {
+            expr: Box::new(resolve_expr(e, params)?),
+            key: key.clone(),
         }),
         Expr::Slice {
             expr: e,

@@ -112,6 +112,21 @@ pub fn eval_expr(expr: &Expr, record: &Record, conn: &Connection) -> crate::type
                 _ => Ok(Value::Null),
             }
         }
+        Expr::DotAccess { expr, key } => {
+            let base = eval_expr(expr, record, conn)?;
+            match &base {
+                Value::Map(m) => Ok(m.get(key).cloned().unwrap_or(Value::Null)),
+                Value::Node(n) => Ok(n.properties.get(key).cloned().unwrap_or(Value::Null)),
+                Value::Edge(e) => Ok(e.properties.get(key).cloned().unwrap_or(Value::Null)),
+                Value::Null => Ok(Value::Null),
+                _ => {
+                    if let Some(result) = temporal_accessor(&base, key) {
+                        return Ok(result);
+                    }
+                    Ok(Value::Null)
+                }
+            }
+        }
         Expr::Slice { expr, start, end } => {
             let base = eval_expr(expr, record, conn)?;
             let start_val = start
@@ -309,6 +324,33 @@ fn eval_function_call(
     conn: &Connection,
 ) -> crate::types::Result<Value> {
     let name_lower = name.to_ascii_lowercase();
+
+    // If this is an aggregate function, check for a pre-computed value in the
+    // record (placed by the Aggregate executor). This allows expressions like
+    // `count(a) > 0` to reference the aggregate result during projection.
+    if matches!(
+        name_lower.as_str(),
+        "count"
+            | "sum"
+            | "avg"
+            | "min"
+            | "max"
+            | "collect"
+            | "percentiledisc"
+            | "percentilecont"
+            | "stdev"
+            | "stdevp"
+    ) {
+        let col = expr_to_column_name(&Expr::FunctionCall {
+            name: name.to_string(),
+            args: args.to_vec(),
+            distinct: false,
+        });
+        if let Some(val) = record.get(&col) {
+            return Ok(val.clone());
+        }
+    }
+
     match name_lower.as_str() {
         "length" => {
             let arg = args
@@ -772,41 +814,50 @@ fn eval_function_call(
             Ok(Value::F64(val))
         }
         // Temporal constructor functions.
-        "date" => eval_temporal_constructor(
-            args,
-            record,
-            conn,
-            |s| crate::temporal::CypherDate::from_iso_string(s).map(Value::Date),
-            |m| crate::temporal::CypherDate::from_map(m).map(Value::Date),
-        ),
-        "localtime" => eval_temporal_constructor(
-            args,
-            record,
-            conn,
-            |s| crate::temporal::CypherLocalTime::from_iso_string(s).map(Value::LocalTime),
-            |m| crate::temporal::CypherLocalTime::from_map(m).map(Value::LocalTime),
-        ),
-        "time" => eval_temporal_constructor(
-            args,
-            record,
-            conn,
-            |s| crate::temporal::CypherTime::from_iso_string(s).map(Value::Time),
-            |m| crate::temporal::CypherTime::from_map(m).map(Value::Time),
-        ),
-        "localdatetime" => eval_temporal_constructor(
+        "date" | "date.transaction" | "date.statement" | "date.realtime" => {
+            eval_temporal_constructor(
+                args,
+                record,
+                conn,
+                |s| crate::temporal::CypherDate::from_iso_string(s).map(Value::Date),
+                |m| crate::temporal::CypherDate::from_map(m).map(Value::Date),
+            )
+        }
+        "localtime" | "localtime.transaction" | "localtime.statement" | "localtime.realtime" => {
+            eval_temporal_constructor(
+                args,
+                record,
+                conn,
+                |s| crate::temporal::CypherLocalTime::from_iso_string(s).map(Value::LocalTime),
+                |m| crate::temporal::CypherLocalTime::from_map(m).map(Value::LocalTime),
+            )
+        }
+        "time" | "time.transaction" | "time.statement" | "time.realtime" => {
+            eval_temporal_constructor(
+                args,
+                record,
+                conn,
+                |s| crate::temporal::CypherTime::from_iso_string(s).map(Value::Time),
+                |m| crate::temporal::CypherTime::from_map(m).map(Value::Time),
+            )
+        }
+        "localdatetime" | "localdatetime.transaction" | "localdatetime.statement"
+        | "localdatetime.realtime" => eval_temporal_constructor(
             args,
             record,
             conn,
             |s| crate::temporal::CypherLocalDateTime::from_iso_string(s).map(Value::LocalDateTime),
             |m| crate::temporal::CypherLocalDateTime::from_map(m).map(Value::LocalDateTime),
         ),
-        "datetime" => eval_temporal_constructor(
-            args,
-            record,
-            conn,
-            |s| crate::temporal::CypherDateTime::from_iso_string(s).map(Value::DateTime),
-            |m| crate::temporal::CypherDateTime::from_map(m).map(Value::DateTime),
-        ),
+        "datetime" | "datetime.transaction" | "datetime.statement" | "datetime.realtime" => {
+            eval_temporal_constructor(
+                args,
+                record,
+                conn,
+                |s| crate::temporal::CypherDateTime::from_iso_string(s).map(Value::DateTime),
+                |m| crate::temporal::CypherDateTime::from_map(m).map(Value::DateTime),
+            )
+        }
         "duration" => eval_temporal_constructor(
             args,
             record,
@@ -1442,6 +1493,38 @@ fn literal_to_value(lit: &LiteralValue) -> Value {
     }
 }
 
+/// Return operator precedence (higher = binds tighter).
+fn binop_precedence(op: &BinOp) -> u8 {
+    match op {
+        BinOp::Or => 1,
+        BinOp::Xor => 2,
+        BinOp::And => 3,
+        BinOp::Eq | BinOp::Neq | BinOp::Lt | BinOp::Gt | BinOp::Lte | BinOp::Gte => 5,
+        BinOp::In | BinOp::StartsWith | BinOp::EndsWith | BinOp::Contains => 5,
+        BinOp::Add | BinOp::Sub => 6,
+        BinOp::Mul | BinOp::Div | BinOp::Mod => 7,
+        BinOp::Pow => 8,
+    }
+}
+
+/// Format a child expression, wrapping in parens if its precedence is lower.
+fn format_child_expr(expr: &Expr, parent_prec: u8, is_left: bool) -> String {
+    let needs_parens = if let Expr::BinaryOp { op, .. } = expr {
+        let child_prec = binop_precedence(op);
+        // Parenthesize if child has lower precedence, or same precedence
+        // on the right side (to preserve left-to-right grouping).
+        child_prec < parent_prec || (child_prec == parent_prec && !is_left)
+    } else {
+        false
+    };
+    let s = expr_to_column_name(expr);
+    if needs_parens {
+        format!("({s})")
+    } else {
+        s
+    }
+}
+
 /// Resolve an expression to a column name for RETURN projections.
 pub fn expr_to_column_name(expr: &Expr) -> String {
     match expr {
@@ -1479,6 +1562,9 @@ pub fn expr_to_column_name(expr: &Expr) -> String {
                 expr_to_column_name(index)
             )
         }
+        Expr::DotAccess { expr, key } => {
+            format!("{}.{}", expr_to_column_name(expr), key)
+        }
         Expr::Slice { expr, start, end } => {
             let s = start
                 .as_ref()
@@ -1491,21 +1577,19 @@ pub fn expr_to_column_name(expr: &Expr) -> String {
             format!("{}[{}..{}]", expr_to_column_name(expr), s, e)
         }
         Expr::BinaryOp { left, op, right } => {
-            let l = expr_to_column_name(left);
-            let r = expr_to_column_name(right);
             let op_str = match op {
-                BinOp::Add => "+",
-                BinOp::Sub => "-",
-                BinOp::Mul => "*",
-                BinOp::Div => "/",
-                BinOp::Mod => "%",
-                BinOp::Pow => "^",
-                BinOp::Eq => "=",
-                BinOp::Neq => "<>",
-                BinOp::Lt => "<",
-                BinOp::Gt => ">",
-                BinOp::Lte => "<=",
-                BinOp::Gte => ">=",
+                BinOp::Add => " + ",
+                BinOp::Sub => " - ",
+                BinOp::Mul => " * ",
+                BinOp::Div => " / ",
+                BinOp::Mod => " % ",
+                BinOp::Pow => " ^ ",
+                BinOp::Eq => " = ",
+                BinOp::Neq => " <> ",
+                BinOp::Lt => " < ",
+                BinOp::Gt => " > ",
+                BinOp::Lte => " <= ",
+                BinOp::Gte => " >= ",
                 BinOp::And => " AND ",
                 BinOp::Or => " OR ",
                 BinOp::Xor => " XOR ",
@@ -1514,7 +1598,10 @@ pub fn expr_to_column_name(expr: &Expr) -> String {
                 BinOp::EndsWith => " ENDS WITH ",
                 BinOp::Contains => " CONTAINS ",
             };
-            format!("{l} {op_str} {r}")
+            let prec = binop_precedence(op);
+            let l = format_child_expr(left, prec, true);
+            let r = format_child_expr(right, prec, false);
+            format!("{l}{op_str}{r}")
         }
         Expr::IsNull(inner) => format!("{} IS NULL", expr_to_column_name(inner)),
         Expr::IsNotNull(inner) => format!("{} IS NOT NULL", expr_to_column_name(inner)),

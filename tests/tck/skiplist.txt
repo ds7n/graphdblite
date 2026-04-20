@@ -141,10 +141,6 @@ List2 - List Slicing::[6] List slice with negative range
 List2 - List Slicing::[7] List slice with invalid range
 List2 - List Slicing::[8] List slice with exceeding range
 List2 - List Slicing::[9] List slice with null range
-List3 - List Equality::[4] Equality between almost equal lists with null should return null
-List3 - List Equality::[7] Equality between almost equal nested lists with null should return null
-List4 - List Concatenation::[1] Concatenating lists of same type
-List4 - List Concatenation::[2] Concatenating a list with a scalar of same type
 List5 - List Membership Validation - IN Operator::[1] IN should work with nested list subscripting
 List5 - List Membership Validation - IN Operator::[21] IN should return null if LHS and RHS are null - list version
 List5 - List Membership Validation - IN Operator::[29] IN should return null if comparison with null is required, list version
@@ -161,25 +157,13 @@ List6 - List size::[7] Using size of pattern comprehension to test existence
 List6 - List size::[8] Get node degree via size of pattern comprehension
 List6 - List size::[9] Get node degree via size of pattern comprehension that specifies a relationship type
 List9 - List Tail::[1] Returning nested expressions based on list property
-Literals5 - Float::[10] Return a negative zero float without integer digits
 Literals5 - Float::[9] Return a negative zero float
-Literals6 - String::[10] Accept valid Unicode literal
-Literals6 - String::[11] Return a double-quoted string with one character
-Literals6 - String::[12] Return a double-quoted string with uft-8 characters
 Literals6 - String::[13] Failing on incorrect unicode literal
-Literals6 - String::[5] Return a single-quoted string with escaped characters
-Literals6 - String::[9] Return a double-quoted empty string
 Literals8 - Maps::[22] Fail on a map containing unquoted string
-Map1 - Static value access::[1] Statically access a field of a non-null map
-Map1 - Static value access::[2] Statically access a field of a null map
 Map1 - Static value access::[3] Statically access a field of a map resulting from an expression
-Map1 - Static value access::[4] Statically access a field is case-sensitive
-Map1 - Static value access::[5] Statically access a field with a delimited identifier
 Map1 - Static value access::[6] Fail when performing property access on a non-map
 Map2 - Dynamic Value Access::[1] Dynamically access a field based on parameters when there is no type information
 Map2 - Dynamic Value Access::[2] Dynamically access a field based on parameters when there is rhs type information
-Map2 - Dynamic Value Access::[3] Dynamically access a field on null results in null
-Map2 - Dynamic Value Access::[4] Dynamically access a field with null results in null
 Map2 - Dynamic Value Access::[5] Dynamically access a field is case-sensitive
 Map2 - Dynamic Value Access::[6] Fail at runtime when attempting to index with an Int into a Map
 Map2 - Dynamic Value Access::[7] Fail at runtime when trying to index into a map with a non-string
@@ -324,8 +308,6 @@ Merge7 - Merge relationships - on match::[5] Copying properties from literal map
 Merge9 - Merge clause interoperation with other clauses::[4] MERGE after WITH with predicate and WITH with aggregation
 Mathematical13 - Square root::[1] `sqrt()` returning float values
 Mathematical2 - Addition::[1] Allow addition
-Mathematical8 - Arithmetic precedence::[1] Arithmetic precedence test
-Mathematical8 - Arithmetic precedence::[2] Arithmetic precedence with parenthesis test
 Null1 - IS NULL validation::[1] Property null check on non-null node
 Null1 - IS NULL validation::[3] Property null check on null node
 Null1 - IS NULL validation::[5] IS NULL on a map
@@ -402,14 +384,12 @@ Remove3 - Persistence of remove clause side effects::[21] Aggregating in `WITH` 
 Remove3 - Persistence of remove clause side effects::[5] Filtering after removing a property from nodes affects the result set but not the side effects
 Remove3 - Persistence of remove clause side effects::[6] Aggregating in `RETURN` after removing a property from nodes affects the result set but not the side effects
 Remove3 - Persistence of remove clause side effects::[7] Aggregating in `WITH` after removing a property from nodes affects the result set but not the side effects
-Return2 - Return single expression (correctly projecting an expression)::[10] Return count aggregation over an empty graph
 Return2 - Return single expression (correctly projecting an expression)::[12] Projecting a list of nodes and relationships
 Return2 - Return single expression (correctly projecting an expression)::[13] Projecting a map of nodes and relationships
 Return2 - Return single expression (correctly projecting an expression)::[14] Do not fail when returning type of deleted relationships
 Return2 - Return single expression (correctly projecting an expression)::[15] Fail when returning properties of deleted nodes
 Return2 - Return single expression (correctly projecting an expression)::[16] Fail when returning labels of deleted nodes
 Return2 - Return single expression (correctly projecting an expression)::[17] Fail when returning properties of deleted relationships
-Return2 - Return single expression (correctly projecting an expression)::[1] Arithmetic expressions should propagate null values
 Return2 - Return single expression (correctly projecting an expression)::[7] Adding list properties in projection
 Return2 - Return single expression (correctly projecting an expression)::[8] Returning label predicate expression
 Return2 - Return single expression (correctly projecting an expression)::[9] Returning a projected map
@@ -537,7 +517,6 @@ Temporal3 - Project Temporal Values from other Temporal Values::[9] Should selec
 Temporal4 - Store Temporal Values::[10] Should store date time array
 Temporal4 - Store Temporal Values::[11] Should store duration
 Temporal4 - Store Temporal Values::[12] Should store duration array
-Temporal4 - Store Temporal Values::[13] Should propagate null
 Temporal4 - Store Temporal Values::[1] Should store date
 Temporal4 - Store Temporal Values::[2] Should store date array
 Temporal4 - Store Temporal Values::[3] Should store local time
@@ -589,7 +568,6 @@ TriadicSelection1 - Query three related nodes on binary-tree graphs::[16] Handli
 TriadicSelection1 - Query three related nodes on binary-tree graphs::[17] Handling triadic friend of a friend that is a friend with different labels
 TriadicSelection1 - Query three related nodes on binary-tree graphs::[18] Handling triadic friend of a friend that is a friend with implicit subset of labels
 TriadicSelection1 - Query three related nodes on binary-tree graphs::[19] Handling triadic friend of a friend that is a friend with implicit superset of labels
-TriadicSelection1 - Query three related nodes on binary-tree graphs::[1] Handling triadic friend of a friend
 TriadicSelection1 - Query three related nodes on binary-tree graphs::[2] Handling triadic friend of a friend that is not a friend
 TriadicSelection1 - Query three related nodes on binary-tree graphs::[3] Handling triadic friend of a friend that is not a friend with different relationship type
 TriadicSelection1 - Query three related nodes on binary-tree graphs::[4] Handling triadic friend of a friend that is not a friend with superset of relationship type
@@ -602,17 +580,12 @@ Union1 - Union::[5] Failing when UNION has different columns
 Union2 - Union All::[5] Failing when UNION ALL has different columns
 Union3 - Union in combination with Union All::[1] Failing when mixing UNION and UNION ALL
 Union3 - Union in combination with Union All::[2] Failing when mixing UNION ALL and UNION
-Unwind1::[11] Unwind does not prune context
 Unwind1::[12] Unwind does not remove variables from scope
-Unwind1::[13] Multiple unwinds after each other
 Unwind1::[14] Unwind with merge
-Unwind1::[3] Unwinding a concatenation of lists
 Unwind1::[4] Unwinding a collected unwound expression
 Unwind1::[5] Unwinding a collected expression
 Unwind1::[6] Creating nodes from an unwound parameter list
-Unwind1::[7] Double unwinding a list of lists
 With2 - Forward single expression::[1] Forwarding a property to express a join
-With2 - Forward single expression::[2] Forwarding a nested map literal
 With4 - Variable aliasing::[2] Aliasing expression to new variable name
 # BLOCKER: ColumnNameConflict validation not implemented for WITH
 With4 - Variable aliasing::[4] Fail when forwarding multiple aliases with the same name

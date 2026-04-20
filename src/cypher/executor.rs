@@ -636,16 +636,25 @@ fn exec_project(
                             }
                         }
                         for (key, val) in &rec.fields {
-                            if !is_user_visible_field(key) {
-                                continue;
-                            }
-                            let owner = key.split_once('.').map(|(v, _)| v);
-                            if let Some(owner) = owner {
+                            if let Some((_, prop)) = key.split_once('.') {
+                                // Dotted key: skip internal fields and fields
+                                // belonging to compound-bound variables.
+                                if prop.starts_with("__") {
+                                    continue;
+                                }
+                                let owner = key.split_once('.').unwrap().0;
                                 if bound_vars.iter().any(|v| v == owner) {
                                     continue;
                                 }
+                                projected.set(key.clone(), val.clone());
+                            } else {
+                                // Bare key: emit if it's a scalar value from
+                                // WITH/UNWIND (no accompanying __id metadata).
+                                let has_id = rec.get(&format!("{key}.__id")).is_some();
+                                if !has_id {
+                                    projected.set(key.clone(), val.clone());
+                                }
                             }
-                            projected.set(key.clone(), val.clone());
                         }
                     } else {
                         // Intermediate WITH * — preserve flat shape so

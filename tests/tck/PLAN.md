@@ -1,8 +1,8 @@
 # TCK Conformance Improvement Plan
 
-## Status: Phases 1-19 complete (2026-04-20)
+## Status: Phases 1-20 complete (2026-04-20)
 
-2057 scenarios passing (77.0%), 615 skiplisted, 0 failures.
+2280 scenarios passing (85.3%), 484 skiplisted, 0 failures.
 
 ---
 
@@ -44,6 +44,18 @@ Three code fixes and a systematic skiplist sweep:
 - **Null property filtering**: `CREATE ({p: null})` no longer stores `p`. Added null check in `exec_create_sequence` and `exec_match_create` property loops.
 - **CREATE dedup**: `CREATE (a), (a)-[:R]->(b)` no longer creates duplicate nodes. `plan_create_pattern` tracks `seen` named variables across patterns, skipping `CreateNode` for already-seen aliases.
 - **Batch unskip**: Removed 45 confirmed-passing skiplist entries (Create1-6, Comparison2, List3, Literals7-8, Merge2-3-5-7, Precedence2, Return3-6, TypeConversion4, WithOrderBy3).
+
+### Phase 20: Quick wins, CASE, Union, batch unskip ✓
+
+Grammar/parser/eval fixes and systematic skiplist sweep:
+- **Simple CASE form**: `CASE expr WHEN value THEN result END` — grammar `case_operand`, parser, AST `operand` field, evaluator value comparison via `values_equal`
+- **Null slice bounds**: `[1,2,3][null..2]` → null (was treating null as unbounded)
+- **IN null-safe equality**: Use `values_equal` result for null detection (handles `[null] IN [[null]]` → null)
+- **Union column validation**: DifferentColumnsInUnion error when UNION branches have mismatched columns
+- **Union mixing**: InvalidClauseComposition when mixing UNION and UNION ALL
+- **Ambiguous aggregation**: AmbiguousAggregationExpression for mixed agg/non-agg expressions where non-agg parts aren't group keys
+- **Batch unskip**: Systematic sweep across all feature groups found 71+ already-passing scenarios
+- Result: 2057 → 2280 passing (+223), skiplist 615 → 484
 
 ### Phase 19: Error validation ✓
 
@@ -173,55 +185,35 @@ Regenerate with: `uv run tests/tck/analyze_blockers.py`
 
 | Sole | Impact | Construct |
 |-----:|-------:|-----------|
-| 111 | 214 | write-result (CREATE/MERGE ... RETURN) |
-| 29 | 46 | temporal types |
-| 8 | 41 | error validation |
+| 83 | 177 | write-result (CREATE/MERGE ... RETURN) |
+| 23 | 40 | temporal types |
 | 8 | 9 | duration.between/inX |
-| 7 | 7 | list slicing [a..b] |
-| 5 | 14 | parameter $param |
 | 5 | 5 | temporal truncation |
-| 4 | 6 | pattern comprehension |
-| 4 | 5 | IN [list] |
-| 3 | 16 | ORDER BY |
-| 3 | 12 | list functions |
-| 2 | 4 | list indexing [n] |
-| 1 | 9 | CREATE (no RETURN) |
-| 1 | 13 | aggregation (non-count) |
-| 1 | 1 | CASE/WHEN |
-| 1 | 3 | float literal |
-| 1 | 13 | IS NULL / IS NOT NULL |
+| 3 | 29 | error validation |
+| 1 | 7 | CREATE (no RETURN) |
+| 1 | 10 | aggregation (non-count) |
+| 1 | 3 | list indexing [n] |
 
 ### Recommended next phases
 
-**Phase 20: Temporal extensions (29+8+5 = 42 sole-blockers, ~60 impact)**
+**Phase 21: Temporal extensions (23+8+5 = 36 sole-blockers, ~54 impact)**
 - `duration.between()`, `duration.inMonths()`, `duration.inDays()`, `duration.inSeconds()`
 - Temporal truncation: `date.truncate()`, `datetime.truncate()`, etc.
 - Remaining map construction: week/ordinal dates, named timezones
 - Storage round-trip, rendering
 - `temporal(null)` → null propagation
 
-**Phase 21: Write-result / side-effect issues (111 sole-blockers, 214 impact)**
-Largest single category. Many are harness categorization artifacts. Real blockers:
-- ON CREATE/ON MATCH SET with labels
-- MERGE path binding
-- Snapshot isolation (read-before-write semantics)
-- Multi-clause aggregation
-- CREATE/MERGE side-effect count verification
-
-**Phase 22: List operations (~20 scenarios)**
-- List slicing `[a..b]`
-- List indexing error handling
-- List functions (range, reverse, tail)
-- Pattern comprehension
-- `IN [list]` edge cases
-
-**Phase 23: Variable-length relationships (22 impact)**
+**Phase 22: Variable-length relationships (22 impact)**
 `[*]`, `[*2..5]` — requires BFS/DFS path expansion in the planner.
 Unlocks TriadicSelection, Path, and some Match/MatchWhere scenarios.
 
-**Phase 24: Parameter support (5 sole-blockers, 23 impact)**
-`$param` in WHERE/property access/UNWIND contexts. Mostly `n[$param]`
-dynamic property access where the index comes from a parameter.
+**Phase 23: Write-result / side-effect issues (83 sole-blockers, 177 impact)**
+Largest single category. Many are harness categorization artifacts (CREATE in setup
+step, not in query under test). Real blockers in actual queries:
+- Multi-clause CREATE/MERGE with WITH and aggregation
+- Side-effect counting in harness
+- OPTIONAL MATCH + write combos
+- Complex self-loop / undirected matching
 
 ## Critical files
 - `tests/tck_support/world.rs` — harness counts

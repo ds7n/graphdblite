@@ -81,6 +81,21 @@ pub fn plan(conn: &Connection, stmt: &Statement) -> crate::types::Result<Logical
         Statement::MultiClause(mc) => plan_multi_clause(conn, mc),
         Statement::Explain(inner) => plan(conn, inner),
         Statement::Union { statements, all } => {
+            // Validate that all branches have the same column names.
+            let columns: Vec<Vec<String>> = statements
+                .iter()
+                .map(|s| statement_return_columns(s))
+                .collect();
+            if columns.len() >= 2 {
+                let first = &columns[0];
+                for cols in &columns[1..] {
+                    if cols != first {
+                        return Err(GraphError::syntax(
+                            "DifferentColumnsInUnion: all sub queries in a UNION must have the same column names".to_string(),
+                        ));
+                    }
+                }
+            }
             let inputs: crate::types::Result<Vec<LogicalOp>> =
                 statements.iter().map(|s| plan(conn, s)).collect();
             Ok(LogicalOp::Union {
@@ -1392,9 +1407,13 @@ fn check_expr_variables(expr: &Expr, scope: &HashSet<String>) -> crate::types::R
             }
         }
         Expr::Case {
+            operand,
             alternatives,
             default,
         } => {
+            if let Some(o) = operand {
+                check_expr_variables(o, scope)?;
+            }
             for (cond, result) in alternatives {
                 check_expr_variables(cond, scope)?;
                 check_expr_variables(result, scope)?;
@@ -1991,10 +2010,20 @@ fn is_aggregate_fn(expr: &Expr) -> bool {
     }
 }
 
+/// Check if an expression is a "pure" aggregate — a direct aggregate function call,
+/// not a mix like `x + count(y)`.
+fn is_pure_aggregate(expr: &Expr) -> bool {
+    match expr {
+        Expr::FunctionCall { name, .. } => parse_agg_name(name).is_some(),
+        _ => false,
+    }
+}
+
 /// Split RETURN/WITH items into group keys (non-aggregate) and aggregate expressions.
 fn split_aggregates(items: &[ReturnItem]) -> crate::types::Result<(Vec<Expr>, Vec<AggregateExpr>)> {
     let mut group_keys = Vec::new();
     let mut aggregates = Vec::new();
+    let mut mixed_items: Vec<&Expr> = Vec::new();
 
     for item in items {
         if let Expr::FunctionCall {
@@ -2029,10 +2058,55 @@ fn split_aggregates(items: &[ReturnItem]) -> crate::types::Result<(Vec<Expr>, Ve
         extract_nested_aggregates(&item.expr, &mut aggregates);
         if !is_aggregate_fn(&item.expr) {
             group_keys.push(item.expr.clone());
+        } else if !is_pure_aggregate(&item.expr) {
+            // Mixed aggregate + non-aggregate expression (e.g. `me.age + count(you.age)`).
+            // Collect non-aggregate leaf expressions.
+            mixed_items.push(&item.expr);
+        }
+    }
+
+    // Validate mixed items: non-aggregate sub-expressions must be group keys.
+    for mixed_expr in &mixed_items {
+        let mut non_agg_leaves = Vec::new();
+        collect_non_aggregate_leaves(mixed_expr, &mut non_agg_leaves);
+        for leaf in &non_agg_leaves {
+            if !group_keys.iter().any(|gk| gk == *leaf) {
+                return Err(GraphError::syntax(
+                    "AmbiguousAggregationExpression: expression mixes aggregate and non-aggregate sub-expressions".to_string(),
+                ));
+            }
         }
     }
 
     Ok((group_keys, aggregates))
+}
+
+/// Collect non-aggregate, non-constant leaf expressions from a mixed expression.
+fn collect_non_aggregate_leaves<'a>(expr: &'a Expr, leaves: &mut Vec<&'a Expr>) {
+    match expr {
+        Expr::FunctionCall { name, .. } if parse_agg_name(name).is_some() => {
+            // Aggregate function — skip entirely (its args are aggregated)
+        }
+        Expr::BinaryOp { left, right, .. } => {
+            collect_non_aggregate_leaves(left, leaves);
+            collect_non_aggregate_leaves(right, leaves);
+        }
+        Expr::Not(inner) | Expr::IsNull(inner) | Expr::IsNotNull(inner) => {
+            collect_non_aggregate_leaves(inner, leaves);
+        }
+        // Constants don't need grouping.
+        Expr::Literal(_) | Expr::Star | Expr::List(_) => {}
+        // Non-aggregate functions are fine if their args are constants/grouped.
+        Expr::FunctionCall { args, .. } => {
+            for arg in args {
+                collect_non_aggregate_leaves(arg, leaves);
+            }
+        }
+        _ => {
+            // Variable reference, property access, etc. — needs grouping.
+            leaves.push(expr);
+        }
+    }
 }
 
 /// Parse aggregate function name to enum.
@@ -2222,5 +2296,45 @@ fn try_replace_scan(
         }
 
         _ => None,
+    }
+}
+
+/// Extract the column names from a statement's RETURN clause for UNION validation.
+fn return_items_columns(items: &[ReturnItem]) -> Vec<String> {
+    use crate::cypher::eval::expr_to_column_name;
+    items
+        .iter()
+        .map(|item| {
+            item.alias
+                .clone()
+                .unwrap_or_else(|| expr_to_column_name(&item.expr))
+        })
+        .collect()
+}
+
+fn statement_return_columns(stmt: &Statement) -> Vec<String> {
+    match stmt {
+        Statement::Match(s) => return_items_columns(&s.return_clause.items),
+        Statement::Return(s) => return_items_columns(&s.return_clause.items),
+        Statement::Create(s) => s
+            .return_clause
+            .as_ref()
+            .map(|rc| return_items_columns(&rc.items))
+            .unwrap_or_default(),
+        Statement::Unwind(s) => match &s.body {
+            UnwindBody::Return { return_clause, .. } => {
+                return_items_columns(&return_clause.items)
+            }
+            UnwindBody::Create { return_clause, .. } => return_clause
+                .as_ref()
+                .map(|rc| return_items_columns(&rc.items))
+                .unwrap_or_default(),
+        },
+        Statement::MultiClause(s) => s
+            .return_clause
+            .as_ref()
+            .map(|rc| return_items_columns(&rc.items))
+            .unwrap_or_default(),
+        _ => vec![],
     }
 }

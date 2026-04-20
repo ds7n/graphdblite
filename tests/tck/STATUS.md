@@ -7,13 +7,13 @@ Last updated: 2026-04-20
 Full openCypher TCK vendored (220 feature files, commit `677cbaf`).
 
 ```
-160 features parsed (1 parse error: Match5.feature)
-2139 total scenario instances running
-2057 passed
+173 features parsed (1 parse error: Match5.feature)
+2362 total scenario instances running
+2280 passed
   82 skipped (cucumber-level)
- 615 skiplisted (known failures)
+ 484 skiplisted (known failures)
  ────
-2057/2672 unique scenarios passing (77.0%)
+2280/2764 unique scenarios passing (85.3%)
 ```
 
 ## Pass rate by area
@@ -21,46 +21,47 @@ Full openCypher TCK vendored (220 feature files, commit `677cbaf`).
 Regenerate with: `cargo test --test tck 2>&1 > /tmp/tck_output.txt && uv run tests/tck/analyze.py /tmp/tck_output.txt`
 
 All running scenarios pass at 100%. The table below shows running
-scenarios per area (1015 total running, 615 skiplisted):
+scenarios per area (1146 total running, 484 skiplisted):
 
 | Area | Running |
 |------|--------:|
-| Literals | 129 |
+| Literals | 130 |
+| List | 94 |
 | Quantifier | 88 |
-| List | 69 |
-| Match | 69 |
-| Create | 67 |
+| Match | 77 |
+| Create | 68 |
 | Merge | 46 |
+| Graph | 44 |
 | Precedence | 43 |
-| Graph | 43 |
+| Return | 40 |
 | TypeConversion | 40 |
 | Call | 39 |
 | Boolean | 36 |
-| Return | 29 |
-| String | 29 |
-| WithOrderBy | 29 |
-| Comparison | 27 |
-| ReturnSkipLimit | 24 |
-| Aggregation | 22 |
-| Set | 22 |
-| ReturnOrderBy | 21 |
+| WithOrderBy | 34 |
+| String | 32 |
+| Comparison | 31 |
+| MatchWhere | 29 |
+| ReturnOrderBy | 27 |
+| ReturnSkipLimit | 26 |
+| Set | 25 |
+| With | 24 |
+| Aggregation | 23 |
 | Remove | 20 |
-| MatchWhere | 19 |
-| With | 17 |
-| Delete | 15 |
-| Map | 10 |
-| Null | 10 |
-| Temporal | 9 |
-| Unwind | 9 |
-| Union | 8 |
-| Mathematical | 4 |
-| WithSkipLimit | 4 |
-| WithWhere | 4 |
+| Delete | 18 |
+| Map | 17 |
+| Null | 16 |
+| Temporal | 15 |
+| Union | 12 |
+| Unwind | 11 |
+| WithWhere | 11 |
+| WithSkipLimit | 6 |
+| Mathematical | 5 |
+| CountingSubgraphMatches | 5 |
 | ExistentialSubquery | 4 |
-| CountingSubgraphMatches | 4 |
-| Pattern | 3 |
+| Pattern | 4 |
+| TriadicSelection | 3 |
 | Path | 2 |
-| TriadicSelection | 1 |
+| Conditional | 1 |
 
 ## Highest-impact work items
 
@@ -70,42 +71,31 @@ Regenerate with: `uv run tests/tck/analyze_blockers.py`
 
 | Sole | Impact | Construct |
 |-----:|-------:|-----------|
-| 111 | 214 | write-result (CREATE/MERGE ... RETURN) |
-| 29 | 46 | temporal types |
-| 8 | 41 | error validation |
+| 83 | 177 | write-result (CREATE/MERGE ... RETURN) |
+| 23 | 40 | temporal types |
 | 8 | 9 | duration.between/inX |
-| 7 | 7 | list slicing [a..b] |
-| 5 | 14 | parameter $param |
 | 5 | 5 | temporal truncation |
-| 4 | 6 | pattern comprehension |
-| 4 | 5 | IN [list] |
-| 3 | 16 | ORDER BY |
-| 3 | 12 | list functions |
-| 2 | 4 | list indexing [n] |
-| 1 | 9 | CREATE (no RETURN) |
-| 1 | 13 | aggregation (non-count) |
-| 1 | 1 | CASE/WHEN |
-| 1 | 3 | float literal |
-| 1 | 13 | IS NULL / IS NOT NULL |
+| 3 | 29 | error validation |
+| 1 | 7 | CREATE (no RETURN) |
+| 1 | 10 | aggregation (non-count) |
+| 1 | 3 | list indexing [n] |
 
 ### High-impact (in scenarios with ≤2 missing constructs)
 
 | Impact | Construct |
 |-------:|-----------|
-| 214 | write-result (CREATE/MERGE ... RETURN) |
-| 46 | temporal types |
-| 41 | error validation |
-| 23 | OPTIONAL MATCH |
+| 177 | write-result (CREATE/MERGE ... RETURN) |
+| 40 | temporal types |
+| 29 | error validation |
 | 22 | var-length rel `*` |
-| 18 | DELETE/DETACH DELETE |
-| 16 | ORDER BY |
-| 14 | parameter $param |
-| 14 | SET property/label |
-| 13 | aggregation (non-count) |
-| 13 | IS NULL / IS NOT NULL |
+| 19 | OPTIONAL MATCH |
+| 15 | DELETE/DETACH DELETE |
+| 13 | SET property/label |
 | 12 | MERGE |
-| 12 | list functions |
+| 10 | aggregation (non-count) |
+| 10 | ORDER BY |
 | 9 | duration.between/inX |
+| 8 | IS NULL / IS NOT NULL |
 
 ### Zero-blocker scenarios (3)
 
@@ -114,11 +104,25 @@ Regenerate with: `uv run tests/tck/analyze_blockers.py`
 
 ## Skiplist
 
-`skiplist.txt` lists 615 known-failing `Feature::Scenario` pairs.
+`skiplist.txt` lists 484 known-failing `Feature::Scenario` pairs.
 The harness filters these out and exits non-zero only if a *non-skiplisted*
 scenario fails — making the TCK a regression gate.
 
 ## History
+
+### Phase 20 — Quick wins, CASE, Union, batch unskip (2026-04-20)
+
+- [x] Add simple CASE form (`CASE expr WHEN value THEN result END`) — grammar, parser, AST, evaluator
+- [x] Fix null bound handling in list slicing (`[1,2,3][null..2]` → null)
+- [x] Fix IN operator null-safe equality (use `values_equal` result, not just item-is-null check)
+- [x] Add Union column validation (DifferentColumnsInUnion)
+- [x] Add Union/Union All mixing detection (InvalidClauseComposition)
+- [x] Add ambiguous aggregation detection (`me.age + count(you.age)` → AmbiguousAggregationExpression)
+- [x] Unskip Null1/Null2 (6 scenarios already passing)
+- [x] Unskip Literals5[9] negative zero (already passing)
+- [x] Unskip List6[2,3,4] size (already passing)
+- [x] Batch unskip: 71 scenarios across 40 features found passing via systematic sweep
+- Result: 2057 → 2280 passing scenarios (+223), skiplist 615 → 484
 
 ### Phase 19 — Error validation (2026-04-20)
 

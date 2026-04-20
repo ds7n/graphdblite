@@ -172,6 +172,12 @@ pub fn eval_expr(expr: &Expr, record: &Record, conn: &Connection) -> crate::type
                 .transpose()?;
             match base {
                 Value::List(items) => {
+                    // Null bounds → null result
+                    if matches!(&start_val, Some(Value::Null))
+                        || matches!(&end_val, Some(Value::Null))
+                    {
+                        return Ok(Value::Null);
+                    }
                     let len = items.len() as i64;
                     let resolve = |v: i64| {
                         let r = if v < 0 { len + v } else { v };
@@ -245,12 +251,25 @@ pub fn eval_expr(expr: &Expr, record: &Record, conn: &Connection) -> crate::type
             Ok(Value::Bool(!matches!(val, Value::Null)))
         }
         Expr::Case {
+            operand,
             alternatives,
             default,
         } => {
-            for (cond, result) in alternatives {
-                if eval_predicate(cond, record, conn)? {
-                    return eval_expr(result, record, conn);
+            if let Some(op_expr) = operand {
+                // Simple CASE: CASE operand WHEN value THEN result ...
+                let op_val = eval_expr(op_expr, record, conn)?;
+                for (when_val_expr, result) in alternatives {
+                    let when_val = eval_expr(when_val_expr, record, conn)?;
+                    if values_equal(&op_val, &when_val) == Value::Bool(true) {
+                        return eval_expr(result, record, conn);
+                    }
+                }
+            } else {
+                // Searched CASE: CASE WHEN cond THEN result ...
+                for (cond, result) in alternatives {
+                    if eval_predicate(cond, record, conn)? {
+                        return eval_expr(result, record, conn);
+                    }
                 }
             }
             match default {
@@ -1162,19 +1181,15 @@ fn eval_binop(left: &Value, op: BinOp, right: &Value) -> crate::types::Result<Va
                 }
             }
             (val, Value::List(items)) => {
-                let mut found = false;
                 let mut has_null = false;
                 for item in items {
-                    if matches!(item, Value::Null) {
-                        has_null = true;
-                    } else if values_equal(val, item) == Value::Bool(true) {
-                        found = true;
-                        break;
+                    match values_equal(val, item) {
+                        Value::Bool(true) => return Ok(Value::Bool(true)),
+                        Value::Null => has_null = true,
+                        _ => {}
                     }
                 }
-                if found {
-                    Ok(Value::Bool(true))
-                } else if has_null {
+                if has_null {
                     Ok(Value::Null)
                 } else {
                     Ok(Value::Bool(false))

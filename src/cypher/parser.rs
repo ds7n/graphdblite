@@ -18,7 +18,7 @@ fn strip_backticks(s: &str) -> &str {
 }
 
 /// Process backslash escape sequences in a string literal.
-fn unescape_string(raw: &str) -> String {
+fn unescape_string(raw: &str) -> crate::types::Result<String> {
     let mut out = String::with_capacity(raw.len());
     let mut chars = raw.chars();
     while let Some(ch) = chars.next() {
@@ -41,16 +41,19 @@ fn unescape_string(raw: &str) -> String {
                             if let Some(c) = char::from_u32(cp) {
                                 out.push(c);
                             } else {
-                                out.push_str("\\u");
-                                out.push_str(&hex);
+                                return Err(GraphError::syntax(format!(
+                                    "InvalidUnicodeLiteral: invalid code point \\u{hex}"
+                                )));
                             }
                         } else {
-                            out.push_str("\\u");
-                            out.push_str(&hex);
+                            return Err(GraphError::syntax(format!(
+                                "InvalidUnicodeLiteral: \\u{hex}"
+                            )));
                         }
                     } else {
-                        out.push_str("\\u");
-                        out.push_str(&hex);
+                        return Err(GraphError::syntax(format!(
+                            "InvalidUnicodeLiteral: \\u{hex}"
+                        )));
                     }
                 }
                 Some(other) => {
@@ -63,7 +66,7 @@ fn unescape_string(raw: &str) -> String {
             out.push(ch);
         }
     }
-    out
+    Ok(out)
 }
 
 /// Parse a Cypher query string into a Statement AST.
@@ -85,6 +88,8 @@ pub fn parse(input: &str) -> crate::types::Result<Statement> {
 fn parse_union_stmt(pair: pest::iterators::Pair<Rule>) -> crate::types::Result<Statement> {
     let mut statements = Vec::new();
     let mut all = true; // UNION ALL by default; plain UNION sets to false.
+    let mut has_all = false;
+    let mut has_plain = false;
 
     for child in pair.into_inner() {
         match child.as_rule() {
@@ -93,9 +98,11 @@ fn parse_union_stmt(pair: pest::iterators::Pair<Rule>) -> crate::types::Result<S
                 statements.push(parse_single_stmt(inner)?);
             }
             Rule::union_op => {
-                // Check if "ALL" is present in the union_op text.
                 let text = child.as_str().to_uppercase();
-                if !text.contains("ALL") {
+                if text.contains("ALL") {
+                    has_all = true;
+                } else {
+                    has_plain = true;
                     all = false;
                 }
             }
@@ -106,6 +113,12 @@ fn parse_union_stmt(pair: pest::iterators::Pair<Rule>) -> crate::types::Result<S
     if statements.len() == 1 {
         Ok(statements.into_iter().next().unwrap())
     } else {
+        // Reject mixing UNION and UNION ALL.
+        if has_all && has_plain {
+            return Err(GraphError::syntax(
+                "InvalidClauseComposition: cannot mix UNION and UNION ALL".to_string(),
+            ));
+        }
         Ok(Statement::Union { statements, all })
     }
 }
@@ -1599,11 +1612,16 @@ fn parse_string_pred_op(pair: pest::iterators::Pair<Rule>) -> crate::types::Resu
 }
 
 fn parse_case_expr(pair: pest::iterators::Pair<Rule>) -> crate::types::Result<Expr> {
+    let mut operand = None;
     let mut alternatives = Vec::new();
     let mut default = None;
 
     for inner in pair.into_inner() {
         match inner.as_rule() {
+            Rule::case_operand => {
+                let expr = parse_expr(inner.into_inner().next().unwrap())?;
+                operand = Some(Box::new(expr));
+            }
             Rule::case_when_clause => {
                 let mut children = inner.into_inner();
                 let condition = parse_expr(children.next().unwrap())?;
@@ -1619,6 +1637,7 @@ fn parse_case_expr(pair: pest::iterators::Pair<Rule>) -> crate::types::Result<Ex
     }
 
     Ok(Expr::Case {
+        operand,
         alternatives,
         default,
     })
@@ -2085,7 +2104,7 @@ fn parse_literal(pair: pest::iterators::Pair<Rule>) -> crate::types::Result<Expr
         Rule::string_literal => {
             let quoted = inner.into_inner().next().unwrap();
             let raw = quoted.into_inner().next().unwrap().as_str();
-            Ok(Expr::Literal(LiteralValue::String(unescape_string(raw))))
+            Ok(Expr::Literal(LiteralValue::String(unescape_string(raw)?)))
         }
         Rule::bool_literal => {
             let b = inner.as_str().to_uppercase() == "TRUE";
@@ -2306,9 +2325,14 @@ fn resolve_expr(expr: &Expr, params: &HashMap<String, Value>) -> crate::types::R
             })
         }
         Expr::Case {
+            operand,
             alternatives,
             default,
         } => {
+            let resolved_operand = operand
+                .as_ref()
+                .map(|o| resolve_expr(o, params).map(Box::new))
+                .transpose()?;
             let mut resolved_alts = Vec::new();
             for (cond, result) in alternatives {
                 resolved_alts.push((
@@ -2321,6 +2345,7 @@ fn resolve_expr(expr: &Expr, params: &HashMap<String, Value>) -> crate::types::R
                 .map(|d| resolve_expr(d, params).map(Box::new))
                 .transpose()?;
             Ok(Expr::Case {
+                operand: resolved_operand,
                 alternatives: resolved_alts,
                 default: resolved_default,
             })

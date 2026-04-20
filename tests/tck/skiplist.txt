@@ -1,58 +1,37 @@
 Aggregation1 - Count::[2] Counting loop relationships
 Aggregation2 - Min and Max::[12] `min()` over mixed values
 Aggregation2 - Min and Max::[9] `max()` over list values
-Aggregation3 - Sum::[2] No overflow during summation
 Aggregation6 - Percentiles::[5] `percentileDisc()` failing in more involved query
-# BLOCKER: WITH collect(...) parsing not supported for standalone WITH...RETURN
-Comparison1 - Equality::[1] Number-typed integer comparison
-Comparison1 - Equality::[2] Number-typed float comparison
-Comparison1 - Equality::[3] Any-typed string comparison
-# BLOCKER: relationship variable binding across WITH...MATCH clauses
-Comparison1 - Equality::[5] Comparing relationships to relationships
-# BLOCKER: path equality with self-loop and named path patterns
-Comparison1 - Equality::[14] Direction of traversed relationship is not significant for path equality, simple
-# BLOCKER: UndefinedVariable semantic validation not implemented
-# BLOCKER: complex multi-clause query with path patterns, range(), size(), subscript
-Comparison2 - Half-bounded Range::[3] Comparing across types yields null, except numbers
 Call1 - Basic procedure calling::[13] Standalone call to unknown procedure should fail
 Call1 - Basic procedure calling::[14] In-query call to unknown procedure should fail
+Comparison1 - Equality::[14] Direction of traversed relationship is not significant for path equality, simple
+Comparison2 - Half-bounded Range::[3] Comparing across types yields null, except numbers
 Conditional1 - Coalesce expression::[1] Run coalesce
-Conditional2 - Case Expression::[1] Simple cases over integers
 CountingSubgraphMatches1 - Matching subgraph patterns and count the number of matches::[10] Mixing directed and undirected pattern parts with self-relationship, count
 CountingSubgraphMatches1 - Matching subgraph patterns and count the number of matches::[11] Mixing directed and undirected pattern parts with self-relationship, undirected count
 CountingSubgraphMatches1 - Matching subgraph patterns and count the number of matches::[1] Undirected match in self-relationship graph, count
 CountingSubgraphMatches1 - Matching subgraph patterns and count the number of matches::[2] Undirected match of self-relationship in self-relationship graph, count
 CountingSubgraphMatches1 - Matching subgraph patterns and count the number of matches::[6] Counting undirected self-relationships in self-relationship graph
-CountingSubgraphMatches1 - Matching subgraph patterns and count the number of matches::[7] Counting distinct undirected self-relationships in self-relationship graph
 CountingSubgraphMatches1 - Matching subgraph patterns and count the number of matches::[9] Counting directed self-relationships
-# BLOCKER: UndefinedVariable validation not implemented for CREATE patterns
 Create1 - Creating nodes::[20] Fail when creating a node using undefined variable in pattern
-# BLOCKER: NoSingleRelationshipType / RequiresDirectedRelationship validation in CREATE
 Create2 - Creating relationships::[18] Fail when creating a relationship without a type
 Create2 - Creating relationships::[19] Fail when creating a relationship without a direction
 Create2 - Creating relationships::[24] Fail when creating a relationship using undefined variable in pattern
-# BLOCKER: multi-clause side-effect counting with MATCH...CREATE...WITH...CREATE
 Create3 - Interoperation with other clauses::[3] MATCH-CREATE-WITH-CREATE
 Create3 - Interoperation with other clauses::[7] WITH-CREATE: Nodes are not created when aliases are applied to variable names multiple times
-# BLOCKER: large multi-CREATE with list property values
-Create4 - Large Create Query::[1] Generate the movie graph
-# BLOCKER: aggregation in RETURN/WITH after multi-clause CREATE
-Create6 - Persistence of create clause side effects::[6] Aggregating in `RETURN` after creating nodes affects the result set but not the side effects
-Create6 - Persistence of create clause side effects::[7] Aggregating in `WITH` after creating nodes affects the result set but not the side effects
 Create6 - Persistence of create clause side effects::[13] Aggregating in `RETURN` after creating relationships affects the result set but not the side effects
 Create6 - Persistence of create clause side effects::[14] Aggregating in `WITH` after creating relationships affects the result set but not the side effects
-Delete1 - Deleting nodes::[3] Detach deleting connected nodes and relationships
+Create6 - Persistence of create clause side effects::[6] Aggregating in `RETURN` after creating nodes affects the result set but not the side effects
+Create6 - Persistence of create clause side effects::[7] Aggregating in `WITH` after creating nodes affects the result set but not the side effects
 Delete1 - Deleting nodes::[4] Delete on null node
 Delete1 - Deleting nodes::[5] Ignore null when deleting node
 Delete1 - Deleting nodes::[6] Detach delete on null node
 Delete1 - Deleting nodes::[7] Failing when deleting connected nodes
-Delete2 - Deleting relationships::[1] Delete relationships
 Delete2 - Deleting relationships::[4] Ignore null when deleting relationship
 Delete3 - Deleting named paths::[1] Detach deleting paths
 Delete3 - Deleting named paths::[2] Delete on null path
 Delete4 - Delete clause interoperation with other clauses::[1] Undirected expand followed by delete and count
 Delete4 - Delete clause interoperation with other clauses::[2] Undirected variable length expand followed by delete and count
-Delete4 - Delete clause interoperation with other clauses::[3] Create and delete in same query
 Delete5 - Delete clause interoperation with built-in data types::[1] Delete node from a list
 Delete5 - Delete clause interoperation with built-in data types::[2] Delete relationship from a list
 Delete5 - Delete clause interoperation with built-in data types::[3] Delete nodes from a map
@@ -73,29 +52,10 @@ ExistentialSubquery2 - Full existential subquery::[2] Full existential subquery 
 ExistentialSubquery3 - Nested existential subquery::[1] Nested simple existential subquery
 ExistentialSubquery3 - Nested existential subquery::[2] Nested full existential subquery
 ExistentialSubquery3 - Nested existential subquery::[3] Nested full existential subquery with pattern predicate
-# BLOCKER: compile-time type checking not implemented (TypeError at runtime vs SyntaxError expected)
-Graph3 - Node labels::[8] `labels()` failing on a path
-# BLOCKER: type() accepts String values from flat record bindings; cannot distinguish '' from rel type
 Graph4 - Edge relationship type::[6] `type()` failing on invalid arguments
-# BLOCKER: compile-time type checking for type() on node variables
-# BLOCKER: label expression on relationships (r:T2 syntax not supported)
 Graph5 - Node and edge label expressions::[2] Single-labels expression on relationships
-# BLOCKER: (expr).property grammar not supported
 Graph6 - Static property access::[4] Statically access a property of a node resulting from an expression
 Graph6 - Static property access::[8] Statically access a property of a relationship resulting from an expression
-# BLOCKER: compile-time type checking for property access on non-graph elements
-# BLOCKER: compile-time type checking for properties() on invalid literal types
-# BLOCKER: flat record architecture cannot distinguish node/relationship from I64/String in list comprehensions
-TypeConversion1 - To Boolean::[5] Fail `toBoolean()` on invalid types #Example: relationship
-TypeConversion2 - To Integer::[8] Fail `toInteger()` on invalid types #Example: node
-TypeConversion2 - To Integer::[8] Fail `toInteger()` on invalid types #Example: relationship
-TypeConversion3 - To Float::[6] Fail `toFloat()` on invalid types #Example: node
-TypeConversion3 - To Float::[6] Fail `toFloat()` on invalid types #Example: relationship
-TypeConversion4 - To String::[10] Fail `toString()` on invalid types #Example: node
-TypeConversion4 - To String::[10] Fail `toString()` on invalid types #Example: relationship
-List1 - Dynamic Element Access::[3] Use list lookup based on parameters when there is no type information
-List1 - Dynamic Element Access::[4] Use list lookup based on parameters when there is lhs type information
-List1 - Dynamic Element Access::[5] Use list lookup based on parameters when there is rhs type information
 List11 - Create a list from a range::[3] Create an empty list if range direction and step direction are inconsistent
 List11 - Create a list from a range::[4] Fail on invalid arguments for `range()`
 List11 - Create a list from a range::[5] Fail on invalid argument types for `range()`
@@ -104,54 +64,21 @@ List12 - List Comprehension::[2] Collect and filter using a list comprehension
 List12 - List Comprehension::[3] Size of list comprehension
 List12 - List Comprehension::[4] Returning a list comprehension
 List12 - List Comprehension::[5] Using a list comprehension in a WITH
-List12 - List Comprehension::[6] Using a list comprehension in a WHERE
 List12 - List Comprehension::[7] Fail when using aggregation in list comprehension
-List2 - List Slicing::[10] List slice with parameterised range
-List2 - List Slicing::[11] List slice with parameterised invalid range
-List2 - List Slicing::[1] List slice
-List2 - List Slicing::[2] List slice with implicit end
-List2 - List Slicing::[3] List slice with implicit start
-List2 - List Slicing::[4] List slice with singleton range
-List2 - List Slicing::[5] List slice with empty range
-List2 - List Slicing::[6] List slice with negative range
-List2 - List Slicing::[7] List slice with invalid range
-List2 - List Slicing::[8] List slice with exceeding range
-List2 - List Slicing::[9] List slice with null range
-List5 - List Membership Validation - IN Operator::[1] IN should work with nested list subscripting
-List5 - List Membership Validation - IN Operator::[21] IN should return null if LHS and RHS are null - list version
-List5 - List Membership Validation - IN Operator::[29] IN should return null if comparison with null is required, list version
-List5 - List Membership Validation - IN Operator::[31] IN should return null when comparing two so-called identical lists where one element is null
-List5 - List Membership Validation - IN Operator::[34] IN should return null if comparison with null is required, list version 2
-List5 - List Membership Validation - IN Operator::[3] IN should work with list slices
 List6 - List size::[10] Get node degree via size of pattern comprehension that specifies multiple relationship types
-List6 - List size::[2] Setting and returning the size of a list property
-List6 - List size::[3] Concatenating and returning the size of literal lists
-List6 - List size::[4] `size()` on null list
 List6 - List size::[5] Fail for `size()` on paths
 List6 - List size::[7] Using size of pattern comprehension to test existence
 List6 - List size::[8] Get node degree via size of pattern comprehension
 List6 - List size::[9] Get node degree via size of pattern comprehension that specifies a relationship type
-List9 - List Tail::[1] Returning nested expressions based on list property
-Literals5 - Float::[9] Return a negative zero float
 Literals8 - Maps::[22] Fail on a map containing unquoted string
 Map1 - Static value access::[3] Statically access a field of a map resulting from an expression
-Map2 - Dynamic Value Access::[1] Dynamically access a field based on parameters when there is no type information
-Map2 - Dynamic Value Access::[2] Dynamically access a field based on parameters when there is rhs type information
-Map2 - Dynamic Value Access::[5] Dynamically access a field is case-sensitive
-Map2 - Dynamic Value Access::[6] Fail at runtime when attempting to index with an Int into a Map
 Map2 - Dynamic Value Access::[7] Fail at runtime when trying to index into a map with a non-string
-Map2 - Dynamic Value Access::[8] Fail at runtime when trying to index something which is not a map
-Map3 - Keys function::[3] Using `keys()` on null map
-Map3 - Keys function::[5] Using `keys()` and `IN` to check field existence
 Match2 - Match relationships::[3] Matching a self-loop with an undirected relationship pattern
-Match2 - Match relationships::[4] Matching a self-loop with a directed relationship pattern
 Match2 - Match relationships::[5] Match relationship with inline property value
 Match2 - Match relationships::[7] Matching twice with conflicting relationship types on same relationship
 Match3 - Match fixed length patterns::[10] Matching using self-referencing pattern returns no result
 Match3 - Match fixed length patterns::[11] Undirected match in self-relationship graph
 Match3 - Match fixed length patterns::[12] Undirected match of self-relationship in self-relationship graph
-Match3 - Match fixed length patterns::[13] Directed match on self-relationship graph
-Match3 - Match fixed length patterns::[14] Directed match of self-relationship on self-relationship graph
 Match3 - Match fixed length patterns::[15] Mixing directed and undirected pattern parts with self-relationship, simple
 Match3 - Match fixed length patterns::[16] Mixing directed and undirected pattern parts with self-relationship, undirected
 Match3 - Match fixed length patterns::[17] Handling cyclic patterns
@@ -161,13 +88,9 @@ Match3 - Match fixed length patterns::[20] Three bound nodes pointing to the sam
 Match3 - Match fixed length patterns::[21] Three bound nodes pointing to the same node with extra connections
 Match3 - Match fixed length patterns::[22] Returning bound nodes that are not part of the pattern
 Match3 - Match fixed length patterns::[23] Matching disconnected patterns
-Match3 - Match fixed length patterns::[28] Matching from null nodes should return no results owing to matches being filtered out
 Match3 - Match fixed length patterns::[30] Fail when using a list or nodes as a node
-Match3 - Match fixed length patterns::[6] Matching a relationship pattern using a label predicate
-Match3 - Match fixed length patterns::[7] Matching nodes with many labels
 Match3 - Match fixed length patterns::[8] Matching using relationship predicate with multiples of the same type
 Match4 - Match variable length patterns scenarios::[1] Handling fixed-length variable length pattern
-Match4 - Match variable length patterns scenarios::[2] Simple variable length pattern
 Match4 - Match variable length patterns scenarios::[3] Zero-length variable length pattern in the middle of the pattern
 Match4 - Match variable length patterns scenarios::[4] Matching longer variable length paths
 Match4 - Match variable length patterns scenarios::[5] Matching variable length pattern with property predicate
@@ -191,17 +114,11 @@ Match6 - Match named paths scenarios::[6] Handling direction of named paths
 Match6 - Match named paths scenarios::[7] Respecting direction when matching existing path
 Match6 - Match named paths scenarios::[8] Respecting direction when matching non-existent path with multiple directions
 Match6 - Match named paths scenarios::[9] Longer path query should return results in written order
-# BLOCKER: undirected relationship binding in OPTIONAL MATCH context
 Match7 - Optional match::[11] Return two subgraphs with bound undirected relationship and optional relationship
-# BLOCKER: variable-length pattern expansion in OPTIONAL MATCH
 Match7 - Optional match::[12] Variable length optional relationships
-# BLOCKER: variable-length pattern traversal returns wrong results (self-loop reuse)
 Match7 - Optional match::[14] Variable length optional relationships with length predicates
-# BLOCKER: MaterializePath does not populate edge data for named paths
 Match7 - Optional match::[17] Optionally matching named paths - existing result
-# BLOCKER: variable-length optional relationships with bound nodes
 Match7 - Optional match::[20] Variable length optional relationships with bound nodes, no matches
-# BLOCKER: self-loop matching in undirected patterns
 Match7 - Optional match::[24] Optionally matching self-loops
 Match8 - Match clause interoperation with other clauses::[2] Counting rows after MATCH, MERGE, OPTIONAL MATCH
 Match8 - Match clause interoperation with other clauses::[3] Matching and disregarding output, then matching again
@@ -210,87 +127,47 @@ Match9 - Match deprecated scenarios::[2] Return relationships by collecting them
 Match9 - Match deprecated scenarios::[3] Return relationships by collecting them as a list - undirected, starting from two extremes
 Match9 - Match deprecated scenarios::[4] Return relationships by collecting them as a list - undirected, starting from one extreme
 Match9 - Match deprecated scenarios::[5] Variable length pattern with label predicate on both sides
-Match9 - Match deprecated scenarios::[6] Matching relationships into a list and matching variable length using the list, with bound nodes
 Match9 - Match deprecated scenarios::[9] Optionally matching named paths with variable length patterns
-MatchWhere1 - Filter single variable::[11] Filter relationship with disjunctive relationship type predicate on multi variables with multiple bindings
 MatchWhere1 - Filter single variable::[12] Filter path with path length predicate on multi variables with one binding
-MatchWhere1 - Filter single variable::[1] Filter node with node label predicate on multi variables with multiple bindings
-MatchWhere1 - Filter single variable::[2] Filter node with node label predicate on multi variables without any bindings
-MatchWhere1 - Filter single variable::[4] Filter start node of relationship with property predicate on multi variables with multiple bindings
-MatchWhere1 - Filter single variable::[7] Filter relationship with relationship type predicate on multi variables with multiple bindings
 MatchWhere1 - Filter single variable::[8] Filter relationship with property predicate on multi variables with multiple bindings
 MatchWhere2 - Filter multiple variables::[1] Filter nodes with conjunctive two-part property predicate on multi variables with multiple bindings
 MatchWhere2 - Filter multiple variables::[2] Filter node with conjunctive multi-part property predicates on multi variables with multiple bindings
-MatchWhere3 - Equi-Joins on variables::[3] Join between node properties of adjacent nodes
 MatchWhere4 - Non-Equi-Joins on variables::[2] Join with disjunctive multi-part predicates including patterns
-MatchWhere5 - Filter on predicate resulting in null::[1] Filter out on null
-MatchWhere5 - Filter on predicate resulting in null::[2] Filter out on null if the AND'd predicate evaluates to false
-MatchWhere5 - Filter on predicate resulting in null::[3] Filter out on null if the AND'd predicate evaluates to true
-MatchWhere5 - Filter on predicate resulting in null::[4] Do not filter out on null if the OR'd predicate evaluates to true
-# BLOCKER: MERGE side-effect counting with multiple labels
+Mathematical13 - Square root::[1] `sqrt()` returning float values
 Merge1 - Merge node::[11] Merge should be able to merge using property of bound node
-# BLOCKER: MERGE path binding (p = pattern)
 Merge1 - Merge node::[13] Merge should bind a path
-# BLOCKER: MERGE must not match deleted nodes (snapshot isolation)
 Merge1 - Merge node::[14] Merges should not be able to match on deleted nodes
-# BLOCKER: VariableAlreadyBound validation for MERGE
 Merge1 - Merge node::[15] Fail when merge a node that is already bound
-# BLOCKER: MergeReadOwnWrites semantic error for null properties
 Merge1 - Merge node::[17] Fail on merging node with null property
-# BLOCKER: MERGE ON CREATE/ON MATCH with map property copying
 Merge1 - Merge node::[9] Merge should support updates while merging
-# BLOCKER: UndefinedVariable validation in ON CREATE
 Merge2 - Merge node - on create::[6] Fail when using undefined variable in ON CREATE
-# BLOCKER: ON MATCH SET with label assignment (grammar + AST)
 Merge3 - Merge node - on match::[1] Merge should be able to set labels on match
-# BLOCKER: UndefinedVariable validation in ON MATCH
 Merge3 - Merge node - on match::[5] Fail when using undefined variable in ON MATCH
-# BLOCKER: ON MATCH/ON CREATE SET with label assignment
 Merge4 - Merge node - on match and on create::[1] Merge should be able to set labels on match and on create
 Merge4 - Merge node - on match and on create::[2] Merge should be able to use properties of bound node in ON MATCH and ON CREATE
-# BLOCKER: MERGE path binding for relationships
 Merge5 - Merge relationships::[10] Merge should bind a path
-# BLOCKER: MERGE with undirected relationships
 Merge5 - Merge relationships::[11] Use outgoing direction when unspecified
 Merge5 - Merge relationships::[12] Match outgoing relationship when direction unspecified
 Merge5 - Merge relationships::[13] Match both incoming and outgoing relationships when direction unspecified
-# BLOCKER: MERGE must not match deleted entities
 Merge5 - Merge relationships::[20] Do not match on deleted entities
 Merge5 - Merge relationships::[21] Do not match on deleted relationships
-# BLOCKER: VariableAlreadyBound validation for MERGE relationship
 Merge5 - Merge relationships::[22] Fail when imposing new predicates on a variable that is already bound
-# BLOCKER: NoSingleRelationshipType validation for MERGE
 Merge5 - Merge relationships::[23] Fail when merging relationship without type
 Merge5 - Merge relationships::[24] Fail when merging relationship without type, no colon
-# BLOCKER: VariableAlreadyBound validation for MERGE relationship
 Merge5 - Merge relationships::[26] Fail when merging relationship that is already bound
-# BLOCKER: MergeReadOwnWrites semantic error for null properties
 Merge5 - Merge relationships::[29] Fail on merging relationship with null property
-# BLOCKER: MERGE relationship property filtering (edge_exists with props)
 Merge5 - Merge relationships::[3] Matching two relationships
 Merge5 - Merge relationships::[6] Creating relationship when all matches filtered out
-# BLOCKER: ON CREATE with property copying from bound nodes
 Merge6 - Merge relationships - on create::[6] Copying properties from node with ON CREATE
 Merge6 - Merge relationships - on create::[7] Copying properties from literal map with ON CREATE
-# BLOCKER: ON MATCH with property copying from bound nodes
 Merge7 - Merge relationships - on match::[4] Copying properties from node with ON MATCH
 Merge7 - Merge relationships - on match::[5] Copying properties from literal map with ON MATCH
-# BLOCKER: MERGE after WITH with aggregation
 Merge9 - Merge clause interoperation with other clauses::[4] MERGE after WITH with predicate and WITH with aggregation
-Mathematical13 - Square root::[1] `sqrt()` returning float values
-Mathematical2 - Addition::[1] Allow addition
-Null1 - IS NULL validation::[1] Property null check on non-null node
-Null1 - IS NULL validation::[3] Property null check on null node
-Null1 - IS NULL validation::[5] IS NULL on a map
-Null2 - IS NOT NULL validation::[1] Property not null check on non-null node
-Null2 - IS NOT NULL validation::[3] Property not null check on null node
-Null2 - IS NOT NULL validation::[5] IS NOT NULL on a map
 Path1 - Nodes of a path::[1] `nodes()` on null path
 Path2 - Relationships of a path::[1] Return relationships by fetching them from the path
 Path2 - Relationships of a path::[2] Return relationships by fetching them from the path - starting from the end
 Path2 - Relationships of a path::[3] `relationships()` on null path
 Path3 - Length of a path::[1] Return a var length path of length zero
-Pattern1 - Pattern predicate::[10] Fail on introducing unbounded variables in pattern
 Pattern1 - Pattern predicate::[10] Matching on a specific type of undirected connection with length 2
 Pattern1 - Pattern predicate::[11] Fail on checking self pattern
 Pattern1 - Pattern predicate::[12] Matching two nodes on a single directed connection between them
@@ -323,26 +200,21 @@ Pattern2 - Pattern Comprehension::[6] Aggregate on a pattern comprehension
 Pattern2 - Pattern Comprehension::[7] Use a pattern comprehension inside a list comprehension
 Pattern2 - Pattern Comprehension::[8] Use a pattern comprehension in WITH
 Pattern2 - Pattern Comprehension::[9] Use a variable-length pattern comprehension in WITH
-# BLOCKER: quantifier tests on node/relationship lists need VLP [*0..N] fixes and `nodes` keyword-as-variable
+Quantifier1 - None quantifier::[15] Fail none quantifier on type mismatch between list elements and predicate
 Quantifier1 - None quantifier::[8] None quantifier on list containing nodes
 Quantifier1 - None quantifier::[9] None quantifier on list containing relationships
+Quantifier2 - Single quantifier::[16] Fail single quantifier on type mismatch between list elements and predicate
 Quantifier2 - Single quantifier::[8] Single quantifier on list containing nodes
 Quantifier2 - Single quantifier::[9] Single quantifier on list containing relationships
+Quantifier3 - Any quantifier::[15] Fail any quantifier on type mismatch between list elements and predicate
 Quantifier3 - Any quantifier::[8] Any quantifier on list containing nodes
 Quantifier3 - Any quantifier::[9] Any quantifier on list containing relationships
+Quantifier4 - All quantifier::[15] Fail all quantifier on type mismatch between list elements and predicate
 Quantifier4 - All quantifier::[8] All quantifier on list containing nodes
 Quantifier4 - All quantifier::[9] All quantifier on list containing relationships
-# BLOCKER: compile-time type checking for quantifier predicates not implemented
-Quantifier1 - None quantifier::[15] Fail none quantifier on type mismatch between list elements and predicate
-Quantifier2 - Single quantifier::[16] Fail single quantifier on type mismatch between list elements and predicate
-Quantifier3 - Any quantifier::[15] Fail any quantifier on type mismatch between list elements and predicate
-Quantifier4 - All quantifier::[15] Fail all quantifier on type mismatch between list elements and predicate
-# BLOCKER: rand() in aggregation context should raise NonConstantExpression (no compile-time validation)
-Return6 - Implicit grouping with aggregates::[15] Using `rand()` in aggregations
 Remove1 - Remove a Property::[4] Remove multiple relationship properties
-# BLOCKER: REMOVE on null relationship from OPTIONAL MATCH
-Remove1 - Remove a Property::[6] Ignore null when removing property from a relationship
 Remove1 - Remove a Property::[5] Ignore null when removing property from a node
+Remove1 - Remove a Property::[6] Ignore null when removing property from a relationship
 Remove2 - Remove a Label::[5] Ignore null when removing a node label
 Remove3 - Persistence of remove clause side effects::[12] Filtering after removing a label from nodes affects the result set but not the side effects
 Remove3 - Persistence of remove clause side effects::[13] Aggregating in `RETURN` after removing a label from nodes affects the result set but not the side effects
@@ -355,76 +227,52 @@ Remove3 - Persistence of remove clause side effects::[6] Aggregating in `RETURN`
 Remove3 - Persistence of remove clause side effects::[7] Aggregating in `WITH` after removing a property from nodes affects the result set but not the side effects
 Return2 - Return single expression (correctly projecting an expression)::[12] Projecting a list of nodes and relationships
 Return2 - Return single expression (correctly projecting an expression)::[13] Projecting a map of nodes and relationships
-Return2 - Return single expression (correctly projecting an expression)::[14] Do not fail when returning type of deleted relationships
 Return2 - Return single expression (correctly projecting an expression)::[15] Fail when returning properties of deleted nodes
 Return2 - Return single expression (correctly projecting an expression)::[16] Fail when returning labels of deleted nodes
 Return2 - Return single expression (correctly projecting an expression)::[17] Fail when returning properties of deleted relationships
-Return2 - Return single expression (correctly projecting an expression)::[7] Adding list properties in projection
 Return2 - Return single expression (correctly projecting an expression)::[8] Returning label predicate expression
 Return2 - Return single expression (correctly projecting an expression)::[9] Returning a projected map
-Return3 - Return multiple expressions (if column order correct)::[3] Projecting nodes and relationships
 Return4 - Column renaming::[11] Reusing variable names in RETURN
 Return4 - Column renaming::[4] Keeping used expression 1
 Return4 - Column renaming::[6] Keeping used expression 3
-Return4 - Column renaming::[8] Support column renaming for aggregations
 Return4 - Column renaming::[9] Handle subexpression in aggregation also occurring as standalone expression with nested aggregation in a literal map
 Return5 - Implicit grouping with distinct::[1] DISTINCT inside aggregation should work with lists in maps
 Return5 - Implicit grouping with distinct::[3] DISTINCT inside aggregation should work with nested lists in maps
 Return5 - Implicit grouping with distinct::[4] DISTINCT inside aggregation should work with nested lists of maps in maps
 Return6 - Implicit grouping with aggregates::[10] Multiple aggregates on same variable
-Return6 - Implicit grouping with aggregates::[11] Counting matches
-Return6 - Implicit grouping with aggregates::[12] Counting matches per group
+Return6 - Implicit grouping with aggregates::[15] Using `rand()` in aggregations
 Return6 - Implicit grouping with aggregates::[16] Aggregation on complex expressions
-Return6 - Implicit grouping with aggregates::[17] Handle constants and parameters inside an expression which contains an aggregation expression
 Return6 - Implicit grouping with aggregates::[1] Return count aggregation over nodes
-Return6 - Implicit grouping with aggregates::[20] Fail if not returned variables are used inside an expression which contains an aggregation expression
-Return6 - Implicit grouping with aggregates::[21] Fail if more complex expressions, even if returned, are used inside expression which contains an aggregation expression
-Return6 - Implicit grouping with aggregates::[2] Projecting an arithmetic expression with aggregation
 Return6 - Implicit grouping with aggregates::[3] Aggregating by a list property has a correct definition of equality
 Return6 - Implicit grouping with aggregates::[4] Support multiple divisions in aggregate function
 Return6 - Implicit grouping with aggregates::[5] Aggregates inside normal functions
 Return6 - Implicit grouping with aggregates::[8] Handle aggregation on functions
-Return6 - Implicit grouping with aggregates::[9] Aggregates with arithmetics
 Return7 - Return all variables::[1] Return all variables
-ReturnOrderBy1 - Order by a single variable (correct order of values according to their type)::[10] ORDER BY DESC should order lists in the expected order
 ReturnOrderBy1 - Order by a single variable (correct order of values according to their type)::[11] ORDER BY should order distinct types in the expected order
 ReturnOrderBy1 - Order by a single variable (correct order of values according to their type)::[12] ORDER BY DESC should order distinct types in the expected order
-ReturnOrderBy1 - Order by a single variable (correct order of values according to their type)::[1] ORDER BY should order booleans in the expected order
-ReturnOrderBy2 - Order by a single expression (order of projection)::[11] Aggregates ordered by arithmetics
 ReturnOrderBy2 - Order by a single expression (order of projection)::[13] Fail when sorting on variable removed by DISTINCT
 ReturnOrderBy2 - Order by a single expression (order of projection)::[14] Fail on aggregation in ORDER BY after RETURN
 ReturnOrderBy2 - Order by a single expression (order of projection)::[1] ORDER BY should return results in ascending order
 ReturnOrderBy2 - Order by a single expression (order of projection)::[2] ORDER BY DESC should return results in descending order
-ReturnOrderBy2 - Order by a single expression (order of projection)::[3] Sort on aggregated function
-ReturnOrderBy3 - Order by multiple expressions (order obey priority of expressions)::[1] Sort on aggregate function and normal property
-ReturnOrderBy4 - Order by in combination with projection::[1] ORDER BY of a column introduced in RETURN should return salient results in ascending order
 ReturnOrderBy6 - Aggregation expressions in order by::[4] Fail if not returned variables are used inside an order by item which contains an aggregation expression
 ReturnOrderBy6 - Aggregation expressions in order by::[5] Fail if more complex expressions, even if returned, are used inside an order by item which contains an aggregation expression
 ReturnSkipLimit1 - Skip::[2] Start the result from the second row by param
 ReturnSkipLimit1 - Skip::[3] SKIP with an expression that does not depend on variables
 ReturnSkipLimit2 - Limit::[4] Handle ORDER BY with LIMIT 1
 ReturnSkipLimit2 - Limit::[6] LIMIT with an expression that does not depend on variables
-ReturnSkipLimit2 - Limit::[8] Limit to more rows than actual results 2
 ReturnSkipLimit3 - Skip and limit::[2] Get rows in the middle by param
-ReturnSkipLimit3 - Skip and limit::[3] Limiting amount of rows when there are fewer left than the LIMIT argument
 Set1 - Set a Property::[10] Failing when setting a list of maps as a property
 Set1 - Set a Property::[1] Set a property
 Set1 - Set a Property::[2] Set a property to an expression
 Set1 - Set a Property::[3] Set a property by selecting the node using a simple expression
 Set1 - Set a Property::[4] Set a property by selecting the relationship using a simple expression
-Set1 - Set a Property::[6] Concatenate elements onto a list property
-Set1 - Set a Property::[7] Concatenate elements in reverse onto a list property
-Set1 - Set a Property::[8] Ignore null when setting property
 Set1 - Set a Property::[9] Failing when using undefined variable in SET
 Set2 - Set a Property to Null::[1] Setting a node property to null removes the existing property
 Set2 - Set a Property to Null::[2] Setting a node property to null removes the existing property, but not before SET
 Set2 - Set a Property to Null::[3] Setting a relationship property to null removes the existing property
-# BLOCKER: side-effect counting uses net-delta, not gross; SET = map rewrites property counts
 Set4 - Set all properties with a map::[2] Non-existent values in a property map are removed with SET
 Set4 - Set all properties with a map::[3] Null values in a property map are removed with SET
-# BLOCKER: side-effect counting uses net-delta for +=
 Set5 - Set multiple properties with a map::[2] Overwrite values when using +=
-# BLOCKER: `sum` is a keyword and cannot be used as an alias
 Set6 - Persistence of set clause side effects::[13] Aggregating in `RETURN` after adding a label on nodes affects the result set but not the side effects
 Set6 - Persistence of set clause side effects::[14] Aggregating in `WITH` after adding a label on nodes affects the result set but not the side effects
 Set6 - Persistence of set clause side effects::[15] Limiting to zero results after setting a property on relationships affects the result set but not the side effects
@@ -441,9 +289,6 @@ Set6 - Persistence of set clause side effects::[4] Skipping zero results and lim
 Set6 - Persistence of set clause side effects::[5] Filtering after setting a property on nodes affects the result set but not the side effects
 Set6 - Persistence of set clause side effects::[6] Aggregating in `RETURN` after setting a property on nodes affects the result set but not the side effects
 Set6 - Persistence of set clause side effects::[7] Aggregating in `WITH` after setting a property on nodes affects the result set but not the side effects
-String10 - Exact Substring Search::[8] Handling non-string operands for CONTAINS
-String8 - Exact String Prefix Search::[8] Handling non-string operands for STARTS WITH
-String9 - Exact String Suffix Search::[8] Handling non-string operands for ENDS WITH
 Temporal1 - Create Temporal Values from a Map::[10] Should construct date time with named time zone
 Temporal1 - Create Temporal Values from a Map::[12] Should construct duration
 Temporal1 - Create Temporal Values from a Map::[13] Should construct temporal with time offset with second precision
@@ -506,12 +351,6 @@ Temporal6 - Render Temporal Values as a String::[4] Should serialize local date 
 Temporal6 - Render Temporal Values as a String::[5] Should serialize date time
 Temporal6 - Render Temporal Values as a String::[6] Should serialize duration
 Temporal6 - Render Temporal Values as a String::[7] Should serialize timezones correctly
-Temporal7 - Compare Temporal Values::[1] Should compare dates
-Temporal7 - Compare Temporal Values::[2] Should compare local times
-Temporal7 - Compare Temporal Values::[3] Should compare times
-Temporal7 - Compare Temporal Values::[4] Should compare local date times
-Temporal7 - Compare Temporal Values::[5] Should compare date times
-Temporal7 - Compare Temporal Values::[6] Should compare durations for equality
 Temporal8 - Compute Arithmetic Operations on Temporal Values::[1] Should add or subtract duration to or from date
 Temporal8 - Compute Arithmetic Operations on Temporal Values::[2] Should add or subtract duration to or from local time
 Temporal8 - Compute Arithmetic Operations on Temporal Values::[3] Should add or subtract duration to or from time
@@ -531,7 +370,6 @@ TriadicSelection1 - Query three related nodes on binary-tree graphs::[13] Handli
 TriadicSelection1 - Query three related nodes on binary-tree graphs::[14] Handling triadic friend of a friend that is a friend with implicit subset of relationship type
 TriadicSelection1 - Query three related nodes on binary-tree graphs::[15] Handling triadic friend of a friend that is a friend with explicit subset of relationship type
 TriadicSelection1 - Query three related nodes on binary-tree graphs::[16] Handling triadic friend of a friend that is a friend with same labels
-TriadicSelection1 - Query three related nodes on binary-tree graphs::[17] Handling triadic friend of a friend that is a friend with different labels
 TriadicSelection1 - Query three related nodes on binary-tree graphs::[18] Handling triadic friend of a friend that is a friend with implicit subset of labels
 TriadicSelection1 - Query three related nodes on binary-tree graphs::[19] Handling triadic friend of a friend that is a friend with implicit superset of labels
 TriadicSelection1 - Query three related nodes on binary-tree graphs::[2] Handling triadic friend of a friend that is not a friend
@@ -540,30 +378,22 @@ TriadicSelection1 - Query three related nodes on binary-tree graphs::[4] Handlin
 TriadicSelection1 - Query three related nodes on binary-tree graphs::[5] Handling triadic friend of a friend that is not a friend with implicit subset of relationship type
 TriadicSelection1 - Query three related nodes on binary-tree graphs::[6] Handling triadic friend of a friend that is not a friend with explicit subset of relationship type
 TriadicSelection1 - Query three related nodes on binary-tree graphs::[7] Handling triadic friend of a friend that is not a friend with same labels
-TriadicSelection1 - Query three related nodes on binary-tree graphs::[8] Handling triadic friend of a friend that is not a friend with different labels
 TriadicSelection1 - Query three related nodes on binary-tree graphs::[9] Handling triadic friend of a friend that is not a friend with implicit subset of labels
-Union1 - Union::[5] Failing when UNION has different columns
-Union2 - Union All::[5] Failing when UNION ALL has different columns
-Union3 - Union in combination with Union All::[1] Failing when mixing UNION and UNION ALL
-Union3 - Union in combination with Union All::[2] Failing when mixing UNION ALL and UNION
+TypeConversion1 - To Boolean::[5] Fail `toBoolean()` on invalid types #Example: relationship
+TypeConversion2 - To Integer::[8] Fail `toInteger()` on invalid types #Example: node
+TypeConversion2 - To Integer::[8] Fail `toInteger()` on invalid types #Example: relationship
+TypeConversion3 - To Float::[6] Fail `toFloat()` on invalid types #Example: node
+TypeConversion3 - To Float::[6] Fail `toFloat()` on invalid types #Example: relationship
+TypeConversion4 - To String::[10] Fail `toString()` on invalid types #Example: node
+TypeConversion4 - To String::[10] Fail `toString()` on invalid types #Example: relationship
 Unwind1::[12] Unwind does not remove variables from scope
-Unwind1::[14] Unwind with merge
-Unwind1::[4] Unwinding a collected unwound expression
 Unwind1::[5] Unwinding a collected expression
 Unwind1::[6] Creating nodes from an unwound parameter list
 With2 - Forward single expression::[1] Forwarding a property to express a join
-With4 - Variable aliasing::[2] Aliasing expression to new variable name
-# BLOCKER: ColumnNameConflict validation not implemented for WITH
 With4 - Variable aliasing::[6] Reusing variable names in WITH
-With4 - Variable aliasing::[7] Multiple aliasing and backreferencing
 With5 - Implicit grouping with DISTINCT::[1] DISTINCT on an expression
 With5 - Implicit grouping with DISTINCT::[2] Handling DISTINCT with lists in maps
-With6 - Implicit grouping with aggregates::[2] Implicit grouping with single relationship variable as grouping key and single aggregation
 With6 - Implicit grouping with aggregates::[4] Implicit grouping with single path variable as grouping key and single aggregation
-With6 - Implicit grouping with aggregates::[5] Handle constants and parameters inside an expression which contains an aggregation expression
-With6 - Implicit grouping with aggregates::[8] Fail if not projected variables are used inside an expression which contains an aggregation expression
-With6 - Implicit grouping with aggregates::[9] Fail if more complex expression, even if projected, are used inside expression which contains an aggregation expression
-With7 - WITH on WITH::[2] Multiple WITHs using a predicate and aggregation
 WithOrderBy1 - Order by a single variable::[21] Sort distinct types in ascending order
 WithOrderBy1 - Order by a single variable::[22] Sort distinct types in descending order
 WithOrderBy1 - Order by a single variable::[23] Sort by a boolean variable projected from a node property in ascending order
@@ -628,27 +458,19 @@ WithOrderBy3 - Order by multiple expressions::[1] Sort by two expressions, both 
 WithOrderBy3 - Order by multiple expressions::[2] Sort by two expressions, first in ascending order, second in descending order
 WithOrderBy3 - Order by multiple expressions::[3] Sort by two expressions, first in descending order, second in ascending order
 WithOrderBy3 - Order by multiple expressions::[4] Sort by two expressions, both in descending order
-WithOrderBy3 - Order by multiple expressions::[6] An constant expression does not influence the order determined by other expression before and after the constant expression
-# BLOCKER: UndefinedVariable validation not implemented for WITH...ORDER BY
-WithOrderBy3 - Order by multiple expressions::[8] Fail on sorting by any number of undefined variables in any position #Example: out of scope
-WithOrderBy3 - Order by multiple expressions::[8] Fail on sorting by any number of undefined variables in any position #Example: never defined
 WithOrderBy3 - Order by multiple expressions::[8] Fail on sorting by any number of undefined variables in any position #Example: mixed
-WithOrderBy4 - Order by in combination with projection and aliasing::[10] Sort by a non-projected expression containing an alias of a projected expression containing the variable shadowed by the alias
+WithOrderBy3 - Order by multiple expressions::[8] Fail on sorting by any number of undefined variables in any position #Example: never defined
+WithOrderBy3 - Order by multiple expressions::[8] Fail on sorting by any number of undefined variables in any position #Example: out of scope
 WithOrderBy4 - Order by in combination with projection and aliasing::[11] Sort by an aggregate projection
 WithOrderBy4 - Order by in combination with projection and aliasing::[12] Sort by an aliased aggregate projection
 WithOrderBy4 - Order by in combination with projection and aliasing::[19] Fail if not projected variables are used inside an order by item which contains an aggregation expression
 WithOrderBy4 - Order by in combination with projection and aliasing::[1] Sort by a projected expression
-WithOrderBy4 - Order by in combination with projection and aliasing::[20] Fail if more complex expressions, even if projected, are used inside an order by item which contains an aggregation expression
 WithOrderBy4 - Order by in combination with projection and aliasing::[2] Sort by an alias of a projected expression
 WithOrderBy4 - Order by in combination with projection and aliasing::[3] Sort by two projected expressions with order priority being different than projection order
 WithOrderBy4 - Order by in combination with projection and aliasing::[4] Sort by one projected expression and one alias of a projected expression with order priority being different than projection order
 WithOrderBy4 - Order by in combination with projection and aliasing::[5] Sort by one alias of a projected expression and one projected expression with order priority being different than projection order
 WithOrderBy4 - Order by in combination with projection and aliasing::[6] Sort by aliases of two projected expressions with order priority being different than projection order
-WithOrderBy4 - Order by in combination with projection and aliasing::[7] Sort by an alias of a projected expression where the alias shadows an existing variable
 WithOrderBy4 - Order by in combination with projection and aliasing::[8] Sort by non-projected existing variable
-WithOrderBy4 - Order by in combination with projection and aliasing::[9] Sort by an alias of a projected expression containing the variable shadowed by the alias
-WithSkipLimit1 - Skip::[2] Ordering and skipping on aggregate
-WithSkipLimit2 - Limit::[1] ORDER BY and LIMIT can be used
 WithSkipLimit2 - Limit::[2] Handle dependencies across WITH with LIMIT
 WithSkipLimit3 - Skip and limit::[2] Get rows in the middle by param
 WithSkipLimit3 - Skip and limit::[3] Limiting amount of rows when there are fewer left than the LIMIT argument
@@ -657,13 +479,6 @@ WithWhere1 - Filter single variable::[3] Filter for an unbound relationship vari
 WithWhere1 - Filter single variable::[4] Filter for an unbound node variable
 WithWhere2 - Filter multiple variables::[1] Filter nodes with conjunctive two-part property predicate on multi variables with multiple bindings
 WithWhere2 - Filter multiple variables::[2] Filter node with conjunctive multi-part property predicates on multi variables with multiple bindings
-WithWhere3 - Equi-Joins on variables::[3] Join between node properties of adjacent nodes
 WithWhere4 - Non-Equi-Joins on variables::[2] Join with disjunctive multi-part predicates including patterns
-WithWhere5 - Filter on predicate resulting in null::[1] Filter out on null
-WithWhere5 - Filter on predicate resulting in null::[2] Filter out on null if the AND'd predicate evaluates to false
-WithWhere5 - Filter on predicate resulting in null::[3] Filter out on null if the AND'd predicate evaluates to true
-WithWhere5 - Filter on predicate resulting in null::[4] Do not filter out on null if the OR'd predicate evaluates to true
-WithWhere6 - Filter on aggregates::[1] Filter a single aggregate
 WithWhere7 - Variable visibility under aliasing::[1] WHERE sees a variable bound before but not after WITH
-WithWhere7 - Variable visibility under aliasing::[2] WHERE sees a variable bound after but not before WITH
 WithWhere7 - Variable visibility under aliasing::[3] WHERE sees both, variable bound before but not after WITH and variable bound after but not before WITH

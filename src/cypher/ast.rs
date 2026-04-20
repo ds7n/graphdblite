@@ -378,8 +378,9 @@ pub enum Expr {
         args: Vec<Expr>,
         distinct: bool,
     },
-    /// CASE WHEN cond THEN result ... ELSE default END
+    /// CASE [operand] WHEN cond THEN result ... ELSE default END
     Case {
+        operand: Option<Box<Expr>>,
         alternatives: Vec<(Box<Expr>, Box<Expr>)>,
         default: Option<Box<Expr>>,
     },

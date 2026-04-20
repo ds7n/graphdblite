@@ -291,10 +291,12 @@ exists_subquery = { ^"EXISTS" ~ "{" ~ pattern_list ~ where_clause? ~ "}" }
 
 case_expr = {
     ^"CASE"
+    ~ case_operand?
     ~ case_when_clause+
     ~ case_else_clause?
     ~ ^"END"
 }
+case_operand = { !^"WHEN" ~ expr }
 case_when_clause = { ^"WHEN" ~ expr ~ ^"THEN" ~ expr }
 case_else_clause = { ^"ELSE" ~ expr }
 

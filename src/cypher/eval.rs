@@ -135,12 +135,12 @@ pub fn eval_expr(expr: &Expr, record: &Record, conn: &Connection) -> crate::type
                 // Indexing a non-list/non-map/non-node/non-edge with an integer.
                 (_, Value::I64(_)) => Err(GraphError::type_error(
                     crate::types::QueryPhase::Runtime,
-                    format!("InvalidArgumentType: cannot index a non-list value"),
+                    "InvalidArgumentType: cannot index a non-list value".to_string(),
                 )),
                 // Indexing a list with a non-integer.
                 (Value::List(_), _) => Err(GraphError::type_error(
                     crate::types::QueryPhase::Runtime,
-                    format!("InvalidArgumentType: list index must be an integer"),
+                    "InvalidArgumentType: list index must be an integer".to_string(),
                 )),
                 _ => Ok(Value::Null),
             }

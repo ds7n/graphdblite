@@ -82,10 +82,8 @@ pub fn plan(conn: &Connection, stmt: &Statement) -> crate::types::Result<Logical
         Statement::Explain(inner) => plan(conn, inner),
         Statement::Union { statements, all } => {
             // Validate that all branches have the same column names.
-            let columns: Vec<Vec<String>> = statements
-                .iter()
-                .map(|s| statement_return_columns(s))
-                .collect();
+            let columns: Vec<Vec<String>> =
+                statements.iter().map(statement_return_columns).collect();
             if columns.len() >= 2 {
                 let first = &columns[0];
                 for cols in &columns[1..] {
@@ -2322,9 +2320,7 @@ fn statement_return_columns(stmt: &Statement) -> Vec<String> {
             .map(|rc| return_items_columns(&rc.items))
             .unwrap_or_default(),
         Statement::Unwind(s) => match &s.body {
-            UnwindBody::Return { return_clause, .. } => {
-                return_items_columns(&return_clause.items)
-            }
+            UnwindBody::Return { return_clause, .. } => return_items_columns(&return_clause.items),
             UnwindBody::Create { return_clause, .. } => return_clause
                 .as_ref()
                 .map(|rc| return_items_columns(&rc.items))

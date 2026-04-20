@@ -935,6 +935,24 @@ fn eval_function_call(
                 _ => Ok(Value::Null),
             }
         }
+        "duration.between" | "duration.inmonths" | "duration.indays" | "duration.inseconds" => {
+            if args.len() < 2 {
+                return Ok(Value::Null);
+            }
+            let lhs = eval_expr(&args[0], record, conn)?;
+            let rhs = eval_expr(&args[1], record, conn)?;
+            if lhs == Value::Null || rhs == Value::Null {
+                return Ok(Value::Null);
+            }
+            let dur = match name {
+                "duration.between" => crate::temporal::duration_between(&lhs, &rhs),
+                "duration.inmonths" => crate::temporal::duration_in_months(&lhs, &rhs),
+                "duration.indays" => crate::temporal::duration_in_days(&lhs, &rhs),
+                "duration.inseconds" => crate::temporal::duration_in_seconds(&lhs, &rhs),
+                _ => unreachable!(),
+            };
+            Ok(Value::Duration(dur))
+        }
         // Aggregate functions are handled by the Aggregate operator.
         _ => Ok(Value::Null),
     }

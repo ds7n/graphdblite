@@ -300,18 +300,15 @@ Temporal1 - Create Temporal Values from a Map::[6] Should construct time
 Temporal1 - Create Temporal Values from a Map::[7] Should construct local date time
 Temporal1 - Create Temporal Values from a Map::[8] Should construct date time with default time zone
 Temporal1 - Create Temporal Values from a Map::[9] Should construct date time with offset time zone
-Temporal10 - Compute Durations Between two Temporal Values::[10] Should handle large durations in seconds
-Temporal10 - Compute Durations Between two Temporal Values::[11] Should handle when seconds and subseconds have different signs
-Temporal10 - Compute Durations Between two Temporal Values::[12] Should compute durations with no difference
 Temporal10 - Compute Durations Between two Temporal Values::[1] Should split between boundaries correctly
 Temporal10 - Compute Durations Between two Temporal Values::[2] Should compute duration between two temporals
 Temporal10 - Compute Durations Between two Temporal Values::[3] Should compute duration between two temporals in months
 Temporal10 - Compute Durations Between two Temporal Values::[4] Should compute duration between two temporals in days
 Temporal10 - Compute Durations Between two Temporal Values::[5] Should compute duration between two temporals in seconds
-Temporal10 - Compute Durations Between two Temporal Values::[6] Should compute duration between if they differ only by a fraction of a second and the first comes after the second.
-Temporal10 - Compute Durations Between two Temporal Values::[7] Should compute negative duration between in big units
 Temporal10 - Compute Durations Between two Temporal Values::[8] Should handle durations at daylight saving time day
 Temporal10 - Compute Durations Between two Temporal Values::[9] Should handle large durations
+Temporal10 - Compute Durations Between two Temporal Values::[10] Should handle large durations in seconds
+Temporal10 - Compute Durations Between two Temporal Values::[12] Should compute durations with no difference
 Temporal2 - Create Temporal Values from a String::[6] Should parse date time with named time zone from string
 Temporal2 - Create Temporal Values from a String::[7] Should parse duration from string
 Temporal3 - Project Temporal Values from other Temporal Values::[10] Should select date and time into date time

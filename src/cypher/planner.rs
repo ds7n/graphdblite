@@ -1869,9 +1869,7 @@ fn is_aggregate_fn(expr: &Expr) -> bool {
         ),
         // Recursively check sub-expressions (e.g. `count(a) > 0`).
         Expr::BinaryOp { left, right, .. } => is_aggregate_fn(left) || is_aggregate_fn(right),
-        Expr::Not(inner) | Expr::IsNull(inner) | Expr::IsNotNull(inner) => {
-            is_aggregate_fn(inner)
-        }
+        Expr::Not(inner) | Expr::IsNull(inner) | Expr::IsNotNull(inner) => is_aggregate_fn(inner),
         _ => false,
     }
 }

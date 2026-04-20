@@ -7,13 +7,13 @@ Last updated: 2026-04-20
 Full openCypher TCK vendored (220 feature files, commit `677cbaf`).
 
 ```
-159 features parsed (1 parse error: Match5.feature)
-2129 total scenario instances running
-2047 passed
+160 features parsed (1 parse error: Match5.feature)
+2139 total scenario instances running
+2057 passed
   82 skipped (cucumber-level)
- 621 skiplisted (known failures)
+ 615 skiplisted (known failures)
  ────
-2047/2668 unique scenarios passing (76.7%)
+2057/2672 unique scenarios passing (77.0%)
 ```
 
 ## Pass rate by area
@@ -113,7 +113,7 @@ Regenerate with: `uv run tests/tck/analyze_blockers.py`
 
 ## Skiplist
 
-`skiplist.txt` lists 621 known-failing `Feature::Scenario` pairs.
+`skiplist.txt` lists 615 known-failing `Feature::Scenario` pairs.
 The harness filters these out and exits non-zero only if a *non-skiplisted*
 scenario fails — making the TCK a regression gate.
 
@@ -132,7 +132,11 @@ scenario fails — making the TCK a regression gate.
 - [x] TypeError for list indexing with non-integer / indexing non-list
 - [x] TypeError for property access on scalar values (integer, string, boolean, etc.)
 - [x] Accept TypeError as SyntaxError in TCK harness (compile-time vs runtime detection)
-- Result: 2007 → 2047 passing scenarios (+40), skiplist 651 → 621
+- [x] Compile-time type checking: `type()` on node, `length()` on node/relationship, type conversion on node/relationship
+- [x] Undefined variable detection in WHERE clauses
+- [x] Non-aliased expressions in WITH (`WITH a, count(*)` → require `AS` alias)
+- [x] TypeError for `IN` operator with non-list right-hand side
+- Result: 2007 → 2057 passing scenarios (+50), skiplist 651 → 615
 
 ### Phase 18 — Edge-case bug fixes, string/grammar improvements (2026-04-20)
 

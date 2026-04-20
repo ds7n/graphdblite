@@ -1180,7 +1180,13 @@ fn eval_binop(left: &Value, op: BinOp, right: &Value) -> crate::types::Result<Va
                     Ok(Value::Bool(false))
                 }
             }
-            _ => Ok(Value::Null),
+            (_, rhs) => Err(GraphError::type_error(
+                crate::types::QueryPhase::Runtime,
+                format!(
+                    "InvalidArgumentType: IN requires a list on the right side, got {}",
+                    value_type_name(rhs)
+                ),
+            )),
         },
         BinOp::Add => {
             if let Some(result) = eval_temporal_add(left, right) {

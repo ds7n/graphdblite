@@ -2,7 +2,7 @@
 
 ## Status: Phases 1-19 complete (2026-04-20)
 
-2047 scenarios passing (76.7%), 621 skiplisted, 0 failures.
+2057 scenarios passing (77.0%), 615 skiplisted, 0 failures.
 
 ---
 
@@ -54,7 +54,10 @@ Runtime type checking and semantic validation for 40 scenarios:
 - TypeError for list indexing with non-integer, indexing non-list
 - TypeError for property access on scalars (integers, strings, booleans)
 - TCK harness: accept TypeError when SyntaxError expected (compile-time vs runtime)
-- Result: 2007 → 2047 passing (+40), skiplist 651 → 621
+- Compile-time type checking: type() on node, length() on node/rel, toX() on node/rel
+- Undefined variable detection in WHERE, non-aliased WITH expressions
+- TypeError for IN on non-list
+- Result: 2007 → 2057 passing (+50), skiplist 651 → 615
 
 ### Phase 18: Edge-case bug fixes, string/grammar improvements ✓
 

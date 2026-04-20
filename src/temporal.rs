@@ -1063,13 +1063,19 @@ impl fmt::Display for CypherDuration {
         let years = self.months / 12;
         let months = self.months % 12;
 
-        // Decompose seconds into hours + minutes + remaining seconds.
-        let total_secs = self.seconds;
-        let hours = total_secs / 3600;
-        let rem = total_secs % 3600;
+        // Reconstruct total nanoseconds from seconds + nanos, then decompose.
+        // The nanos field may be non-negative (floor convention) even when seconds
+        // is negative, so we reconstruct to get the true total.
+        let total_nanos = self.seconds * 1_000_000_000 + self.nanos;
+        // Truncate toward zero for h/m/s decomposition.
+        let total_secs_from_nanos = total_nanos / 1_000_000_000; // truncates toward zero
+        let sub_nanos = total_nanos % 1_000_000_000; // same sign as total_nanos
+
+        let hours = total_secs_from_nanos / 3600;
+        let rem = total_secs_from_nanos % 3600;
         let minutes = rem / 60;
         let secs = rem % 60;
-        let nanos = self.nanos;
+        let nanos = sub_nanos;
 
         let has_date_part = years != 0 || months != 0 || self.days != 0;
         let has_time_part = hours != 0 || minutes != 0 || secs != 0 || nanos != 0;
@@ -1101,14 +1107,10 @@ impl fmt::Display for CypherDuration {
                     // Format fractional seconds.
                     let frac = format!("{:09}", nanos.unsigned_abs());
                     let trimmed = frac.trim_end_matches('0');
-                    if nanos < 0 || secs < 0 {
-                        // Combine sign: if seconds is negative or nanos is negative.
+                    let neg = secs < 0 || (secs == 0 && nanos < 0);
+                    if neg {
                         let abs_secs = secs.unsigned_abs();
-                        if secs < 0 {
-                            write!(f, "-{abs_secs}.{trimmed}S")?;
-                        } else {
-                            write!(f, "{secs}.{trimmed}S")?;
-                        }
+                        write!(f, "-{abs_secs}.{trimmed}S")?;
                     } else {
                         write!(f, "{secs}.{trimmed}S")?;
                     }
@@ -1353,6 +1355,342 @@ fn parse_duration_time_part(s: &str, seconds: &mut i64, nanos: &mut i64) -> Resu
         }
     }
     Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// duration.between / inMonths / inDays / inSeconds helpers
+// ---------------------------------------------------------------------------
+
+/// Extract a `NaiveDate` from any temporal value that has a date component.
+pub fn extract_date(val: &Value) -> Option<NaiveDate> {
+    match val {
+        Value::Date(d) => Some(d.0),
+        Value::LocalDateTime(dt) => Some(dt.0.date()),
+        Value::DateTime(dt) => Some(dt.0.date()),
+        _ => None,
+    }
+}
+
+/// Extract a `NaiveTime` from any temporal value that has a time component.
+/// For date-only values, returns midnight.
+pub fn extract_time(val: &Value) -> Option<NaiveTime> {
+    match val {
+        Value::Date(_) => Some(NaiveTime::from_hms_opt(0, 0, 0).unwrap()),
+        Value::LocalTime(t) => Some(t.0),
+        Value::Time(t) => Some(t.0),
+        Value::LocalDateTime(dt) => Some(dt.0.time()),
+        Value::DateTime(dt) => Some(dt.0.time()),
+        _ => None,
+    }
+}
+
+/// Extract UTC offset seconds from a temporal value. Returns 0 for local types.
+pub fn extract_offset_secs(val: &Value) -> i32 {
+    match val {
+        Value::Time(t) => t.1.local_minus_utc(),
+        Value::DateTime(dt) => dt.1.local_minus_utc(),
+        _ => 0,
+    }
+}
+
+/// Whether a value is a time-only type (LocalTime or Time).
+fn is_time_only(val: &Value) -> bool {
+    matches!(val, Value::LocalTime(_) | Value::Time(_))
+}
+
+/// Whether a value has a date component.
+fn has_date(val: &Value) -> bool {
+    matches!(
+        val,
+        Value::Date(_) | Value::LocalDateTime(_) | Value::DateTime(_)
+    )
+}
+
+/// Whether a value is offset-aware (Time with offset or DateTime with offset).
+fn is_offset_aware(val: &Value) -> bool {
+    matches!(val, Value::Time(_) | Value::DateTime(_))
+}
+
+/// Compute the effective offset to apply for a value, considering whether
+/// the other side is also offset-aware. Offsets are only applied when BOTH
+/// sides are offset-aware; otherwise local times are compared directly.
+fn effective_offset(val: &Value, other: &Value) -> i64 {
+    if is_offset_aware(val) && is_offset_aware(other) {
+        extract_offset_secs(val) as i64
+    } else {
+        0
+    }
+}
+
+/// Number of days in a given month of a given year.
+fn days_in_month(year: i32, month: u32) -> u32 {
+    // Use the 1st of the next month minus 1 day trick.
+    if month == 12 {
+        NaiveDate::from_ymd_opt(year + 1, 1, 1)
+    } else {
+        NaiveDate::from_ymd_opt(year, month + 1, 1)
+    }
+    .unwrap()
+    .signed_duration_since(NaiveDate::from_ymd_opt(year, month, 1).unwrap())
+    .num_days() as u32
+}
+
+/// Add `months` months to a `NaiveDate`, clamping the day to the target month's max.
+fn add_months_to_date(d: NaiveDate, months: i64) -> NaiveDate {
+    let total_months = d.year() as i64 * 12 + (d.month() as i64 - 1) + months;
+    let y = total_months.div_euclid(12) as i32;
+    let m = (total_months.rem_euclid(12) + 1) as u32;
+    let max_day = days_in_month(y, m);
+    let day = (d.day()).min(max_day);
+    NaiveDate::from_ymd_opt(y, m, day).unwrap()
+}
+
+/// Convert a `NaiveTime` to total nanoseconds since midnight.
+fn time_to_nanos(t: NaiveTime) -> i64 {
+    t.num_seconds_from_midnight() as i64 * 1_000_000_000 + t.nanosecond() as i64
+}
+
+/// Compute the calendar-month difference between two dates, adjusting if the
+/// day-of-month means we haven't reached a full month boundary yet.
+fn month_diff(d1: NaiveDate, d2: NaiveDate) -> i64 {
+    let mut months =
+        (d2.year() as i64 - d1.year() as i64) * 12 + d2.month() as i64 - d1.month() as i64;
+
+    // Check if we overshot: adding `months` months to d1 should not go past d2.
+    let adjusted = add_months_to_date(d1, months);
+    if months > 0 && adjusted > d2 {
+        months -= 1;
+    } else if months < 0 && adjusted < d2 {
+        months += 1;
+    }
+    months
+}
+
+/// Compute `duration.between(lhs, rhs)`.
+///
+/// Returns a `CypherDuration` with months (calendar) + remainder as seconds/nanos.
+pub fn duration_between(lhs: &Value, rhs: &Value) -> CypherDuration {
+    let d1 = extract_date(lhs);
+    let d2 = extract_date(rhs);
+    let t1 = extract_time(lhs);
+    let t2 = extract_time(rhs);
+
+    // When one side is time-only and the other has a date → time-only comparison.
+    let both_have_dates = d1.is_some() && d2.is_some() && has_date(lhs) && has_date(rhs);
+    let either_time_only = is_time_only(lhs) || is_time_only(rhs);
+
+    if either_time_only && !both_have_dates {
+        // Pure time comparison — take the time from whichever has it.
+        let lhs_nanos =
+            t1.map(|t| time_to_nanos(t)).unwrap_or(0) - effective_offset(lhs, rhs) * 1_000_000_000;
+        let rhs_nanos =
+            t2.map(|t| time_to_nanos(t)).unwrap_or(0) - effective_offset(rhs, lhs) * 1_000_000_000;
+        let diff_nanos = rhs_nanos - lhs_nanos;
+        let total_secs = diff_nanos.div_euclid(1_000_000_000);
+        let rem_nanos = diff_nanos.rem_euclid(1_000_000_000);
+        // Normalize: if total_secs > 0 but we need negative, keep consistent sign.
+        // Actually div_euclid/rem_euclid always gives non-negative remainder, which
+        // works for positive diffs. For negative diffs, total_secs is negative and
+        // rem_nanos is non-negative. If rem_nanos > 0 with negative seconds, we need
+        // to present it properly. But CypherDuration stores them separately and the
+        // Display handles sign combining.
+        return CypherDuration {
+            months: 0,
+            days: 0,
+            seconds: total_secs,
+            nanos: rem_nanos,
+        };
+    }
+
+    if let (Some(date1), Some(date2)) = (d1, d2) {
+        // Both have dates — compute calendar months first.
+        let months = month_diff(date1, date2);
+
+        // Advance d1 by those months to get the remainder as days+time.
+        let d1_advanced = add_months_to_date(date1, months);
+
+        // Remainder days after month advancement.
+        let mut day_diff = date2.signed_duration_since(d1_advanced).num_days();
+
+        // Time-of-day difference (in nanos), adjusted for UTC offsets only when
+        // both sides are offset-aware.
+        let t1_nanos =
+            t1.map(|t| time_to_nanos(t)).unwrap_or(0) - effective_offset(lhs, rhs) * 1_000_000_000;
+        let t2_nanos =
+            t2.map(|t| time_to_nanos(t)).unwrap_or(0) - effective_offset(rhs, lhs) * 1_000_000_000;
+        let mut time_diff_nanos = t2_nanos - t1_nanos;
+
+        // Normalize: if day_diff and time_diff have opposite signs, borrow a day.
+        let nanos_per_day: i64 = 86_400_000_000_000;
+        if day_diff > 0 && time_diff_nanos < 0 {
+            day_diff -= 1;
+            time_diff_nanos += nanos_per_day;
+        } else if day_diff < 0 && time_diff_nanos > 0 {
+            day_diff += 1;
+            time_diff_nanos -= nanos_per_day;
+        }
+
+        let secs = time_diff_nanos.div_euclid(1_000_000_000);
+        let ns = time_diff_nanos.rem_euclid(1_000_000_000);
+
+        CypherDuration {
+            months,
+            days: day_diff,
+            seconds: secs,
+            nanos: ns,
+        }
+    } else {
+        // Fallback: no dates on either side, this shouldn't normally happen
+        // but handle gracefully.
+        CypherDuration {
+            months: 0,
+            days: 0,
+            seconds: 0,
+            nanos: 0,
+        }
+    }
+}
+
+/// Compute `duration.inMonths(lhs, rhs)` — only the months component.
+pub fn duration_in_months(lhs: &Value, rhs: &Value) -> CypherDuration {
+    let d1 = extract_date(lhs);
+    let d2 = extract_date(rhs);
+
+    if is_time_only(lhs) || is_time_only(rhs) || d1.is_none() || d2.is_none() {
+        return CypherDuration {
+            months: 0,
+            days: 0,
+            seconds: 0,
+            nanos: 0,
+        };
+    }
+
+    let date1 = d1.unwrap();
+    let date2 = d2.unwrap();
+
+    // For inMonths with datetime args, we need to check if the time pushes us
+    // past a month boundary. Compare times at the month-boundary date.
+    let mut months = month_diff(date1, date2);
+
+    // If dates+times cross: e.g. datetime('2014-07-21T21:40:36.143+0200') to
+    // datetime('2015-07-21T21:40:32.142+0100'): the date diff is exactly 12 months,
+    // but the time on RHS is earlier → still 12 months (P1Y) because month_diff
+    // already handles day clamping. But we also need time comparison:
+    // if same day-of-month after advancing, check time.
+    let d1_advanced = add_months_to_date(date1, months);
+    if d1_advanced == date2 {
+        // Same date after advancing — check time.
+        let t1_nanos = extract_time(lhs).map(|t| time_to_nanos(t)).unwrap_or(0)
+            - effective_offset(lhs, rhs) * 1_000_000_000;
+        let t2_nanos = extract_time(rhs).map(|t| time_to_nanos(t)).unwrap_or(0)
+            - effective_offset(rhs, lhs) * 1_000_000_000;
+        if months > 0 && t2_nanos < t1_nanos {
+            months -= 1;
+        } else if months < 0 && t2_nanos > t1_nanos {
+            months += 1;
+        }
+    }
+
+    CypherDuration {
+        months,
+        days: 0,
+        seconds: 0,
+        nanos: 0,
+    }
+}
+
+/// Compute `duration.inDays(lhs, rhs)` — total elapsed days + time remainder.
+pub fn duration_in_days(lhs: &Value, rhs: &Value) -> CypherDuration {
+    let d1 = extract_date(lhs);
+    let d2 = extract_date(rhs);
+
+    // If either side is time-only without a date on the other side with a date,
+    // and the other side has no date, or if either side is time-only → no days.
+    if is_time_only(lhs) || is_time_only(rhs) {
+        // When one side is time-only, inDays returns PT0S (no days to count).
+        return CypherDuration {
+            months: 0,
+            days: 0,
+            seconds: 0,
+            nanos: 0,
+        };
+    }
+
+    if let (Some(date1), Some(date2)) = (d1, d2) {
+        // Compute total elapsed nanoseconds including time components.
+        let day_nanos = date2.signed_duration_since(date1).num_days() * 86_400_000_000_000i64;
+        let t1_nanos = extract_time(lhs).map(|t| time_to_nanos(t)).unwrap_or(0)
+            - effective_offset(lhs, rhs) * 1_000_000_000;
+        let t2_nanos = extract_time(rhs).map(|t| time_to_nanos(t)).unwrap_or(0)
+            - effective_offset(rhs, lhs) * 1_000_000_000;
+        let total_nanos = day_nanos + (t2_nanos - t1_nanos);
+
+        // Truncate toward zero to get whole days.
+        let nanos_per_day: i64 = 86_400_000_000_000;
+        let days = total_nanos / nanos_per_day; // truncates toward zero
+
+        CypherDuration {
+            months: 0,
+            days,
+            seconds: 0,
+            nanos: 0,
+        }
+    } else {
+        CypherDuration {
+            months: 0,
+            days: 0,
+            seconds: 0,
+            nanos: 0,
+        }
+    }
+}
+
+/// Compute `duration.inSeconds(lhs, rhs)` — everything flattened to seconds+nanos.
+pub fn duration_in_seconds(lhs: &Value, rhs: &Value) -> CypherDuration {
+    let d1 = extract_date(lhs);
+    let d2 = extract_date(rhs);
+
+    // If either is time-only and the other has a date (but not time-only), do time-only diff.
+    let either_time_only = is_time_only(lhs) || is_time_only(rhs);
+
+    let t1_nanos = extract_time(lhs).map(|t| time_to_nanos(t)).unwrap_or(0)
+        - effective_offset(lhs, rhs) * 1_000_000_000;
+    let t2_nanos = extract_time(rhs).map(|t| time_to_nanos(t)).unwrap_or(0)
+        - effective_offset(rhs, lhs) * 1_000_000_000;
+
+    let time_diff = t2_nanos - t1_nanos;
+
+    if either_time_only && !(has_date(lhs) && has_date(rhs)) {
+        // Time-only comparison.
+        let secs = time_diff.div_euclid(1_000_000_000);
+        let ns = time_diff.rem_euclid(1_000_000_000);
+        return CypherDuration {
+            months: 0,
+            days: 0,
+            seconds: secs,
+            nanos: ns,
+        };
+    }
+
+    if let (Some(date1), Some(date2)) = (d1, d2) {
+        let total_day_secs = date2.signed_duration_since(date1).num_days() * 86400;
+        let total_nanos = total_day_secs * 1_000_000_000 + time_diff;
+        let secs = total_nanos.div_euclid(1_000_000_000);
+        let ns = total_nanos.rem_euclid(1_000_000_000);
+        CypherDuration {
+            months: 0,
+            days: 0,
+            seconds: secs,
+            nanos: ns,
+        }
+    } else {
+        CypherDuration {
+            months: 0,
+            days: 0,
+            seconds: 0,
+            nanos: 0,
+        }
+    }
 }
 
 #[cfg(test)]

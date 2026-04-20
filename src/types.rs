@@ -505,6 +505,14 @@ impl GraphError {
         })
     }
 
+    /// Convenience constructor for type errors.
+    pub fn type_error(phase: QueryPhase, message: impl Into<String>) -> Self {
+        GraphError::Query(QueryError::TypeError {
+            phase,
+            message: message.into(),
+        })
+    }
+
     /// Convenience constructor for argument errors (e.g. missing parameters).
     pub fn argument(phase: QueryPhase, message: impl Into<String>) -> Self {
         GraphError::Query(QueryError::ArgumentError {

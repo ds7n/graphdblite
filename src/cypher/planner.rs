@@ -120,6 +120,15 @@ fn plan_match(conn: &Connection, stmt: &MatchStatement) -> crate::types::Result<
         bound_vars.extend(new_aliases);
     }
 
+    // Reject aggregation functions in WHERE clause.
+    if let Some(ref predicate) = stmt.where_clause {
+        if is_aggregate_fn(predicate) {
+            return Err(GraphError::syntax(
+                "InvalidAggregation: aggregation functions are not allowed in WHERE".to_string(),
+            ));
+        }
+    }
+
     // Apply WHERE filter with predicate pushdown.
     if let Some(ref predicate) = stmt.where_clause {
         let conjuncts = decompose_conjuncts(predicate);
@@ -244,6 +253,8 @@ fn plan_match(conn: &Connection, stmt: &MatchStatement) -> crate::types::Result<
 /// Plan a standalone `RETURN` statement (no preceding MATCH).
 fn plan_return(stmt: &ReturnStatement) -> crate::types::Result<LogicalOp> {
     let mut op: LogicalOp = LogicalOp::SingleRow;
+
+    check_duplicate_columns(&stmt.return_clause.items)?;
 
     let has_aggregates = stmt
         .return_clause
@@ -991,6 +1002,8 @@ fn plan_multi_clause(
 fn plan_with(input: LogicalOp, with: &WithClause) -> crate::types::Result<LogicalOp> {
     let mut op = input;
 
+    check_duplicate_columns(&with.items)?;
+
     // Check if WITH items contain aggregates.
     let has_aggregates = with.items.iter().any(|item| is_aggregate_fn(&item.expr));
 
@@ -1248,9 +1261,35 @@ fn validate_return_variables(
 ) -> crate::types::Result<()> {
     for item in items {
         if matches!(item.expr, Expr::Star) {
+            // RETURN * with no variables in scope.
+            if scope_vars.is_empty() {
+                return Err(GraphError::syntax(
+                    "RETURN * is not allowed when there are no variables in scope".to_string(),
+                ));
+            }
             continue;
         }
         check_expr_variables(&item.expr, scope_vars)?;
+    }
+    Ok(())
+}
+
+/// Check for duplicate column names in RETURN/WITH items.
+fn check_duplicate_columns(items: &[ReturnItem]) -> crate::types::Result<()> {
+    let mut seen: HashSet<String> = HashSet::new();
+    for item in items {
+        if matches!(item.expr, Expr::Star) {
+            continue;
+        }
+        let col = item
+            .alias
+            .clone()
+            .unwrap_or_else(|| crate::cypher::eval::expr_to_column_name(&item.expr));
+        if !seen.insert(col.clone()) {
+            return Err(GraphError::syntax(format!(
+                "Multiple result columns with the same name are not supported: '{col}'"
+            )));
+        }
     }
     Ok(())
 }
@@ -1430,6 +1469,11 @@ fn validate_variable_types_with_map(
                                     },
                                 ));
                             }
+                            // Relationship variables cannot be reused in the
+                            // same MATCH clause (unlike node variables).
+                            return Err(GraphError::syntax(format!(
+                                "VariableAlreadyBound: cannot use relationship variable '{var}' more than once in a pattern"
+                            )));
                         } else {
                             types.insert(var.clone(), VarKind::Relationship);
                         }
@@ -1887,6 +1931,14 @@ fn split_aggregates(items: &[ReturnItem]) -> crate::types::Result<(Vec<Expr>, Ve
         } = &item.expr
         {
             if let Some(function) = parse_agg_name(name) {
+                // Reject aggregate-in-aggregate: count(count(*))
+                for arg in args {
+                    if is_aggregate_fn(arg) {
+                        return Err(GraphError::syntax(
+                            "Can not use an aggregation in an aggregation".to_string(),
+                        ));
+                    }
+                }
                 let input = args.first().cloned().unwrap_or(Expr::Star);
                 let extra_arg = args.get(1).cloned();
                 aggregates.push(AggregateExpr {

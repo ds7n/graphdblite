@@ -1,8 +1,8 @@
 # TCK Conformance Improvement Plan
 
-## Status: Phases 1-18 complete (2026-04-20)
+## Status: Phases 1-19 complete (2026-04-20)
 
-2007 scenarios passing (75.5%), 651 skiplisted, 0 failures.
+2047 scenarios passing (76.7%), 621 skiplisted, 0 failures.
 
 ---
 
@@ -44,6 +44,17 @@ Three code fixes and a systematic skiplist sweep:
 - **Null property filtering**: `CREATE ({p: null})` no longer stores `p`. Added null check in `exec_create_sequence` and `exec_match_create` property loops.
 - **CREATE dedup**: `CREATE (a), (a)-[:R]->(b)` no longer creates duplicate nodes. `plan_create_pattern` tracks `seen` named variables across patterns, skipping `CreateNode` for already-seen aliases.
 - **Batch unskip**: Removed 45 confirmed-passing skiplist entries (Create1-6, Comparison2, List3, Literals7-8, Merge2-3-5-7, Precedence2, Return3-6, TypeConversion4, WithOrderBy3).
+
+### Phase 19: Error validation ✓
+
+Runtime type checking and semantic validation for 40 scenarios:
+- Duplicate column names in RETURN/WITH, RETURN * with empty scope
+- Aggregate in WHERE, aggregate-in-aggregate, duplicate relationship variables
+- Invalid unicode literal error, TypeError for properties()/length() on wrong types
+- TypeError for list indexing with non-integer, indexing non-list
+- TypeError for property access on scalars (integers, strings, booleans)
+- TCK harness: accept TypeError when SyntaxError expected (compile-time vs runtime)
+- Result: 2007 → 2047 passing (+40), skiplist 651 → 621
 
 ### Phase 18: Edge-case bug fixes, string/grammar improvements ✓
 

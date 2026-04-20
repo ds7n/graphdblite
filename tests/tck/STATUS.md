@@ -7,13 +7,13 @@ Last updated: 2026-04-20
 Full openCypher TCK vendored (220 feature files, commit `677cbaf`).
 
 ```
-158 features parsed (1 parse error: Match5.feature)
-2089 total scenario instances running
-2007 passed
+159 features parsed (1 parse error: Match5.feature)
+2129 total scenario instances running
+2047 passed
   82 skipped (cucumber-level)
- 651 skiplisted (known failures)
+ 621 skiplisted (known failures)
  ────
-2007/2658 unique scenarios passing (75.5%)
+2047/2668 unique scenarios passing (76.7%)
 ```
 
 ## Pass rate by area
@@ -113,11 +113,26 @@ Regenerate with: `uv run tests/tck/analyze_blockers.py`
 
 ## Skiplist
 
-`skiplist.txt` lists 651 known-failing `Feature::Scenario` pairs.
+`skiplist.txt` lists 621 known-failing `Feature::Scenario` pairs.
 The harness filters these out and exits non-zero only if a *non-skiplisted*
 scenario fails — making the TCK a regression gate.
 
 ## History
+
+### Phase 19 — Error validation (2026-04-20)
+
+- [x] Duplicate column name detection in RETURN/WITH (`RETURN 1 AS a, 2 AS a`)
+- [x] `RETURN *` with no variables in scope
+- [x] Aggregate in WHERE clause rejection
+- [x] Aggregate-in-aggregate rejection (`count(count(*))`)
+- [x] Duplicate relationship variable in MATCH pattern (`-[r]->()-[r]->`)
+- [x] Invalid unicode escape error (`\uH` → SyntaxError)
+- [x] TypeError for `properties()` on non-entity (integer, string, list)
+- [x] TypeError for `length()` on non-path/non-string/non-list
+- [x] TypeError for list indexing with non-integer / indexing non-list
+- [x] TypeError for property access on scalar values (integer, string, boolean, etc.)
+- [x] Accept TypeError as SyntaxError in TCK harness (compile-time vs runtime detection)
+- Result: 2007 → 2047 passing scenarios (+40), skiplist 651 → 621
 
 ### Phase 18 — Edge-case bug fixes, string/grammar improvements (2026-04-20)
 

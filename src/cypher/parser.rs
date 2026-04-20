@@ -12,7 +12,9 @@ struct CypherParser;
 
 /// Strip backticks from a delimited identifier.
 fn strip_backticks(s: &str) -> &str {
-    s.strip_prefix('`').and_then(|s| s.strip_suffix('`')).unwrap_or(s)
+    s.strip_prefix('`')
+        .and_then(|s| s.strip_suffix('`'))
+        .unwrap_or(s)
 }
 
 /// Process backslash escape sequences in a string literal.
@@ -1808,7 +1810,8 @@ fn parse_atom_expr(pair: pest::iterators::Pair<Rule>) -> crate::types::Result<Ex
                 if sub.as_rule() == Rule::subscript {
                     expr = parse_subscript(expr, sub)?;
                 } else if sub.as_rule() == Rule::dot_access {
-                    let prop = strip_backticks(sub.into_inner().next().unwrap().as_str()).to_string();
+                    let prop =
+                        strip_backticks(sub.into_inner().next().unwrap().as_str()).to_string();
                     // Chained dot access: wrap as DotAccess for correct column
                     // naming (m.a.b → "m.a.b" not "m.a['b']").
                     expr = Expr::DotAccess {
@@ -2081,11 +2084,7 @@ fn parse_literal(pair: pest::iterators::Pair<Rule>) -> crate::types::Result<Expr
         }
         Rule::string_literal => {
             let quoted = inner.into_inner().next().unwrap();
-            let raw = quoted
-                .into_inner()
-                .next()
-                .unwrap()
-                .as_str();
+            let raw = quoted.into_inner().next().unwrap().as_str();
             Ok(Expr::Literal(LiteralValue::String(unescape_string(raw))))
         }
         Rule::bool_literal => {

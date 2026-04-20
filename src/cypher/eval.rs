@@ -841,7 +841,9 @@ fn eval_function_call(
                 |m| crate::temporal::CypherTime::from_map(m).map(Value::Time),
             )
         }
-        "localdatetime" | "localdatetime.transaction" | "localdatetime.statement"
+        "localdatetime"
+        | "localdatetime.transaction"
+        | "localdatetime.statement"
         | "localdatetime.realtime" => eval_temporal_constructor(
             args,
             record,

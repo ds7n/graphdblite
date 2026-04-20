@@ -444,6 +444,12 @@ fn eval_function_call(
                 Value::I64(n) => Ok(Value::String(n.to_string())),
                 Value::F64(f) => Ok(Value::String(format_float(f))),
                 Value::Bool(b) => Ok(Value::String(b.to_string())),
+                Value::Date(d) => Ok(Value::String(d.to_string())),
+                Value::LocalTime(t) => Ok(Value::String(t.to_string())),
+                Value::Time(t) => Ok(Value::String(t.to_string())),
+                Value::LocalDateTime(dt) => Ok(Value::String(dt.to_string())),
+                Value::DateTime(dt) => Ok(Value::String(dt.to_string())),
+                Value::Duration(d) => Ok(Value::String(d.to_string())),
                 other => Err(invalid_argument_type("toString()", &other)),
             }
         }

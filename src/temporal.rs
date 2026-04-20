@@ -8,7 +8,7 @@ use std::collections::BTreeMap;
 use std::fmt;
 use std::hash::{Hash, Hasher};
 
-use chrono::{Datelike, FixedOffset, NaiveDate, NaiveDateTime, NaiveTime, Timelike};
+use chrono::{Datelike, FixedOffset, NaiveDate, NaiveDateTime, NaiveTime, Offset, TimeZone, Timelike};
 use serde::de::{self, MapAccess, Visitor};
 use serde::ser::SerializeStruct;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
@@ -65,6 +65,20 @@ fn parse_offset(s: &str) -> Result<FixedOffset> {
             .parse::<i32>()
             .map_err(|e| GraphError::Serialization(e.to_string()))?;
         (hh, mm)
+    } else if body.len() == 8 && body.as_bytes()[2] == b':' && body.as_bytes()[5] == b':' {
+        // +HH:MM:SS — historical offsets with seconds precision
+        let hh = body[..2]
+            .parse::<i32>()
+            .map_err(|e| GraphError::Serialization(e.to_string()))?;
+        let mm = body[3..5]
+            .parse::<i32>()
+            .map_err(|e| GraphError::Serialization(e.to_string()))?;
+        let ss = body[6..8]
+            .parse::<i32>()
+            .map_err(|e| GraphError::Serialization(e.to_string()))?;
+        let total = sign * (hh * 3600 + mm * 60 + ss);
+        return FixedOffset::east_opt(total)
+            .ok_or_else(|| GraphError::Serialization(format!("offset out of range: {s}")));
     } else {
         return Err(GraphError::Serialization(format!("invalid offset: {s}")));
     };
@@ -351,7 +365,12 @@ pub fn fmt_offset_public(off: &FixedOffset) -> String {
         let abs = secs.unsigned_abs();
         let h = abs / 3600;
         let m = (abs % 3600) / 60;
-        format!("{sign}{h:02}:{m:02}")
+        let s = abs % 60;
+        if s != 0 {
+            format!("{sign}{h:02}:{m:02}:{s:02}")
+        } else {
+            format!("{sign}{h:02}:{m:02}")
+        }
     }
 }
 
@@ -364,7 +383,12 @@ fn fmt_offset(off: &FixedOffset, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let abs = secs.unsigned_abs();
         let h = abs / 3600;
         let m = (abs % 3600) / 60;
-        write!(f, "{sign}{h:02}:{m:02}")
+        let s = abs % 60;
+        if s != 0 {
+            write!(f, "{sign}{h:02}:{m:02}:{s:02}")
+        } else {
+            write!(f, "{sign}{h:02}:{m:02}")
+        }
     }
 }
 
@@ -413,13 +437,50 @@ fn date_from_map(map: &BTreeMap<String, Value>) -> Result<NaiveDate> {
 }
 
 /// Extract an offset from the `timezone` map key.
-fn offset_from_map(map: &BTreeMap<String, Value>) -> Result<FixedOffset> {
+/// Returns `(FixedOffset, Option<tz_name>)`.
+fn offset_from_map(map: &BTreeMap<String, Value>) -> Result<(FixedOffset, Option<String>)> {
     match map.get("timezone") {
-        Some(Value::String(s)) => parse_offset(s),
+        Some(Value::String(s)) => {
+            if s.starts_with('+') || s.starts_with('-') || s == "Z" || s == "z" {
+                Ok((parse_offset(s)?, None))
+            } else {
+                // IANA timezone name — resolve at "now" (no NaiveDateTime context).
+                resolve_tz_name_now(s)
+            }
+        }
         _ => Err(GraphError::Serialization(
             "missing or invalid 'timezone' key".to_string(),
         )),
     }
+}
+
+/// Resolve an IANA timezone name to offset using the current time.
+/// Used when no specific datetime context is available (e.g. CypherTime).
+fn resolve_tz_name_now(name: &str) -> Result<(FixedOffset, Option<String>)> {
+    let tz: chrono_tz::Tz = name
+        .parse()
+        .map_err(|_| GraphError::Serialization(format!("unknown timezone: {name}")))?;
+    let now = chrono::Utc::now().with_timezone(&tz);
+    let off = now.offset().fix();
+    Ok((off, Some(name.to_string())))
+}
+
+/// Resolve an IANA timezone name to offset at a specific NaiveDateTime.
+/// Uses the earliest valid local time (handles DST transitions).
+fn resolve_tz_name_at(name: &str, dt: &NaiveDateTime) -> Result<(FixedOffset, Option<String>)> {
+    let tz: chrono_tz::Tz = name
+        .parse()
+        .map_err(|_| GraphError::Serialization(format!("unknown timezone: {name}")))?;
+    let aware = tz
+        .from_local_datetime(dt)
+        .earliest()
+        .ok_or_else(|| {
+            GraphError::Serialization(format!(
+                "ambiguous or invalid datetime in timezone: {name}"
+            ))
+        })?;
+    let off = aware.offset().fix();
+    Ok((off, Some(name.to_string())))
 }
 
 // ===========================================================================
@@ -721,7 +782,7 @@ impl CypherTime {
     /// Build from a property map.
     pub fn from_map(map: &BTreeMap<String, Value>) -> Result<Self> {
         let t = time_from_map(map)?;
-        let off = offset_from_map(map)?;
+        let (off, _tz_name) = offset_from_map(map)?;
         Ok(CypherTime(t, off))
     }
 }
@@ -884,7 +945,11 @@ impl fmt::Display for CypherDateTime {
         let d = self.0.date();
         write!(f, "{:04}-{:02}-{:02}T", d.year(), d.month(), d.day())?;
         fmt_local_time(&self.0.time(), f)?;
-        fmt_offset(&self.1, f)
+        fmt_offset(&self.1, f)?;
+        if let Some(ref tz) = self.2 {
+            write!(f, "[{tz}]")?;
+        }
+        Ok(())
     }
 }
 
@@ -981,7 +1046,8 @@ impl<'de> Deserialize<'de> for CypherDateTime {
 }
 
 impl CypherDateTime {
-    /// Parse from ISO 8601 with timezone, e.g. `1984-10-11T12:31:14Z`.
+    /// Parse from ISO 8601 with timezone, e.g. `1984-10-11T12:31:14Z` or
+    /// `2015-07-21T21:40:32.142+02:00[Europe/Stockholm]`.
     pub fn from_iso_string(s: &str) -> Result<Self> {
         let t_pos = s
             .find('T')
@@ -989,21 +1055,54 @@ impl CypherDateTime {
             .ok_or_else(|| GraphError::Serialization(format!("expected 'T' separator in: {s}")))?;
         let date = parse_date_str(&s[..t_pos])?;
         let time_and_off = &s[t_pos + 1..];
-        let (time_part, off_part) = split_time_offset(time_and_off);
-        let off_str = off_part.ok_or_else(|| {
-            GraphError::Serialization(format!("CypherDateTime requires an offset: {s}"))
-        })?;
+
+        // Check for [TzName] suffix
+        let (time_off_part, tz_name) = if let Some(bracket_pos) = time_and_off.find('[') {
+            let name = time_and_off[bracket_pos + 1..]
+                .trim_end_matches(']')
+                .to_string();
+            (&time_and_off[..bracket_pos], Some(name))
+        } else {
+            (time_and_off, None)
+        };
+
+        let (time_part, off_part) = split_time_offset(time_off_part);
         let time = parse_time_str(time_part)?;
-        let off = parse_offset(off_str)?;
-        Ok(CypherDateTime(NaiveDateTime::new(date, time), off, None))
+
+        let off = if let Some(off_str) = off_part {
+            parse_offset(off_str)?
+        } else if let Some(ref tz) = tz_name {
+            // No explicit offset but tz name present — resolve from tz at this datetime.
+            let ndt = NaiveDateTime::new(date, time);
+            let (resolved, _) = resolve_tz_name_at(tz, &ndt)?;
+            resolved
+        } else {
+            return Err(GraphError::Serialization(format!(
+                "CypherDateTime requires an offset or timezone: {s}"
+            )));
+        };
+
+        Ok(CypherDateTime(NaiveDateTime::new(date, time), off, tz_name))
     }
 
     /// Build from a property map.
     pub fn from_map(map: &BTreeMap<String, Value>) -> Result<Self> {
         let d = date_from_map(map)?;
         let t = time_from_map(map)?;
-        let off = offset_from_map(map)?;
-        Ok(CypherDateTime(NaiveDateTime::new(d, t), off, None))
+        let ndt = NaiveDateTime::new(d, t);
+        match map.get("timezone") {
+            Some(Value::String(s)) => {
+                if s.starts_with('+') || s.starts_with('-') || s == "Z" || s == "z" {
+                    Ok(CypherDateTime(ndt, parse_offset(s)?, None))
+                } else {
+                    let (off, tz_name) = resolve_tz_name_at(s, &ndt)?;
+                    Ok(CypherDateTime(ndt, off, tz_name))
+                }
+            }
+            _ => Err(GraphError::Serialization(
+                "missing or invalid 'timezone' key".to_string(),
+            )),
+        }
     }
 
     /// Create from epoch seconds and nanoseconds (UTC).

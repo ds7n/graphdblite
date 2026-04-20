@@ -86,11 +86,7 @@ Graph5 - Node and edge label expressions::[2] Single-labels expression on relati
 Graph6 - Static property access::[4] Statically access a property of a node resulting from an expression
 Graph6 - Static property access::[8] Statically access a property of a relationship resulting from an expression
 # BLOCKER: compile-time type checking for property access on non-graph elements
-Graph6 - Static property access::[9] Fail when performing property access on a non-graph element
 # BLOCKER: compile-time type checking for properties() on invalid literal types
-Graph9 - Retrieve all properties as a property map::[5] `properties()` failing on an integer literal
-Graph9 - Retrieve all properties as a property map::[6] `properties()` failing on a string literal
-Graph9 - Retrieve all properties as a property map::[7] `properties()` failing on a list of booleans
 # BLOCKER: flat record architecture cannot distinguish node/relationship from I64/String in list comprehensions
 TypeConversion1 - To Boolean::[5] Fail `toBoolean()` on invalid types #Example: relationship
 TypeConversion2 - To Integer::[8] Fail `toInteger()` on invalid types #Example: node
@@ -102,24 +98,6 @@ TypeConversion4 - To String::[10] Fail `toString()` on invalid types #Example: r
 List1 - Dynamic Element Access::[3] Use list lookup based on parameters when there is no type information
 List1 - Dynamic Element Access::[4] Use list lookup based on parameters when there is lhs type information
 List1 - Dynamic Element Access::[5] Use list lookup based on parameters when there is rhs type information
-List1 - Dynamic Element Access::[6] Fail when indexing a non-list #Example: boolean
-List1 - Dynamic Element Access::[6] Fail when indexing a non-list #Example: float
-List1 - Dynamic Element Access::[6] Fail when indexing a non-list #Example: integer
-List1 - Dynamic Element Access::[6] Fail when indexing a non-list #Example: string
-List1 - Dynamic Element Access::[7] Fail when indexing a non-list given by a parameter #Example: boolean
-List1 - Dynamic Element Access::[7] Fail when indexing a non-list given by a parameter #Example: float
-List1 - Dynamic Element Access::[7] Fail when indexing a non-list given by a parameter #Example: integer
-List1 - Dynamic Element Access::[7] Fail when indexing a non-list given by a parameter #Example: string
-List1 - Dynamic Element Access::[8] Fail when indexing with a non-integer #Example: boolean
-List1 - Dynamic Element Access::[8] Fail when indexing with a non-integer #Example: float
-List1 - Dynamic Element Access::[8] Fail when indexing with a non-integer #Example: list
-List1 - Dynamic Element Access::[8] Fail when indexing with a non-integer #Example: map
-List1 - Dynamic Element Access::[8] Fail when indexing with a non-integer #Example: string
-List1 - Dynamic Element Access::[9] Fail when indexing with a non-integer given by a parameter #Example: boolean
-List1 - Dynamic Element Access::[9] Fail when indexing with a non-integer given by a parameter #Example: float
-List1 - Dynamic Element Access::[9] Fail when indexing with a non-integer given by a parameter #Example: list
-List1 - Dynamic Element Access::[9] Fail when indexing with a non-integer given by a parameter #Example: map
-List1 - Dynamic Element Access::[9] Fail when indexing with a non-integer given by a parameter #Example: string
 List11 - Create a list from a range::[3] Create an empty list if range direction and step direction are inconsistent
 List11 - Create a list from a range::[4] Fail on invalid arguments for `range()`
 List11 - Create a list from a range::[5] Fail on invalid argument types for `range()`
@@ -158,10 +136,8 @@ List6 - List size::[8] Get node degree via size of pattern comprehension
 List6 - List size::[9] Get node degree via size of pattern comprehension that specifies a relationship type
 List9 - List Tail::[1] Returning nested expressions based on list property
 Literals5 - Float::[9] Return a negative zero float
-Literals6 - String::[13] Failing on incorrect unicode literal
 Literals8 - Maps::[22] Fail on a map containing unquoted string
 Map1 - Static value access::[3] Statically access a field of a map resulting from an expression
-Map1 - Static value access::[6] Fail when performing property access on a non-map
 Map2 - Dynamic Value Access::[1] Dynamically access a field based on parameters when there is no type information
 Map2 - Dynamic Value Access::[2] Dynamically access a field based on parameters when there is rhs type information
 Map2 - Dynamic Value Access::[5] Dynamically access a field is case-sensitive
@@ -189,7 +165,6 @@ Match3 - Match fixed length patterns::[21] Three bound nodes pointing to the sam
 Match3 - Match fixed length patterns::[22] Returning bound nodes that are not part of the pattern
 Match3 - Match fixed length patterns::[23] Matching disconnected patterns
 Match3 - Match fixed length patterns::[28] Matching from null nodes should return no results owing to matches being filtered out
-Match3 - Match fixed length patterns::[29] Fail when re-using a relationship in the same pattern
 Match3 - Match fixed length patterns::[30] Fail when using a list or nodes as a node
 Match3 - Match fixed length patterns::[6] Matching a relationship pattern using a label predicate
 Match3 - Match fixed length patterns::[7] Matching nodes with many labels
@@ -242,7 +217,6 @@ Match9 - Match deprecated scenarios::[6] Matching relationships into a list and 
 Match9 - Match deprecated scenarios::[9] Optionally matching named paths with variable length patterns
 MatchWhere1 - Filter single variable::[11] Filter relationship with disjunctive relationship type predicate on multi variables with multiple bindings
 MatchWhere1 - Filter single variable::[12] Filter path with path length predicate on multi variables with one binding
-MatchWhere1 - Filter single variable::[15] Fail on aggregation in WHERE
 MatchWhere1 - Filter single variable::[1] Filter node with node label predicate on multi variables with multiple bindings
 MatchWhere1 - Filter single variable::[2] Filter node with node label predicate on multi variables without any bindings
 MatchWhere1 - Filter single variable::[4] Filter start node of relationship with property predicate on multi variables with multiple bindings
@@ -394,7 +368,6 @@ Return2 - Return single expression (correctly projecting an expression)::[7] Add
 Return2 - Return single expression (correctly projecting an expression)::[8] Returning label predicate expression
 Return2 - Return single expression (correctly projecting an expression)::[9] Returning a projected map
 Return3 - Return multiple expressions (if column order correct)::[3] Projecting nodes and relationships
-Return4 - Column renaming::[10] Fail when returning multiple columns with same name
 Return4 - Column renaming::[11] Reusing variable names in RETURN
 Return4 - Column renaming::[4] Keeping used expression 1
 Return4 - Column renaming::[6] Keeping used expression 3
@@ -406,7 +379,6 @@ Return5 - Implicit grouping with distinct::[4] DISTINCT inside aggregation shoul
 Return6 - Implicit grouping with aggregates::[10] Multiple aggregates on same variable
 Return6 - Implicit grouping with aggregates::[11] Counting matches
 Return6 - Implicit grouping with aggregates::[12] Counting matches per group
-Return6 - Implicit grouping with aggregates::[14] Aggregates in aggregates
 Return6 - Implicit grouping with aggregates::[16] Aggregation on complex expressions
 Return6 - Implicit grouping with aggregates::[17] Handle constants and parameters inside an expression which contains an aggregation expression
 Return6 - Implicit grouping with aggregates::[1] Return count aggregation over nodes
@@ -419,7 +391,6 @@ Return6 - Implicit grouping with aggregates::[5] Aggregates inside normal functi
 Return6 - Implicit grouping with aggregates::[8] Handle aggregation on functions
 Return6 - Implicit grouping with aggregates::[9] Aggregates with arithmetics
 Return7 - Return all variables::[1] Return all variables
-Return7 - Return all variables::[2] Fail when using RETURN * without variables in scope
 ReturnOrderBy1 - Order by a single variable (correct order of values according to their type)::[10] ORDER BY DESC should order lists in the expected order
 ReturnOrderBy1 - Order by a single variable (correct order of values according to their type)::[11] ORDER BY should order distinct types in the expected order
 ReturnOrderBy1 - Order by a single variable (correct order of values according to their type)::[12] ORDER BY DESC should order distinct types in the expected order
@@ -588,7 +559,6 @@ Unwind1::[6] Creating nodes from an unwound parameter list
 With2 - Forward single expression::[1] Forwarding a property to express a join
 With4 - Variable aliasing::[2] Aliasing expression to new variable name
 # BLOCKER: ColumnNameConflict validation not implemented for WITH
-With4 - Variable aliasing::[4] Fail when forwarding multiple aliases with the same name
 With4 - Variable aliasing::[5] Fail when not aliasing expressions in WITH
 With4 - Variable aliasing::[6] Reusing variable names in WITH
 With4 - Variable aliasing::[7] Multiple aliasing and backreferencing

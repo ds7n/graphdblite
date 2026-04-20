@@ -44,6 +44,29 @@ pub fn eval_expr(expr: &Expr, record: &Record, conn: &Connection) -> crate::type
                 if let Some(result) = temporal_accessor(val, prop) {
                     return Ok(result);
                 }
+                // If the variable is a pure scalar (no compound node/edge
+                // metadata), property access is a type error.
+                let has_metadata = record.get(&format!("{var}.__id")).is_some()
+                    || record.get(&format!("{var}.__src")).is_some()
+                    || record.get(&format!("{var}.__type")).is_some();
+                if !has_metadata {
+                    match val {
+                        Value::Bool(_)
+                        | Value::I64(_)
+                        | Value::F64(_)
+                        | Value::String(_)
+                        | Value::List(_) => {
+                            return Err(GraphError::type_error(
+                                crate::types::QueryPhase::Runtime,
+                                format!(
+                                    "InvalidArgumentType: property access on {}",
+                                    value_type_name(val)
+                                ),
+                            ));
+                        }
+                        _ => {}
+                    }
+                }
             }
             Ok(Value::Null)
         }
@@ -109,6 +132,16 @@ pub fn eval_expr(expr: &Expr, record: &Record, conn: &Connection) -> crate::type
                     Ok(m.get(key).cloned().unwrap_or(Value::Null))
                 }
                 (Value::Null, _) | (_, Value::Null) => Ok(Value::Null),
+                // Indexing a non-list/non-map/non-node/non-edge with an integer.
+                (_, Value::I64(_)) => Err(GraphError::type_error(
+                    crate::types::QueryPhase::Runtime,
+                    format!("InvalidArgumentType: cannot index a non-list value"),
+                )),
+                // Indexing a list with a non-integer.
+                (Value::List(_), _) => Err(GraphError::type_error(
+                    crate::types::QueryPhase::Runtime,
+                    format!("InvalidArgumentType: list index must be an integer"),
+                )),
                 _ => Ok(Value::Null),
             }
         }
@@ -284,22 +317,12 @@ fn eval_single_arg(
 
 /// Build a TypeError for invalid argument types passed to type conversion functions.
 fn invalid_argument_type(func_name: &str, value: &Value) -> GraphError {
-    let type_name = match value {
-        Value::Null => "Null",
-        Value::Bool(_) => "Boolean",
-        Value::I64(_) => "Integer",
-        Value::F64(_) => "Float",
-        Value::String(_) => "String",
-        Value::List(_) => "List",
-        Value::Map(_) => "Map",
-        Value::Node(_) => "Node",
-        Value::Edge(_) => "Relationship",
-        Value::Path(_) => "Path",
-        _ => "Unknown",
-    };
     GraphError::Query(QueryError::TypeError {
         phase: QueryPhase::Runtime,
-        message: format!("{func_name}: invalid argument type {type_name}"),
+        message: format!(
+            "{func_name}: invalid argument type {}",
+            value_type_name(value)
+        ),
     })
 }
 
@@ -361,7 +384,8 @@ fn eval_function_call(
                 Some(Value::Path(p)) => Ok(Value::I64(p.len() as i64)),
                 Some(Value::String(s)) => Ok(Value::I64(s.len() as i64)),
                 Some(Value::List(items)) => Ok(Value::I64(items.len() as i64)),
-                _ => Ok(Value::Null),
+                Some(Value::Null) | None => Ok(Value::Null),
+                Some(other) => Err(invalid_argument_type("length()", &other)),
             }
         }
         "nodes" => {
@@ -614,7 +638,7 @@ fn eval_function_call(
                 }
                 Value::Map(_) => Ok(arg),
                 Value::Null => Ok(Value::Null),
-                _ => Ok(Value::Null),
+                other => Err(invalid_argument_type("properties()", &other)),
             }
         }
         "relationships" => {

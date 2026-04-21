@@ -28,21 +28,39 @@ test *args:
 fmt:
     just _run fmt "cargo fmt --all"
 
-# Build cross-compiled release artifacts
-build *args:
-    just _run build "scripts/build-release.sh {{args}}"
+# Build all release artifacts via Docker
+build:
+    just _run build "docker compose -f docker/docker-compose.yml up --build"
 
-# Publish artifacts to GitHub release
+# Build a specific Docker target (native, zig-bins, zig-wheels, xwin, macos)
+build-target target:
+    just _run build "docker compose -f docker/docker-compose.yml run --build --rm {{target}}"
+
+
+# Publish tagged release to Forgejo (e.g. just publish v0.1.0)
 publish *args:
     just _run publish "scripts/publish-release.sh {{args}}"
 
-# Build all via Docker (reproducible)
-build-docker:
-    just _run build-docker "docker compose -f docker/docker-compose.yml up --build"
+# Publish dev-latest prerelease to Forgejo
+publish-dev:
+    just _run publish "scripts/publish-release.sh --dev"
 
-# Build a specific Docker target (native, zig-bins, zig-wheels, xwin)
-build-docker-target target:
-    just _run build-docker-target "docker compose -f docker/docker-compose.yml run --build --rm {{target}}"
+# Publish to GitHub instead of Forgejo
+publish-github *args:
+    just _run publish "scripts/publish-release.sh --github {{args}}"
+
+# Publish dev-latest to GitHub
+publish-github-dev:
+    just _run publish "scripts/publish-release.sh --github --dev"
+
+# Dry-run publish (Forgejo)
+publish-dry *args:
+    just _run publish "scripts/publish-release.sh --dry-run {{args}}"
+
+# Dry-run dev-latest publish (Forgejo)
+publish-dry-dev:
+    just _run publish "scripts/publish-release.sh --dry-run --dev"
+
 
 # Remove build artifacts
 clean:

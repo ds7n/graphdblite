@@ -4,7 +4,7 @@ build-backend = "maturin"
 
 [project]
 name = "graphdblite"
-version = "0.1.0"
+dynamic = ["version"]
 description = "Embedded graph database with Cypher support"
 requires-python = ">=3.9"
 

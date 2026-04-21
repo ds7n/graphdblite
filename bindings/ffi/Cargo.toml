@@ -1,9 +1,9 @@
 [package]
 name = "graphdblite-ffi"
-version = "0.1.0"
-edition = "2021"
+version.workspace = true
+edition.workspace = true
 description = "C FFI bindings for graphdblite"
-license = "MPL-2.0"
+license.workspace = true
 publish = false
 
 [lib]

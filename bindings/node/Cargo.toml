@@ -1,9 +1,9 @@
 [package]
 name = "graphdblite-node"
-version = "0.1.0"
-edition = "2021"
+version.workspace = true
+edition.workspace = true
 description = "Node.js bindings for graphdblite via napi-rs"
-license = "MPL-2.0"
+license.workspace = true
 publish = false
 
 [lib]

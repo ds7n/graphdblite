@@ -14,17 +14,17 @@ CountingSubgraphMatches1 - Matching subgraph patterns and count the number of ma
 CountingSubgraphMatches1 - Matching subgraph patterns and count the number of matches::[6] Counting undirected self-relationships in self-relationship graph
 CountingSubgraphMatches1 - Matching subgraph patterns and count the number of matches::[9] Counting directed self-relationships
 Create1 - Creating nodes::[20] Fail when creating a node using undefined variable in pattern
-Create2 - Creating relationships::[4] Create two nodes and a single relationship in the reverse direction
-Create2 - Creating relationships::[6] Create a single relationship between two existing nodes in the reverse direction
 Create2 - Creating relationships::[18] Fail when creating a relationship without a type
 Create2 - Creating relationships::[19] Fail when creating a relationship without a direction
 Create2 - Creating relationships::[24] Fail when creating a relationship using undefined variable in pattern
+Create2 - Creating relationships::[4] Create two nodes and a single relationship in the reverse direction
+Create2 - Creating relationships::[6] Create a single relationship between two existing nodes in the reverse direction
+Create3 - Interoperation with other clauses::[3] MATCH-CREATE-WITH-CREATE
+Create3 - Interoperation with other clauses::[7] WITH-CREATE: Nodes are not created when aliases are applied to variable names multiple times
 Create5 - Multiple hops create patterns::[2] Create a pattern with multiple hops in the reverse direction
 Create5 - Multiple hops create patterns::[3] Create a pattern with multiple hops in varying directions
 Create5 - Multiple hops create patterns::[4] Create a pattern with multiple hops with multiple types and varying directions
 Create5 - Multiple hops create patterns::[5] Create a pattern with multiple hops and varying directions
-Create3 - Interoperation with other clauses::[3] MATCH-CREATE-WITH-CREATE
-Create3 - Interoperation with other clauses::[7] WITH-CREATE: Nodes are not created when aliases are applied to variable names multiple times
 Create6 - Persistence of create clause side effects::[13] Aggregating in `RETURN` after creating relationships affects the result set but not the side effects
 Create6 - Persistence of create clause side effects::[14] Aggregating in `WITH` after creating relationships affects the result set but not the side effects
 Create6 - Persistence of create clause side effects::[6] Aggregating in `RETURN` after creating nodes affects the result set but not the side effects
@@ -295,17 +295,21 @@ Set6 - Persistence of set clause side effects::[4] Skipping zero results and lim
 Set6 - Persistence of set clause side effects::[5] Filtering after setting a property on nodes affects the result set but not the side effects
 Set6 - Persistence of set clause side effects::[6] Aggregating in `RETURN` after setting a property on nodes affects the result set but not the side effects
 Set6 - Persistence of set clause side effects::[7] Aggregating in `WITH` after setting a property on nodes affects the result set but not the side effects
-Temporal1 - Create Temporal Values from a Map::[10] Should construct date time with named time zone
 Temporal1 - Create Temporal Values from a Map::[12] Should construct duration
+Temporal10 - Compute Durations Between two Temporal Values::[10] Should handle large durations in seconds
+Temporal10 - Compute Durations Between two Temporal Values::[11] Should handle when seconds and subseconds have different signs
+Temporal10 - Compute Durations Between two Temporal Values::[1] Should split between boundaries correctly
 Temporal10 - Compute Durations Between two Temporal Values::[2] Should compute duration between two temporals
 Temporal10 - Compute Durations Between two Temporal Values::[3] Should compute duration between two temporals in months
 Temporal10 - Compute Durations Between two Temporal Values::[4] Should compute duration between two temporals in days
 Temporal10 - Compute Durations Between two Temporal Values::[5] Should compute duration between two temporals in seconds
+Temporal10 - Compute Durations Between two Temporal Values::[6] Should compute duration between if they differ only by a fraction of a second and the first comes after the second.
 Temporal10 - Compute Durations Between two Temporal Values::[8] Should handle durations at daylight saving time day
 Temporal10 - Compute Durations Between two Temporal Values::[9] Should handle large durations
-Temporal10 - Compute Durations Between two Temporal Values::[10] Should handle large durations in seconds
-Temporal10 - Compute Durations Between two Temporal Values::[12] Should compute durations with no difference
 Temporal2 - Create Temporal Values from a String::[7] Should parse duration from string
+Temporal4 - Store Temporal Values::[10] Should store date time array
+Temporal4 - Store Temporal Values::[11] Should store duration
+Temporal4 - Store Temporal Values::[12] Should store duration array
 Temporal4 - Store Temporal Values::[1] Should store date
 Temporal4 - Store Temporal Values::[2] Should store date array
 Temporal4 - Store Temporal Values::[3] Should store local time
@@ -315,9 +319,6 @@ Temporal4 - Store Temporal Values::[6] Should store time array
 Temporal4 - Store Temporal Values::[7] Should store local date time
 Temporal4 - Store Temporal Values::[8] Should store local date time array
 Temporal4 - Store Temporal Values::[9] Should store date time
-Temporal4 - Store Temporal Values::[10] Should store date time array
-Temporal4 - Store Temporal Values::[11] Should store duration
-Temporal4 - Store Temporal Values::[12] Should store duration array
 Temporal5 - Access Components of Temporal Values::[1] Should provide accessors for date
 Temporal5 - Access Components of Temporal Values::[2] Should provide accessors for date in last weekYear
 Temporal5 - Access Components of Temporal Values::[3] Should provide accessors for local time
@@ -325,11 +326,6 @@ Temporal5 - Access Components of Temporal Values::[4] Should provide accessors f
 Temporal5 - Access Components of Temporal Values::[5] Should provide accessors for local date time
 Temporal5 - Access Components of Temporal Values::[6] Should provide accessors for date time
 Temporal5 - Access Components of Temporal Values::[7] Should provide accessors for duration
-Temporal6 - Render Temporal Values as a String::[1] Should serialize date
-Temporal6 - Render Temporal Values as a String::[2] Should serialize local time
-Temporal6 - Render Temporal Values as a String::[3] Should serialize time
-Temporal6 - Render Temporal Values as a String::[4] Should serialize local date time
-Temporal6 - Render Temporal Values as a String::[5] Should serialize date time
 Temporal8 - Compute Arithmetic Operations on Temporal Values::[1] Should add or subtract duration to or from date
 Temporal8 - Compute Arithmetic Operations on Temporal Values::[2] Should add or subtract duration to or from local time
 Temporal8 - Compute Arithmetic Operations on Temporal Values::[3] Should add or subtract duration to or from time
@@ -391,16 +387,6 @@ WithOrderBy1 - Order by a single variable::[40] Sort by a local date time variab
 WithOrderBy1 - Order by a single variable::[41] Sort by a date time variable projected from a node property in ascending order
 WithOrderBy1 - Order by a single variable::[42] Sort by a date time variable projected from a node property in descending order
 WithOrderBy1 - Order by a single variable::[44] Sort by a variable that is only partially orderable on a non-distinct binding table, but made distinct
-WithOrderBy1 - Order by a single variable::[45] Sort order should be consistent with comparisons where comparisons are defined #Example: booleans
-WithOrderBy1 - Order by a single variable::[45] Sort order should be consistent with comparisons where comparisons are defined #Example: dates
-WithOrderBy1 - Order by a single variable::[45] Sort order should be consistent with comparisons where comparisons are defined #Example: datetimes
-WithOrderBy1 - Order by a single variable::[45] Sort order should be consistent with comparisons where comparisons are defined #Example: floats
-WithOrderBy1 - Order by a single variable::[45] Sort order should be consistent with comparisons where comparisons are defined #Example: integers
-WithOrderBy1 - Order by a single variable::[45] Sort order should be consistent with comparisons where comparisons are defined #Example: lists
-WithOrderBy1 - Order by a single variable::[45] Sort order should be consistent with comparisons where comparisons are defined #Example: localdatetimes
-WithOrderBy1 - Order by a single variable::[45] Sort order should be consistent with comparisons where comparisons are defined #Example: localtimes
-WithOrderBy1 - Order by a single variable::[45] Sort order should be consistent with comparisons where comparisons are defined #Example: string
-WithOrderBy1 - Order by a single variable::[45] Sort order should be consistent with comparisons where comparisons are defined #Example: times
 WithOrderBy1 - Order by a single variable::[46] Fail on sorting by an undefined variable #Example: never defined
 WithOrderBy1 - Order by a single variable::[46] Fail on sorting by an undefined variable #Example: out of scope
 WithOrderBy2 - Order by a single expression::[10] Sort by a list expression in descending order
@@ -456,7 +442,3 @@ WithWhere2 - Filter multiple variables::[2] Filter node with conjunctive multi-p
 WithWhere4 - Non-Equi-Joins on variables::[2] Join with disjunctive multi-part predicates including patterns
 WithWhere7 - Variable visibility under aliasing::[1] WHERE sees a variable bound before but not after WITH
 WithWhere7 - Variable visibility under aliasing::[3] WHERE sees both, variable bound before but not after WITH and variable bound after but not before WITH
-Temporal10 - Compute Durations Between two Temporal Values::[1] Should split between boundaries correctly
-Temporal10 - Compute Durations Between two Temporal Values::[6] Should compute duration between if they differ only by a fraction of a second and the first comes after the second.
-Temporal10 - Compute Durations Between two Temporal Values::[7] Should compute negative duration between in big units
-Temporal10 - Compute Durations Between two Temporal Values::[11] Should handle when seconds and subseconds have different signs

@@ -518,7 +518,7 @@ fn date_from_map(map: &BTreeMap<String, Value>) -> Result<NaiveDate> {
         } else if let Some(bd) = base_date {
             // No explicit dayOfQuarter but base date present: preserve month-offset
             // within the quarter and day-of-month from the base date.
-            let base_month_in_quarter = ((bd.month() - 1) % 3); // 0, 1, or 2
+            let base_month_in_quarter = (bd.month() - 1) % 3; // 0, 1, or 2
             let month = quarter_start_month + base_month_in_quarter;
             let day = get_i64(map, "day").unwrap_or(bd.day() as i64) as u32;
             NaiveDate::from_ymd_opt(year, month, day)

@@ -518,7 +518,7 @@ fn date_from_map(map: &BTreeMap<String, Value>) -> Result<NaiveDate> {
         } else if let Some(bd) = base_date {
             // No explicit dayOfQuarter but base date present: preserve month-offset
             // within the quarter and day-of-month from the base date.
-            let base_month_in_quarter = ((bd.month() - 1) % 3) as u32; // 0, 1, or 2
+            let base_month_in_quarter = ((bd.month() - 1) % 3); // 0, 1, or 2
             let month = quarter_start_month + base_month_in_quarter;
             let day = get_i64(map, "day").unwrap_or(bd.day() as i64) as u32;
             NaiveDate::from_ymd_opt(year, month, day)
@@ -1774,9 +1774,9 @@ pub fn duration_between(lhs: &Value, rhs: &Value) -> CypherDuration {
     if either_time_only && !both_have_dates {
         // Pure time comparison — take the time from whichever has it.
         let lhs_nanos =
-            t1.map(|t| time_to_nanos(t)).unwrap_or(0) - effective_offset(lhs, rhs) * 1_000_000_000;
+            t1.map(time_to_nanos).unwrap_or(0) - effective_offset(lhs, rhs) * 1_000_000_000;
         let rhs_nanos =
-            t2.map(|t| time_to_nanos(t)).unwrap_or(0) - effective_offset(rhs, lhs) * 1_000_000_000;
+            t2.map(time_to_nanos).unwrap_or(0) - effective_offset(rhs, lhs) * 1_000_000_000;
         let diff_nanos = rhs_nanos - lhs_nanos;
         let total_secs = diff_nanos.div_euclid(1_000_000_000);
         let rem_nanos = diff_nanos.rem_euclid(1_000_000_000);
@@ -1807,9 +1807,9 @@ pub fn duration_between(lhs: &Value, rhs: &Value) -> CypherDuration {
         // Time-of-day difference (in nanos), adjusted for UTC offsets only when
         // both sides are offset-aware.
         let t1_nanos =
-            t1.map(|t| time_to_nanos(t)).unwrap_or(0) - effective_offset(lhs, rhs) * 1_000_000_000;
+            t1.map(time_to_nanos).unwrap_or(0) - effective_offset(lhs, rhs) * 1_000_000_000;
         let t2_nanos =
-            t2.map(|t| time_to_nanos(t)).unwrap_or(0) - effective_offset(rhs, lhs) * 1_000_000_000;
+            t2.map(time_to_nanos).unwrap_or(0) - effective_offset(rhs, lhs) * 1_000_000_000;
         let mut time_diff_nanos = t2_nanos - t1_nanos;
 
         // Normalize: if day_diff and time_diff have opposite signs, borrow a day.
@@ -1872,9 +1872,9 @@ pub fn duration_in_months(lhs: &Value, rhs: &Value) -> CypherDuration {
     let d1_advanced = add_months_to_date(date1, months);
     if d1_advanced == date2 {
         // Same date after advancing — check time.
-        let t1_nanos = extract_time(lhs).map(|t| time_to_nanos(t)).unwrap_or(0)
+        let t1_nanos = extract_time(lhs).map(time_to_nanos).unwrap_or(0)
             - effective_offset(lhs, rhs) * 1_000_000_000;
-        let t2_nanos = extract_time(rhs).map(|t| time_to_nanos(t)).unwrap_or(0)
+        let t2_nanos = extract_time(rhs).map(time_to_nanos).unwrap_or(0)
             - effective_offset(rhs, lhs) * 1_000_000_000;
         if months > 0 && t2_nanos < t1_nanos {
             months -= 1;
@@ -1911,9 +1911,9 @@ pub fn duration_in_days(lhs: &Value, rhs: &Value) -> CypherDuration {
     if let (Some(date1), Some(date2)) = (d1, d2) {
         // Compute total elapsed nanoseconds including time components.
         let day_nanos = date2.signed_duration_since(date1).num_days() * 86_400_000_000_000i64;
-        let t1_nanos = extract_time(lhs).map(|t| time_to_nanos(t)).unwrap_or(0)
+        let t1_nanos = extract_time(lhs).map(time_to_nanos).unwrap_or(0)
             - effective_offset(lhs, rhs) * 1_000_000_000;
-        let t2_nanos = extract_time(rhs).map(|t| time_to_nanos(t)).unwrap_or(0)
+        let t2_nanos = extract_time(rhs).map(time_to_nanos).unwrap_or(0)
             - effective_offset(rhs, lhs) * 1_000_000_000;
         let total_nanos = day_nanos + (t2_nanos - t1_nanos);
 
@@ -1945,9 +1945,9 @@ pub fn duration_in_seconds(lhs: &Value, rhs: &Value) -> CypherDuration {
     // If either is time-only and the other has a date (but not time-only), do time-only diff.
     let either_time_only = is_time_only(lhs) || is_time_only(rhs);
 
-    let t1_nanos = extract_time(lhs).map(|t| time_to_nanos(t)).unwrap_or(0)
+    let t1_nanos = extract_time(lhs).map(time_to_nanos).unwrap_or(0)
         - effective_offset(lhs, rhs) * 1_000_000_000;
-    let t2_nanos = extract_time(rhs).map(|t| time_to_nanos(t)).unwrap_or(0)
+    let t2_nanos = extract_time(rhs).map(time_to_nanos).unwrap_or(0)
         - effective_offset(rhs, lhs) * 1_000_000_000;
 
     let time_diff = t2_nanos - t1_nanos;
@@ -2012,7 +2012,7 @@ pub fn truncate_date(unit: &str, val: &Value, map: &BTreeMap<String, Value>) -> 
         // Monday = 1. The truncated date for 'week' is already Monday.
         let current_dow = d.weekday().num_days_from_monday() as i64 + 1;
         let delta = *dow - current_dow;
-        d = d + chrono::Duration::days(delta);
+        d += chrono::Duration::days(delta);
     }
     if let Some(Value::I64(m)) = map.get("month") {
         d = d

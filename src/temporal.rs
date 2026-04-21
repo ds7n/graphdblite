@@ -392,23 +392,91 @@ fn fmt_offset(off: &FixedOffset, f: &mut fmt::Formatter<'_>) -> fmt::Result {
     }
 }
 
+/// Extract the source offset from a base temporal value in the map (if any).
+/// Returns `Some(offset)` when the base `time` or `datetime` key carries a timezone.
+fn base_source_offset(map: &BTreeMap<String, Value>) -> Option<FixedOffset> {
+    match map.get("time").or_else(|| map.get("datetime")) {
+        Some(Value::Time(t)) => Some(t.1),
+        Some(Value::DateTime(dt)) => Some(dt.1),
+        _ => None,
+    }
+}
+
+/// Re-resolve the source offset at a new NaiveDateTime when the base temporal
+/// has a named timezone. This accounts for DST changes when the date differs
+/// from the original temporal.
+fn base_source_offset_at(map: &BTreeMap<String, Value>, ndt: &NaiveDateTime) -> Option<FixedOffset> {
+    match map.get("time").or_else(|| map.get("datetime")) {
+        Some(Value::Time(t)) => Some(t.1),
+        Some(Value::DateTime(dt)) => {
+            if let Some(ref tz_name) = dt.2 {
+                // Re-resolve at the new date/time for DST awareness.
+                if let Ok((off, _)) = resolve_tz_name_at(tz_name, ndt) {
+                    Some(off)
+                } else {
+                    Some(dt.1)
+                }
+            } else {
+                Some(dt.1)
+            }
+        }
+        _ => None,
+    }
+}
+
 /// Build a `NaiveTime` from map keys (hour, minute, second, nanosecond, millisecond, microsecond).
+/// If a `time` key is present (LocalTime, Time, LocalDateTime, or DateTime), its components
+/// are used as defaults for any unspecified fields.
 fn time_from_map(map: &BTreeMap<String, Value>) -> Result<NaiveTime> {
-    let h = get_i64(map, "hour").unwrap_or(0) as u32;
-    let m = get_i64(map, "minute").unwrap_or(0) as u32;
-    let s = get_i64(map, "second").unwrap_or(0) as u32;
-    let mut nano = get_i64(map, "nanosecond").unwrap_or(0) as u32;
+    let base_time = match map.get("time").or_else(|| map.get("datetime")) {
+        Some(Value::LocalTime(t)) => Some(t.0),
+        Some(Value::Time(t)) => Some(t.0),
+        Some(Value::LocalDateTime(dt)) => Some(dt.0.time()),
+        Some(Value::DateTime(dt)) => Some(dt.0.time()),
+        _ => None,
+    };
+
+    let h = get_i64(map, "hour")
+        .or_else(|| base_time.map(|t| t.hour() as i64))
+        .unwrap_or(0) as u32;
+    let m = get_i64(map, "minute")
+        .or_else(|| base_time.map(|t| t.minute() as i64))
+        .unwrap_or(0) as u32;
+    let s = get_i64(map, "second")
+        .or_else(|| base_time.map(|t| t.second() as i64))
+        .unwrap_or(0) as u32;
+    let mut nano = get_i64(map, "nanosecond")
+        .or_else(|| base_time.map(|t| (t.nanosecond() % 1_000_000_000) as i64))
+        .unwrap_or(0) as u32;
     nano += get_i64(map, "millisecond").unwrap_or(0) as u32 * 1_000_000;
     nano += get_i64(map, "microsecond").unwrap_or(0) as u32 * 1_000;
     NaiveTime::from_hms_nano_opt(h, m, s, nano)
         .ok_or_else(|| GraphError::Serialization("invalid time components".to_string()))
 }
 
-/// Build a `NaiveDate` from map keys (year, month, day, week, dayOfWeek, ordinalDay).
+/// Build a `NaiveDate` from map keys (year, month, day, week, dayOfWeek, ordinalDay, quarter, dayOfQuarter).
+/// If a `date` key is present (Date, LocalDateTime, or DateTime), its components are used as
+/// defaults for any unspecified fields.
 fn date_from_map(map: &BTreeMap<String, Value>) -> Result<NaiveDate> {
-    let year = get_i64(map, "year").unwrap_or(0) as i32;
+    // Check for a base `date` or `datetime` temporal value to project from.
+    let base_date = match map.get("date").or_else(|| map.get("datetime")) {
+        Some(Value::Date(d)) => Some(d.0),
+        Some(Value::LocalDateTime(dt)) => Some(dt.0.date()),
+        Some(Value::DateTime(dt)) => Some(dt.0.date()),
+        _ => None,
+    };
+
     if let Some(week) = get_i64(map, "week") {
-        let dow = get_i64(map, "dayOfWeek").unwrap_or(1) as u32;
+        // For ISO week dates, the year should be the ISO week year, not the calendar year.
+        let year = get_i64(map, "year")
+            .or_else(|| base_date.map(|d| d.iso_week().year() as i64))
+            .unwrap_or(0) as i32;
+        let dow = get_i64(map, "dayOfWeek")
+            .unwrap_or(
+                base_date
+                    .map(|d| d.weekday().num_days_from_monday() as i64 + 1)
+                    .unwrap_or(1),
+            ) as u32;
         let weekday = match dow {
             1 => chrono::Weekday::Mon,
             2 => chrono::Weekday::Tue,
@@ -426,11 +494,48 @@ fn date_from_map(map: &BTreeMap<String, Value>) -> Result<NaiveDate> {
         NaiveDate::from_isoywd_opt(year, week as u32, weekday)
             .ok_or_else(|| GraphError::Serialization("invalid week date components".to_string()))
     } else if let Some(ord) = get_i64(map, "ordinalDay") {
+        let year = get_i64(map, "year")
+            .or_else(|| base_date.map(|d| d.year() as i64))
+            .unwrap_or(0) as i32;
         NaiveDate::from_yo_opt(year, ord as u32)
             .ok_or_else(|| GraphError::Serialization("invalid ordinal date components".to_string()))
+    } else if let Some(quarter) = get_i64(map, "quarter") {
+        let year = get_i64(map, "year")
+            .or_else(|| base_date.map(|d| d.year() as i64))
+            .unwrap_or(0) as i32;
+        let quarter_start_month = ((quarter - 1) * 3 + 1) as u32;
+        if let Some(doq) = get_i64(map, "dayOfQuarter") {
+            // Explicit dayOfQuarter: count from first day of the quarter.
+            let start = NaiveDate::from_ymd_opt(year, quarter_start_month, 1)
+                .ok_or_else(|| GraphError::Serialization("invalid quarter".to_string()))?;
+            start
+                .checked_add_signed(chrono::Duration::days(doq - 1))
+                .ok_or_else(|| {
+                    GraphError::Serialization("dayOfQuarter out of range".to_string())
+                })
+        } else if let Some(bd) = base_date {
+            // No explicit dayOfQuarter but base date present: preserve month-offset
+            // within the quarter and day-of-month from the base date.
+            let base_month_in_quarter = ((bd.month() - 1) % 3) as u32; // 0, 1, or 2
+            let month = quarter_start_month + base_month_in_quarter;
+            let day = get_i64(map, "day").unwrap_or(bd.day() as i64) as u32;
+            NaiveDate::from_ymd_opt(year, month, day)
+                .ok_or_else(|| GraphError::Serialization("invalid quarter date".to_string()))
+        } else {
+            // No base date, no dayOfQuarter: first day of the quarter.
+            NaiveDate::from_ymd_opt(year, quarter_start_month, 1)
+                .ok_or_else(|| GraphError::Serialization("invalid quarter".to_string()))
+        }
     } else {
-        let month = get_i64(map, "month").unwrap_or(1) as u32;
-        let day = get_i64(map, "day").unwrap_or(1) as u32;
+        let year = get_i64(map, "year")
+            .or_else(|| base_date.map(|d| d.year() as i64))
+            .unwrap_or(0) as i32;
+        let month = get_i64(map, "month")
+            .or_else(|| base_date.map(|d| d.month() as i64))
+            .unwrap_or(1) as u32;
+        let day = get_i64(map, "day")
+            .or_else(|| base_date.map(|d| d.day() as i64))
+            .unwrap_or(1) as u32;
         NaiveDate::from_ymd_opt(year, month, day)
             .ok_or_else(|| GraphError::Serialization("invalid date components".to_string()))
     }
@@ -448,9 +553,22 @@ fn offset_from_map(map: &BTreeMap<String, Value>) -> Result<(FixedOffset, Option
                 resolve_tz_name_now(s)
             }
         }
-        _ => Err(GraphError::Serialization(
-            "missing or invalid 'timezone' key".to_string(),
-        )),
+        _ => {
+            // No explicit timezone — try to inherit from a `time` or `datetime` base temporal.
+            // If the base temporal has no offset (e.g. LocalTime, LocalDateTime), default to UTC.
+            match map.get("time").or_else(|| map.get("datetime")) {
+                Some(Value::Time(t)) => Ok((t.1, None)),
+                Some(Value::DateTime(dt)) => Ok((dt.1, dt.2.clone())),
+                Some(Value::LocalTime(_) | Value::LocalDateTime(_)) => {
+                    Ok((FixedOffset::east_opt(0).unwrap(), None))
+                }
+                _ => {
+                    // Default to UTC when no timezone source is available.
+                    // This covers `time({hour: 12})` and `datetime({date: d})`.
+                    Ok((FixedOffset::east_opt(0).unwrap(), None))
+                }
+            }
+        }
     }
 }
 
@@ -783,6 +901,25 @@ impl CypherTime {
     pub fn from_map(map: &BTreeMap<String, Value>) -> Result<Self> {
         let t = time_from_map(map)?;
         let (off, _tz_name) = offset_from_map(map)?;
+        // If the base temporal had a different offset and an explicit timezone was
+        // given, convert the local time from source offset to target offset.
+        let t = if map.contains_key("timezone") {
+            if let Some(src_off) = base_source_offset(map) {
+                if src_off != off {
+                    let delta = off.local_minus_utc() - src_off.local_minus_utc();
+                    let secs = t.num_seconds_from_midnight() as i64 + delta as i64;
+                    let secs = secs.rem_euclid(86400) as u32;
+                    NaiveTime::from_num_seconds_from_midnight_opt(secs, t.nanosecond() % 1_000_000_000)
+                        .unwrap_or(t)
+                } else {
+                    t
+                }
+            } else {
+                t
+            }
+        } else {
+            t
+        };
         Ok(CypherTime(t, off))
     }
 }
@@ -1092,16 +1229,67 @@ impl CypherDateTime {
         let ndt = NaiveDateTime::new(d, t);
         match map.get("timezone") {
             Some(Value::String(s)) => {
-                if s.starts_with('+') || s.starts_with('-') || s == "Z" || s == "z" {
-                    Ok(CypherDateTime(ndt, parse_offset(s)?, None))
+                let target_off = if s.starts_with('+') || s.starts_with('-') || s == "Z" || s == "z" {
+                    parse_offset(s)?
                 } else {
+                    // Will be resolved below after possible conversion.
+                    FixedOffset::east_opt(0).unwrap()
+                };
+                let is_named = !(s.starts_with('+') || s.starts_with('-') || s == "Z" || s == "z");
+                // Convert local time when the base temporal has a different offset.
+                // Use base_source_offset_at to re-resolve named timezones at the new date.
+                let ndt = if let Some(src_off) = base_source_offset_at(map, &ndt) {
+                    if is_named {
+                        // Convert via UTC intermediary, then resolve target named tz.
+                        let utc_ndt = ndt - chrono::Duration::seconds(src_off.local_minus_utc() as i64);
+                        let tz: chrono_tz::Tz = s.parse().map_err(|_| {
+                            GraphError::Serialization(format!("unknown timezone: {s}"))
+                        })?;
+                        let aware = tz.from_utc_datetime(&utc_ndt);
+                        let off = aware.offset().fix();
+                        let converted = aware.naive_local();
+                        return Ok(CypherDateTime(converted, off, Some(s.to_string())));
+                    } else if src_off != target_off {
+                        let delta = target_off.local_minus_utc() - src_off.local_minus_utc();
+                        ndt + chrono::Duration::seconds(delta as i64)
+                    } else {
+                        ndt
+                    }
+                } else {
+                    ndt
+                };
+                if is_named {
                     let (off, tz_name) = resolve_tz_name_at(s, &ndt)?;
                     Ok(CypherDateTime(ndt, off, tz_name))
+                } else {
+                    Ok(CypherDateTime(ndt, target_off, None))
                 }
             }
-            _ => Err(GraphError::Serialization(
-                "missing or invalid 'timezone' key".to_string(),
-            )),
+            _ => {
+                // No explicit timezone — try to inherit from a `time` or `datetime` base temporal.
+                match map.get("time").or_else(|| map.get("datetime")) {
+                    Some(Value::Time(t)) => Ok(CypherDateTime(ndt, t.1, None)),
+                    Some(Value::DateTime(dt)) => {
+                        // If the base has a named timezone, re-resolve at the new
+                        // NaiveDateTime to account for DST changes.
+                        if let Some(ref tz_name) = dt.2 {
+                            let (off, tz) = resolve_tz_name_at(tz_name, &ndt)?;
+                            Ok(CypherDateTime(ndt, off, tz))
+                        } else {
+                            Ok(CypherDateTime(ndt, dt.1, None))
+                        }
+                    }
+                    _ => {
+                        // Default to UTC when constructing from date/time components
+                        // or from a date projection.
+                        Ok(CypherDateTime(
+                            ndt,
+                            FixedOffset::east_opt(0).unwrap(),
+                            None,
+                        ))
+                    }
+                }
+            }
         }
     }
 

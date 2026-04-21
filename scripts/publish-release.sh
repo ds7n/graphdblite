@@ -108,17 +108,41 @@ check_prereqs() {
   fi
 }
 
+# ── Checksums ────────────────────────────────────────────────────────────────
+generate_checksums() {
+  log "Generating sha256sums.txt"
+  local checksum_file="$DIST_DIR/sha256sums.txt"
+  rm -f "$checksum_file"
+
+  # Collect all release artifacts (not .sha256 sidecars).
+  local artifacts=()
+  for f in "$DIST_DIR"/cli/graphdblite-*.tar.gz "$DIST_DIR"/cli/graphdblite-*.zip \
+           "$DIST_DIR"/ffi/graphdblite-ffi-*.tar.gz "$DIST_DIR"/ffi/graphdblite-ffi-*.zip \
+           "$DIST_DIR"/node/*.node \
+           "$DIST_DIR"/wheels/*.whl; do
+    [[ -f "$f" ]] && artifacts+=("$f")
+  done
+
+  for f in "${artifacts[@]}"; do
+    (cd "$(dirname "$f")" && sha256sum "$(basename "$f")") >> "$checksum_file"
+  done
+
+  ok "sha256sums.txt (${#artifacts[@]} entries)"
+}
+
 # ── Collect artifacts ────────────────────────────────────────────────────────
 collect_artifacts() {
   local files=()
 
-  # CLI
-  for f in "$DIST_DIR"/cli/graphdblite-*.tar.gz "$DIST_DIR"/cli/graphdblite-*.zip; do
+  # CLI (archives + sidecar checksums)
+  for f in "$DIST_DIR"/cli/graphdblite-*.tar.gz "$DIST_DIR"/cli/graphdblite-*.zip \
+           "$DIST_DIR"/cli/*.sha256; do
     [[ -f "$f" ]] && files+=("$f")
   done
 
-  # FFI
-  for f in "$DIST_DIR"/ffi/graphdblite-ffi-*.tar.gz "$DIST_DIR"/ffi/graphdblite-ffi-*.zip; do
+  # FFI (archives + sidecar checksums)
+  for f in "$DIST_DIR"/ffi/graphdblite-ffi-*.tar.gz "$DIST_DIR"/ffi/graphdblite-ffi-*.zip \
+           "$DIST_DIR"/ffi/*.sha256; do
     [[ -f "$f" ]] && files+=("$f")
   done
 
@@ -132,11 +156,11 @@ collect_artifacts() {
     [[ -f "$f" ]] && files+=("$f")
   done
 
-  # Checksums
+  # Combined checksums
   [[ -f "$DIST_DIR/sha256sums.txt" ]] && files+=("$DIST_DIR/sha256sums.txt")
 
   if [[ ${#files[@]} -eq 0 ]]; then
-    err "No artifacts found in dist/ — run scripts/build-release.sh first"
+    err "No artifacts found in dist/ — run 'just build' first"
     exit 1
   fi
 
@@ -341,6 +365,7 @@ github_publish_tagged() {
 main() {
   parse_args "$@"
   check_prereqs
+  generate_checksums
   collect_artifacts
 
   if [[ "$TARGET" == "github" ]]; then

@@ -1,8 +1,8 @@
 # TCK Conformance Improvement Plan
 
-## Status: Phases 1-20 complete (2026-04-20)
+## Status: Phases 1-21 complete (2026-04-20)
 
-2280 scenarios passing (85.3%), 484 skiplisted, 0 failures.
+3022 scenarios passing (87.2%), 444 skiplisted, 0 failures.
 
 ---
 
@@ -44,6 +44,21 @@ Three code fixes and a systematic skiplist sweep:
 - **Null property filtering**: `CREATE ({p: null})` no longer stores `p`. Added null check in `exec_create_sequence` and `exec_match_create` property loops.
 - **CREATE dedup**: `CREATE (a), (a)-[:R]->(b)` no longer creates duplicate nodes. `plan_create_pattern` tracks `seen` named variables across patterns, skipping `CreateNode` for already-seen aliases.
 - **Batch unskip**: Removed 45 confirmed-passing skiplist entries (Create1-6, Comparison2, List3, Literals7-8, Merge2-3-5-7, Precedence2, Return3-6, TypeConversion4, WithOrderBy3).
+
+### Phase 21: Temporal extensions ✓
+
+Temporal features, control queries, and systematic sweep:
+- **duration.between/inMonths/inDays/inSeconds**: Full eval pipeline for 4 dotted duration functions with cross-type mixing, UTC offset handling, and null propagation
+- **Named timezone (IANA)**: Parse `[Europe/Stockholm]` in datetime strings, resolve IANA names to DST-aware offsets in map construction, render `[TzName]` in Display
+- **Quarter/dayOfQuarter**: `{year: 1984, quarter: 3, dayOfQuarter: 45}` → `1984-08-14` in `date_from_map`
+- **Base date/time projection**: `{date: other, year: 28}` and `{time: other, second: 42}` in temporal constructors
+- **Temporal truncation**: `date.truncate()`, `localtime.truncate()`, `time.truncate()`, `localdatetime.truncate()`, `datetime.truncate()` with unit-based truncation and map overrides
+- **Duration rendering**: Normalize seconds+nanos same sign in `from_map`, fix negative fractional Display
+- **toString()**: Added for all 6 temporal types
+- **Control query step**: `When executing control query:` in TCK harness (unblocks Temporal4, Create2/5, Merge6/7)
+- **Accessor fixes**: weekYear/week split, dayOfQuarter, timezone, epochSeconds/Millis, Duration sub-accessors
+- **Batch unskip**: 18 scenarios found passing via systematic sweep
+- Result: 2280 → 3022 passing (+742), skiplist 484 → 444
 
 ### Phase 20: Quick wins, CASE, Union, batch unskip ✓
 
@@ -185,35 +200,28 @@ Regenerate with: `uv run tests/tck/analyze_blockers.py`
 
 | Sole | Impact | Construct |
 |-----:|-------:|-----------|
-| 83 | 177 | write-result (CREATE/MERGE ... RETURN) |
-| 23 | 40 | temporal types |
+| 89 | 183 | write-result (CREATE/MERGE ... RETURN) |
 | 8 | 9 | duration.between/inX |
-| 5 | 5 | temporal truncation |
 | 3 | 29 | error validation |
+| 3 | 18 | temporal types |
 | 1 | 7 | CREATE (no RETURN) |
 | 1 | 10 | aggregation (non-count) |
 | 1 | 3 | list indexing [n] |
 
 ### Recommended next phases
 
-**Phase 21: Temporal extensions (23+8+5 = 36 sole-blockers, ~54 impact)**
-- `duration.between()`, `duration.inMonths()`, `duration.inDays()`, `duration.inSeconds()`
-- Temporal truncation: `date.truncate()`, `datetime.truncate()`, etc.
-- Remaining map construction: week/ordinal dates, named timezones
-- Storage round-trip, rendering
-- `temporal(null)` → null propagation
-
-**Phase 22: Variable-length relationships (22 impact)**
-`[*]`, `[*2..5]` — requires BFS/DFS path expansion in the planner.
-Unlocks TriadicSelection, Path, and some Match/MatchWhere scenarios.
-
-**Phase 23: Write-result / side-effect issues (83 sole-blockers, 177 impact)**
+**Phase 22: Write-result / side-effect issues (89 sole-blockers, 183 impact)**
 Largest single category. Many are harness categorization artifacts (CREATE in setup
 step, not in query under test). Real blockers in actual queries:
 - Multi-clause CREATE/MERGE with WITH and aggregation
 - Side-effect counting in harness
 - OPTIONAL MATCH + write combos
 - Complex self-loop / undirected matching
+- Temporal property storage (CREATE + MATCH round-trip)
+
+**Phase 23: Variable-length relationships (22 impact)**
+`[*]`, `[*2..5]` — requires BFS/DFS path expansion in the planner.
+Unlocks TriadicSelection, Path, and some Match/MatchWhere scenarios.
 
 ## Critical files
 - `tests/tck_support/world.rs` — harness counts

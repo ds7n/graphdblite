@@ -7,13 +7,13 @@ Last updated: 2026-04-20
 Full openCypher TCK vendored (220 feature files, commit `677cbaf`).
 
 ```
-173 features parsed (1 parse error: Match5.feature)
-2362 total scenario instances running
-2280 passed
-  82 skipped (cucumber-level)
- 484 skiplisted (known failures)
+176 features parsed (1 parse error: Match5.feature)
+3093 total scenario instances running
+3022 passed
+  71 skipped (cucumber-level)
+ 444 skiplisted (known failures)
  ────
-2280/2764 unique scenarios passing (85.3%)
+3022/3466 unique scenarios passing (87.2%)
 ```
 
 ## Pass rate by area
@@ -71,11 +71,10 @@ Regenerate with: `uv run tests/tck/analyze_blockers.py`
 
 | Sole | Impact | Construct |
 |-----:|-------:|-----------|
-| 83 | 177 | write-result (CREATE/MERGE ... RETURN) |
-| 23 | 40 | temporal types |
+| 89 | 183 | write-result (CREATE/MERGE ... RETURN) |
 | 8 | 9 | duration.between/inX |
-| 5 | 5 | temporal truncation |
 | 3 | 29 | error validation |
+| 3 | 18 | temporal types |
 | 1 | 7 | CREATE (no RETURN) |
 | 1 | 10 | aggregation (non-count) |
 | 1 | 3 | list indexing [n] |
@@ -84,11 +83,11 @@ Regenerate with: `uv run tests/tck/analyze_blockers.py`
 
 | Impact | Construct |
 |-------:|-----------|
-| 177 | write-result (CREATE/MERGE ... RETURN) |
-| 40 | temporal types |
+| 183 | write-result (CREATE/MERGE ... RETURN) |
 | 29 | error validation |
 | 22 | var-length rel `*` |
 | 19 | OPTIONAL MATCH |
+| 18 | temporal types |
 | 15 | DELETE/DETACH DELETE |
 | 13 | SET property/label |
 | 12 | MERGE |
@@ -97,18 +96,31 @@ Regenerate with: `uv run tests/tck/analyze_blockers.py`
 | 9 | duration.between/inX |
 | 8 | IS NULL / IS NOT NULL |
 
-### Zero-blocker scenarios (3)
+### Zero-blocker scenarios (2)
 
 - Temporal1::[13]: timezone offset with second precision (`+02:05:59`)
-- Temporal1::[13] variants: require `chrono` second-precision FixedOffset
 
 ## Skiplist
 
-`skiplist.txt` lists 484 known-failing `Feature::Scenario` pairs.
+`skiplist.txt` lists 444 known-failing `Feature::Scenario` pairs.
 The harness filters these out and exits non-zero only if a *non-skiplisted*
 scenario fails — making the TCK a regression gate.
 
 ## History
+
+### Phase 21 — Temporal extensions (2026-04-20)
+
+- [x] Add `duration.between()`, `duration.inMonths()`, `duration.inDays()`, `duration.inSeconds()` functions
+- [x] Add named timezone (IANA) support: string parsing (`[Europe/Stockholm]`), map construction, DST-aware offset resolution
+- [x] Add quarter/dayOfQuarter date construction from maps
+- [x] Add base date/time projection (`{date: other, year: 28}`, `{time: other, second: 42}`)
+- [x] Add temporal truncation functions: `date.truncate()`, `localtime.truncate()`, `time.truncate()`, `localdatetime.truncate()`, `datetime.truncate()`
+- [x] Fix duration rendering normalization (seconds/nanos same sign, negative fractional display)
+- [x] Add `toString()` for all 6 temporal types
+- [x] Add `executing control query:` step to TCK harness (unblocks Temporal4, Create2/5, Merge6/7)
+- [x] Fix weekYear/week accessor split, add dayOfQuarter, timezone, epochSeconds/Millis accessors
+- [x] Batch unskip: 18 scenarios found passing via systematic sweep
+- Result: 2280 → 3022 passing scenarios (+742), skiplist 484 → 444
 
 ### Phase 20 — Quick wins, CASE, Union, batch unskip (2026-04-20)
 

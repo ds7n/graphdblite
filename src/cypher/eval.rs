@@ -972,11 +972,32 @@ fn eval_temporal_constructor(
     from_str: impl Fn(&str) -> crate::types::Result<Value>,
     from_map: impl Fn(&std::collections::BTreeMap<String, Value>) -> crate::types::Result<Value>,
 ) -> crate::types::Result<Value> {
+    if args.is_empty() {
+        return from_map(&std::collections::BTreeMap::new());
+    }
     let arg = eval_single_arg(args, record, conn)?;
     match arg {
         Value::String(s) => from_str(&s),
         Value::Map(m) => from_map(&m),
         Value::Null => Ok(Value::Null),
+        Value::Date(_) | Value::LocalTime(_) | Value::Time(_)
+        | Value::LocalDateTime(_) | Value::DateTime(_) => {
+            let mut m = std::collections::BTreeMap::new();
+            match &arg {
+                Value::Date(_) => {
+                    m.insert("date".to_string(), arg);
+                }
+                Value::LocalDateTime(_) | Value::DateTime(_) => {
+                    // Use `datetime` key so both date_from_map and time_from_map pick it up.
+                    m.insert("datetime".to_string(), arg);
+                }
+                Value::LocalTime(_) | Value::Time(_) => {
+                    m.insert("time".to_string(), arg);
+                }
+                _ => {}
+            }
+            from_map(&m)
+        }
         _ => Ok(Value::Null),
     }
 }

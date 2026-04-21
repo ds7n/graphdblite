@@ -291,15 +291,6 @@ Set6 - Persistence of set clause side effects::[6] Aggregating in `RETURN` after
 Set6 - Persistence of set clause side effects::[7] Aggregating in `WITH` after setting a property on nodes affects the result set but not the side effects
 Temporal1 - Create Temporal Values from a Map::[10] Should construct date time with named time zone
 Temporal1 - Create Temporal Values from a Map::[12] Should construct duration
-Temporal1 - Create Temporal Values from a Map::[13] Should construct temporal with time offset with second precision
-Temporal1 - Create Temporal Values from a Map::[1] Should construct week date
-Temporal1 - Create Temporal Values from a Map::[2] Should construct week localdatetime
-Temporal1 - Create Temporal Values from a Map::[3] Should construct week datetime
-Temporal1 - Create Temporal Values from a Map::[4] Should construct date
-Temporal1 - Create Temporal Values from a Map::[6] Should construct time
-Temporal1 - Create Temporal Values from a Map::[7] Should construct local date time
-Temporal1 - Create Temporal Values from a Map::[8] Should construct date time with default time zone
-Temporal1 - Create Temporal Values from a Map::[9] Should construct date time with offset time zone
 Temporal10 - Compute Durations Between two Temporal Values::[2] Should compute duration between two temporals
 Temporal10 - Compute Durations Between two Temporal Values::[3] Should compute duration between two temporals in months
 Temporal10 - Compute Durations Between two Temporal Values::[4] Should compute duration between two temporals in days
@@ -309,17 +300,6 @@ Temporal10 - Compute Durations Between two Temporal Values::[9] Should handle la
 Temporal10 - Compute Durations Between two Temporal Values::[10] Should handle large durations in seconds
 Temporal10 - Compute Durations Between two Temporal Values::[12] Should compute durations with no difference
 Temporal2 - Create Temporal Values from a String::[7] Should parse duration from string
-Temporal3 - Project Temporal Values from other Temporal Values::[10] Should select date and time into date time
-Temporal3 - Project Temporal Values from other Temporal Values::[11] Should datetime into date time
-Temporal3 - Project Temporal Values from other Temporal Values::[1] Should select date
-Temporal3 - Project Temporal Values from other Temporal Values::[2] Should select local time
-Temporal3 - Project Temporal Values from other Temporal Values::[3] Should select time
-Temporal3 - Project Temporal Values from other Temporal Values::[4] Should select date into local date time
-Temporal3 - Project Temporal Values from other Temporal Values::[5] Should select time into local date time
-Temporal3 - Project Temporal Values from other Temporal Values::[6] Should select date and time into local date time
-Temporal3 - Project Temporal Values from other Temporal Values::[7] Should select datetime into local date time
-Temporal3 - Project Temporal Values from other Temporal Values::[8] Should select date into date time
-Temporal3 - Project Temporal Values from other Temporal Values::[9] Should select time into date time
 Temporal4 - Store Temporal Values::[10] Should store date time array
 Temporal4 - Store Temporal Values::[11] Should store duration
 Temporal4 - Store Temporal Values::[12] Should store duration array

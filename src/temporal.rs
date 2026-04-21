@@ -8,7 +8,9 @@ use std::collections::BTreeMap;
 use std::fmt;
 use std::hash::{Hash, Hasher};
 
-use chrono::{Datelike, FixedOffset, NaiveDate, NaiveDateTime, NaiveTime, Offset, TimeZone, Timelike};
+use chrono::{
+    Datelike, FixedOffset, NaiveDate, NaiveDateTime, NaiveTime, Offset, TimeZone, Timelike,
+};
 use serde::de::{self, MapAccess, Visitor};
 use serde::ser::SerializeStruct;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
@@ -405,7 +407,10 @@ fn base_source_offset(map: &BTreeMap<String, Value>) -> Option<FixedOffset> {
 /// Re-resolve the source offset at a new NaiveDateTime when the base temporal
 /// has a named timezone. This accounts for DST changes when the date differs
 /// from the original temporal.
-fn base_source_offset_at(map: &BTreeMap<String, Value>, ndt: &NaiveDateTime) -> Option<FixedOffset> {
+fn base_source_offset_at(
+    map: &BTreeMap<String, Value>,
+    ndt: &NaiveDateTime,
+) -> Option<FixedOffset> {
     match map.get("time").or_else(|| map.get("datetime")) {
         Some(Value::Time(t)) => Some(t.1),
         Some(Value::DateTime(dt)) => {
@@ -471,12 +476,11 @@ fn date_from_map(map: &BTreeMap<String, Value>) -> Result<NaiveDate> {
         let year = get_i64(map, "year")
             .or_else(|| base_date.map(|d| d.iso_week().year() as i64))
             .unwrap_or(0) as i32;
-        let dow = get_i64(map, "dayOfWeek")
-            .unwrap_or(
-                base_date
-                    .map(|d| d.weekday().num_days_from_monday() as i64 + 1)
-                    .unwrap_or(1),
-            ) as u32;
+        let dow = get_i64(map, "dayOfWeek").unwrap_or(
+            base_date
+                .map(|d| d.weekday().num_days_from_monday() as i64 + 1)
+                .unwrap_or(1),
+        ) as u32;
         let weekday = match dow {
             1 => chrono::Weekday::Mon,
             2 => chrono::Weekday::Tue,
@@ -510,9 +514,7 @@ fn date_from_map(map: &BTreeMap<String, Value>) -> Result<NaiveDate> {
                 .ok_or_else(|| GraphError::Serialization("invalid quarter".to_string()))?;
             start
                 .checked_add_signed(chrono::Duration::days(doq - 1))
-                .ok_or_else(|| {
-                    GraphError::Serialization("dayOfQuarter out of range".to_string())
-                })
+                .ok_or_else(|| GraphError::Serialization("dayOfQuarter out of range".to_string()))
         } else if let Some(bd) = base_date {
             // No explicit dayOfQuarter but base date present: preserve month-offset
             // within the quarter and day-of-month from the base date.
@@ -589,14 +591,9 @@ fn resolve_tz_name_at(name: &str, dt: &NaiveDateTime) -> Result<(FixedOffset, Op
     let tz: chrono_tz::Tz = name
         .parse()
         .map_err(|_| GraphError::Serialization(format!("unknown timezone: {name}")))?;
-    let aware = tz
-        .from_local_datetime(dt)
-        .earliest()
-        .ok_or_else(|| {
-            GraphError::Serialization(format!(
-                "ambiguous or invalid datetime in timezone: {name}"
-            ))
-        })?;
+    let aware = tz.from_local_datetime(dt).earliest().ok_or_else(|| {
+        GraphError::Serialization(format!("ambiguous or invalid datetime in timezone: {name}"))
+    })?;
     let off = aware.offset().fix();
     Ok((off, Some(name.to_string())))
 }
@@ -909,8 +906,11 @@ impl CypherTime {
                     let delta = off.local_minus_utc() - src_off.local_minus_utc();
                     let secs = t.num_seconds_from_midnight() as i64 + delta as i64;
                     let secs = secs.rem_euclid(86400) as u32;
-                    NaiveTime::from_num_seconds_from_midnight_opt(secs, t.nanosecond() % 1_000_000_000)
-                        .unwrap_or(t)
+                    NaiveTime::from_num_seconds_from_midnight_opt(
+                        secs,
+                        t.nanosecond() % 1_000_000_000,
+                    )
+                    .unwrap_or(t)
                 } else {
                     t
                 }
@@ -1229,7 +1229,8 @@ impl CypherDateTime {
         let ndt = NaiveDateTime::new(d, t);
         match map.get("timezone") {
             Some(Value::String(s)) => {
-                let target_off = if s.starts_with('+') || s.starts_with('-') || s == "Z" || s == "z" {
+                let target_off = if s.starts_with('+') || s.starts_with('-') || s == "Z" || s == "z"
+                {
                     parse_offset(s)?
                 } else {
                     // Will be resolved below after possible conversion.
@@ -1241,7 +1242,8 @@ impl CypherDateTime {
                 let ndt = if let Some(src_off) = base_source_offset_at(map, &ndt) {
                     if is_named {
                         // Convert via UTC intermediary, then resolve target named tz.
-                        let utc_ndt = ndt - chrono::Duration::seconds(src_off.local_minus_utc() as i64);
+                        let utc_ndt =
+                            ndt - chrono::Duration::seconds(src_off.local_minus_utc() as i64);
                         let tz: chrono_tz::Tz = s.parse().map_err(|_| {
                             GraphError::Serialization(format!("unknown timezone: {s}"))
                         })?;
@@ -1282,11 +1284,7 @@ impl CypherDateTime {
                     _ => {
                         // Default to UTC when constructing from date/time components
                         // or from a date projection.
-                        Ok(CypherDateTime(
-                            ndt,
-                            FixedOffset::east_opt(0).unwrap(),
-                            None,
-                        ))
+                        Ok(CypherDateTime(ndt, FixedOffset::east_opt(0).unwrap(), None))
                     }
                 }
             }
@@ -2005,9 +2003,9 @@ pub fn truncate_date(unit: &str, val: &Value, map: &BTreeMap<String, Value>) -> 
 
     // Apply map overrides.
     if let Some(Value::I64(day)) = map.get("day") {
-        d = d.with_day(*day as u32).ok_or_else(|| {
-            GraphError::Serialization(format!("invalid day: {day}"))
-        })?;
+        d = d
+            .with_day(*day as u32)
+            .ok_or_else(|| GraphError::Serialization(format!("invalid day: {day}")))?;
     }
     if let Some(Value::I64(dow)) = map.get("dayOfWeek") {
         // dayOfWeek override: keep the same week, change to the given day.
@@ -2017,9 +2015,9 @@ pub fn truncate_date(unit: &str, val: &Value, map: &BTreeMap<String, Value>) -> 
         d = d + chrono::Duration::days(delta);
     }
     if let Some(Value::I64(m)) = map.get("month") {
-        d = d.with_month(*m as u32).ok_or_else(|| {
-            GraphError::Serialization(format!("invalid month: {m}"))
-        })?;
+        d = d
+            .with_month(*m as u32)
+            .ok_or_else(|| GraphError::Serialization(format!("invalid month: {m}")))?;
     }
 
     Ok(d)
@@ -2070,9 +2068,9 @@ pub fn truncate_time(unit: &str, val: &Value, map: &BTreeMap<String, Value>) -> 
     if let Some(Value::I64(ns)) = map.get("nanosecond") {
         let truncated_nanos = t.nanosecond();
         let new_nanos = truncated_nanos + *ns as u32;
-        t = t.with_nanosecond(new_nanos).ok_or_else(|| {
-            GraphError::Serialization(format!("invalid nanosecond: {ns}"))
-        })?;
+        t = t
+            .with_nanosecond(new_nanos)
+            .ok_or_else(|| GraphError::Serialization(format!("invalid nanosecond: {ns}")))?;
     }
 
     Ok(t)
@@ -2088,11 +2086,20 @@ fn truncate_time_core(unit: &str, time: NaiveTime) -> Result<NaiveTime> {
         "second" => Ok(NaiveTime::from_hms_opt(time.hour(), time.minute(), time.second()).unwrap()),
         "millisecond" => {
             let ms = time.nanosecond() / 1_000_000;
-            Ok(NaiveTime::from_hms_nano_opt(time.hour(), time.minute(), time.second(), ms * 1_000_000).unwrap())
+            Ok(NaiveTime::from_hms_nano_opt(
+                time.hour(),
+                time.minute(),
+                time.second(),
+                ms * 1_000_000,
+            )
+            .unwrap())
         }
         "microsecond" => {
             let us = time.nanosecond() / 1_000;
-            Ok(NaiveTime::from_hms_nano_opt(time.hour(), time.minute(), time.second(), us * 1_000).unwrap())
+            Ok(
+                NaiveTime::from_hms_nano_opt(time.hour(), time.minute(), time.second(), us * 1_000)
+                    .unwrap(),
+            )
         }
         _ => Err(GraphError::Serialization(format!(
             "unsupported truncation unit for time: {unit}"

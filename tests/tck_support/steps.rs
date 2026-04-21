@@ -179,6 +179,31 @@ fn when_executing_query(world: &mut World, step: &Step) {
     }
 }
 
+#[when("executing control query:")]
+fn when_executing_control_query(world: &mut World, step: &Step) {
+    let query = step
+        .docstring
+        .as_ref()
+        .expect("executing control query requires a docstring")
+        .trim();
+
+    let db = world.db.as_mut().expect("database not initialized");
+
+    // Control queries verify side effects — always read-only.
+    let tx = db.begin_read().expect("begin_read");
+    match tx.query(query) {
+        Ok(records) => {
+            world.last_result = Some(records);
+            world.last_error = None;
+        }
+        Err(e) => {
+            world.last_result = None;
+            world.last_error = Some(e);
+        }
+    }
+    tx.commit().expect("commit read tx");
+}
+
 // ─── Then ────────────────────────────────────────────────────────────────
 
 #[then("the result should be, in any order:")]

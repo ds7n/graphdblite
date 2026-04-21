@@ -1049,7 +1049,9 @@ fn eval_function_call(
             let d = crate::temporal::truncate_date(&unit, &val, &map)?;
             let t = crate::temporal::truncate_time(&unit, &val, &map)?;
             let ndt = d.and_time(t);
-            Ok(Value::LocalDateTime(crate::temporal::CypherLocalDateTime(ndt)))
+            Ok(Value::LocalDateTime(crate::temporal::CypherLocalDateTime(
+                ndt,
+            )))
         }
         "datetime.truncate" => {
             if args.len() < 2 {
@@ -1080,8 +1082,8 @@ fn eval_function_call(
                     (chrono::FixedOffset::east_opt(off_secs).unwrap(), None)
                 } else {
                     // IANA timezone name — resolve at the truncated datetime.
-                    use chrono_tz::Tz;
                     use chrono::TimeZone;
+                    use chrono_tz::Tz;
                     let tz: Tz = tz_s.parse().map_err(|_| {
                         crate::types::GraphError::Serialization(format!("unknown timezone: {tz_s}"))
                     })?;
@@ -1100,7 +1102,9 @@ fn eval_function_call(
                     _ => (chrono::FixedOffset::east_opt(0).unwrap(), None),
                 }
             };
-            Ok(Value::DateTime(crate::temporal::CypherDateTime(ndt, offset, tz_name)))
+            Ok(Value::DateTime(crate::temporal::CypherDateTime(
+                ndt, offset, tz_name,
+            )))
         }
         // Aggregate functions are handled by the Aggregate operator.
         _ => Ok(Value::Null),
@@ -1123,8 +1127,11 @@ fn eval_temporal_constructor(
         Value::String(s) => from_str(&s),
         Value::Map(m) => from_map(&m),
         Value::Null => Ok(Value::Null),
-        Value::Date(_) | Value::LocalTime(_) | Value::Time(_)
-        | Value::LocalDateTime(_) | Value::DateTime(_) => {
+        Value::Date(_)
+        | Value::LocalTime(_)
+        | Value::Time(_)
+        | Value::LocalDateTime(_)
+        | Value::DateTime(_) => {
             let mut m = std::collections::BTreeMap::new();
             match &arg {
                 Value::Date(_) => {
@@ -1993,9 +2000,18 @@ fn temporal_accessor(val: &Value, prop: &str) -> Option<Value> {
             "month" => Some(Value::I64(d.0.month() as i64)),
             "day" => Some(Value::I64(d.0.day() as i64)),
             "ordinalDay" => Some(Value::I64(d.0.ordinal() as i64)),
-            "weekYear" | "week" => Some(Value::I64(d.0.iso_week().week() as i64)),
-            "dayOfWeek" => Some(Value::I64(d.0.weekday().num_days_from_monday() as i64 + 1)),
+            "weekYear" => Some(Value::I64(d.0.iso_week().year() as i64)),
+            "week" => Some(Value::I64(d.0.iso_week().week() as i64)),
+            "dayOfWeek" | "weekDay" => {
+                Some(Value::I64(d.0.weekday().num_days_from_monday() as i64 + 1))
+            }
             "quarter" => Some(Value::I64(((d.0.month() - 1) / 3 + 1) as i64)),
+            "dayOfQuarter" => {
+                let q_start_month = ((d.0.month() - 1) / 3) * 3 + 1;
+                let q_start =
+                    chrono::NaiveDate::from_ymd_opt(d.0.year(), q_start_month, 1).unwrap();
+                Some(Value::I64((d.0 - q_start).num_days() + 1))
+            }
             _ => None,
         },
         Value::LocalTime(lt) => {
@@ -2023,7 +2039,9 @@ fn temporal_accessor(val: &Value, prop: &str) -> Option<Value> {
                 "millisecond" => Some(Value::I64(
                     (t.nanosecond() as i64 % 1_000_000_000) / 1_000_000,
                 )),
-                "offset" => Some(Value::String(crate::temporal::fmt_offset_public(&ct.1))),
+                "offset" | "timezone" => {
+                    Some(Value::String(crate::temporal::fmt_offset_public(&ct.1)))
+                }
                 "offsetMinutes" => Some(Value::I64(ct.1.local_minus_utc() as i64 / 60)),
                 "offsetSeconds" => Some(Value::I64(ct.1.local_minus_utc() as i64)),
                 _ => None,
@@ -2039,6 +2057,25 @@ fn temporal_accessor(val: &Value, prop: &str) -> Option<Value> {
             temporal_accessor(&time_val, prop)
         }
         Value::DateTime(dt) => {
+            // DateTime-specific accessors first.
+            match prop {
+                "timezone" => {
+                    // Return named tz if available, otherwise the offset string.
+                    return Some(Value::String(
+                        dt.2.clone()
+                            .unwrap_or_else(|| crate::temporal::fmt_offset_public(&dt.1)),
+                    ));
+                }
+                "epochSeconds" => {
+                    let epoch = dt.0.and_utc().timestamp();
+                    return Some(Value::I64(epoch));
+                }
+                "epochMillis" => {
+                    let epoch = dt.0.and_utc().timestamp_millis();
+                    return Some(Value::I64(epoch));
+                }
+                _ => {}
+            }
             // Try date accessors, then time accessors, then offset accessors.
             let date_val = Value::Date(crate::temporal::CypherDate(dt.0.date()));
             if let Some(v) = temporal_accessor(&date_val, prop) {
@@ -2049,18 +2086,25 @@ fn temporal_accessor(val: &Value, prop: &str) -> Option<Value> {
         }
         Value::Duration(d) => match prop {
             "years" => Some(Value::I64(d.months / 12)),
+            "quarters" => Some(Value::I64(d.months / 3)),
             "months" => Some(Value::I64(d.months)),
-            "monthsOfYear" => Some(Value::I64(d.months % 12)),
+            "weeks" => Some(Value::I64(d.days / 7)),
             "days" => Some(Value::I64(d.days)),
             "hours" => Some(Value::I64(d.seconds / 3600)),
             "minutes" => Some(Value::I64(d.seconds / 60)),
             "seconds" => Some(Value::I64(d.seconds)),
             "nanoseconds" => Some(Value::I64(d.seconds * 1_000_000_000 + d.nanos)),
-            "nanosecondsOfSecond" => Some(Value::I64(d.nanos)),
             "milliseconds" => Some(Value::I64(d.seconds * 1_000 + d.nanos / 1_000_000)),
             "microseconds" => Some(Value::I64(d.seconds * 1_000_000 + d.nanos / 1_000)),
+            "quartersOfYear" => Some(Value::I64((d.months % 12) / 3)),
+            "monthsOfQuarter" => Some(Value::I64(d.months % 3)),
+            "monthsOfYear" => Some(Value::I64(d.months % 12)),
+            "daysOfWeek" => Some(Value::I64(d.days % 7)),
             "minutesOfHour" => Some(Value::I64((d.seconds / 60) % 60)),
             "secondsOfMinute" => Some(Value::I64(d.seconds % 60)),
+            "millisecondsOfSecond" => Some(Value::I64(d.nanos / 1_000_000)),
+            "microsecondsOfSecond" => Some(Value::I64(d.nanos / 1_000)),
+            "nanosecondsOfSecond" => Some(Value::I64(d.nanos)),
             _ => None,
         },
         _ => None,

@@ -1350,19 +1350,13 @@ impl fmt::Display for CypherDuration {
         let years = self.months / 12;
         let months = self.months % 12;
 
-        // Reconstruct total nanoseconds from seconds + nanos, then decompose.
-        // The nanos field may be non-negative (floor convention) even when seconds
-        // is negative, so we reconstruct to get the true total.
-        let total_nanos = self.seconds * 1_000_000_000 + self.nanos;
-        // Truncate toward zero for h/m/s decomposition.
-        let total_secs_from_nanos = total_nanos / 1_000_000_000; // truncates toward zero
-        let sub_nanos = total_nanos % 1_000_000_000; // same sign as total_nanos
-
-        let hours = total_secs_from_nanos / 3600;
-        let rem = total_secs_from_nanos % 3600;
+        // Decompose seconds into hours, minutes, seconds.
+        // Rust % preserves sign, so e.g. -60 % 3600 = -60, -60 / 60 = -1.
+        let hours = self.seconds / 3600;
+        let rem = self.seconds % 3600;
         let minutes = rem / 60;
         let secs = rem % 60;
-        let nanos = sub_nanos;
+        let nanos = self.nanos;
 
         let has_date_part = years != 0 || months != 0 || self.days != 0;
         let has_time_part = hours != 0 || minutes != 0 || secs != 0 || nanos != 0;
@@ -1524,8 +1518,21 @@ impl CypherDuration {
 
         let total_months = years * 12 + mons;
         let total_days = weeks * 7 + days;
-        let total_seconds = hours * 3600 + minutes * 60 + secs;
-        let total_nanos = millis * 1_000_000 + micros * 1_000 + ns;
+        let mut total_seconds = hours * 3600 + minutes * 60 + secs;
+        let mut total_nanos = millis * 1_000_000 + micros * 1_000 + ns;
+
+        // Fold nanos into seconds when they cross the 1-second boundary.
+        total_seconds += total_nanos / 1_000_000_000;
+        total_nanos %= 1_000_000_000;
+
+        // Ensure seconds and nanos have the same sign.
+        if total_seconds > 0 && total_nanos < 0 {
+            total_seconds -= 1;
+            total_nanos += 1_000_000_000;
+        } else if total_seconds < 0 && total_nanos > 0 {
+            total_seconds += 1;
+            total_nanos -= 1_000_000_000;
+        }
 
         Ok(CypherDuration {
             months: total_months,
@@ -1977,6 +1984,119 @@ pub fn duration_in_seconds(lhs: &Value, rhs: &Value) -> CypherDuration {
             seconds: 0,
             nanos: 0,
         }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Truncation helpers
+// ---------------------------------------------------------------------------
+
+/// Public wrapper around `parse_offset` for use from eval.rs.
+pub fn parse_offset_public(s: &str) -> Result<i32> {
+    parse_offset(s).map(|off| off.local_minus_utc())
+}
+
+/// Truncate a date to the given unit, then apply optional map overrides.
+pub fn truncate_date(unit: &str, val: &Value, map: &BTreeMap<String, Value>) -> Result<NaiveDate> {
+    let date = extract_date(val).ok_or_else(|| {
+        GraphError::Serialization("truncate_date requires a temporal with a date component".into())
+    })?;
+    let mut d = truncate_date_core(unit, date)?;
+
+    // Apply map overrides.
+    if let Some(Value::I64(day)) = map.get("day") {
+        d = d.with_day(*day as u32).ok_or_else(|| {
+            GraphError::Serialization(format!("invalid day: {day}"))
+        })?;
+    }
+    if let Some(Value::I64(dow)) = map.get("dayOfWeek") {
+        // dayOfWeek override: keep the same week, change to the given day.
+        // Monday = 1. The truncated date for 'week' is already Monday.
+        let current_dow = d.weekday().num_days_from_monday() as i64 + 1;
+        let delta = *dow - current_dow;
+        d = d + chrono::Duration::days(delta);
+    }
+    if let Some(Value::I64(m)) = map.get("month") {
+        d = d.with_month(*m as u32).ok_or_else(|| {
+            GraphError::Serialization(format!("invalid month: {m}"))
+        })?;
+    }
+
+    Ok(d)
+}
+
+/// Core date truncation logic.
+fn truncate_date_core(unit: &str, date: NaiveDate) -> Result<NaiveDate> {
+    let y = date.year();
+    match unit {
+        "millennium" => Ok(NaiveDate::from_ymd_opt((y / 1000) * 1000, 1, 1).unwrap()),
+        "century" => Ok(NaiveDate::from_ymd_opt((y / 100) * 100, 1, 1).unwrap()),
+        "decade" => Ok(NaiveDate::from_ymd_opt((y / 10) * 10, 1, 1).unwrap()),
+        "year" => Ok(NaiveDate::from_ymd_opt(y, 1, 1).unwrap()),
+        "weekYear" => {
+            // Monday of ISO week 1 of the ISO week-year.
+            let iso_year = date.iso_week().year();
+            Ok(NaiveDate::from_isoywd_opt(iso_year, 1, chrono::Weekday::Mon).unwrap())
+        }
+        "quarter" => {
+            let q = (date.month() - 1) / 3;
+            let first_month = q * 3 + 1;
+            Ok(NaiveDate::from_ymd_opt(y, first_month, 1).unwrap())
+        }
+        "month" => Ok(NaiveDate::from_ymd_opt(y, date.month(), 1).unwrap()),
+        "week" => {
+            // Monday of the current ISO week.
+            let dow = date.weekday().num_days_from_monday() as i64;
+            Ok(date - chrono::Duration::days(dow))
+        }
+        "day" | "hour" | "minute" | "second" | "millisecond" | "microsecond" => Ok(date),
+        _ => Err(GraphError::Serialization(format!(
+            "unsupported truncation unit for date: {unit}"
+        ))),
+    }
+}
+
+/// Truncate a time to the given unit, then apply optional map overrides.
+pub fn truncate_time(unit: &str, val: &Value, map: &BTreeMap<String, Value>) -> Result<NaiveTime> {
+    let time = extract_time(val).ok_or_else(|| {
+        GraphError::Serialization("truncate_time requires a temporal with a time component".into())
+    })?;
+    let mut t = truncate_time_core(unit, time)?;
+
+    // Apply nano override from map.
+    // The nanosecond override adds to the truncated nanos (fills in the zeroed-out
+    // sub-precision digits). E.g. for 'millisecond' truncation with nanos=645000000,
+    // {nanosecond: 2} produces 645000002.
+    if let Some(Value::I64(ns)) = map.get("nanosecond") {
+        let truncated_nanos = t.nanosecond();
+        let new_nanos = truncated_nanos + *ns as u32;
+        t = t.with_nanosecond(new_nanos).ok_or_else(|| {
+            GraphError::Serialization(format!("invalid nanosecond: {ns}"))
+        })?;
+    }
+
+    Ok(t)
+}
+
+/// Core time truncation logic.
+fn truncate_time_core(unit: &str, time: NaiveTime) -> Result<NaiveTime> {
+    match unit {
+        "millennium" | "century" | "decade" | "year" | "weekYear" | "quarter" | "month"
+        | "week" | "day" => Ok(NaiveTime::from_hms_opt(0, 0, 0).unwrap()),
+        "hour" => Ok(NaiveTime::from_hms_opt(time.hour(), 0, 0).unwrap()),
+        "minute" => Ok(NaiveTime::from_hms_opt(time.hour(), time.minute(), 0).unwrap()),
+        "second" => Ok(NaiveTime::from_hms_opt(time.hour(), time.minute(), time.second()).unwrap()),
+        "millisecond" => {
+            let ms = time.nanosecond() / 1_000_000;
+            Ok(NaiveTime::from_hms_nano_opt(time.hour(), time.minute(), time.second(), ms * 1_000_000).unwrap())
+        }
+        "microsecond" => {
+            let us = time.nanosecond() / 1_000;
+            Ok(NaiveTime::from_hms_nano_opt(time.hour(), time.minute(), time.second(), us * 1_000).unwrap())
+        }
+        _ => Err(GraphError::Serialization(format!(
+            "unsupported truncation unit for time: {unit}"
+        ))),
     }
 }
 

@@ -324,7 +324,6 @@ Temporal6 - Render Temporal Values as a String::[2] Should serialize local time
 Temporal6 - Render Temporal Values as a String::[3] Should serialize time
 Temporal6 - Render Temporal Values as a String::[4] Should serialize local date time
 Temporal6 - Render Temporal Values as a String::[5] Should serialize date time
-Temporal6 - Render Temporal Values as a String::[6] Should serialize duration
 Temporal8 - Compute Arithmetic Operations on Temporal Values::[1] Should add or subtract duration to or from date
 Temporal8 - Compute Arithmetic Operations on Temporal Values::[2] Should add or subtract duration to or from local time
 Temporal8 - Compute Arithmetic Operations on Temporal Values::[3] Should add or subtract duration to or from time
@@ -332,11 +331,6 @@ Temporal8 - Compute Arithmetic Operations on Temporal Values::[4] Should add or 
 Temporal8 - Compute Arithmetic Operations on Temporal Values::[5] Should add or subtract duration to or from date time
 Temporal8 - Compute Arithmetic Operations on Temporal Values::[6] Should add or subtract durations
 Temporal8 - Compute Arithmetic Operations on Temporal Values::[7] Should multiply or divide durations by numbers
-Temporal9 - Truncate Temporal Values::[1] Should truncate date
-Temporal9 - Truncate Temporal Values::[2] Should truncate datetime
-Temporal9 - Truncate Temporal Values::[3] Should truncate localdatetime
-Temporal9 - Truncate Temporal Values::[4] Should truncate localtime
-Temporal9 - Truncate Temporal Values::[5] Should truncate time
 TriadicSelection1 - Query three related nodes on binary-tree graphs::[10] Handling triadic friend of a friend that is not a friend with implicit superset of labels
 TriadicSelection1 - Query three related nodes on binary-tree graphs::[11] Handling triadic friend of a friend that is a friend
 TriadicSelection1 - Query three related nodes on binary-tree graphs::[12] Handling triadic friend of a friend that is a friend with different relationship type

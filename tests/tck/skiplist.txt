@@ -450,3 +450,7 @@ WithWhere2 - Filter multiple variables::[2] Filter node with conjunctive multi-p
 WithWhere4 - Non-Equi-Joins on variables::[2] Join with disjunctive multi-part predicates including patterns
 WithWhere7 - Variable visibility under aliasing::[1] WHERE sees a variable bound before but not after WITH
 WithWhere7 - Variable visibility under aliasing::[3] WHERE sees both, variable bound before but not after WITH and variable bound after but not before WITH
+Temporal10 - Compute Durations Between two Temporal Values::[1] Should split between boundaries correctly
+Temporal10 - Compute Durations Between two Temporal Values::[6] Should compute duration between if they differ only by a fraction of a second and the first comes after the second.
+Temporal10 - Compute Durations Between two Temporal Values::[7] Should compute negative duration between in big units
+Temporal10 - Compute Durations Between two Temporal Values::[11] Should handle when seconds and subseconds have different signs

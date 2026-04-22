@@ -5,7 +5,6 @@ Call1 - Basic procedure calling::[13] Standalone call to unknown procedure shoul
 Call1 - Basic procedure calling::[14] In-query call to unknown procedure should fail
 Comparison1 - Equality::[14] Direction of traversed relationship is not significant for path equality, simple
 Comparison2 - Half-bounded Range::[3] Comparing across types yields null, except numbers
-Conditional1 - Coalesce expression::[1] Run coalesce
 CountingSubgraphMatches1 - Matching subgraph patterns and count the number of matches::[10] Mixing directed and undirected pattern parts with self-relationship, count
 CountingSubgraphMatches1 - Matching subgraph patterns and count the number of matches::[11] Mixing directed and undirected pattern parts with self-relationship, undirected count
 CountingSubgraphMatches1 - Matching subgraph patterns and count the number of matches::[9] Counting directed self-relationships
@@ -119,7 +118,6 @@ Match9 - Match deprecated scenarios::[9] Optionally matching named paths with va
 MatchWhere2 - Filter multiple variables::[1] Filter nodes with conjunctive two-part property predicate on multi variables with multiple bindings
 MatchWhere2 - Filter multiple variables::[2] Filter node with conjunctive multi-part property predicates on multi variables with multiple bindings
 MatchWhere4 - Non-Equi-Joins on variables::[2] Join with disjunctive multi-part predicates including patterns
-Mathematical13 - Square root::[1] `sqrt()` returning float values
 Merge1 - Merge node::[11] Merge should be able to merge using property of bound node
 Merge1 - Merge node::[13] Merge should bind a path
 Merge1 - Merge node::[14] Merges should not be able to match on deleted nodes

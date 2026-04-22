@@ -366,7 +366,7 @@ variable = { ident }
 star = { "*" }
 
 function_call = { function_name ~ "(" ~ function_args ~ ")" }
-function_name = @{ ^"count" | ^"sum" | ^"avg" | ^"min" | ^"max" | ^"collect" | ^"percentileDisc" | ^"percentileCont" | ^"stDev" | ^"stDevP" | ^"length" | ^"nodes" | ^"relationships" | ^"toLower" | ^"toUpper" | ^"toBoolean" | ^"toString" | ^"toInteger" | ^"toFloat" | ^"keys" | ^"labels" | ^"id" | ^"coalesce" | ^"type" | ^"head" | ^"tail" | ^"last" | ^"size" | ^"abs" | ^"substring" | ^"replace" | ^"split" | ^"trim" | ^"reverse" | ^"range" | ^"rand" | ^"properties" | ^"localdatetime" | ^"localtime" | ^"datetime" | ^"date" | ^"duration" | ^"time" }
+function_name = @{ ^"count" | ^"sum" | ^"avg" | ^"min" | ^"max" | ^"collect" | ^"percentileDisc" | ^"percentileCont" | ^"stDev" | ^"stDevP" | ^"length" | ^"nodes" | ^"relationships" | ^"toLower" | ^"toUpper" | ^"toBoolean" | ^"toString" | ^"toInteger" | ^"toFloat" | ^"keys" | ^"labels" | ^"id" | ^"coalesce" | ^"type" | ^"head" | ^"tail" | ^"last" | ^"size" | ^"abs" | ^"sqrt" | ^"sign" | ^"ceil" | ^"floor" | ^"round" | ^"log" | ^"log10" | ^"exp" | ^"e" | ^"pi" | ^"substring" | ^"left" | ^"right" | ^"lTrim" | ^"rTrim" | ^"replace" | ^"split" | ^"trim" | ^"reverse" | ^"range" | ^"rand" | ^"properties" | ^"localdatetime" | ^"localtime" | ^"datetime" | ^"date" | ^"duration" | ^"time" | ^"startNode" | ^"endNode" | ^"exists" }
 function_args = { star | distinct_keyword ~ expr_list | expr_list | "" }
 expr_list = { expr ~ ("," ~ expr)* }
 

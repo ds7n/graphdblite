@@ -735,6 +735,80 @@ fn eval_function_call(
                 _ => Ok(Value::Null),
             }
         }
+        "sqrt" => {
+            let arg = eval_single_arg(args, record, conn)?;
+            match arg {
+                Value::I64(n) => Ok(Value::F64((n as f64).sqrt())),
+                Value::F64(n) => Ok(Value::F64(n.sqrt())),
+                Value::Null => Ok(Value::Null),
+                other => Err(invalid_argument_type("sqrt()", &other)),
+            }
+        }
+        "sign" => {
+            let arg = eval_single_arg(args, record, conn)?;
+            match arg {
+                Value::I64(n) => Ok(Value::I64(n.signum())),
+                Value::F64(n) => Ok(Value::I64(if n.is_nan() { 0 } else { n.signum() as i64 })),
+                Value::Null => Ok(Value::Null),
+                _ => Ok(Value::Null),
+            }
+        }
+        "ceil" => {
+            let arg = eval_single_arg(args, record, conn)?;
+            match arg {
+                Value::I64(n) => Ok(Value::F64(n as f64)),
+                Value::F64(n) => Ok(Value::F64(n.ceil())),
+                Value::Null => Ok(Value::Null),
+                _ => Ok(Value::Null),
+            }
+        }
+        "floor" => {
+            let arg = eval_single_arg(args, record, conn)?;
+            match arg {
+                Value::I64(n) => Ok(Value::F64(n as f64)),
+                Value::F64(n) => Ok(Value::F64(n.floor())),
+                Value::Null => Ok(Value::Null),
+                _ => Ok(Value::Null),
+            }
+        }
+        "round" => {
+            let arg = eval_single_arg(args, record, conn)?;
+            match arg {
+                Value::I64(n) => Ok(Value::F64(n as f64)),
+                Value::F64(n) => Ok(Value::F64(n.round())),
+                Value::Null => Ok(Value::Null),
+                _ => Ok(Value::Null),
+            }
+        }
+        "log" => {
+            let arg = eval_single_arg(args, record, conn)?;
+            match arg {
+                Value::I64(n) => Ok(Value::F64((n as f64).ln())),
+                Value::F64(n) => Ok(Value::F64(n.ln())),
+                Value::Null => Ok(Value::Null),
+                _ => Ok(Value::Null),
+            }
+        }
+        "log10" => {
+            let arg = eval_single_arg(args, record, conn)?;
+            match arg {
+                Value::I64(n) => Ok(Value::F64((n as f64).log10())),
+                Value::F64(n) => Ok(Value::F64(n.log10())),
+                Value::Null => Ok(Value::Null),
+                _ => Ok(Value::Null),
+            }
+        }
+        "exp" => {
+            let arg = eval_single_arg(args, record, conn)?;
+            match arg {
+                Value::I64(n) => Ok(Value::F64((n as f64).exp())),
+                Value::F64(n) => Ok(Value::F64(n.exp())),
+                Value::Null => Ok(Value::Null),
+                _ => Ok(Value::Null),
+            }
+        }
+        "e" => Ok(Value::F64(std::f64::consts::E)),
+        "pi" => Ok(Value::F64(std::f64::consts::PI)),
         "substring" => {
             // substring(s, start [, length])
             let s = eval_single_arg(args, record, conn)?;
@@ -804,6 +878,66 @@ fn eval_function_call(
                 Value::Null => Ok(Value::Null),
                 _ => Ok(Value::Null),
             }
+        }
+        "lTrim" | "ltrim" => {
+            let arg = eval_single_arg(args, record, conn)?;
+            match arg {
+                Value::String(s) => Ok(Value::String(s.trim_start().to_string())),
+                Value::Null => Ok(Value::Null),
+                _ => Ok(Value::Null),
+            }
+        }
+        "rTrim" | "rtrim" => {
+            let arg = eval_single_arg(args, record, conn)?;
+            match arg {
+                Value::String(s) => Ok(Value::String(s.trim_end().to_string())),
+                Value::Null => Ok(Value::Null),
+                _ => Ok(Value::Null),
+            }
+        }
+        "left" => {
+            let s = eval_single_arg(args, record, conn)?;
+            let len_val = args.get(1).map(|a| eval_expr(a, record, conn)).transpose()?;
+            match (s, len_val) {
+                (Value::String(s), Some(Value::I64(n))) => {
+                    let n = n.max(0) as usize;
+                    Ok(Value::String(s.chars().take(n).collect()))
+                }
+                (Value::Null, _) | (_, Some(Value::Null)) => Ok(Value::Null),
+                _ => Ok(Value::Null),
+            }
+        }
+        "right" => {
+            let s = eval_single_arg(args, record, conn)?;
+            let len_val = args.get(1).map(|a| eval_expr(a, record, conn)).transpose()?;
+            match (s, len_val) {
+                (Value::String(s), Some(Value::I64(n))) => {
+                    let n = n.max(0) as usize;
+                    let chars: Vec<char> = s.chars().collect();
+                    let start = chars.len().saturating_sub(n);
+                    Ok(Value::String(chars[start..].iter().collect()))
+                }
+                (Value::Null, _) | (_, Some(Value::Null)) => Ok(Value::Null),
+                _ => Ok(Value::Null),
+            }
+        }
+        "startNode" | "startnode" => {
+            let arg = eval_single_arg(args, record, conn)?;
+            match arg {
+                Value::Null => Ok(Value::Null),
+                _ => Ok(Value::Null),
+            }
+        }
+        "endNode" | "endnode" => {
+            let arg = eval_single_arg(args, record, conn)?;
+            match arg {
+                Value::Null => Ok(Value::Null),
+                _ => Ok(Value::Null),
+            }
+        }
+        "exists" => {
+            let arg = eval_single_arg(args, record, conn)?;
+            Ok(Value::Bool(arg != Value::Null))
         }
         "reverse" => {
             let arg = eval_single_arg(args, record, conn)?;
@@ -1781,7 +1915,8 @@ pub fn expr_to_column_name(expr: &Expr) -> String {
             if args.is_empty() || matches!(args[0], Expr::Star) {
                 format!("{name}(*)")
             } else {
-                format!("{name}({dist_prefix}{})", expr_to_column_name(&args[0]))
+                let arg_names: Vec<String> = args.iter().map(expr_to_column_name).collect();
+                format!("{name}({dist_prefix}{})", arg_names.join(", "))
             }
         }
         Expr::Star => "*".to_string(),

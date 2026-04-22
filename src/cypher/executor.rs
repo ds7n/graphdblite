@@ -2048,8 +2048,16 @@ fn exec_materialize_path(
                 }
             }
         }
-        let edges = Vec::new(); // TODO: populate from rel_aliases for multi-hop paths
-        let _ = rel_aliases; // suppress warning
+        let mut edges = Vec::new();
+        for alias in rel_aliases {
+            if rec.get(alias) == Some(&Value::Null) {
+                has_null = true;
+                break;
+            }
+            if let Some(Value::Edge(e)) = build_compound_binding(&rec, alias) {
+                edges.push(e);
+            }
+        }
 
         let mut new_rec = rec;
         if has_null {

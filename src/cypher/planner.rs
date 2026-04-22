@@ -1660,11 +1660,23 @@ fn plan_single_pattern(conn: &Connection, pattern: &Pattern) -> crate::types::Re
 
                 let (min_hops, max_hops) = rel.var_length.unwrap_or((1, 1));
 
+                // When building a named path, ensure anonymous relationships get
+                // a synthetic alias so edge data is recorded for MaterializePath.
+                let effective_rel_alias = if pattern.path_variable.is_some() {
+                    Some(
+                        rel.variable
+                            .clone()
+                            .unwrap_or_else(|| format!("_path_rel_{i}")),
+                    )
+                } else {
+                    rel.variable.clone()
+                };
+
                 op = Some(LogicalOp::Expand {
                     input: Box::new(op.unwrap()),
                     src_alias,
                     dst_alias: dst_alias.clone(),
-                    rel_alias: rel.variable.clone(),
+                    rel_alias: effective_rel_alias,
                     edge_types: rel.rel_types.clone(),
                     direction,
                     min_hops,
@@ -1709,17 +1721,21 @@ fn plan_single_pattern(conn: &Connection, pattern: &Pattern) -> crate::types::Re
     if let Some(ref path_var) = pattern.path_variable {
         let mut node_aliases = Vec::new();
         let mut rel_aliases = Vec::new();
-        for elem in &pattern.elements {
+        for (idx, elem) in pattern.elements.iter().enumerate() {
             match elem {
                 PatternElement::Node(n) => {
-                    if let Some(ref var) = n.variable {
-                        node_aliases.push(var.clone());
-                    }
+                    let alias = n
+                        .variable
+                        .clone()
+                        .unwrap_or_else(|| format!("_anon_{idx}"));
+                    node_aliases.push(alias);
                 }
                 PatternElement::Relationship(r) => {
-                    if let Some(ref var) = r.variable {
-                        rel_aliases.push(var.clone());
-                    }
+                    let alias = r
+                        .variable
+                        .clone()
+                        .unwrap_or_else(|| format!("_path_rel_{idx}"));
+                    rel_aliases.push(alias);
                 }
             }
         }
@@ -1920,12 +1936,20 @@ fn plan_create_pattern_with_counter(
                     });
                 }
 
-                let src = last_alias.clone().ok_or_else(|| {
+                let left = last_alias.clone().ok_or_else(|| {
                     GraphError::Serialization("edge without source node".to_string())
                 })?;
-                let dst = dst_alias.clone().ok_or_else(|| {
+                let right = dst_alias.clone().ok_or_else(|| {
                     GraphError::Serialization("edge target must have a variable".to_string())
                 })?;
+
+                // Respect relationship direction: `(a)<-[:T]-(b)` means
+                // the edge goes FROM b TO a.
+                let (src, dst) = if rel.direction == RelDirection::Incoming {
+                    (right, left)
+                } else {
+                    (left, right)
+                };
 
                 ops.push(LogicalOp::CreateEdge {
                     src_alias: src,

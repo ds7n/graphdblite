@@ -1,19 +1,19 @@
 # TCK Conformance Status
 
-Last updated: 2026-04-20
+Last updated: 2026-04-22
 
 ## Current pass rate
 
 Full openCypher TCK vendored (220 feature files, commit `677cbaf`).
 
 ```
-176 features parsed (1 parse error: Match5.feature)
-3093 total scenario instances running
-3022 passed
+177 features parsed (1 parse error: Match5.feature)
+3130 total scenario instances running
+3059 passed
   71 skipped (cucumber-level)
- 444 skiplisted (known failures)
+ 413 skiplisted (known failures)
  ────
-3022/3466 unique scenarios passing (87.2%)
+3189/3466 unique scenarios passing (92.0%)
 ```
 
 ## Pass rate by area

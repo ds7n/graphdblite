@@ -26,3 +26,6 @@ bindings/node/*.node
 bindings/python/python/graphdblite/*.so
 bindings/python/python/graphdblite/*.dylib
 bindings/python/python/graphdblite/__pycache__/
+
+# Plans (working docs, not tracked)
+plans/

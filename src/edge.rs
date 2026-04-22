@@ -503,9 +503,15 @@ pub fn get_all_edge_labels(
         Direction::Outgoing => kv::TABLE_ADJ_OUT,
         Direction::Incoming => kv::TABLE_ADJ_IN,
         Direction::Both => {
-            // Combine both directions.
+            // Combine both directions, deduplicating labels.
             let mut result = get_all_edge_labels(conn, id, Direction::Outgoing)?;
-            result.extend(get_all_edge_labels(conn, id, Direction::Incoming)?);
+            let existing: std::collections::HashSet<String> =
+                result.iter().map(|(l, _)| l.clone()).collect();
+            for (label, ids) in get_all_edge_labels(conn, id, Direction::Incoming)? {
+                if !existing.contains(&label) {
+                    result.push((label, ids));
+                }
+            }
             return Ok(result);
         }
     };

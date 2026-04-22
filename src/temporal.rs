@@ -11,7 +11,7 @@ use std::hash::{Hash, Hasher};
 use chrono::{
     Datelike, FixedOffset, NaiveDate, NaiveDateTime, NaiveTime, Offset, TimeZone, Timelike,
 };
-use serde::de::{self, MapAccess, Visitor};
+use serde::de::{self, MapAccess, SeqAccess, Visitor};
 use serde::ser::SerializeStruct;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
@@ -656,6 +656,17 @@ impl<'de> Deserialize<'de> for CypherDate {
             fn expecting(&self, f: &mut fmt::Formatter) -> fmt::Result {
                 f.write_str("a CypherDate struct with year, month, day")
             }
+            fn visit_seq<A: SeqAccess<'de>>(
+                self,
+                mut seq: A,
+            ) -> std::result::Result<CypherDate, A::Error> {
+                let year: i32 = seq.next_element()?.ok_or_else(|| de::Error::invalid_length(0, &self))?;
+                let month: u32 = seq.next_element()?.ok_or_else(|| de::Error::invalid_length(1, &self))?;
+                let day: u32 = seq.next_element()?.ok_or_else(|| de::Error::invalid_length(2, &self))?;
+                let date = NaiveDate::from_ymd_opt(year, month, day)
+                    .ok_or_else(|| de::Error::custom("invalid date"))?;
+                Ok(CypherDate(date))
+            }
             fn visit_map<A: MapAccess<'de>>(
                 self,
                 mut map: A,
@@ -676,7 +687,7 @@ impl<'de> Deserialize<'de> for CypherDate {
                 Ok(CypherDate(date))
             }
         }
-        deserializer.deserialize_struct("CypherDate", &["year", "month", "day"], CypherDateVisitor)
+        deserializer.deserialize_any(CypherDateVisitor)
     }
 }
 
@@ -746,6 +757,18 @@ impl<'de> Deserialize<'de> for CypherLocalTime {
             fn expecting(&self, f: &mut fmt::Formatter) -> fmt::Result {
                 f.write_str("CypherLocalTime")
             }
+            fn visit_seq<A: SeqAccess<'de>>(
+                self,
+                mut seq: A,
+            ) -> std::result::Result<CypherLocalTime, A::Error> {
+                let h: u32 = seq.next_element()?.ok_or_else(|| de::Error::invalid_length(0, &self))?;
+                let m: u32 = seq.next_element()?.ok_or_else(|| de::Error::invalid_length(1, &self))?;
+                let s: u32 = seq.next_element()?.ok_or_else(|| de::Error::invalid_length(2, &self))?;
+                let n: u32 = seq.next_element()?.ok_or_else(|| de::Error::invalid_length(3, &self))?;
+                let t = NaiveTime::from_hms_nano_opt(h, m, s, n)
+                    .ok_or_else(|| de::Error::custom("invalid time"))?;
+                Ok(CypherLocalTime(t))
+            }
             fn visit_map<A: MapAccess<'de>>(
                 self,
                 mut map: A,
@@ -768,11 +791,7 @@ impl<'de> Deserialize<'de> for CypherLocalTime {
                 Ok(CypherLocalTime(t))
             }
         }
-        deserializer.deserialize_struct(
-            "CypherLocalTime",
-            &["hour", "minute", "second", "nanosecond"],
-            V,
-        )
+        deserializer.deserialize_any(V)
     }
 }
 
@@ -847,6 +866,21 @@ impl<'de> Deserialize<'de> for CypherTime {
             fn expecting(&self, f: &mut fmt::Formatter) -> fmt::Result {
                 f.write_str("CypherTime")
             }
+            fn visit_seq<A: SeqAccess<'de>>(
+                self,
+                mut seq: A,
+            ) -> std::result::Result<CypherTime, A::Error> {
+                let h: u32 = seq.next_element()?.ok_or_else(|| de::Error::invalid_length(0, &self))?;
+                let m: u32 = seq.next_element()?.ok_or_else(|| de::Error::invalid_length(1, &self))?;
+                let s: u32 = seq.next_element()?.ok_or_else(|| de::Error::invalid_length(2, &self))?;
+                let n: u32 = seq.next_element()?.ok_or_else(|| de::Error::invalid_length(3, &self))?;
+                let o: i32 = seq.next_element()?.ok_or_else(|| de::Error::invalid_length(4, &self))?;
+                let t = NaiveTime::from_hms_nano_opt(h, m, s, n)
+                    .ok_or_else(|| de::Error::custom("invalid time"))?;
+                let offset =
+                    FixedOffset::east_opt(o).ok_or_else(|| de::Error::custom("invalid offset"))?;
+                Ok(CypherTime(t, offset))
+            }
             fn visit_map<A: MapAccess<'de>>(
                 self,
                 mut map: A,
@@ -874,9 +908,7 @@ impl<'de> Deserialize<'de> for CypherTime {
                 Ok(CypherTime(t, offset))
             }
         }
-        deserializer.deserialize_struct(
-            "CypherTime",
-            &["hour", "minute", "second", "nanosecond", "offset_seconds"],
+        deserializer.deserialize_any(
             V,
         )
     }
@@ -988,6 +1020,23 @@ impl<'de> Deserialize<'de> for CypherLocalDateTime {
             fn expecting(&self, f: &mut fmt::Formatter) -> fmt::Result {
                 f.write_str("CypherLocalDateTime")
             }
+            fn visit_seq<A: SeqAccess<'de>>(
+                self,
+                mut seq: A,
+            ) -> std::result::Result<CypherLocalDateTime, A::Error> {
+                let year: i32 = seq.next_element()?.ok_or_else(|| de::Error::invalid_length(0, &self))?;
+                let month: u32 = seq.next_element()?.ok_or_else(|| de::Error::invalid_length(1, &self))?;
+                let day: u32 = seq.next_element()?.ok_or_else(|| de::Error::invalid_length(2, &self))?;
+                let h: u32 = seq.next_element()?.ok_or_else(|| de::Error::invalid_length(3, &self))?;
+                let m: u32 = seq.next_element()?.ok_or_else(|| de::Error::invalid_length(4, &self))?;
+                let s: u32 = seq.next_element()?.ok_or_else(|| de::Error::invalid_length(5, &self))?;
+                let n: u32 = seq.next_element()?.ok_or_else(|| de::Error::invalid_length(6, &self))?;
+                let date = NaiveDate::from_ymd_opt(year, month, day)
+                    .ok_or_else(|| de::Error::custom("invalid date"))?;
+                let time = NaiveTime::from_hms_nano_opt(h, m, s, n)
+                    .ok_or_else(|| de::Error::custom("invalid time"))?;
+                Ok(CypherLocalDateTime(NaiveDateTime::new(date, time)))
+            }
             fn visit_map<A: MapAccess<'de>>(
                 self,
                 mut map: A,
@@ -1019,17 +1068,7 @@ impl<'de> Deserialize<'de> for CypherLocalDateTime {
                 Ok(CypherLocalDateTime(NaiveDateTime::new(d, t)))
             }
         }
-        deserializer.deserialize_struct(
-            "CypherLocalDateTime",
-            &[
-                "year",
-                "month",
-                "day",
-                "hour",
-                "minute",
-                "second",
-                "nanosecond",
-            ],
+        deserializer.deserialize_any(
             V,
         )
     }
@@ -1129,6 +1168,27 @@ impl<'de> Deserialize<'de> for CypherDateTime {
             fn expecting(&self, f: &mut fmt::Formatter) -> fmt::Result {
                 f.write_str("CypherDateTime")
             }
+            fn visit_seq<A: SeqAccess<'de>>(
+                self,
+                mut seq: A,
+            ) -> std::result::Result<CypherDateTime, A::Error> {
+                let year: i32 = seq.next_element()?.ok_or_else(|| de::Error::invalid_length(0, &self))?;
+                let month: u32 = seq.next_element()?.ok_or_else(|| de::Error::invalid_length(1, &self))?;
+                let day: u32 = seq.next_element()?.ok_or_else(|| de::Error::invalid_length(2, &self))?;
+                let h: u32 = seq.next_element()?.ok_or_else(|| de::Error::invalid_length(3, &self))?;
+                let m: u32 = seq.next_element()?.ok_or_else(|| de::Error::invalid_length(4, &self))?;
+                let s: u32 = seq.next_element()?.ok_or_else(|| de::Error::invalid_length(5, &self))?;
+                let n: u32 = seq.next_element()?.ok_or_else(|| de::Error::invalid_length(6, &self))?;
+                let o: i32 = seq.next_element()?.ok_or_else(|| de::Error::invalid_length(7, &self))?;
+                let date = NaiveDate::from_ymd_opt(year, month, day)
+                    .ok_or_else(|| de::Error::custom("invalid date"))?;
+                let time = NaiveTime::from_hms_nano_opt(h, m, s, n)
+                    .ok_or_else(|| de::Error::custom("invalid time"))?;
+                let offset =
+                    FixedOffset::east_opt(o).ok_or_else(|| de::Error::custom("invalid offset"))?;
+                let dt = NaiveDateTime::new(date, time);
+                Ok(CypherDateTime(dt, offset, None))
+            }
             fn visit_map<A: MapAccess<'de>>(
                 self,
                 mut map: A,
@@ -1165,18 +1225,7 @@ impl<'de> Deserialize<'de> for CypherDateTime {
                 Ok(CypherDateTime(NaiveDateTime::new(d, t), offset, None))
             }
         }
-        deserializer.deserialize_struct(
-            "CypherDateTime",
-            &[
-                "year",
-                "month",
-                "day",
-                "hour",
-                "minute",
-                "second",
-                "nanosecond",
-                "offset_seconds",
-            ],
+        deserializer.deserialize_any(
             V,
         )
     }
@@ -1430,6 +1479,16 @@ impl<'de> Deserialize<'de> for CypherDuration {
             fn expecting(&self, f: &mut fmt::Formatter) -> fmt::Result {
                 f.write_str("CypherDuration")
             }
+            fn visit_seq<A: SeqAccess<'de>>(
+                self,
+                mut seq: A,
+            ) -> std::result::Result<CypherDuration, A::Error> {
+                let months: i64 = seq.next_element()?.ok_or_else(|| de::Error::invalid_length(0, &self))?;
+                let days: i64 = seq.next_element()?.ok_or_else(|| de::Error::invalid_length(1, &self))?;
+                let seconds: i64 = seq.next_element()?.ok_or_else(|| de::Error::invalid_length(2, &self))?;
+                let nanos: i64 = seq.next_element()?.ok_or_else(|| de::Error::invalid_length(3, &self))?;
+                Ok(CypherDuration { months, days, seconds, nanos })
+            }
             fn visit_map<A: MapAccess<'de>>(
                 self,
                 mut map: A,
@@ -1451,9 +1510,7 @@ impl<'de> Deserialize<'de> for CypherDuration {
                 })
             }
         }
-        deserializer.deserialize_struct(
-            "CypherDuration",
-            &["months", "days", "seconds", "nanos"],
+        deserializer.deserialize_any(
             V,
         )
     }

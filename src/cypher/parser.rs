@@ -1348,7 +1348,8 @@ fn parse_order_by(pair: pest::iterators::Pair<Rule>) -> crate::types::Result<Vec
                 match inner.as_rule() {
                     Rule::expr => expr = Some(parse_expr(inner)?),
                     Rule::sort_direction => {
-                        descending = inner.as_str().to_uppercase() == "DESC";
+                        let dir = inner.as_str().to_uppercase();
+                        descending = dir == "DESC" || dir == "DESCENDING";
                     }
                     _ => {}
                 }

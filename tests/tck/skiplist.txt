@@ -1,4 +1,3 @@
-Aggregation1 - Count::[2] Counting loop relationships
 Aggregation2 - Min and Max::[12] `min()` over mixed values
 Aggregation2 - Min and Max::[9] `max()` over list values
 Aggregation6 - Percentiles::[5] `percentileDisc()` failing in more involved query
@@ -9,21 +8,14 @@ Comparison2 - Half-bounded Range::[3] Comparing across types yields null, except
 Conditional1 - Coalesce expression::[1] Run coalesce
 CountingSubgraphMatches1 - Matching subgraph patterns and count the number of matches::[10] Mixing directed and undirected pattern parts with self-relationship, count
 CountingSubgraphMatches1 - Matching subgraph patterns and count the number of matches::[11] Mixing directed and undirected pattern parts with self-relationship, undirected count
-CountingSubgraphMatches1 - Matching subgraph patterns and count the number of matches::[1] Undirected match in self-relationship graph, count
-CountingSubgraphMatches1 - Matching subgraph patterns and count the number of matches::[2] Undirected match of self-relationship in self-relationship graph, count
-CountingSubgraphMatches1 - Matching subgraph patterns and count the number of matches::[6] Counting undirected self-relationships in self-relationship graph
 CountingSubgraphMatches1 - Matching subgraph patterns and count the number of matches::[9] Counting directed self-relationships
 Create1 - Creating nodes::[20] Fail when creating a node using undefined variable in pattern
 Create2 - Creating relationships::[18] Fail when creating a relationship without a type
 Create2 - Creating relationships::[19] Fail when creating a relationship without a direction
 Create2 - Creating relationships::[24] Fail when creating a relationship using undefined variable in pattern
-Create2 - Creating relationships::[4] Create two nodes and a single relationship in the reverse direction
-Create2 - Creating relationships::[6] Create a single relationship between two existing nodes in the reverse direction
 Create3 - Interoperation with other clauses::[3] MATCH-CREATE-WITH-CREATE
 Create3 - Interoperation with other clauses::[7] WITH-CREATE: Nodes are not created when aliases are applied to variable names multiple times
-Create5 - Multiple hops create patterns::[2] Create a pattern with multiple hops in the reverse direction
-Create5 - Multiple hops create patterns::[3] Create a pattern with multiple hops in varying directions
-Create5 - Multiple hops create patterns::[4] Create a pattern with multiple hops with multiple types and varying directions
+Create4 - Large Create Query::[2] Many CREATE clauses
 Create5 - Multiple hops create patterns::[5] Create a pattern with multiple hops and varying directions
 Create6 - Persistence of create clause side effects::[13] Aggregating in `RETURN` after creating relationships affects the result set but not the side effects
 Create6 - Persistence of create clause side effects::[14] Aggregating in `WITH` after creating relationships affects the result set but not the side effects
@@ -79,12 +71,9 @@ List6 - List size::[9] Get node degree via size of pattern comprehension that sp
 Literals8 - Maps::[22] Fail on a map containing unquoted string
 Map1 - Static value access::[3] Statically access a field of a map resulting from an expression
 Map2 - Dynamic Value Access::[7] Fail at runtime when trying to index into a map with a non-string
-Match2 - Match relationships::[3] Matching a self-loop with an undirected relationship pattern
 Match2 - Match relationships::[5] Match relationship with inline property value
 Match2 - Match relationships::[7] Matching twice with conflicting relationship types on same relationship
 Match3 - Match fixed length patterns::[10] Matching using self-referencing pattern returns no result
-Match3 - Match fixed length patterns::[11] Undirected match in self-relationship graph
-Match3 - Match fixed length patterns::[12] Undirected match of self-relationship in self-relationship graph
 Match3 - Match fixed length patterns::[15] Mixing directed and undirected pattern parts with self-relationship, simple
 Match3 - Match fixed length patterns::[16] Mixing directed and undirected pattern parts with self-relationship, undirected
 Match3 - Match fixed length patterns::[17] Handling cyclic patterns
@@ -110,14 +99,8 @@ Match6 - Match named paths scenarios::[14] Named path with undirected fixed vari
 Match6 - Match named paths scenarios::[15] Variable-length named path
 Match6 - Match named paths scenarios::[16] Return a var length path
 Match6 - Match named paths scenarios::[17] Return a named var length path of length zero
-Match6 - Match named paths scenarios::[18] Undirected named path
 Match6 - Match named paths scenarios::[19] Variable length relationship without lower bound
 Match6 - Match named paths scenarios::[20] Variable length relationship without bounds
-Match6 - Match named paths scenarios::[2] Return a simple path
-Match6 - Match named paths scenarios::[3] Return a three node path
-Match6 - Match named paths scenarios::[5] Path query should return results in written order
-Match6 - Match named paths scenarios::[6] Handling direction of named paths
-Match6 - Match named paths scenarios::[7] Respecting direction when matching existing path
 Match6 - Match named paths scenarios::[8] Respecting direction when matching non-existent path with multiple directions
 Match6 - Match named paths scenarios::[9] Longer path query should return results in written order
 Match7 - Optional match::[11] Return two subgraphs with bound undirected relationship and optional relationship
@@ -125,7 +108,6 @@ Match7 - Optional match::[12] Variable length optional relationships
 Match7 - Optional match::[14] Variable length optional relationships with length predicates
 Match7 - Optional match::[17] Optionally matching named paths - existing result
 Match7 - Optional match::[20] Variable length optional relationships with bound nodes, no matches
-Match7 - Optional match::[24] Optionally matching self-loops
 Match8 - Match clause interoperation with other clauses::[2] Counting rows after MATCH, MERGE, OPTIONAL MATCH
 Match8 - Match clause interoperation with other clauses::[3] Matching and disregarding output, then matching again
 Match9 - Match deprecated scenarios::[1] Variable length relationship variables are lists of relationships
@@ -134,8 +116,6 @@ Match9 - Match deprecated scenarios::[3] Return relationships by collecting them
 Match9 - Match deprecated scenarios::[4] Return relationships by collecting them as a list - undirected, starting from one extreme
 Match9 - Match deprecated scenarios::[5] Variable length pattern with label predicate on both sides
 Match9 - Match deprecated scenarios::[9] Optionally matching named paths with variable length patterns
-MatchWhere1 - Filter single variable::[12] Filter path with path length predicate on multi variables with one binding
-MatchWhere1 - Filter single variable::[8] Filter relationship with property predicate on multi variables with multiple bindings
 MatchWhere2 - Filter multiple variables::[1] Filter nodes with conjunctive two-part property predicate on multi variables with multiple bindings
 MatchWhere2 - Filter multiple variables::[2] Filter node with conjunctive multi-part property predicates on multi variables with multiple bindings
 MatchWhere4 - Non-Equi-Joins on variables::[2] Join with disjunctive multi-part predicates including patterns
@@ -253,7 +233,6 @@ Return6 - Implicit grouping with aggregates::[3] Aggregating by a list property 
 Return6 - Implicit grouping with aggregates::[4] Support multiple divisions in aggregate function
 Return6 - Implicit grouping with aggregates::[5] Aggregates inside normal functions
 Return6 - Implicit grouping with aggregates::[8] Handle aggregation on functions
-Return7 - Return all variables::[1] Return all variables
 ReturnOrderBy1 - Order by a single variable (correct order of values according to their type)::[11] ORDER BY should order distinct types in the expected order
 ReturnOrderBy1 - Order by a single variable (correct order of values according to their type)::[12] ORDER BY DESC should order distinct types in the expected order
 ReturnOrderBy2 - Order by a single expression (order of projection)::[13] Fail when sorting on variable removed by DISTINCT
@@ -307,25 +286,7 @@ Temporal10 - Compute Durations Between two Temporal Values::[6] Should compute d
 Temporal10 - Compute Durations Between two Temporal Values::[8] Should handle durations at daylight saving time day
 Temporal10 - Compute Durations Between two Temporal Values::[9] Should handle large durations
 Temporal2 - Create Temporal Values from a String::[7] Should parse duration from string
-Temporal4 - Store Temporal Values::[10] Should store date time array
-Temporal4 - Store Temporal Values::[11] Should store duration
-Temporal4 - Store Temporal Values::[12] Should store duration array
-Temporal4 - Store Temporal Values::[1] Should store date
-Temporal4 - Store Temporal Values::[2] Should store date array
-Temporal4 - Store Temporal Values::[3] Should store local time
-Temporal4 - Store Temporal Values::[4] Should store local time array
-Temporal4 - Store Temporal Values::[5] Should store time
-Temporal4 - Store Temporal Values::[6] Should store time array
-Temporal4 - Store Temporal Values::[7] Should store local date time
-Temporal4 - Store Temporal Values::[8] Should store local date time array
-Temporal4 - Store Temporal Values::[9] Should store date time
-Temporal5 - Access Components of Temporal Values::[1] Should provide accessors for date
-Temporal5 - Access Components of Temporal Values::[2] Should provide accessors for date in last weekYear
-Temporal5 - Access Components of Temporal Values::[3] Should provide accessors for local time
-Temporal5 - Access Components of Temporal Values::[4] Should provide accessors for time
-Temporal5 - Access Components of Temporal Values::[5] Should provide accessors for local date time
 Temporal5 - Access Components of Temporal Values::[6] Should provide accessors for date time
-Temporal5 - Access Components of Temporal Values::[7] Should provide accessors for duration
 Temporal8 - Compute Arithmetic Operations on Temporal Values::[1] Should add or subtract duration to or from date
 Temporal8 - Compute Arithmetic Operations on Temporal Values::[2] Should add or subtract duration to or from local time
 Temporal8 - Compute Arithmetic Operations on Temporal Values::[3] Should add or subtract duration to or from time
@@ -366,58 +327,15 @@ With5 - Implicit grouping with DISTINCT::[2] Handling DISTINCT with lists in map
 With6 - Implicit grouping with aggregates::[4] Implicit grouping with single path variable as grouping key and single aggregation
 WithOrderBy1 - Order by a single variable::[21] Sort distinct types in ascending order
 WithOrderBy1 - Order by a single variable::[22] Sort distinct types in descending order
-WithOrderBy1 - Order by a single variable::[23] Sort by a boolean variable projected from a node property in ascending order
-WithOrderBy1 - Order by a single variable::[24] Sort by a boolean variable projected from a node property in descending order
-WithOrderBy1 - Order by a single variable::[25] Sort by an integer variable projected from a node property in ascending order
-WithOrderBy1 - Order by a single variable::[26] Sort by an integer variable projected from a node property in descending order
-WithOrderBy1 - Order by a single variable::[27] Sort by a float variable projected from a node property in ascending order
-WithOrderBy1 - Order by a single variable::[28] Sort by a float variable projected from a node property in descending order
-WithOrderBy1 - Order by a single variable::[29] Sort by a string variable projected from a node property in ascending order
-WithOrderBy1 - Order by a single variable::[30] Sort by a string variable projected from a node property in descending order
-WithOrderBy1 - Order by a single variable::[31] Sort by a list variable projected from a node property in ascending order
-WithOrderBy1 - Order by a single variable::[32] Sort by a list variable projected from a node property in descending order
-WithOrderBy1 - Order by a single variable::[33] Sort by a date variable projected from a node property in ascending order
-WithOrderBy1 - Order by a single variable::[34] Sort by a date variable projected from a node property in descending order
-WithOrderBy1 - Order by a single variable::[35] Sort by a local time variable projected from a node property in ascending order
-WithOrderBy1 - Order by a single variable::[36] Sort by a local time variable projected from a node property in descending order
-WithOrderBy1 - Order by a single variable::[37] Sort by a time variable projected from a node property in ascending order
-WithOrderBy1 - Order by a single variable::[38] Sort by a time variable projected from a node property in descending order
-WithOrderBy1 - Order by a single variable::[39] Sort by a local date time variable projected from a node property in ascending order
-WithOrderBy1 - Order by a single variable::[40] Sort by a local date time variable projected from a node property in descending order
-WithOrderBy1 - Order by a single variable::[41] Sort by a date time variable projected from a node property in ascending order
-WithOrderBy1 - Order by a single variable::[42] Sort by a date time variable projected from a node property in descending order
 WithOrderBy1 - Order by a single variable::[44] Sort by a variable that is only partially orderable on a non-distinct binding table, but made distinct
 WithOrderBy1 - Order by a single variable::[46] Fail on sorting by an undefined variable #Example: never defined
 WithOrderBy1 - Order by a single variable::[46] Fail on sorting by an undefined variable #Example: out of scope
-WithOrderBy2 - Order by a single expression::[10] Sort by a list expression in descending order
-WithOrderBy2 - Order by a single expression::[11] Sort by a date expression in ascending order
-WithOrderBy2 - Order by a single expression::[12] Sort by a date expression in descending order
-WithOrderBy2 - Order by a single expression::[13] Sort by a local time expression in ascending order
-WithOrderBy2 - Order by a single expression::[14] Sort by a local time expression in descending order
 WithOrderBy2 - Order by a single expression::[15] Sort by a time expression in ascending order
-WithOrderBy2 - Order by a single expression::[16] Sort by a time expression in descending order
-WithOrderBy2 - Order by a single expression::[17] Sort by a local date time expression in ascending order
-WithOrderBy2 - Order by a single expression::[18] Sort by a local date time expression in descending order
-WithOrderBy2 - Order by a single expression::[19] Sort by a date time expression in ascending order
-WithOrderBy2 - Order by a single expression::[1] Sort by a boolean expression in ascending order
-WithOrderBy2 - Order by a single expression::[20] Sort by a date time expression in descending order
 WithOrderBy2 - Order by a single expression::[21] Sort by an expression that is only partially orderable on a non-distinct binding table
 WithOrderBy2 - Order by a single expression::[22] Sort by an expression that is only partially orderable on a non-distinct binding table, but used as a grouping key
 WithOrderBy2 - Order by a single expression::[23] Sort by an expression that is only partially orderable on a non-distinct binding table, but used in parts as a grouping key
 WithOrderBy2 - Order by a single expression::[24] Sort by an expression that is only partially orderable on a non-distinct binding table, but made distinct
 WithOrderBy2 - Order by a single expression::[25] Fail on sorting by an aggregation
-WithOrderBy2 - Order by a single expression::[2] Sort by a boolean expression in descending order
-WithOrderBy2 - Order by a single expression::[3] Sort by an integer expression in ascending order
-WithOrderBy2 - Order by a single expression::[4] Sort by an integer expression in descending order
-WithOrderBy2 - Order by a single expression::[5] Sort by a float expression in ascending order
-WithOrderBy2 - Order by a single expression::[6] Sort by a float expression in descending order
-WithOrderBy2 - Order by a single expression::[7] Sort by a string expression in ascending order
-WithOrderBy2 - Order by a single expression::[8] Sort by a string expression in descending order
-WithOrderBy2 - Order by a single expression::[9] Sort by a list expression in ascending order
-WithOrderBy3 - Order by multiple expressions::[1] Sort by two expressions, both in ascending order
-WithOrderBy3 - Order by multiple expressions::[2] Sort by two expressions, first in ascending order, second in descending order
-WithOrderBy3 - Order by multiple expressions::[3] Sort by two expressions, first in descending order, second in ascending order
-WithOrderBy3 - Order by multiple expressions::[4] Sort by two expressions, both in descending order
 WithOrderBy3 - Order by multiple expressions::[8] Fail on sorting by any number of undefined variables in any position #Example: mixed
 WithOrderBy3 - Order by multiple expressions::[8] Fail on sorting by any number of undefined variables in any position #Example: never defined
 WithOrderBy3 - Order by multiple expressions::[8] Fail on sorting by any number of undefined variables in any position #Example: out of scope

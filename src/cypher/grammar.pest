@@ -254,7 +254,7 @@ alias = { ^"AS" ~ ident }
 order_by_clause = { ^"ORDER" ~ ^"BY" ~ sort_items }
 sort_items = { sort_item ~ ("," ~ sort_item)* }
 sort_item = { expr ~ sort_direction? }
-sort_direction = { ^"ASC" | ^"DESC" }
+sort_direction = { ^"DESCENDING" | ^"ASCENDING" | ^"DESC" | ^"ASC" }
 
 skip_clause = { ^"SKIP" ~ integer }
 limit_clause = { ^"LIMIT" ~ integer }
@@ -394,7 +394,7 @@ symbolic_name = @{ (ASCII_ALPHA | "_") ~ (ASCII_ALPHANUMERIC | "_")* }
 keyword = {
     (^"MATCH" | ^"WHERE" | ^"RETURN" | ^"CREATE" | ^"DELETE" | ^"DETACH" | ^"SET" | ^"REMOVE" |
      ^"MERGE" | ^"ORDER" | ^"BY" | ^"SKIP" | ^"LIMIT" | ^"AND" | ^"OR" | ^"NOT" |
-     ^"AS" | ^"IS" | ^"ON" | ^"ASC" | ^"DESC" | ^"STARTS" | ^"ENDS" | ^"WITH" | ^"CONTAINS" |
+     ^"AS" | ^"IS" | ^"ON" | ^"ASCENDING" | ^"DESCENDING" | ^"ASC" | ^"DESC" | ^"STARTS" | ^"ENDS" | ^"WITH" | ^"CONTAINS" |
      ^"OPTIONAL" | ^"UNWIND" | ^"TRUE" | ^"FALSE" | ^"NULL" |
      ^"CASE" | ^"WHEN" | ^"THEN" | ^"ELSE" | ^"END" | ^"EXISTS" | ^"IN" | ^"DISTINCT" | ^"UNION" | ^"ALL" | ^"XOR" |
      ^"NONE" | ^"SINGLE" | ^"ANY" |

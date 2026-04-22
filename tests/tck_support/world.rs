@@ -2,11 +2,19 @@
 //! scenario; it owns a disposable in-memory `Database` plus snapshot state used
 //! to evaluate side-effect assertions.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
+use std::hash::{Hash, Hasher};
 
 use cucumber::World as CucumberWorld;
 use graphdblite::{Database, GraphError, Record, Value};
 use rusqlite::Connection;
+
+/// Hash a Value for property fingerprinting (used in side-effect diffing).
+fn hash_value(v: &Value) -> u64 {
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    v.hash(&mut hasher);
+    hasher.finish()
+}
 
 /// Counts used to compute the side-effect diff that TCK scenarios assert
 /// via `And the side effects should be:`.
@@ -15,7 +23,9 @@ pub struct GraphCounts {
     pub nodes: i64,
     pub relationships: i64,
     pub labels: i64,
-    pub properties: i64,
+    /// Set of (owner_key, prop_name, value_hash) tuples — tracks individual
+    /// property VALUES so that `SET n.x = 2` (was 1) registers as +1/-1.
+    pub property_fingerprints: HashSet<(String, String, u64)>,
 }
 
 impl GraphCounts {
@@ -35,45 +45,50 @@ impl GraphCounts {
                 |r| r.get(0),
             )
             .unwrap_or(0);
-        // Count properties by iterating all node and edge property blobs.
-        // NodeRecord is pub(crate), so we define a local mirror for deserialization.
+        // Collect property fingerprints — (owner_key, prop_name, value_hash) —
+        // so that value changes register as +/-properties in the delta.
         #[derive(serde::Deserialize)]
         struct NodeBlob {
             #[allow(dead_code)]
             labels: Vec<String>,
             properties: HashMap<String, graphdblite::Value>,
         }
-        let node_props: i64 = {
-            let mut stmt = conn.prepare("SELECT value FROM nodes").unwrap();
+        let mut fingerprints = HashSet::new();
+        {
+            let mut stmt = conn.prepare("SELECT key, value FROM nodes").unwrap();
             let mut rows = stmt.query([]).unwrap();
-            let mut count: i64 = 0;
             while let Some(row) = rows.next().unwrap() {
-                let data: Vec<u8> = row.get(0).unwrap();
+                let key: Vec<u8> = row.get(0).unwrap();
+                let owner = format!("n:{}", format!("{key:?}"));
+                let data: Vec<u8> = row.get(1).unwrap();
                 if let Ok(rec) = rmp_serde::from_slice::<NodeBlob>(&data) {
-                    count += rec.properties.len() as i64;
+                    for (k, v) in &rec.properties {
+                        fingerprints.insert((owner.clone(), k.clone(), hash_value(v)));
+                    }
                 }
             }
-            count
-        };
-        let edge_property_count: i64 = {
-            let mut stmt = conn.prepare("SELECT value FROM edge_props").unwrap();
+        }
+        {
+            let mut stmt = conn.prepare("SELECT key, value FROM edge_props").unwrap();
             let mut rows = stmt.query([]).unwrap();
-            let mut count: i64 = 0;
             while let Some(row) = rows.next().unwrap() {
-                let data: Vec<u8> = row.get(0).unwrap();
+                let key: Vec<u8> = row.get(0).unwrap();
+                let owner = format!("e:{}", format!("{key:?}"));
+                let data: Vec<u8> = row.get(1).unwrap();
                 if let Ok(props) =
                     rmp_serde::from_slice::<HashMap<String, graphdblite::Value>>(&data)
                 {
-                    count += props.len() as i64;
+                    for (k, v) in &props {
+                        fingerprints.insert((owner.clone(), k.clone(), hash_value(v)));
+                    }
                 }
             }
-            count
-        };
+        }
         Self {
             nodes,
             relationships,
             labels,
-            properties: node_props + edge_property_count,
+            property_fingerprints: fingerprints,
         }
     }
 
@@ -92,14 +107,17 @@ impl GraphCounts {
         );
         m.insert("+labels".into(), (after.labels - self.labels).max(0));
         m.insert("-labels".into(), (self.labels - after.labels).max(0));
-        m.insert(
-            "+properties".into(),
-            (after.properties - self.properties).max(0),
-        );
-        m.insert(
-            "-properties".into(),
-            (self.properties - after.properties).max(0),
-        );
+        // Properties: count fingerprints added/removed (catches value changes).
+        let added = after
+            .property_fingerprints
+            .difference(&self.property_fingerprints)
+            .count() as i64;
+        let removed = self
+            .property_fingerprints
+            .difference(&after.property_fingerprints)
+            .count() as i64;
+        m.insert("+properties".into(), added);
+        m.insert("-properties".into(), removed);
         m
     }
 }

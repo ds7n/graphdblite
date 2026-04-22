@@ -247,31 +247,16 @@ ReturnSkipLimit2 - Limit::[4] Handle ORDER BY with LIMIT 1
 ReturnSkipLimit2 - Limit::[6] LIMIT with an expression that does not depend on variables
 ReturnSkipLimit3 - Skip and limit::[2] Get rows in the middle by param
 Set1 - Set a Property::[10] Failing when setting a list of maps as a property
-Set1 - Set a Property::[1] Set a property
-Set1 - Set a Property::[2] Set a property to an expression
 Set1 - Set a Property::[3] Set a property by selecting the node using a simple expression
 Set1 - Set a Property::[4] Set a property by selecting the relationship using a simple expression
 Set1 - Set a Property::[9] Failing when using undefined variable in SET
 Set2 - Set a Property to Null::[1] Setting a node property to null removes the existing property
 Set2 - Set a Property to Null::[2] Setting a node property to null removes the existing property, but not before SET
 Set2 - Set a Property to Null::[3] Setting a relationship property to null removes the existing property
-Set4 - Set all properties with a map::[2] Non-existent values in a property map are removed with SET
-Set4 - Set all properties with a map::[3] Null values in a property map are removed with SET
-Set5 - Set multiple properties with a map::[2] Overwrite values when using +=
 Set6 - Persistence of set clause side effects::[13] Aggregating in `RETURN` after adding a label on nodes affects the result set but not the side effects
 Set6 - Persistence of set clause side effects::[14] Aggregating in `WITH` after adding a label on nodes affects the result set but not the side effects
-Set6 - Persistence of set clause side effects::[15] Limiting to zero results after setting a property on relationships affects the result set but not the side effects
-Set6 - Persistence of set clause side effects::[16] Skipping all results after setting a property on relationships affects the result set but not the side effects
-Set6 - Persistence of set clause side effects::[17] Skipping and limiting to a few results after setting a property on relationships affects the result set but not the side effects
-Set6 - Persistence of set clause side effects::[18] Skipping zero result and limiting to all results after setting a property on relationships does not affect the result set nor the side effects
-Set6 - Persistence of set clause side effects::[19] Filtering after setting a property on relationships affects the result set but not the side effects
-Set6 - Persistence of set clause side effects::[1] Limiting to zero results after setting a property on nodes affects the result set but not the side effects
 Set6 - Persistence of set clause side effects::[20] Aggregating in `RETURN` after setting a property on relationships affects the result set but not the side effects
 Set6 - Persistence of set clause side effects::[21] Aggregating in `WITH` after setting a property on relationships affects the result set but not the side effects
-Set6 - Persistence of set clause side effects::[2] Skipping all results after setting a property on nodes affects the result set but not the side effects
-Set6 - Persistence of set clause side effects::[3] Skipping and limiting to a few results after setting a property on nodes affects the result set but not the side effects
-Set6 - Persistence of set clause side effects::[4] Skipping zero results and limiting to all results after setting a property on nodes does not affect the result set nor the side effects
-Set6 - Persistence of set clause side effects::[5] Filtering after setting a property on nodes affects the result set but not the side effects
 Set6 - Persistence of set clause side effects::[6] Aggregating in `RETURN` after setting a property on nodes affects the result set but not the side effects
 Set6 - Persistence of set clause side effects::[7] Aggregating in `WITH` after setting a property on nodes affects the result set but not the side effects
 Temporal1 - Create Temporal Values from a Map::[12] Should construct duration

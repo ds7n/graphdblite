@@ -29,6 +29,15 @@ fn apply_return_projection(
         };
     }
 
+    // Sort BEFORE projection so ORDER BY can reference pre-projection variables.
+    // The Project that follows will discard sort-only columns.
+    if !order_by.is_empty() {
+        op = LogicalOp::Sort {
+            input: Box::new(op),
+            items: order_by.to_vec(),
+        };
+    }
+
     op = LogicalOp::Project {
         input: Box::new(op),
         items: return_clause.items.clone(),
@@ -38,13 +47,6 @@ fn apply_return_projection(
     if return_clause.distinct {
         op = LogicalOp::Distinct {
             input: Box::new(op),
-        };
-    }
-
-    if !order_by.is_empty() {
-        op = LogicalOp::Sort {
-            input: Box::new(op),
-            items: order_by.to_vec(),
         };
     }
 
@@ -228,6 +230,15 @@ fn plan_match(conn: &Connection, stmt: &MatchStatement) -> crate::types::Result<
         };
     }
 
+    // ORDER BY before projection so sort expressions can reference
+    // pre-projection variables (e.g. RETURN n.num AS prop ORDER BY n.num).
+    if !stmt.order_by.is_empty() {
+        op = LogicalOp::Sort {
+            input: Box::new(op),
+            items: stmt.order_by.clone(),
+        };
+    }
+
     // Project (RETURN).
     op = LogicalOp::Project {
         input: Box::new(op),
@@ -239,14 +250,6 @@ fn plan_match(conn: &Connection, stmt: &MatchStatement) -> crate::types::Result<
     if stmt.return_clause.distinct {
         op = LogicalOp::Distinct {
             input: Box::new(op),
-        };
-    }
-
-    // ORDER BY.
-    if !stmt.order_by.is_empty() {
-        op = LogicalOp::Sort {
-            input: Box::new(op),
-            items: stmt.order_by.clone(),
         };
     }
 
@@ -290,6 +293,14 @@ fn plan_return(stmt: &ReturnStatement) -> crate::types::Result<LogicalOp> {
         };
     }
 
+    // Sort BEFORE projection so ORDER BY can reference pre-projection variables.
+    if !stmt.order_by.is_empty() {
+        op = LogicalOp::Sort {
+            input: Box::new(op),
+            items: stmt.order_by.clone(),
+        };
+    }
+
     op = LogicalOp::Project {
         input: Box::new(op),
         items: stmt.return_clause.items.clone(),
@@ -299,13 +310,6 @@ fn plan_return(stmt: &ReturnStatement) -> crate::types::Result<LogicalOp> {
     if stmt.return_clause.distinct {
         op = LogicalOp::Distinct {
             input: Box::new(op),
-        };
-    }
-
-    if !stmt.order_by.is_empty() {
-        op = LogicalOp::Sort {
-            input: Box::new(op),
-            items: stmt.order_by.clone(),
         };
     }
 

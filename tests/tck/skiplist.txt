@@ -235,14 +235,14 @@ ReturnOrderBy1 - Order by a single variable (correct order of values according t
 ReturnOrderBy1 - Order by a single variable (correct order of values according to their type)::[12] ORDER BY DESC should order distinct types in the expected order
 ReturnOrderBy2 - Order by a single expression (order of projection)::[13] Fail when sorting on variable removed by DISTINCT
 ReturnOrderBy2 - Order by a single expression (order of projection)::[14] Fail on aggregation in ORDER BY after RETURN
-ReturnOrderBy2 - Order by a single expression (order of projection)::[1] ORDER BY should return results in ascending order
-ReturnOrderBy2 - Order by a single expression (order of projection)::[2] ORDER BY DESC should return results in descending order
+ReturnOrderBy2 - Order by a single expression (order of projection)::[9] Using aliased DISTINCT expression in ORDER BY
+ReturnOrderBy5 - Order by in combination with column renaming::[1] Renaming columns before ORDER BY should return results in ascending order
 ReturnOrderBy6 - Aggregation expressions in order by::[4] Fail if not returned variables are used inside an order by item which contains an aggregation expression
 ReturnOrderBy6 - Aggregation expressions in order by::[5] Fail if more complex expressions, even if returned, are used inside an order by item which contains an aggregation expression
 ReturnSkipLimit1 - Skip::[2] Start the result from the second row by param
 ReturnSkipLimit1 - Skip::[3] SKIP with an expression that does not depend on variables
-ReturnSkipLimit2 - Limit::[4] Handle ORDER BY with LIMIT 1
 ReturnSkipLimit2 - Limit::[6] LIMIT with an expression that does not depend on variables
+ReturnSkipLimit2 - Limit::[7] Limit to more rows than actual results 1
 ReturnSkipLimit3 - Skip and limit::[2] Get rows in the middle by param
 Set1 - Set a Property::[10] Failing when setting a list of maps as a property
 Set1 - Set a Property::[3] Set a property by selecting the node using a simple expression

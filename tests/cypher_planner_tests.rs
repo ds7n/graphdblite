@@ -110,12 +110,17 @@ fn plan_with_aggregate() {
 #[test]
 fn plan_with_order_by_and_limit() {
     let op = plan_query("MATCH (n:Person) RETURN n.name ORDER BY n.name LIMIT 5");
+    // Pipeline: Limit → Project → Sort (sort before projection so ORDER BY
+    // can reference pre-projection variables).
     match op {
         LogicalOp::Limit { input, count } => {
             assert_eq!(count, 5);
             match *input {
-                LogicalOp::Sort { .. } => {}
-                _ => panic!("expected Sort"),
+                LogicalOp::Project { input, .. } => match *input {
+                    LogicalOp::Sort { .. } => {}
+                    _ => panic!("expected Sort"),
+                },
+                _ => panic!("expected Project"),
             }
         }
         _ => panic!("expected Limit"),

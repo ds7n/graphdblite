@@ -382,7 +382,20 @@ property_key = @{ backtick_ident | ((ASCII_ALPHA | "_") ~ (ASCII_ALPHANUMERIC | 
 
 ident_list = { ident ~ ("," ~ ident)* }
 
-ident = @{ backtick_ident | plain_ident }
+ident = @{ backtick_ident | fn_name_as_ident | plain_ident }
+fn_name_as_ident = @{ function_name_word ~ !("(" | ASCII_ALPHANUMERIC | "_") }
+function_name_word = _{
+    ^"count" | ^"sum" | ^"avg" | ^"min" | ^"max" | ^"collect" |
+    ^"percentileDisc" | ^"percentileCont" | ^"stDev" | ^"stDevP" |
+    ^"length" | ^"nodes" | ^"relationships" |
+    ^"toLower" | ^"toUpper" | ^"toBoolean" | ^"toString" | ^"toInteger" | ^"toFloat" |
+    ^"keys" | ^"labels" | ^"id" | ^"coalesce" | ^"type" | ^"head" | ^"tail" | ^"last" | ^"size" |
+    ^"abs" | ^"sqrt" | ^"sign" | ^"ceil" | ^"floor" | ^"round" | ^"log" | ^"log10" | ^"exp" | ^"e" | ^"pi" |
+    ^"substring" | ^"left" | ^"right" | ^"lTrim" | ^"rTrim" | ^"replace" | ^"split" | ^"trim" | ^"reverse" |
+    ^"range" | ^"rand" | ^"properties" |
+    ^"localdatetime" | ^"localtime" | ^"datetime" | ^"date" | ^"duration" | ^"time" |
+    ^"startNode" | ^"endNode" | ^"exists"
+}
 plain_ident = @{ !keyword ~ (ASCII_ALPHA | "_") ~ (ASCII_ALPHANUMERIC | "_")* }
 backtick_ident = @{ "`" ~ (!"`" ~ ANY)+ ~ "`" }
 

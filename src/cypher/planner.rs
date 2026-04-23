@@ -1743,7 +1743,7 @@ fn plan_single_pattern(conn: &Connection, pattern: &Pattern) -> crate::types::Re
                     input: Box::new(op.unwrap()),
                     src_alias,
                     dst_alias: dst_alias.clone(),
-                    rel_alias: effective_rel_alias,
+                    rel_alias: effective_rel_alias.clone(),
                     edge_types: rel.rel_types.clone(),
                     direction,
                     min_hops,
@@ -1776,6 +1776,17 @@ fn plan_single_pattern(conn: &Connection, pattern: &Pattern) -> crate::types::Re
                         input: Box::new(op.unwrap()),
                         predicate,
                     });
+                }
+
+                // Apply relationship inline property filters.
+                if !rel.properties.is_empty() {
+                    if let Some(ref r_alias) = effective_rel_alias {
+                        let predicate = properties_to_filter(r_alias, &rel.properties);
+                        op = Some(LogicalOp::Filter {
+                            input: Box::new(op.unwrap()),
+                            predicate,
+                        });
+                    }
                 }
 
                 i += 2; // skip rel + dst node

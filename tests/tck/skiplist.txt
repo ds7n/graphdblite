@@ -63,7 +63,6 @@ List6 - List size::[9] Get node degree via size of pattern comprehension that sp
 Literals8 - Maps::[22] Fail on a map containing unquoted string
 Map1 - Static value access::[3] Statically access a field of a map resulting from an expression
 Map2 - Dynamic Value Access::[7] Fail at runtime when trying to index into a map with a non-string
-Match2 - Match relationships::[5] Match relationship with inline property value
 Match2 - Match relationships::[7] Matching twice with conflicting relationship types on same relationship
 Match3 - Match fixed length patterns::[10] Matching using self-referencing pattern returns no result
 Match3 - Match fixed length patterns::[15] Mixing directed and undirected pattern parts with self-relationship, simple
@@ -76,6 +75,7 @@ Match3 - Match fixed length patterns::[21] Three bound nodes pointing to the sam
 Match3 - Match fixed length patterns::[22] Returning bound nodes that are not part of the pattern
 Match3 - Match fixed length patterns::[23] Matching disconnected patterns
 Match3 - Match fixed length patterns::[30] Fail when using a list or nodes as a node
+Match3 - Match fixed length patterns::[5] Return two subgraphs with bound undirected relationship
 Match3 - Match fixed length patterns::[8] Matching using relationship predicate with multiples of the same type
 Match4 - Match variable length patterns scenarios::[4] Matching longer variable length paths
 Match4 - Match variable length patterns scenarios::[5] Matching variable length pattern with property predicate

@@ -59,7 +59,7 @@ impl GraphCounts {
             let mut rows = stmt.query([]).unwrap();
             while let Some(row) = rows.next().unwrap() {
                 let key: Vec<u8> = row.get(0).unwrap();
-                let owner = format!("n:{}", format!("{key:?}"));
+                let owner = format!("n:{key:?}");
                 let data: Vec<u8> = row.get(1).unwrap();
                 if let Ok(rec) = rmp_serde::from_slice::<NodeBlob>(&data) {
                     for (k, v) in &rec.properties {
@@ -73,7 +73,7 @@ impl GraphCounts {
             let mut rows = stmt.query([]).unwrap();
             while let Some(row) = rows.next().unwrap() {
                 let key: Vec<u8> = row.get(0).unwrap();
-                let owner = format!("e:{}", format!("{key:?}"));
+                let owner = format!("e:{key:?}");
                 let data: Vec<u8> = row.get(1).unwrap();
                 if let Ok(props) =
                     rmp_serde::from_slice::<HashMap<String, graphdblite::Value>>(&data)

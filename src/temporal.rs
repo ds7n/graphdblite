@@ -660,9 +660,15 @@ impl<'de> Deserialize<'de> for CypherDate {
                 self,
                 mut seq: A,
             ) -> std::result::Result<CypherDate, A::Error> {
-                let year: i32 = seq.next_element()?.ok_or_else(|| de::Error::invalid_length(0, &self))?;
-                let month: u32 = seq.next_element()?.ok_or_else(|| de::Error::invalid_length(1, &self))?;
-                let day: u32 = seq.next_element()?.ok_or_else(|| de::Error::invalid_length(2, &self))?;
+                let year: i32 = seq
+                    .next_element()?
+                    .ok_or_else(|| de::Error::invalid_length(0, &self))?;
+                let month: u32 = seq
+                    .next_element()?
+                    .ok_or_else(|| de::Error::invalid_length(1, &self))?;
+                let day: u32 = seq
+                    .next_element()?
+                    .ok_or_else(|| de::Error::invalid_length(2, &self))?;
                 let date = NaiveDate::from_ymd_opt(year, month, day)
                     .ok_or_else(|| de::Error::custom("invalid date"))?;
                 Ok(CypherDate(date))
@@ -761,10 +767,18 @@ impl<'de> Deserialize<'de> for CypherLocalTime {
                 self,
                 mut seq: A,
             ) -> std::result::Result<CypherLocalTime, A::Error> {
-                let h: u32 = seq.next_element()?.ok_or_else(|| de::Error::invalid_length(0, &self))?;
-                let m: u32 = seq.next_element()?.ok_or_else(|| de::Error::invalid_length(1, &self))?;
-                let s: u32 = seq.next_element()?.ok_or_else(|| de::Error::invalid_length(2, &self))?;
-                let n: u32 = seq.next_element()?.ok_or_else(|| de::Error::invalid_length(3, &self))?;
+                let h: u32 = seq
+                    .next_element()?
+                    .ok_or_else(|| de::Error::invalid_length(0, &self))?;
+                let m: u32 = seq
+                    .next_element()?
+                    .ok_or_else(|| de::Error::invalid_length(1, &self))?;
+                let s: u32 = seq
+                    .next_element()?
+                    .ok_or_else(|| de::Error::invalid_length(2, &self))?;
+                let n: u32 = seq
+                    .next_element()?
+                    .ok_or_else(|| de::Error::invalid_length(3, &self))?;
                 let t = NaiveTime::from_hms_nano_opt(h, m, s, n)
                     .ok_or_else(|| de::Error::custom("invalid time"))?;
                 Ok(CypherLocalTime(t))
@@ -870,11 +884,21 @@ impl<'de> Deserialize<'de> for CypherTime {
                 self,
                 mut seq: A,
             ) -> std::result::Result<CypherTime, A::Error> {
-                let h: u32 = seq.next_element()?.ok_or_else(|| de::Error::invalid_length(0, &self))?;
-                let m: u32 = seq.next_element()?.ok_or_else(|| de::Error::invalid_length(1, &self))?;
-                let s: u32 = seq.next_element()?.ok_or_else(|| de::Error::invalid_length(2, &self))?;
-                let n: u32 = seq.next_element()?.ok_or_else(|| de::Error::invalid_length(3, &self))?;
-                let o: i32 = seq.next_element()?.ok_or_else(|| de::Error::invalid_length(4, &self))?;
+                let h: u32 = seq
+                    .next_element()?
+                    .ok_or_else(|| de::Error::invalid_length(0, &self))?;
+                let m: u32 = seq
+                    .next_element()?
+                    .ok_or_else(|| de::Error::invalid_length(1, &self))?;
+                let s: u32 = seq
+                    .next_element()?
+                    .ok_or_else(|| de::Error::invalid_length(2, &self))?;
+                let n: u32 = seq
+                    .next_element()?
+                    .ok_or_else(|| de::Error::invalid_length(3, &self))?;
+                let o: i32 = seq
+                    .next_element()?
+                    .ok_or_else(|| de::Error::invalid_length(4, &self))?;
                 let t = NaiveTime::from_hms_nano_opt(h, m, s, n)
                     .ok_or_else(|| de::Error::custom("invalid time"))?;
                 let offset =
@@ -908,9 +932,7 @@ impl<'de> Deserialize<'de> for CypherTime {
                 Ok(CypherTime(t, offset))
             }
         }
-        deserializer.deserialize_any(
-            V,
-        )
+        deserializer.deserialize_any(V)
     }
 }
 
@@ -1024,13 +1046,27 @@ impl<'de> Deserialize<'de> for CypherLocalDateTime {
                 self,
                 mut seq: A,
             ) -> std::result::Result<CypherLocalDateTime, A::Error> {
-                let year: i32 = seq.next_element()?.ok_or_else(|| de::Error::invalid_length(0, &self))?;
-                let month: u32 = seq.next_element()?.ok_or_else(|| de::Error::invalid_length(1, &self))?;
-                let day: u32 = seq.next_element()?.ok_or_else(|| de::Error::invalid_length(2, &self))?;
-                let h: u32 = seq.next_element()?.ok_or_else(|| de::Error::invalid_length(3, &self))?;
-                let m: u32 = seq.next_element()?.ok_or_else(|| de::Error::invalid_length(4, &self))?;
-                let s: u32 = seq.next_element()?.ok_or_else(|| de::Error::invalid_length(5, &self))?;
-                let n: u32 = seq.next_element()?.ok_or_else(|| de::Error::invalid_length(6, &self))?;
+                let year: i32 = seq
+                    .next_element()?
+                    .ok_or_else(|| de::Error::invalid_length(0, &self))?;
+                let month: u32 = seq
+                    .next_element()?
+                    .ok_or_else(|| de::Error::invalid_length(1, &self))?;
+                let day: u32 = seq
+                    .next_element()?
+                    .ok_or_else(|| de::Error::invalid_length(2, &self))?;
+                let h: u32 = seq
+                    .next_element()?
+                    .ok_or_else(|| de::Error::invalid_length(3, &self))?;
+                let m: u32 = seq
+                    .next_element()?
+                    .ok_or_else(|| de::Error::invalid_length(4, &self))?;
+                let s: u32 = seq
+                    .next_element()?
+                    .ok_or_else(|| de::Error::invalid_length(5, &self))?;
+                let n: u32 = seq
+                    .next_element()?
+                    .ok_or_else(|| de::Error::invalid_length(6, &self))?;
                 let date = NaiveDate::from_ymd_opt(year, month, day)
                     .ok_or_else(|| de::Error::custom("invalid date"))?;
                 let time = NaiveTime::from_hms_nano_opt(h, m, s, n)
@@ -1068,9 +1104,7 @@ impl<'de> Deserialize<'de> for CypherLocalDateTime {
                 Ok(CypherLocalDateTime(NaiveDateTime::new(d, t)))
             }
         }
-        deserializer.deserialize_any(
-            V,
-        )
+        deserializer.deserialize_any(V)
     }
 }
 
@@ -1172,14 +1206,30 @@ impl<'de> Deserialize<'de> for CypherDateTime {
                 self,
                 mut seq: A,
             ) -> std::result::Result<CypherDateTime, A::Error> {
-                let year: i32 = seq.next_element()?.ok_or_else(|| de::Error::invalid_length(0, &self))?;
-                let month: u32 = seq.next_element()?.ok_or_else(|| de::Error::invalid_length(1, &self))?;
-                let day: u32 = seq.next_element()?.ok_or_else(|| de::Error::invalid_length(2, &self))?;
-                let h: u32 = seq.next_element()?.ok_or_else(|| de::Error::invalid_length(3, &self))?;
-                let m: u32 = seq.next_element()?.ok_or_else(|| de::Error::invalid_length(4, &self))?;
-                let s: u32 = seq.next_element()?.ok_or_else(|| de::Error::invalid_length(5, &self))?;
-                let n: u32 = seq.next_element()?.ok_or_else(|| de::Error::invalid_length(6, &self))?;
-                let o: i32 = seq.next_element()?.ok_or_else(|| de::Error::invalid_length(7, &self))?;
+                let year: i32 = seq
+                    .next_element()?
+                    .ok_or_else(|| de::Error::invalid_length(0, &self))?;
+                let month: u32 = seq
+                    .next_element()?
+                    .ok_or_else(|| de::Error::invalid_length(1, &self))?;
+                let day: u32 = seq
+                    .next_element()?
+                    .ok_or_else(|| de::Error::invalid_length(2, &self))?;
+                let h: u32 = seq
+                    .next_element()?
+                    .ok_or_else(|| de::Error::invalid_length(3, &self))?;
+                let m: u32 = seq
+                    .next_element()?
+                    .ok_or_else(|| de::Error::invalid_length(4, &self))?;
+                let s: u32 = seq
+                    .next_element()?
+                    .ok_or_else(|| de::Error::invalid_length(5, &self))?;
+                let n: u32 = seq
+                    .next_element()?
+                    .ok_or_else(|| de::Error::invalid_length(6, &self))?;
+                let o: i32 = seq
+                    .next_element()?
+                    .ok_or_else(|| de::Error::invalid_length(7, &self))?;
                 let date = NaiveDate::from_ymd_opt(year, month, day)
                     .ok_or_else(|| de::Error::custom("invalid date"))?;
                 let time = NaiveTime::from_hms_nano_opt(h, m, s, n)
@@ -1225,9 +1275,7 @@ impl<'de> Deserialize<'de> for CypherDateTime {
                 Ok(CypherDateTime(NaiveDateTime::new(d, t), offset, None))
             }
         }
-        deserializer.deserialize_any(
-            V,
-        )
+        deserializer.deserialize_any(V)
     }
 }
 
@@ -1483,11 +1531,24 @@ impl<'de> Deserialize<'de> for CypherDuration {
                 self,
                 mut seq: A,
             ) -> std::result::Result<CypherDuration, A::Error> {
-                let months: i64 = seq.next_element()?.ok_or_else(|| de::Error::invalid_length(0, &self))?;
-                let days: i64 = seq.next_element()?.ok_or_else(|| de::Error::invalid_length(1, &self))?;
-                let seconds: i64 = seq.next_element()?.ok_or_else(|| de::Error::invalid_length(2, &self))?;
-                let nanos: i64 = seq.next_element()?.ok_or_else(|| de::Error::invalid_length(3, &self))?;
-                Ok(CypherDuration { months, days, seconds, nanos })
+                let months: i64 = seq
+                    .next_element()?
+                    .ok_or_else(|| de::Error::invalid_length(0, &self))?;
+                let days: i64 = seq
+                    .next_element()?
+                    .ok_or_else(|| de::Error::invalid_length(1, &self))?;
+                let seconds: i64 = seq
+                    .next_element()?
+                    .ok_or_else(|| de::Error::invalid_length(2, &self))?;
+                let nanos: i64 = seq
+                    .next_element()?
+                    .ok_or_else(|| de::Error::invalid_length(3, &self))?;
+                Ok(CypherDuration {
+                    months,
+                    days,
+                    seconds,
+                    nanos,
+                })
             }
             fn visit_map<A: MapAccess<'de>>(
                 self,
@@ -1510,9 +1571,7 @@ impl<'de> Deserialize<'de> for CypherDuration {
                 })
             }
         }
-        deserializer.deserialize_any(
-            V,
-        )
+        deserializer.deserialize_any(V)
     }
 }
 

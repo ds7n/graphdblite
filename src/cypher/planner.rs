@@ -1728,10 +1728,7 @@ fn plan_single_pattern(conn: &Connection, pattern: &Pattern) -> crate::types::Re
         for (idx, elem) in pattern.elements.iter().enumerate() {
             match elem {
                 PatternElement::Node(n) => {
-                    let alias = n
-                        .variable
-                        .clone()
-                        .unwrap_or_else(|| format!("_anon_{idx}"));
+                    let alias = n.variable.clone().unwrap_or_else(|| format!("_anon_{idx}"));
                     node_aliases.push(alias);
                 }
                 PatternElement::Relationship(r) => {

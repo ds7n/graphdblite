@@ -897,7 +897,10 @@ fn eval_function_call(
         }
         "left" => {
             let s = eval_single_arg(args, record, conn)?;
-            let len_val = args.get(1).map(|a| eval_expr(a, record, conn)).transpose()?;
+            let len_val = args
+                .get(1)
+                .map(|a| eval_expr(a, record, conn))
+                .transpose()?;
             match (s, len_val) {
                 (Value::String(s), Some(Value::I64(n))) => {
                     let n = n.max(0) as usize;
@@ -909,7 +912,10 @@ fn eval_function_call(
         }
         "right" => {
             let s = eval_single_arg(args, record, conn)?;
-            let len_val = args.get(1).map(|a| eval_expr(a, record, conn)).transpose()?;
+            let len_val = args
+                .get(1)
+                .map(|a| eval_expr(a, record, conn))
+                .transpose()?;
             match (s, len_val) {
                 (Value::String(s), Some(Value::I64(n))) => {
                     let n = n.max(0) as usize;

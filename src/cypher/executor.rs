@@ -2789,17 +2789,30 @@ pub fn execute_first_match(
             ..
         } => {
             let input_records = exec(conn, input, &ExecContext::default())?;
-            let label = edge_types.first().map(|s| s.as_str()).unwrap_or("");
             for rec in &input_records {
                 let src_id = match rec.get(src_alias) {
                     Some(Value::I64(id)) => NodeId(*id as u64),
                     _ => continue,
                 };
-                let dst_ids = if *min_hops == 1 && *max_hops == 1 {
-                    edge::get_neighbors(conn, src_id, label, *direction)?
+                // Discover edge labels when edge_types is empty (match any type).
+                let _owned: Vec<String>;
+                let labels: Vec<&str> = if edge_types.is_empty() {
+                    let all = edge::get_all_edge_labels(conn, src_id, *direction)?;
+                    _owned = all.into_iter().map(|(l, _)| l).collect();
+                    _owned.iter().map(|s| s.as_str()).collect()
                 } else {
-                    edge::traverse(conn, src_id, label, *direction, *min_hops, *max_hops)?
+                    edge_types.iter().map(|s| s.as_str()).collect()
                 };
+                let mut dst_ids = Vec::new();
+                for label in &labels {
+                    if *min_hops == 1 && *max_hops == 1 {
+                        dst_ids.extend(edge::get_neighbors(conn, src_id, label, *direction)?);
+                    } else {
+                        dst_ids.extend(edge::traverse(
+                            conn, src_id, label, *direction, *min_hops, *max_hops,
+                        )?);
+                    }
+                }
                 for dst_id in dst_ids {
                     let dst_node = node::get_node(conn, dst_id)?;
                     let mut new_rec = rec.clone();

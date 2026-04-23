@@ -1022,6 +1022,42 @@ fn plan_multi_clause(
 }
 
 /// Plan a WITH clause as an intermediate projection (+aggregation) and optional filter.
+/// Replace variable references that match WITH alias names with the original
+/// expressions. This allows WITH WHERE to filter before projection while
+/// correctly resolving aliases like `WITH n.age AS age WHERE age > 25`.
+fn substitute_aliases(expr: &Expr, aliases: &std::collections::HashMap<String, Expr>) -> Expr {
+    match expr {
+        Expr::Variable(name) => {
+            if let Some(original) = aliases.get(name) {
+                original.clone()
+            } else {
+                expr.clone()
+            }
+        }
+        Expr::BinaryOp { left, op, right } => Expr::BinaryOp {
+            left: Box::new(substitute_aliases(left, aliases)),
+            op: *op,
+            right: Box::new(substitute_aliases(right, aliases)),
+        },
+        Expr::Not(inner) => Expr::Not(Box::new(substitute_aliases(inner, aliases))),
+        Expr::IsNull(inner) => Expr::IsNull(Box::new(substitute_aliases(inner, aliases))),
+        Expr::IsNotNull(inner) => Expr::IsNotNull(Box::new(substitute_aliases(inner, aliases))),
+        Expr::FunctionCall {
+            name,
+            args,
+            distinct,
+        } => Expr::FunctionCall {
+            name: name.clone(),
+            args: args
+                .iter()
+                .map(|a| substitute_aliases(a, aliases))
+                .collect(),
+            distinct: *distinct,
+        },
+        _ => expr.clone(),
+    }
+}
+
 fn plan_with(input: LogicalOp, with: &WithClause) -> crate::types::Result<LogicalOp> {
     let mut op = input;
 
@@ -1053,22 +1089,48 @@ fn plan_with(input: LogicalOp, with: &WithClause) -> crate::types::Result<Logica
         };
     }
 
-    // Apply WITH's WHERE filter BEFORE projection so it can reference
-    // pre-projection variables (e.g. WITH c WHERE r IS NULL).
     if let Some(ref predicate) = with.where_clause {
-        op = LogicalOp::Filter {
+        if has_aggregates {
+            // When WITH has aggregates, filter AFTER projection because
+            // aggregate results are only available after Aggregate + Project.
+            op = LogicalOp::Project {
+                input: Box::new(op),
+                items: with.items.clone(),
+                emit_compound: false,
+            };
+            op = LogicalOp::Filter {
+                input: Box::new(op),
+                predicate: predicate.clone(),
+            };
+        } else {
+            // No aggregates: filter BEFORE projection so WHERE can access
+            // pre-projection variables (e.g. WITH c WHERE r IS NULL).
+            // Substitute alias names with original expressions so aliases
+            // like `WHERE age > 25` (age = n.age) resolve correctly.
+            let alias_map: std::collections::HashMap<String, Expr> = with
+                .items
+                .iter()
+                .filter_map(|item| item.alias.as_ref().map(|a| (a.clone(), item.expr.clone())))
+                .collect();
+            let resolved = substitute_aliases(predicate, &alias_map);
+            op = LogicalOp::Filter {
+                input: Box::new(op),
+                predicate: resolved,
+            };
+            op = LogicalOp::Project {
+                input: Box::new(op),
+                items: with.items.clone(),
+                emit_compound: false,
+            };
+        }
+    } else {
+        // No WHERE — just project.
+        op = LogicalOp::Project {
             input: Box::new(op),
-            predicate: predicate.clone(),
+            items: with.items.clone(),
+            emit_compound: false,
         };
     }
-
-    // Project the WITH items. Keep flat shape — downstream operators rely on
-    // `var.__id` / `var.prop` flat fields.
-    op = LogicalOp::Project {
-        input: Box::new(op),
-        items: with.items.clone(),
-        emit_compound: false,
-    };
 
     // Apply ORDER BY.
     if !with.order_by.is_empty() {

@@ -36,7 +36,6 @@ Delete6 - Persistence of delete clause side effects::[14] Aggregating in `WITH` 
 Delete6 - Persistence of delete clause side effects::[5] Filtering after deleting nodes affects the result set but not the side effects
 Delete6 - Persistence of delete clause side effects::[6] Aggregating in `RETURN` after deleting nodes affects the result set but not the side effects
 Delete6 - Persistence of delete clause side effects::[7] Aggregating in `WITH` after deleting nodes affects the result set but not the side effects
-ExistentialSubquery1 - Simple existential subquery::[1] Simple subquery without WHERE clause
 ExistentialSubquery2 - Full existential subquery::[1] Full existential subquery
 ExistentialSubquery2 - Full existential subquery::[2] Full existential subquery with aggregation
 ExistentialSubquery3 - Nested existential subquery::[1] Nested simple existential subquery
@@ -57,6 +56,7 @@ List12 - List Comprehension::[5] Using a list comprehension in a WITH
 List12 - List Comprehension::[7] Fail when using aggregation in list comprehension
 List6 - List size::[10] Get node degree via size of pattern comprehension that specifies multiple relationship types
 List6 - List size::[5] Fail for `size()` on paths
+List6 - List size::[6] Fail for `size()` on pattern predicates
 List6 - List size::[7] Using size of pattern comprehension to test existence
 List6 - List size::[8] Get node degree via size of pattern comprehension
 List6 - List size::[9] Get node degree via size of pattern comprehension that specifies a relationship type
@@ -104,7 +104,6 @@ Match9 - Match deprecated scenarios::[1] Variable length relationship variables 
 Match9 - Match deprecated scenarios::[9] Optionally matching named paths with variable length patterns
 MatchWhere2 - Filter multiple variables::[1] Filter nodes with conjunctive two-part property predicate on multi variables with multiple bindings
 MatchWhere2 - Filter multiple variables::[2] Filter node with conjunctive multi-part property predicates on multi variables with multiple bindings
-MatchWhere4 - Non-Equi-Joins on variables::[2] Join with disjunctive multi-part predicates including patterns
 Merge1 - Merge node::[11] Merge should be able to merge using property of bound node
 Merge1 - Merge node::[13] Merge should bind a path
 Merge1 - Merge node::[14] Merges should not be able to match on deleted nodes
@@ -139,27 +138,13 @@ Path2 - Relationships of a path::[1] Return relationships by fetching them from 
 Path2 - Relationships of a path::[2] Return relationships by fetching them from the path - starting from the end
 Path2 - Relationships of a path::[3] `relationships()` on null path
 Path3 - Length of a path::[1] Return a var length path of length zero
+Pattern1 - Pattern predicate::[10] Fail on introducing unbounded variables in pattern
 Pattern1 - Pattern predicate::[10] Matching on a specific type of undirected connection with length 2
 Pattern1 - Pattern predicate::[11] Fail on checking self pattern
-Pattern1 - Pattern predicate::[12] Matching two nodes on a single directed connection between them
-Pattern1 - Pattern predicate::[13] Fail on matching two nodes on a single undirected connection between them
-Pattern1 - Pattern predicate::[14] Matching two nodes on a specific type of single outgoing directed connection
-Pattern1 - Pattern predicate::[15] Matching two nodes on a specific type of single undirected connection
-Pattern1 - Pattern predicate::[16] Matching two nodes on a specific type of a variable length outgoing directed connection
-Pattern1 - Pattern predicate::[17] Matching two nodes on a specific type of variable length undirected connection
 Pattern1 - Pattern predicate::[18] Matching two nodes on a specific type of undirected connection with length 2
-Pattern1 - Pattern predicate::[19] Using a negated existential pattern predicate
-Pattern1 - Pattern predicate::[1] Matching on any single outgoing directed connection
-Pattern1 - Pattern predicate::[20] Using two existential pattern predicates in a conjunction
-Pattern1 - Pattern predicate::[21] Using two existential pattern predicates in a disjunction
-Pattern1 - Pattern predicate::[2] Matching on a single undirected connection
-Pattern1 - Pattern predicate::[3] Matching on any single incoming directed connection
-Pattern1 - Pattern predicate::[4] Matching on a specific type of single outgoing directed connection
-Pattern1 - Pattern predicate::[5] Matching on a specific type of single undirected connection
-Pattern1 - Pattern predicate::[6] Matching on a specific type of single incoming directed connection
-Pattern1 - Pattern predicate::[7] Matching on a specific type of a variable length outgoing directed connection
-Pattern1 - Pattern predicate::[8] Matching on a specific type of variable length undirected connection
-Pattern1 - Pattern predicate::[9] Matching on a specific type of variable length incoming directed connection
+Pattern1 - Pattern predicate::[22] Fail on using pattern in RETURN projection
+Pattern1 - Pattern predicate::[23] Fail on using pattern in WITH projection
+Pattern1 - Pattern predicate::[24] Fail on using pattern in right-hand side of SET
 Pattern2 - Pattern Comprehension::[10] Use a pattern comprehension in RETURN
 Pattern2 - Pattern Comprehension::[11] Use a pattern comprehension and ORDER BY
 Pattern2 - Pattern Comprehension::[1] Return a pattern comprehension
@@ -313,6 +298,5 @@ WithWhere1 - Filter single variable::[3] Filter for an unbound relationship vari
 WithWhere1 - Filter single variable::[4] Filter for an unbound node variable
 WithWhere2 - Filter multiple variables::[1] Filter nodes with conjunctive two-part property predicate on multi variables with multiple bindings
 WithWhere2 - Filter multiple variables::[2] Filter node with conjunctive multi-part property predicates on multi variables with multiple bindings
-WithWhere4 - Non-Equi-Joins on variables::[2] Join with disjunctive multi-part predicates including patterns
 WithWhere7 - Variable visibility under aliasing::[1] WHERE sees a variable bound before but not after WITH
 WithWhere7 - Variable visibility under aliasing::[3] WHERE sees both, variable bound before but not after WITH and variable bound after but not before WITH

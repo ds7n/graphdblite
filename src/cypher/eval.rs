@@ -300,6 +300,9 @@ pub fn eval_expr(expr: &Expr, record: &Record, conn: &Connection) -> crate::type
             patterns,
             where_clause,
         } => eval_exists(patterns, where_clause.as_deref(), record, conn),
+        Expr::PatternPredicate(pattern) => {
+            eval_exists(std::slice::from_ref(pattern), None, record, conn)
+        }
         Expr::MapLiteral(pairs) => {
             let mut map = std::collections::BTreeMap::new();
             for (k, expr) in pairs {

@@ -1556,6 +1556,10 @@ fn parse_cmp_primary(pair: pest::iterators::Pair<Rule>) -> crate::types::Result<
     match inner.as_rule() {
         Rule::case_expr => parse_case_expr(inner),
         Rule::exists_subquery => parse_exists_subquery(inner),
+        Rule::pattern_predicate => {
+            let pattern = parse_pattern(inner)?;
+            Ok(Expr::PatternPredicate(pattern))
+        }
         Rule::expr => parse_expr(inner),
         Rule::add_expr => parse_add_expr(inner),
         _ => Err(GraphError::Serialization(format!(
@@ -2437,6 +2441,7 @@ fn resolve_expr(expr: &Expr, params: &HashMap<String, Value>) -> crate::types::R
         | Expr::Property(_, _)
         | Expr::Variable(_)
         | Expr::HasLabel(_, _)
+        | Expr::PatternPredicate(_)
         | Expr::Star => Ok(expr.clone()),
     }
 }

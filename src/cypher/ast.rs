@@ -421,6 +421,9 @@ pub enum Expr {
     },
     /// Label predicate: n:Label (true if node has all specified labels).
     HasLabel(String, Vec<String>),
+    /// Pattern predicate: (n)-[:REL]->(m) — true if the pattern matches.
+    /// Used in WHERE clauses for existential checks.
+    PatternPredicate(Pattern),
     /// Wildcard * (used in count(*) and RETURN *)
     Star,
 }

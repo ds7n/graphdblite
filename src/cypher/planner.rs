@@ -1053,6 +1053,15 @@ fn plan_with(input: LogicalOp, with: &WithClause) -> crate::types::Result<Logica
         };
     }
 
+    // Apply WITH's WHERE filter BEFORE projection so it can reference
+    // pre-projection variables (e.g. WITH c WHERE r IS NULL).
+    if let Some(ref predicate) = with.where_clause {
+        op = LogicalOp::Filter {
+            input: Box::new(op),
+            predicate: predicate.clone(),
+        };
+    }
+
     // Project the WITH items. Keep flat shape — downstream operators rely on
     // `var.__id` / `var.prop` flat fields.
     op = LogicalOp::Project {
@@ -1060,14 +1069,6 @@ fn plan_with(input: LogicalOp, with: &WithClause) -> crate::types::Result<Logica
         items: with.items.clone(),
         emit_compound: false,
     };
-
-    // Apply WITH's WHERE filter before ORDER BY/SKIP/LIMIT (Cypher semantics).
-    if let Some(ref predicate) = with.where_clause {
-        op = LogicalOp::Filter {
-            input: Box::new(op),
-            predicate: predicate.clone(),
-        };
-    }
 
     // Apply ORDER BY.
     if !with.order_by.is_empty() {

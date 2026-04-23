@@ -236,22 +236,6 @@ Temporal8 - Compute Arithmetic Operations on Temporal Values::[4] Should add or 
 Temporal8 - Compute Arithmetic Operations on Temporal Values::[5] Should add or subtract duration to or from date time
 Temporal8 - Compute Arithmetic Operations on Temporal Values::[6] Should add or subtract durations
 Temporal8 - Compute Arithmetic Operations on Temporal Values::[7] Should multiply or divide durations by numbers
-TriadicSelection1 - Query three related nodes on binary-tree graphs::[10] Handling triadic friend of a friend that is not a friend with implicit superset of labels
-TriadicSelection1 - Query three related nodes on binary-tree graphs::[11] Handling triadic friend of a friend that is a friend
-TriadicSelection1 - Query three related nodes on binary-tree graphs::[12] Handling triadic friend of a friend that is a friend with different relationship type
-TriadicSelection1 - Query three related nodes on binary-tree graphs::[13] Handling triadic friend of a friend that is a friend with superset of relationship type
-TriadicSelection1 - Query three related nodes on binary-tree graphs::[14] Handling triadic friend of a friend that is a friend with implicit subset of relationship type
-TriadicSelection1 - Query three related nodes on binary-tree graphs::[15] Handling triadic friend of a friend that is a friend with explicit subset of relationship type
-TriadicSelection1 - Query three related nodes on binary-tree graphs::[16] Handling triadic friend of a friend that is a friend with same labels
-TriadicSelection1 - Query three related nodes on binary-tree graphs::[18] Handling triadic friend of a friend that is a friend with implicit subset of labels
-TriadicSelection1 - Query three related nodes on binary-tree graphs::[19] Handling triadic friend of a friend that is a friend with implicit superset of labels
-TriadicSelection1 - Query three related nodes on binary-tree graphs::[2] Handling triadic friend of a friend that is not a friend
-TriadicSelection1 - Query three related nodes on binary-tree graphs::[3] Handling triadic friend of a friend that is not a friend with different relationship type
-TriadicSelection1 - Query three related nodes on binary-tree graphs::[4] Handling triadic friend of a friend that is not a friend with superset of relationship type
-TriadicSelection1 - Query three related nodes on binary-tree graphs::[5] Handling triadic friend of a friend that is not a friend with implicit subset of relationship type
-TriadicSelection1 - Query three related nodes on binary-tree graphs::[6] Handling triadic friend of a friend that is not a friend with explicit subset of relationship type
-TriadicSelection1 - Query three related nodes on binary-tree graphs::[7] Handling triadic friend of a friend that is not a friend with same labels
-TriadicSelection1 - Query three related nodes on binary-tree graphs::[9] Handling triadic friend of a friend that is not a friend with implicit subset of labels
 TypeConversion1 - To Boolean::[5] Fail `toBoolean()` on invalid types #Example: relationship
 TypeConversion2 - To Integer::[8] Fail `toInteger()` on invalid types #Example: node
 TypeConversion2 - To Integer::[8] Fail `toInteger()` on invalid types #Example: relationship
@@ -294,9 +278,7 @@ WithSkipLimit2 - Limit::[2] Handle dependencies across WITH with LIMIT
 WithSkipLimit3 - Skip and limit::[2] Get rows in the middle by param
 WithSkipLimit3 - Skip and limit::[3] Limiting amount of rows when there are fewer left than the LIMIT argument
 WithWhere1 - Filter single variable::[2] Filter node with property predicate on a single variable with multiple distinct bindings
-WithWhere1 - Filter single variable::[3] Filter for an unbound relationship variable
-WithWhere1 - Filter single variable::[4] Filter for an unbound node variable
 WithWhere2 - Filter multiple variables::[1] Filter nodes with conjunctive two-part property predicate on multi variables with multiple bindings
 WithWhere2 - Filter multiple variables::[2] Filter node with conjunctive multi-part property predicates on multi variables with multiple bindings
-WithWhere7 - Variable visibility under aliasing::[1] WHERE sees a variable bound before but not after WITH
+WithWhere7 - Variable visibility under aliasing::[2] WHERE sees a variable bound after but not before WITH
 WithWhere7 - Variable visibility under aliasing::[3] WHERE sees both, variable bound before but not after WITH and variable bound after but not before WITH

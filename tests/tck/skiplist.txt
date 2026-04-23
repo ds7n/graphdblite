@@ -190,7 +190,6 @@ Return4 - Column renaming::[9] Handle subexpression in aggregation also occurrin
 Return6 - Implicit grouping with aggregates::[10] Multiple aggregates on same variable
 Return6 - Implicit grouping with aggregates::[15] Using `rand()` in aggregations
 Return6 - Implicit grouping with aggregates::[16] Aggregation on complex expressions
-Return6 - Implicit grouping with aggregates::[3] Aggregating by a list property has a correct definition of equality
 Return6 - Implicit grouping with aggregates::[5] Aggregates inside normal functions
 Return6 - Implicit grouping with aggregates::[8] Handle aggregation on functions
 ReturnOrderBy1 - Order by a single variable (correct order of values according to their type)::[11] ORDER BY should order distinct types in the expected order
@@ -264,19 +263,12 @@ WithOrderBy2 - Order by a single expression::[25] Fail on sorting by an aggregat
 WithOrderBy3 - Order by multiple expressions::[8] Fail on sorting by any number of undefined variables in any position #Example: mixed
 WithOrderBy3 - Order by multiple expressions::[8] Fail on sorting by any number of undefined variables in any position #Example: never defined
 WithOrderBy3 - Order by multiple expressions::[8] Fail on sorting by any number of undefined variables in any position #Example: out of scope
-WithOrderBy4 - Order by in combination with projection and aliasing::[11] Sort by an aggregate projection
-WithOrderBy4 - Order by in combination with projection and aliasing::[12] Sort by an aliased aggregate projection
-WithOrderBy4 - Order by in combination with projection and aliasing::[19] Fail if not projected variables are used inside an order by item which contains an aggregation expression
-WithOrderBy4 - Order by in combination with projection and aliasing::[1] Sort by a projected expression
-WithOrderBy4 - Order by in combination with projection and aliasing::[2] Sort by an alias of a projected expression
-WithOrderBy4 - Order by in combination with projection and aliasing::[3] Sort by two projected expressions with order priority being different than projection order
-WithOrderBy4 - Order by in combination with projection and aliasing::[4] Sort by one projected expression and one alias of a projected expression with order priority being different than projection order
-WithOrderBy4 - Order by in combination with projection and aliasing::[5] Sort by one alias of a projected expression and one projected expression with order priority being different than projection order
-WithOrderBy4 - Order by in combination with projection and aliasing::[6] Sort by aliases of two projected expressions with order priority being different than projection order
 WithOrderBy4 - Order by in combination with projection and aliasing::[8] Sort by non-projected existing variable
+WithOrderBy4 - Order by in combination with projection and aliasing::[13] Fail on sorting by a non-projected aggregation on a variable
+WithOrderBy4 - Order by in combination with projection and aliasing::[14] Fail on sorting by a non-projected aggregation on an expression
+WithOrderBy4 - Order by in combination with projection and aliasing::[19] Fail if not projected variables are used inside an order by item which contains an aggregation expression
 WithSkipLimit2 - Limit::[2] Handle dependencies across WITH with LIMIT
 WithSkipLimit3 - Skip and limit::[2] Get rows in the middle by param
-WithSkipLimit3 - Skip and limit::[3] Limiting amount of rows when there are fewer left than the LIMIT argument
 WithWhere1 - Filter single variable::[2] Filter node with property predicate on a single variable with multiple distinct bindings
 WithWhere2 - Filter multiple variables::[1] Filter nodes with conjunctive two-part property predicate on multi variables with multiple bindings
 WithWhere2 - Filter multiple variables::[2] Filter node with conjunctive multi-part property predicates on multi variables with multiple bindings

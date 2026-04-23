@@ -20,13 +20,8 @@ Create6 - Persistence of create clause side effects::[13] Aggregating in `RETURN
 Create6 - Persistence of create clause side effects::[14] Aggregating in `WITH` after creating relationships affects the result set but not the side effects
 Create6 - Persistence of create clause side effects::[6] Aggregating in `RETURN` after creating nodes affects the result set but not the side effects
 Create6 - Persistence of create clause side effects::[7] Aggregating in `WITH` after creating nodes affects the result set but not the side effects
-Delete1 - Deleting nodes::[4] Delete on null node
-Delete1 - Deleting nodes::[5] Ignore null when deleting node
-Delete1 - Deleting nodes::[6] Detach delete on null node
 Delete1 - Deleting nodes::[7] Failing when deleting connected nodes
-Delete2 - Deleting relationships::[4] Ignore null when deleting relationship
 Delete3 - Deleting named paths::[1] Detach deleting paths
-Delete3 - Deleting named paths::[2] Delete on null path
 Delete4 - Delete clause interoperation with other clauses::[1] Undirected expand followed by delete and count
 Delete4 - Delete clause interoperation with other clauses::[2] Undirected variable length expand followed by delete and count
 Delete5 - Delete clause interoperation with built-in data types::[1] Delete node from a list
@@ -197,9 +192,7 @@ Quantifier4 - All quantifier::[15] Fail all quantifier on type mismatch between 
 Quantifier4 - All quantifier::[8] All quantifier on list containing nodes
 Quantifier4 - All quantifier::[9] All quantifier on list containing relationships
 Remove1 - Remove a Property::[4] Remove multiple relationship properties
-Remove1 - Remove a Property::[5] Ignore null when removing property from a node
 Remove1 - Remove a Property::[6] Ignore null when removing property from a relationship
-Remove2 - Remove a Label::[5] Ignore null when removing a node label
 Remove3 - Persistence of remove clause side effects::[12] Filtering after removing a label from nodes affects the result set but not the side effects
 Remove3 - Persistence of remove clause side effects::[13] Aggregating in `RETURN` after removing a label from nodes affects the result set but not the side effects
 Remove3 - Persistence of remove clause side effects::[14] Aggregating in `WITH` after removing a label from nodes affects the result set but not the side effects

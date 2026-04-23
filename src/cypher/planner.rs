@@ -1685,6 +1685,7 @@ fn plan_single_pattern(conn: &Connection, pattern: &Pattern) -> crate::types::Re
                     direction,
                     min_hops,
                     max_hops,
+                    var_length: rel.var_length.is_some(),
                 });
 
                 // Apply destination node's label filters.
@@ -2291,6 +2292,7 @@ fn try_replace_scan(
             direction,
             min_hops,
             max_hops,
+            var_length,
         } => try_replace_scan(conn, input, alias, prop, lit).map(|new_input| LogicalOp::Expand {
             input: Box::new(new_input),
             src_alias: src_alias.clone(),
@@ -2300,6 +2302,7 @@ fn try_replace_scan(
             direction: *direction,
             min_hops: *min_hops,
             max_hops: *max_hops,
+            var_length: *var_length,
         }),
 
         LogicalOp::CrossProduct { left, right } => {

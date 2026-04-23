@@ -36,6 +36,9 @@ pub enum LogicalOp {
         direction: Direction,
         min_hops: u32,
         max_hops: u32,
+        /// True when the pattern uses `[*]` or `[*min..max]` syntax.
+        /// Even `[*1..1]` is var-length (rel variable binds to a list).
+        var_length: bool,
     },
 
     /// Cross-product of two pipelines (for multi-pattern MATCH).

@@ -280,5 +280,3 @@ WithSkipLimit3 - Skip and limit::[3] Limiting amount of rows when there are fewe
 WithWhere1 - Filter single variable::[2] Filter node with property predicate on a single variable with multiple distinct bindings
 WithWhere2 - Filter multiple variables::[1] Filter nodes with conjunctive two-part property predicate on multi variables with multiple bindings
 WithWhere2 - Filter multiple variables::[2] Filter node with conjunctive multi-part property predicates on multi variables with multiple bindings
-WithWhere7 - Variable visibility under aliasing::[2] WHERE sees a variable bound after but not before WITH
-WithWhere7 - Variable visibility under aliasing::[3] WHERE sees both, variable bound before but not after WITH and variable bound after but not before WITH

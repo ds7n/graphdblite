@@ -159,8 +159,7 @@ match_merge_stmt = {
 // === DELETE statement ===
 
 delete_stmt = {
-    ^"MATCH" ~ pattern_list ~
-    optional_match_clause* ~
+    (^"MATCH" ~ pattern_list ~ optional_match_clause* | optional_match_clause+) ~
     where_clause? ~
     detach_keyword? ~ ^"DELETE" ~ ident_list ~
     (return_clause ~ order_by_clause? ~ skip_clause? ~ limit_clause?)?
@@ -191,8 +190,7 @@ property_assignment_list = { assignment ~ ("," ~ assignment)* }
 // === REMOVE statement ===
 
 remove_stmt = {
-    ^"MATCH" ~ pattern_list ~
-    optional_match_clause* ~
+    (^"MATCH" ~ pattern_list ~ optional_match_clause* | optional_match_clause+) ~
     where_clause? ~
     ^"REMOVE" ~ remove_item_list ~
     (return_clause ~ order_by_clause? ~ skip_clause? ~ limit_clause?)?

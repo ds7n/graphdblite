@@ -432,6 +432,7 @@ pub fn build_iter<'a>(
             direction,
             min_hops,
             max_hops,
+            ..
         } => {
             let input_iter = build_iter(conn, input)?;
             Ok(Box::new(ExpandIter {

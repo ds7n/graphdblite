@@ -79,8 +79,6 @@ Match3 - Match fixed length patterns::[22] Returning bound nodes that are not pa
 Match3 - Match fixed length patterns::[23] Matching disconnected patterns
 Match3 - Match fixed length patterns::[30] Fail when using a list or nodes as a node
 Match3 - Match fixed length patterns::[8] Matching using relationship predicate with multiples of the same type
-Match4 - Match variable length patterns scenarios::[1] Handling fixed-length variable length pattern
-Match4 - Match variable length patterns scenarios::[3] Zero-length variable length pattern in the middle of the pattern
 Match4 - Match variable length patterns scenarios::[4] Matching longer variable length paths
 Match4 - Match variable length patterns scenarios::[5] Matching variable length pattern with property predicate
 Match4 - Match variable length patterns scenarios::[7] Matching variable length patterns including a bound relationship
@@ -105,10 +103,6 @@ Match7 - Optional match::[20] Variable length optional relationships with bound 
 Match8 - Match clause interoperation with other clauses::[2] Counting rows after MATCH, MERGE, OPTIONAL MATCH
 Match8 - Match clause interoperation with other clauses::[3] Matching and disregarding output, then matching again
 Match9 - Match deprecated scenarios::[1] Variable length relationship variables are lists of relationships
-Match9 - Match deprecated scenarios::[2] Return relationships by collecting them as a list - directed, one way
-Match9 - Match deprecated scenarios::[3] Return relationships by collecting them as a list - undirected, starting from two extremes
-Match9 - Match deprecated scenarios::[4] Return relationships by collecting them as a list - undirected, starting from one extreme
-Match9 - Match deprecated scenarios::[5] Variable length pattern with label predicate on both sides
 Match9 - Match deprecated scenarios::[9] Optionally matching named paths with variable length patterns
 MatchWhere2 - Filter multiple variables::[1] Filter nodes with conjunctive two-part property predicate on multi variables with multiple bindings
 MatchWhere2 - Filter multiple variables::[2] Filter node with conjunctive multi-part property predicates on multi variables with multiple bindings

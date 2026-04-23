@@ -344,6 +344,106 @@ pub fn traverse_with_depth(
     Ok(result)
 }
 
+/// A single step in a variable-length path: the edge traversed and the
+/// destination node reached.
+#[derive(Debug, Clone)]
+pub struct PathStep {
+    /// The actual edge source in the database.
+    pub edge_src: NodeId,
+    /// The actual edge destination in the database.
+    pub edge_dst: NodeId,
+    /// The edge type/label.
+    pub edge_label: String,
+    /// The node reached by this step.
+    pub dst: NodeId,
+}
+
+/// Variable-length path traversal returning full paths.
+///
+/// Returns all paths from `start` following edges with the given `label`(s) and
+/// `direction`, with length between `min_hops` and `max_hops` inclusive.
+/// Uses DFS with relationship uniqueness (no edge reused within a single path).
+/// Zero-length paths (min_hops=0) include the start node with empty step list.
+pub fn traverse_paths(
+    conn: &Connection,
+    start: NodeId,
+    labels: &[&str],
+    direction: Direction,
+    min_hops: u32,
+    max_hops: u32,
+) -> Result<Vec<(NodeId, Vec<PathStep>)>> {
+    let mut results: Vec<(NodeId, Vec<PathStep>)> = Vec::new();
+
+    // Zero-length match: the start node itself.
+    if min_hops == 0 {
+        results.push((start, Vec::new()));
+    }
+
+    if max_hops == 0 {
+        return Ok(results);
+    }
+
+    // DFS stack: (current_node, path_so_far, visited_edges)
+    type EdgeKey = (u64, u64, String);
+    type DfsFrame = (NodeId, Vec<PathStep>, std::collections::HashSet<EdgeKey>);
+    let mut stack: Vec<DfsFrame> = Vec::new();
+    stack.push((start, Vec::new(), std::collections::HashSet::new()));
+
+    while let Some((current, path, visited_edges)) = stack.pop() {
+        let depth = path.len() as u32;
+        if depth >= max_hops {
+            continue;
+        }
+
+        for label in labels {
+            let neighbors = get_neighbors(conn, current, label, direction)?;
+            for neighbor in neighbors {
+                // Determine actual edge direction in storage.
+                let (edge_src, edge_dst) = match direction {
+                    Direction::Incoming => (neighbor, current),
+                    Direction::Outgoing => (current, neighbor),
+                    Direction::Both => {
+                        // Check which direction the edge actually exists.
+                        if edge_exists(conn, current, neighbor, label)? {
+                            (current, neighbor)
+                        } else {
+                            (neighbor, current)
+                        }
+                    }
+                };
+
+                let edge_key = (edge_src.0, edge_dst.0, label.to_string());
+                if visited_edges.contains(&edge_key) {
+                    continue; // Relationship uniqueness.
+                }
+
+                let step = PathStep {
+                    edge_src,
+                    edge_dst,
+                    edge_label: label.to_string(),
+                    dst: neighbor,
+                };
+
+                let mut new_path = path.clone();
+                new_path.push(step);
+                let new_depth = new_path.len() as u32;
+
+                if new_depth >= min_hops {
+                    results.push((neighbor, new_path.clone()));
+                }
+
+                if new_depth < max_hops {
+                    let mut new_visited = visited_edges.clone();
+                    new_visited.insert(edge_key);
+                    stack.push((neighbor, new_path, new_visited));
+                }
+            }
+        }
+    }
+
+    Ok(results)
+}
+
 /// Find the shortest path between two nodes using BFS.
 ///
 /// Returns the path as an ordered list of node IDs (including start and end),

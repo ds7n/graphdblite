@@ -160,6 +160,7 @@ fn exec(conn: &Connection, plan: &LogicalOp, ctx: &ExecContext) -> Result<Vec<Re
             direction,
             min_hops,
             max_hops,
+            var_length,
         } => exec_expand(
             conn,
             input,
@@ -170,6 +171,7 @@ fn exec(conn: &Connection, plan: &LogicalOp, ctx: &ExecContext) -> Result<Vec<Re
             *direction,
             *min_hops,
             *max_hops,
+            *var_length,
             ctx,
         ),
 
@@ -378,6 +380,7 @@ fn exec_expand(
     direction: Direction,
     min_hops: u32,
     max_hops: u32,
+    var_length: bool,
     ctx: &ExecContext,
 ) -> Result<Vec<Record>> {
     let input_records = exec(conn, input, ctx)?;
@@ -400,7 +403,7 @@ fn exec_expand(
         };
 
         for &label in &labels {
-            if min_hops == 1 && max_hops == 1 {
+            if !var_length {
                 // Single hop — direct neighbor lookup.
                 let neighbors = edge::get_neighbors(conn, src_id, label, direction)?;
                 for dst_id in neighbors {
@@ -450,9 +453,11 @@ fn exec_expand(
                     results.push(new_rec);
                 }
             } else {
-                // Variable-length traversal.
-                let reachable = edge::traverse(conn, src_id, label, direction, min_hops, max_hops)?;
-                for dst_id in reachable {
+                // Variable-length traversal — returns full paths.
+                let label_refs: Vec<&str> = vec![label];
+                let paths =
+                    edge::traverse_paths(conn, src_id, &label_refs, direction, min_hops, max_hops)?;
+                for (dst_id, steps) in paths {
                     let dst_node = node::get_node(conn, dst_id)?;
                     let mut new_rec = rec.clone();
                     new_rec.set(dst_alias.to_string(), Value::I64(dst_id.0 as i64));
@@ -474,6 +479,28 @@ fn exec_expand(
                         ),
                     );
                     new_rec.set(format!("{dst_alias}.__id"), Value::I64(dst_id.0 as i64));
+                    // Bind relationship variable as a list of edges.
+                    if let Some(r_alias) = rel_alias {
+                        let edge_list: Vec<Value> = steps
+                            .iter()
+                            .map(|step| {
+                                let props = edge::get_edge_properties(
+                                    conn,
+                                    step.edge_src,
+                                    step.edge_dst,
+                                    &step.edge_label,
+                                )
+                                .unwrap_or_default();
+                                Value::Edge(crate::types::Edge {
+                                    src: step.edge_src,
+                                    dst: step.edge_dst,
+                                    label: step.edge_label.clone(),
+                                    properties: props,
+                                })
+                            })
+                            .collect();
+                        new_rec.set(r_alias.to_string(), Value::List(edge_list));
+                    }
                     results.push(new_rec);
                 }
             }
@@ -2243,6 +2270,7 @@ fn exec_correlated(
             direction,
             min_hops,
             max_hops,
+            var_length: _,
         } => {
             let input_records = exec_correlated(conn, input, outer, ctx)?;
             let mut results = Vec::new();

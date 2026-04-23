@@ -247,7 +247,7 @@ return_clause = { ^"RETURN" ~ distinct_keyword? ~ return_items }
 distinct_keyword = { ^"DISTINCT" }
 return_items = { return_item ~ ("," ~ return_item)* }
 return_item = { expr ~ alias? }
-alias = { ^"AS" ~ ident }
+alias = { ^"AS" ~ (backtick_ident | symbolic_name) }
 
 order_by_clause = { ^"ORDER" ~ ^"BY" ~ sort_items }
 sort_items = { sort_item ~ ("," ~ sort_item)* }

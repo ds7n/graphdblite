@@ -1125,7 +1125,12 @@ fn parse_with(pair: pest::iterators::Pair<Rule>) -> crate::types::Result<WithCla
                                 Rule::expr => expr = Some(parse_expr(child)?),
                                 Rule::alias => {
                                     for a in child.into_inner() {
-                                        if a.as_rule() == Rule::ident {
+                                        if matches!(
+                                            a.as_rule(),
+                                            Rule::ident
+                                                | Rule::backtick_ident
+                                                | Rule::symbolic_name
+                                        ) {
                                             alias = Some(strip_backticks(a.as_str()).to_string());
                                         }
                                     }
@@ -1314,7 +1319,10 @@ fn parse_return(pair: pest::iterators::Pair<Rule>) -> crate::types::Result<Retur
                     Rule::expr => expr = Some(parse_expr(inner)?),
                     Rule::alias => {
                         for child in inner.into_inner() {
-                            if child.as_rule() == Rule::ident {
+                            if matches!(
+                                child.as_rule(),
+                                Rule::ident | Rule::backtick_ident | Rule::symbolic_name
+                            ) {
                                 alias = Some(strip_backticks(child.as_str()).to_string());
                             }
                         }

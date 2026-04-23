@@ -16,9 +16,7 @@ Create3 - Interoperation with other clauses::[3] MATCH-CREATE-WITH-CREATE
 Create3 - Interoperation with other clauses::[7] WITH-CREATE: Nodes are not created when aliases are applied to variable names multiple times
 Create4 - Large Create Query::[2] Many CREATE clauses
 Create5 - Multiple hops create patterns::[5] Create a pattern with multiple hops and varying directions
-Create6 - Persistence of create clause side effects::[13] Aggregating in `RETURN` after creating relationships affects the result set but not the side effects
 Create6 - Persistence of create clause side effects::[14] Aggregating in `WITH` after creating relationships affects the result set but not the side effects
-Create6 - Persistence of create clause side effects::[6] Aggregating in `RETURN` after creating nodes affects the result set but not the side effects
 Create6 - Persistence of create clause side effects::[7] Aggregating in `WITH` after creating nodes affects the result set but not the side effects
 Delete1 - Deleting nodes::[7] Failing when deleting connected nodes
 Delete3 - Deleting named paths::[1] Detach deleting paths
@@ -188,13 +186,10 @@ Quantifier4 - All quantifier::[9] All quantifier on list containing relationship
 Remove1 - Remove a Property::[4] Remove multiple relationship properties
 Remove1 - Remove a Property::[6] Ignore null when removing property from a relationship
 Remove3 - Persistence of remove clause side effects::[12] Filtering after removing a label from nodes affects the result set but not the side effects
-Remove3 - Persistence of remove clause side effects::[13] Aggregating in `RETURN` after removing a label from nodes affects the result set but not the side effects
 Remove3 - Persistence of remove clause side effects::[14] Aggregating in `WITH` after removing a label from nodes affects the result set but not the side effects
 Remove3 - Persistence of remove clause side effects::[19] Filtering after removing a property from relationships affects the result set but not the side effects
-Remove3 - Persistence of remove clause side effects::[20] Aggregating in `RETURN` after removing a property from relationships affects the result set but not the side effects
 Remove3 - Persistence of remove clause side effects::[21] Aggregating in `WITH` after removing a property from relationships affects the result set but not the side effects
 Remove3 - Persistence of remove clause side effects::[5] Filtering after removing a property from nodes affects the result set but not the side effects
-Remove3 - Persistence of remove clause side effects::[6] Aggregating in `RETURN` after removing a property from nodes affects the result set but not the side effects
 Remove3 - Persistence of remove clause side effects::[7] Aggregating in `WITH` after removing a property from nodes affects the result set but not the side effects
 Return2 - Return single expression (correctly projecting an expression)::[12] Projecting a list of nodes and relationships
 Return2 - Return single expression (correctly projecting an expression)::[13] Projecting a map of nodes and relationships
@@ -207,15 +202,10 @@ Return4 - Column renaming::[11] Reusing variable names in RETURN
 Return4 - Column renaming::[4] Keeping used expression 1
 Return4 - Column renaming::[6] Keeping used expression 3
 Return4 - Column renaming::[9] Handle subexpression in aggregation also occurring as standalone expression with nested aggregation in a literal map
-Return5 - Implicit grouping with distinct::[1] DISTINCT inside aggregation should work with lists in maps
-Return5 - Implicit grouping with distinct::[3] DISTINCT inside aggregation should work with nested lists in maps
-Return5 - Implicit grouping with distinct::[4] DISTINCT inside aggregation should work with nested lists of maps in maps
 Return6 - Implicit grouping with aggregates::[10] Multiple aggregates on same variable
 Return6 - Implicit grouping with aggregates::[15] Using `rand()` in aggregations
 Return6 - Implicit grouping with aggregates::[16] Aggregation on complex expressions
-Return6 - Implicit grouping with aggregates::[1] Return count aggregation over nodes
 Return6 - Implicit grouping with aggregates::[3] Aggregating by a list property has a correct definition of equality
-Return6 - Implicit grouping with aggregates::[4] Support multiple divisions in aggregate function
 Return6 - Implicit grouping with aggregates::[5] Aggregates inside normal functions
 Return6 - Implicit grouping with aggregates::[8] Handle aggregation on functions
 ReturnOrderBy1 - Order by a single variable (correct order of values according to their type)::[11] ORDER BY should order distinct types in the expected order
@@ -238,11 +228,8 @@ Set1 - Set a Property::[9] Failing when using undefined variable in SET
 Set2 - Set a Property to Null::[1] Setting a node property to null removes the existing property
 Set2 - Set a Property to Null::[2] Setting a node property to null removes the existing property, but not before SET
 Set2 - Set a Property to Null::[3] Setting a relationship property to null removes the existing property
-Set6 - Persistence of set clause side effects::[13] Aggregating in `RETURN` after adding a label on nodes affects the result set but not the side effects
 Set6 - Persistence of set clause side effects::[14] Aggregating in `WITH` after adding a label on nodes affects the result set but not the side effects
-Set6 - Persistence of set clause side effects::[20] Aggregating in `RETURN` after setting a property on relationships affects the result set but not the side effects
 Set6 - Persistence of set clause side effects::[21] Aggregating in `WITH` after setting a property on relationships affects the result set but not the side effects
-Set6 - Persistence of set clause side effects::[6] Aggregating in `RETURN` after setting a property on nodes affects the result set but not the side effects
 Set6 - Persistence of set clause side effects::[7] Aggregating in `WITH` after setting a property on nodes affects the result set but not the side effects
 Temporal1 - Create Temporal Values from a Map::[12] Should construct duration
 Temporal10 - Compute Durations Between two Temporal Values::[10] Should handle large durations in seconds
@@ -294,7 +281,6 @@ With2 - Forward single expression::[1] Forwarding a property to express a join
 With4 - Variable aliasing::[6] Reusing variable names in WITH
 With5 - Implicit grouping with DISTINCT::[1] DISTINCT on an expression
 With5 - Implicit grouping with DISTINCT::[2] Handling DISTINCT with lists in maps
-With6 - Implicit grouping with aggregates::[4] Implicit grouping with single path variable as grouping key and single aggregation
 WithOrderBy1 - Order by a single variable::[21] Sort distinct types in ascending order
 WithOrderBy1 - Order by a single variable::[22] Sort distinct types in descending order
 WithOrderBy1 - Order by a single variable::[44] Sort by a variable that is only partially orderable on a non-distinct binding table, but made distinct

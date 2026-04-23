@@ -16,8 +16,6 @@ Create3 - Interoperation with other clauses::[3] MATCH-CREATE-WITH-CREATE
 Create3 - Interoperation with other clauses::[7] WITH-CREATE: Nodes are not created when aliases are applied to variable names multiple times
 Create4 - Large Create Query::[2] Many CREATE clauses
 Create5 - Multiple hops create patterns::[5] Create a pattern with multiple hops and varying directions
-Create6 - Persistence of create clause side effects::[14] Aggregating in `WITH` after creating relationships affects the result set but not the side effects
-Create6 - Persistence of create clause side effects::[7] Aggregating in `WITH` after creating nodes affects the result set but not the side effects
 Delete1 - Deleting nodes::[7] Failing when deleting connected nodes
 Delete3 - Deleting named paths::[1] Detach deleting paths
 Delete4 - Delete clause interoperation with other clauses::[1] Undirected expand followed by delete and count
@@ -30,12 +28,6 @@ Delete5 - Delete clause interoperation with built-in data types::[5] Detach dele
 Delete5 - Delete clause interoperation with built-in data types::[6] Delete relationships from nested map/list
 Delete5 - Delete clause interoperation with built-in data types::[7] Delete paths from nested map/list
 Delete5 - Delete clause interoperation with built-in data types::[8] Failing when using undefined variable in DELETE
-Delete6 - Persistence of delete clause side effects::[12] Filtering after deleting relationships affects the result set but not the side effects
-Delete6 - Persistence of delete clause side effects::[13] Aggregating in `RETURN` after deleting relationships affects the result set but not the side effects
-Delete6 - Persistence of delete clause side effects::[14] Aggregating in `WITH` after deleting relationships affects the result set but not the side effects
-Delete6 - Persistence of delete clause side effects::[5] Filtering after deleting nodes affects the result set but not the side effects
-Delete6 - Persistence of delete clause side effects::[6] Aggregating in `RETURN` after deleting nodes affects the result set but not the side effects
-Delete6 - Persistence of delete clause side effects::[7] Aggregating in `WITH` after deleting nodes affects the result set but not the side effects
 ExistentialSubquery2 - Full existential subquery::[1] Full existential subquery
 ExistentialSubquery2 - Full existential subquery::[2] Full existential subquery with aggregation
 ExistentialSubquery3 - Nested existential subquery::[1] Nested simple existential subquery
@@ -212,9 +204,6 @@ Set1 - Set a Property::[9] Failing when using undefined variable in SET
 Set2 - Set a Property to Null::[1] Setting a node property to null removes the existing property
 Set2 - Set a Property to Null::[2] Setting a node property to null removes the existing property, but not before SET
 Set2 - Set a Property to Null::[3] Setting a relationship property to null removes the existing property
-Set6 - Persistence of set clause side effects::[14] Aggregating in `WITH` after adding a label on nodes affects the result set but not the side effects
-Set6 - Persistence of set clause side effects::[21] Aggregating in `WITH` after setting a property on relationships affects the result set but not the side effects
-Set6 - Persistence of set clause side effects::[7] Aggregating in `WITH` after setting a property on nodes affects the result set but not the side effects
 Temporal1 - Create Temporal Values from a Map::[12] Should construct duration
 Temporal10 - Compute Durations Between two Temporal Values::[10] Should handle large durations in seconds
 Temporal10 - Compute Durations Between two Temporal Values::[11] Should handle when seconds and subseconds have different signs

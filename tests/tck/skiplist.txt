@@ -83,8 +83,6 @@ Match6 - Match named paths scenarios::[9] Longer path query should return result
 Match7 - Optional match::[11] Return two subgraphs with bound undirected relationship and optional relationship
 Match7 - Optional match::[12] Variable length optional relationships
 Match7 - Optional match::[14] Variable length optional relationships with length predicates
-Match7 - Optional match::[17] Optionally matching named paths - existing result
-Match7 - Optional match::[20] Variable length optional relationships with bound nodes, no matches
 Match8 - Match clause interoperation with other clauses::[2] Counting rows after MATCH, MERGE, OPTIONAL MATCH
 Match8 - Match clause interoperation with other clauses::[3] Matching and disregarding output, then matching again
 Match9 - Match deprecated scenarios::[1] Variable length relationship variables are lists of relationships
@@ -115,14 +113,11 @@ Merge5 - Merge relationships::[29] Fail on merging relationship with null proper
 Merge5 - Merge relationships::[3] Matching two relationships
 Merge5 - Merge relationships::[6] Creating relationship when all matches filtered out
 Merge6 - Merge relationships - on create::[6] Copying properties from node with ON CREATE
-Merge6 - Merge relationships - on create::[7] Copying properties from literal map with ON CREATE
 Merge7 - Merge relationships - on match::[4] Copying properties from node with ON MATCH
 Merge7 - Merge relationships - on match::[5] Copying properties from literal map with ON MATCH
 Merge9 - Merge clause interoperation with other clauses::[4] MERGE after WITH with predicate and WITH with aggregation
-Path1 - Nodes of a path::[1] `nodes()` on null path
 Path2 - Relationships of a path::[1] Return relationships by fetching them from the path
 Path2 - Relationships of a path::[2] Return relationships by fetching them from the path - starting from the end
-Path2 - Relationships of a path::[3] `relationships()` on null path
 Path3 - Length of a path::[1] Return a var length path of length zero
 Pattern1 - Pattern predicate::[10] Fail on introducing unbounded variables in pattern
 Pattern1 - Pattern predicate::[11] Fail on checking self pattern
@@ -171,7 +166,8 @@ ReturnOrderBy2 - Order by a single expression (order of projection)::[13] Fail w
 ReturnOrderBy2 - Order by a single expression (order of projection)::[14] Fail on aggregation in ORDER BY after RETURN
 ReturnOrderBy2 - Order by a single expression (order of projection)::[9] Using aliased DISTINCT expression in ORDER BY
 ReturnOrderBy5 - Order by in combination with column renaming::[1] Renaming columns before ORDER BY should return results in ascending order
-ReturnOrderBy6 - Aggregation expressions in order by::[4] Fail if not returned variables are used inside an order by item which contains an aggregation expression
+ReturnOrderBy6 - Aggregation expressions in order by::[4] Fail if not returned variables are used inside an order by item which contains an aggregation expressionTotal: 218
+
 ReturnOrderBy6 - Aggregation expressions in order by::[5] Fail if more complex expressions, even if returned, are used inside an order by item which contains an aggregation expression
 ReturnSkipLimit2 - Limit::[7] Limit to more rows than actual results 1
 Set1 - Set a Property::[10] Failing when setting a list of maps as a property
@@ -202,15 +198,12 @@ TypeConversion4 - To String::[10] Fail `toString()` on invalid types #Example: n
 TypeConversion4 - To String::[10] Fail `toString()` on invalid types #Example: relationship
 Unwind1::[12] Unwind does not remove variables from scope
 Unwind1::[5] Unwinding a collected expression
-Unwind1::[6] Creating nodes from an unwound parameter list
 With2 - Forward single expression::[1] Forwarding a property to express a join
 With4 - Variable aliasing::[6] Reusing variable names in WITH
 WithOrderBy1 - Order by a single variable::[21] Sort distinct types in ascending order
 WithOrderBy1 - Order by a single variable::[22] Sort distinct types in descending order
-WithOrderBy1 - Order by a single variable::[44] Sort by a variable that is only partially orderable on a non-distinct binding table, but made distinct
 WithOrderBy1 - Order by a single variable::[46] Fail on sorting by an undefined variable #Example: never defined
 WithOrderBy1 - Order by a single variable::[46] Fail on sorting by an undefined variable #Example: out of scope
-WithOrderBy2 - Order by a single expression::[15] Sort by a time expression in ascending order
 WithOrderBy2 - Order by a single expression::[21] Sort by an expression that is only partially orderable on a non-distinct binding table
 WithOrderBy2 - Order by a single expression::[22] Sort by an expression that is only partially orderable on a non-distinct binding table, but used as a grouping key
 WithOrderBy2 - Order by a single expression::[23] Sort by an expression that is only partially orderable on a non-distinct binding table, but used in parts as a grouping key
@@ -219,8 +212,9 @@ WithOrderBy2 - Order by a single expression::[25] Fail on sorting by an aggregat
 WithOrderBy3 - Order by multiple expressions::[8] Fail on sorting by any number of undefined variables in any position #Example: mixed
 WithOrderBy3 - Order by multiple expressions::[8] Fail on sorting by any number of undefined variables in any position #Example: never defined
 WithOrderBy3 - Order by multiple expressions::[8] Fail on sorting by any number of undefined variables in any position #Example: out of scope
-WithOrderBy4 - Order by in combination with projection and aliasing::[8] Sort by non-projected existing variable
 WithOrderBy4 - Order by in combination with projection and aliasing::[19] Fail if not projected variables are used inside an order by item which contains an aggregation expression
+WithOrderBy4 - Order by in combination with projection and aliasing::[8] Sort by non-projected existing variable
 WithSkipLimit2 - Limit::[2] Handle dependencies across WITH with LIMIT
 WithWhere2 - Filter multiple variables::[1] Filter nodes with conjunctive two-part property predicate on multi variables with multiple bindings
 WithWhere2 - Filter multiple variables::[2] Filter node with conjunctive multi-part property predicates on multi variables with multiple bindings
+ReturnOrderBy6 - Aggregation expressions in order by::[4] Fail if not returned variables are used inside an order by item which contains an aggregation expression

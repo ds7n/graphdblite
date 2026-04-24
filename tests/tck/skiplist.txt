@@ -99,7 +99,6 @@ Merge1 - Merge node::[15] Fail when merge a node that is already bound
 Merge1 - Merge node::[17] Fail on merging node with null property
 Merge1 - Merge node::[9] Merge should support updates while merging
 Merge2 - Merge node - on create::[6] Fail when using undefined variable in ON CREATE
-Merge3 - Merge node - on match::[1] Merge should be able to set labels on match
 Merge3 - Merge node - on match::[5] Fail when using undefined variable in ON MATCH
 Merge4 - Merge node - on match and on create::[1] Merge should be able to set labels on match and on create
 Merge4 - Merge node - on match and on create::[2] Merge should be able to use properties of bound node in ON MATCH and ON CREATE
@@ -127,9 +126,7 @@ Path2 - Relationships of a path::[2] Return relationships by fetching them from 
 Path2 - Relationships of a path::[3] `relationships()` on null path
 Path3 - Length of a path::[1] Return a var length path of length zero
 Pattern1 - Pattern predicate::[10] Fail on introducing unbounded variables in pattern
-Pattern1 - Pattern predicate::[10] Matching on a specific type of undirected connection with length 2
 Pattern1 - Pattern predicate::[11] Fail on checking self pattern
-Pattern1 - Pattern predicate::[18] Matching two nodes on a specific type of undirected connection with length 2
 Pattern1 - Pattern predicate::[22] Fail on using pattern in RETURN projection
 Pattern1 - Pattern predicate::[23] Fail on using pattern in WITH projection
 Pattern1 - Pattern predicate::[24] Fail on using pattern in right-hand side of SET
@@ -188,11 +185,7 @@ ReturnOrderBy2 - Order by a single expression (order of projection)::[9] Using a
 ReturnOrderBy5 - Order by in combination with column renaming::[1] Renaming columns before ORDER BY should return results in ascending order
 ReturnOrderBy6 - Aggregation expressions in order by::[4] Fail if not returned variables are used inside an order by item which contains an aggregation expression
 ReturnOrderBy6 - Aggregation expressions in order by::[5] Fail if more complex expressions, even if returned, are used inside an order by item which contains an aggregation expression
-ReturnSkipLimit1 - Skip::[2] Start the result from the second row by param
-ReturnSkipLimit1 - Skip::[3] SKIP with an expression that does not depend on variables
-ReturnSkipLimit2 - Limit::[6] LIMIT with an expression that does not depend on variables
 ReturnSkipLimit2 - Limit::[7] Limit to more rows than actual results 1
-ReturnSkipLimit3 - Skip and limit::[2] Get rows in the middle by param
 Set1 - Set a Property::[10] Failing when setting a list of maps as a property
 Set1 - Set a Property::[3] Set a property by selecting the node using a simple expression
 Set1 - Set a Property::[4] Set a property by selecting the relationship using a simple expression
@@ -232,8 +225,6 @@ Unwind1::[5] Unwinding a collected expression
 Unwind1::[6] Creating nodes from an unwound parameter list
 With2 - Forward single expression::[1] Forwarding a property to express a join
 With4 - Variable aliasing::[6] Reusing variable names in WITH
-With5 - Implicit grouping with DISTINCT::[1] DISTINCT on an expression
-With5 - Implicit grouping with DISTINCT::[2] Handling DISTINCT with lists in maps
 WithOrderBy1 - Order by a single variable::[21] Sort distinct types in ascending order
 WithOrderBy1 - Order by a single variable::[22] Sort distinct types in descending order
 WithOrderBy1 - Order by a single variable::[44] Sort by a variable that is only partially orderable on a non-distinct binding table, but made distinct
@@ -251,7 +242,5 @@ WithOrderBy3 - Order by multiple expressions::[8] Fail on sorting by any number 
 WithOrderBy4 - Order by in combination with projection and aliasing::[8] Sort by non-projected existing variable
 WithOrderBy4 - Order by in combination with projection and aliasing::[19] Fail if not projected variables are used inside an order by item which contains an aggregation expression
 WithSkipLimit2 - Limit::[2] Handle dependencies across WITH with LIMIT
-WithSkipLimit3 - Skip and limit::[2] Get rows in the middle by param
-WithWhere1 - Filter single variable::[2] Filter node with property predicate on a single variable with multiple distinct bindings
 WithWhere2 - Filter multiple variables::[1] Filter nodes with conjunctive two-part property predicate on multi variables with multiple bindings
 WithWhere2 - Filter multiple variables::[2] Filter node with conjunctive multi-part property predicates on multi variables with multiple bindings

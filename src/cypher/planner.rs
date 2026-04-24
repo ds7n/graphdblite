@@ -5,15 +5,66 @@ use rusqlite::Connection;
 use crate::cypher::ast::*;
 use crate::cypher::ir::*;
 use crate::index;
-use crate::types::{Direction, GraphError};
+use crate::cypher::record::Record;
+use crate::types::{Direction, GraphError, Value};
+
+/// Evaluate a SKIP/LIMIT expression to a u64 at plan time.
+///
+/// Handles integer literals, float literals (truncated), and simple function
+/// calls like `toInteger(rand()*9)`. Parameters are already resolved to
+/// literals before planning.
+fn eval_skip_limit(expr: &Expr, conn: &Connection) -> crate::types::Result<u64> {
+    match expr {
+        Expr::Literal(LiteralValue::I64(n)) => {
+            if *n < 0 {
+                return Err(GraphError::syntax(
+                    "NegativeIntegerArgument: SKIP/LIMIT must be a non-negative integer",
+                ));
+            }
+            Ok(*n as u64)
+        }
+        Expr::Literal(LiteralValue::F64(_)) => Err(GraphError::type_error(
+            crate::types::QueryPhase::Runtime,
+            "InvalidArgumentType: SKIP/LIMIT does not accept a floating point value",
+        )),
+        _ => {
+            // Evaluate the expression at plan time with an empty record.
+            let rec = Record::new();
+            let val = crate::cypher::eval::eval_expr(expr, &rec, conn)?;
+            match val {
+                Value::I64(n) => {
+                    if n < 0 {
+                        return Err(GraphError::syntax(
+                            "NegativeIntegerArgument: SKIP/LIMIT must be a non-negative integer",
+                        ));
+                    }
+                    Ok(n as u64)
+                }
+                Value::F64(_) => Err(GraphError::type_error(
+                    crate::types::QueryPhase::Runtime,
+                    "InvalidArgumentType: SKIP/LIMIT does not accept a floating point value",
+                )),
+                Value::Null => Err(GraphError::type_error(
+                    crate::types::QueryPhase::Runtime,
+                    "InvalidArgumentType: SKIP/LIMIT does not accept NULL",
+                )),
+                _ => Err(GraphError::type_error(
+                    crate::types::QueryPhase::Runtime,
+                    "InvalidArgumentType: SKIP/LIMIT must evaluate to an integer",
+                )),
+            }
+        }
+    }
+}
 
 /// Apply RETURN projection (+ DISTINCT, ORDER BY, SKIP, LIMIT) to a plan operator.
 fn apply_return_projection(
+    conn: &Connection,
     mut op: LogicalOp,
     return_clause: &ReturnClause,
     order_by: &[SortItem],
-    skip: Option<u64>,
-    limit: Option<u64>,
+    skip: &Option<Expr>,
+    limit: &Option<Expr>,
 ) -> crate::types::Result<LogicalOp> {
     let has_aggregates = return_clause
         .items
@@ -50,14 +101,16 @@ fn apply_return_projection(
         };
     }
 
-    if let Some(count) = skip {
+    if let Some(ref expr) = skip {
+        let count = eval_skip_limit(expr, conn)?;
         op = LogicalOp::Skip {
             input: Box::new(op),
             count,
         };
     }
 
-    if let Some(count) = limit {
+    if let Some(ref expr) = limit {
+        let count = eval_skip_limit(expr, conn)?;
         op = LogicalOp::Limit {
             input: Box::new(op),
             count,
@@ -71,15 +124,15 @@ fn apply_return_projection(
 pub fn plan(conn: &Connection, stmt: &Statement) -> crate::types::Result<LogicalOp> {
     match stmt {
         Statement::Match(m) => plan_match(conn, m),
-        Statement::Create(c) => plan_create(c),
+        Statement::Create(c) => plan_create(conn, c),
         Statement::MatchCreate(mc) => plan_match_create(conn, mc),
         Statement::Delete(d) => plan_delete(conn, d),
         Statement::Set(s) => plan_set(conn, s),
         Statement::Remove(r) => plan_remove(conn, r),
-        Statement::Merge(m) => plan_merge(m),
+        Statement::Merge(m) => plan_merge(conn, m),
         Statement::MatchMerge(mm) => plan_match_merge(conn, mm),
         Statement::Unwind(u) => plan_unwind(conn, u),
-        Statement::Return(r) => plan_return(r),
+        Statement::Return(r) => plan_return(conn, r),
         Statement::MultiClause(mc) => plan_multi_clause(conn, mc),
         Statement::Explain(inner) => plan(conn, inner),
         Statement::Union { statements, all } => {
@@ -179,7 +232,7 @@ fn plan_match(conn: &Connection, stmt: &MatchStatement) -> crate::types::Result<
     for clause in &stmt.intermediate_clauses {
         match clause {
             IntermediateClause::With(with) => {
-                op = plan_with(op, with)?;
+                op = plan_with(conn, op, with)?;
                 // WITH resets scope to only the projected aliases.
                 scope_vars.clear();
                 for item in &with.items {
@@ -254,7 +307,8 @@ fn plan_match(conn: &Connection, stmt: &MatchStatement) -> crate::types::Result<
     }
 
     // SKIP.
-    if let Some(count) = stmt.skip {
+    if let Some(ref expr) = stmt.skip {
+        let count = eval_skip_limit(expr, conn)?;
         op = LogicalOp::Skip {
             input: Box::new(op),
             count,
@@ -262,7 +316,8 @@ fn plan_match(conn: &Connection, stmt: &MatchStatement) -> crate::types::Result<
     }
 
     // LIMIT.
-    if let Some(count) = stmt.limit {
+    if let Some(ref expr) = stmt.limit {
+        let count = eval_skip_limit(expr, conn)?;
         op = LogicalOp::Limit {
             input: Box::new(op),
             count,
@@ -273,7 +328,7 @@ fn plan_match(conn: &Connection, stmt: &MatchStatement) -> crate::types::Result<
 }
 
 /// Plan a standalone `RETURN` statement (no preceding MATCH).
-fn plan_return(stmt: &ReturnStatement) -> crate::types::Result<LogicalOp> {
+fn plan_return(conn: &Connection, stmt: &ReturnStatement) -> crate::types::Result<LogicalOp> {
     let mut op: LogicalOp = LogicalOp::SingleRow;
 
     check_duplicate_columns(&stmt.return_clause.items)?;
@@ -313,14 +368,16 @@ fn plan_return(stmt: &ReturnStatement) -> crate::types::Result<LogicalOp> {
         };
     }
 
-    if let Some(count) = stmt.skip {
+    if let Some(ref expr) = stmt.skip {
+        let count = eval_skip_limit(expr, conn)?;
         op = LogicalOp::Skip {
             input: Box::new(op),
             count,
         };
     }
 
-    if let Some(count) = stmt.limit {
+    if let Some(ref expr) = stmt.limit {
+        let count = eval_skip_limit(expr, conn)?;
         op = LogicalOp::Limit {
             input: Box::new(op),
             count,
@@ -330,7 +387,7 @@ fn plan_return(stmt: &ReturnStatement) -> crate::types::Result<LogicalOp> {
     Ok(op)
 }
 
-fn plan_create(stmt: &CreateStatement) -> crate::types::Result<LogicalOp> {
+fn plan_create(conn: &Connection, stmt: &CreateStatement) -> crate::types::Result<LogicalOp> {
     let mut ops = Vec::new();
     let mut seen = HashSet::new();
 
@@ -346,7 +403,7 @@ fn plan_create(stmt: &CreateStatement) -> crate::types::Result<LogicalOp> {
     };
 
     if let Some(ref rc) = stmt.return_clause {
-        op = apply_return_projection(op, rc, &stmt.order_by, stmt.skip, stmt.limit)?;
+        op = apply_return_projection(conn, op, rc, &stmt.order_by, &stmt.skip, &stmt.limit)?;
     }
 
     Ok(op)
@@ -377,7 +434,7 @@ fn plan_match_create(
     };
 
     if let Some(ref rc) = stmt.return_clause {
-        result = apply_return_projection(result, rc, &stmt.order_by, stmt.skip, stmt.limit)?;
+        result = apply_return_projection(conn, result, rc, &stmt.order_by, &stmt.skip, &stmt.limit)?;
     }
 
     Ok(result)
@@ -412,7 +469,7 @@ fn plan_delete(conn: &Connection, stmt: &DeleteStatement) -> crate::types::Resul
     };
 
     if let Some(ref rc) = stmt.return_clause {
-        op = apply_return_projection(op, rc, &stmt.order_by, stmt.skip, stmt.limit)?;
+        op = apply_return_projection(conn, op, rc, &stmt.order_by, &stmt.skip, &stmt.limit)?;
     }
 
     Ok(op)
@@ -476,7 +533,7 @@ fn plan_set(conn: &Connection, stmt: &SetStatement) -> crate::types::Result<Logi
     for clause in &stmt.intermediate_clauses {
         match clause {
             IntermediateClause::With(with) => {
-                op = plan_with(op, with)?;
+                op = plan_with(conn, op, with)?;
             }
             IntermediateClause::Match(im) => {
                 op = plan_intermediate_match_with_scope(conn, op, im, &bound_vars)?;
@@ -493,7 +550,7 @@ fn plan_set(conn: &Connection, stmt: &SetStatement) -> crate::types::Result<Logi
     }
 
     if let Some(ref rc) = stmt.return_clause {
-        op = apply_return_projection(op, rc, &stmt.order_by, stmt.skip, stmt.limit)?;
+        op = apply_return_projection(conn, op, rc, &stmt.order_by, &stmt.skip, &stmt.limit)?;
     }
 
     Ok(op)
@@ -527,7 +584,7 @@ fn plan_remove(conn: &Connection, stmt: &RemoveStatement) -> crate::types::Resul
     };
 
     if let Some(ref rc) = stmt.return_clause {
-        op = apply_return_projection(op, rc, &stmt.order_by, stmt.skip, stmt.limit)?;
+        op = apply_return_projection(conn, op, rc, &stmt.order_by, &stmt.skip, &stmt.limit)?;
     }
 
     Ok(op)
@@ -562,7 +619,7 @@ fn plan_unwind(conn: &Connection, stmt: &UnwindStatement) -> crate::types::Resul
             for clause in intermediate_clauses {
                 match clause {
                     IntermediateClause::With(with) => {
-                        op = plan_with(op, with)?;
+                        op = plan_with(conn, op, with)?;
                         scope_vars.clear();
                         for item in &with.items {
                             if let Some(ref alias) = item.alias {
@@ -623,17 +680,19 @@ fn plan_unwind(conn: &Connection, stmt: &UnwindStatement) -> crate::types::Resul
                 };
             }
 
-            if let Some(count) = skip {
+            if let Some(ref expr) = skip {
+                let count = eval_skip_limit(expr, conn)?;
                 op = LogicalOp::Skip {
                     input: Box::new(op),
-                    count: *count,
+                    count,
                 };
             }
 
-            if let Some(count) = limit {
+            if let Some(ref expr) = limit {
+                let count = eval_skip_limit(expr, conn)?;
                 op = LogicalOp::Limit {
                     input: Box::new(op),
-                    count: *count,
+                    count,
                 };
             }
         }
@@ -661,7 +720,7 @@ fn plan_unwind(conn: &Connection, stmt: &UnwindStatement) -> crate::types::Resul
             for clause in intermediate_clauses {
                 match clause {
                     IntermediateClause::With(with) => {
-                        op = plan_with(op, with)?;
+                        op = plan_with(conn, op, with)?;
                         scope_vars2.clear();
                         for item in &with.items {
                             if let Some(ref alias) = item.alias {
@@ -690,7 +749,7 @@ fn plan_unwind(conn: &Connection, stmt: &UnwindStatement) -> crate::types::Resul
             }
 
             if let Some(rc) = return_clause {
-                op = apply_return_projection(op, rc, order_by, *skip, *limit)?;
+                op = apply_return_projection(conn, op, rc, order_by, skip, limit)?;
             }
         }
     }
@@ -698,7 +757,7 @@ fn plan_unwind(conn: &Connection, stmt: &UnwindStatement) -> crate::types::Resul
     Ok(op)
 }
 
-fn plan_merge(stmt: &MergeStatement) -> crate::types::Result<LogicalOp> {
+fn plan_merge(conn: &Connection, stmt: &MergeStatement) -> crate::types::Result<LogicalOp> {
     let len = stmt.pattern.elements.len();
     match len {
         // Single node MERGE: MERGE (n:Label {props})
@@ -720,9 +779,15 @@ fn plan_merge(stmt: &MergeStatement) -> crate::types::Result<LogicalOp> {
             ) {
                 (
                     PatternElement::Node(_),
-                    PatternElement::Relationship(_),
+                    PatternElement::Relationship(rel),
                     PatternElement::Node(_),
-                ) => {}
+                ) => {
+                    if rel.var_length.is_some() {
+                        return Err(GraphError::syntax(
+                            "CreatingVarLength: variable-length relationships are not allowed in MERGE".to_string(),
+                        ));
+                    }
+                }
                 _ => {
                     return Err(crate::types::GraphError::semantic(
                         "MERGE relationship pattern must be (node)-[rel]->(node)",
@@ -743,7 +808,7 @@ fn plan_merge(stmt: &MergeStatement) -> crate::types::Result<LogicalOp> {
     };
 
     if let Some(ref rc) = stmt.return_clause {
-        op = apply_return_projection(op, rc, &stmt.order_by, stmt.skip, stmt.limit)?;
+        op = apply_return_projection(conn, op, rc, &stmt.order_by, &stmt.skip, &stmt.limit)?;
     }
 
     Ok(op)
@@ -770,7 +835,7 @@ fn plan_match_merge(
     };
 
     if let Some(ref rc) = stmt.return_clause {
-        result = apply_return_projection(result, rc, &stmt.order_by, stmt.skip, stmt.limit)?;
+        result = apply_return_projection(conn, result, rc, &stmt.order_by, &stmt.skip, &stmt.limit)?;
     }
 
     Ok(result)
@@ -913,6 +978,16 @@ fn plan_multi_clause(
                 on_create,
                 on_match,
             } => {
+                // Reject variable-length relationships in MERGE patterns.
+                for el in &pattern.elements {
+                    if let PatternElement::Relationship(rel) = el {
+                        if rel.var_length.is_some() {
+                            return Err(GraphError::syntax(
+                                "CreatingVarLength: variable-length relationships are not allowed in MERGE".to_string(),
+                            ));
+                        }
+                    }
+                }
                 op = Some(if let Some(input) = op.take() {
                     LogicalOp::MatchMerge {
                         input: Box::new(input),
@@ -931,7 +1006,7 @@ fn plan_multi_clause(
             }
             Clause::With(with) => {
                 let input = op.take().unwrap_or(LogicalOp::EmptyRow);
-                op = Some(plan_with(input, with)?);
+                op = Some(plan_with(conn, input, with)?);
                 // WITH resets scope.
                 let old_scope = scope_vars.clone();
                 scope_vars.clear();
@@ -1015,7 +1090,7 @@ fn plan_multi_clause(
         if !scope_vars.is_empty() {
             validate_return_variables(&rc.items, &scope_vars)?;
         }
-        result = apply_return_projection(result, rc, &stmt.order_by, stmt.skip, stmt.limit)?;
+        result = apply_return_projection(conn, result, rc, &stmt.order_by, &stmt.skip, &stmt.limit)?;
     }
 
     Ok(result)
@@ -1058,7 +1133,7 @@ fn substitute_aliases(expr: &Expr, aliases: &std::collections::HashMap<String, E
     }
 }
 
-fn plan_with(input: LogicalOp, with: &WithClause) -> crate::types::Result<LogicalOp> {
+fn plan_with(conn: &Connection, input: LogicalOp, with: &WithClause) -> crate::types::Result<LogicalOp> {
     let mut op = input;
 
     check_duplicate_columns(&with.items)?;
@@ -1132,6 +1207,13 @@ fn plan_with(input: LogicalOp, with: &WithClause) -> crate::types::Result<Logica
         };
     }
 
+    // Apply DISTINCT.
+    if with.distinct {
+        op = LogicalOp::Distinct {
+            input: Box::new(op),
+        };
+    }
+
     // Apply ORDER BY.
     if !with.order_by.is_empty() {
         // When WITH has aggregates, reject ORDER BY expressions that contain
@@ -1174,7 +1256,8 @@ fn plan_with(input: LogicalOp, with: &WithClause) -> crate::types::Result<Logica
     }
 
     // Apply SKIP.
-    if let Some(count) = with.skip {
+    if let Some(ref expr) = with.skip {
+        let count = eval_skip_limit(expr, conn)?;
         op = LogicalOp::Skip {
             input: Box::new(op),
             count,
@@ -1182,7 +1265,8 @@ fn plan_with(input: LogicalOp, with: &WithClause) -> crate::types::Result<Logica
     }
 
     // Apply LIMIT.
-    if let Some(count) = with.limit {
+    if let Some(ref expr) = with.limit {
+        let count = eval_skip_limit(expr, conn)?;
         op = LogicalOp::Limit {
             input: Box::new(op),
             count,
@@ -2015,6 +2099,13 @@ fn plan_create_pattern_with_counter(
                 i += 1;
             }
             PatternElement::Relationship(rel) => {
+                // Variable-length relationships are not allowed in CREATE patterns.
+                if rel.var_length.is_some() {
+                    return Err(GraphError::syntax(
+                        "CreatingVarLength: variable-length relationships are not allowed in CREATE".to_string(),
+                    ));
+                }
+
                 let dst_node = match pattern.elements.get(i + 1) {
                     Some(PatternElement::Node(n)) => n,
                     _ => {

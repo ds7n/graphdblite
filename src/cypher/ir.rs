@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 
 use crate::cypher::ast::{
-    Assignment, Expr, LiteralValue, Pattern, RemoveItem, ReturnItem, SortItem,
+    Assignment, Expr, LiteralValue, Pattern, RemoveItem, ReturnItem, SetItem, SortItem,
 };
 use crate::types::Direction;
 
@@ -150,16 +150,16 @@ pub enum LogicalOp {
     /// Merge: match-or-create pattern.
     Merge {
         pattern: Pattern,
-        on_create: Vec<Assignment>,
-        on_match: Vec<Assignment>,
+        on_create: Vec<SetItem>,
+        on_match: Vec<SetItem>,
     },
 
     /// MATCH ... MERGE: merge a pattern using bound variables from MATCH pipeline.
     MatchMerge {
         input: Box<LogicalOp>,
         merge_pattern: Pattern,
-        on_create: Vec<Assignment>,
-        on_match: Vec<Assignment>,
+        on_create: Vec<SetItem>,
+        on_match: Vec<SetItem>,
     },
 
     /// Build a Path value from the matched pattern elements and store it

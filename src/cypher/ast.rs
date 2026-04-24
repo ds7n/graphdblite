@@ -38,8 +38,8 @@ pub enum Clause {
     },
     Merge {
         pattern: Pattern,
-        on_create: Vec<Assignment>,
-        on_match: Vec<Assignment>,
+        on_create: Vec<SetItem>,
+        on_match: Vec<SetItem>,
     },
     With(WithClause),
     Unwind(UnwindClause),
@@ -61,8 +61,8 @@ pub struct MultiClauseStatement {
     pub clauses: Vec<Clause>,
     pub return_clause: Option<ReturnClause>,
     pub order_by: Vec<SortItem>,
-    pub skip: Option<u64>,
-    pub limit: Option<u64>,
+    pub skip: Option<Expr>,
+    pub limit: Option<Expr>,
 }
 
 /// Standalone `RETURN expr [AS alias], ... [ORDER BY ...] [SKIP n] [LIMIT n]`
@@ -70,8 +70,8 @@ pub struct MultiClauseStatement {
 pub struct ReturnStatement {
     pub return_clause: ReturnClause,
     pub order_by: Vec<SortItem>,
-    pub skip: Option<u64>,
-    pub limit: Option<u64>,
+    pub skip: Option<Expr>,
+    pub limit: Option<Expr>,
 }
 
 /// An OPTIONAL MATCH clause with its patterns and optional WHERE filter.
@@ -90,17 +90,18 @@ pub struct MatchStatement {
     pub intermediate_clauses: Vec<IntermediateClause>,
     pub return_clause: ReturnClause,
     pub order_by: Vec<SortItem>,
-    pub skip: Option<u64>,
-    pub limit: Option<u64>,
+    pub skip: Option<Expr>,
+    pub limit: Option<Expr>,
 }
 
 /// WITH clause: intermediate projection/filter/aggregation.
 #[derive(Debug, Clone, PartialEq)]
 pub struct WithClause {
     pub items: Vec<ReturnItem>,
+    pub distinct: bool,
     pub order_by: Vec<SortItem>,
-    pub skip: Option<u64>,
-    pub limit: Option<u64>,
+    pub skip: Option<Expr>,
+    pub limit: Option<Expr>,
     pub where_clause: Option<Expr>,
 }
 
@@ -110,8 +111,8 @@ pub struct CreateStatement {
     pub patterns: Vec<Pattern>,
     pub return_clause: Option<ReturnClause>,
     pub order_by: Vec<SortItem>,
-    pub skip: Option<u64>,
-    pub limit: Option<u64>,
+    pub skip: Option<Expr>,
+    pub limit: Option<Expr>,
 }
 
 /// MATCH ... CREATE (a)-[:TYPE]->(b) [RETURN ...]
@@ -122,8 +123,8 @@ pub struct MatchCreateStatement {
     pub create_patterns: Vec<Pattern>,
     pub return_clause: Option<ReturnClause>,
     pub order_by: Vec<SortItem>,
-    pub skip: Option<u64>,
-    pub limit: Option<u64>,
+    pub skip: Option<Expr>,
+    pub limit: Option<Expr>,
 }
 
 /// MATCH ... [DETACH] DELETE n, m [RETURN ...]
@@ -136,8 +137,8 @@ pub struct DeleteStatement {
     pub variables: Vec<String>,
     pub return_clause: Option<ReturnClause>,
     pub order_by: Vec<SortItem>,
-    pub skip: Option<u64>,
-    pub limit: Option<u64>,
+    pub skip: Option<Expr>,
+    pub limit: Option<Expr>,
 }
 
 /// MATCH ... SET n.prop = value | n:Label | n = {map} | n += {map} [WITH ...] [RETURN ...]
@@ -150,8 +151,8 @@ pub struct SetStatement {
     pub intermediate_clauses: Vec<IntermediateClause>,
     pub return_clause: Option<ReturnClause>,
     pub order_by: Vec<SortItem>,
-    pub skip: Option<u64>,
-    pub limit: Option<u64>,
+    pub skip: Option<Expr>,
+    pub limit: Option<Expr>,
 }
 
 /// A single SET clause item.
@@ -181,8 +182,8 @@ pub struct RemoveStatement {
     pub items: Vec<RemoveItem>,
     pub return_clause: Option<ReturnClause>,
     pub order_by: Vec<SortItem>,
-    pub skip: Option<u64>,
-    pub limit: Option<u64>,
+    pub skip: Option<Expr>,
+    pub limit: Option<Expr>,
 }
 
 /// An item to remove: property or label(s).
@@ -204,24 +205,24 @@ pub struct MatchMergeStatement {
     pub patterns: Vec<Pattern>,
     pub where_clause: Option<Expr>,
     pub merge_pattern: Pattern,
-    pub on_create: Vec<Assignment>,
-    pub on_match: Vec<Assignment>,
+    pub on_create: Vec<SetItem>,
+    pub on_match: Vec<SetItem>,
     pub return_clause: Option<ReturnClause>,
     pub order_by: Vec<SortItem>,
-    pub skip: Option<u64>,
-    pub limit: Option<u64>,
+    pub skip: Option<Expr>,
+    pub limit: Option<Expr>,
 }
 
 /// MERGE (n:Label {props}) ON CREATE SET ... ON MATCH SET ... [RETURN ...]
 #[derive(Debug, Clone, PartialEq)]
 pub struct MergeStatement {
     pub pattern: Pattern,
-    pub on_create: Vec<Assignment>,
-    pub on_match: Vec<Assignment>,
+    pub on_create: Vec<SetItem>,
+    pub on_match: Vec<SetItem>,
     pub return_clause: Option<ReturnClause>,
     pub order_by: Vec<SortItem>,
-    pub skip: Option<u64>,
-    pub limit: Option<u64>,
+    pub skip: Option<Expr>,
+    pub limit: Option<Expr>,
 }
 
 /// UNWIND expr AS alias [WHERE ...] RETURN ... / CREATE ...
@@ -240,16 +241,16 @@ pub enum UnwindBody {
         intermediate_clauses: Vec<IntermediateClause>,
         return_clause: ReturnClause,
         order_by: Vec<SortItem>,
-        skip: Option<u64>,
-        limit: Option<u64>,
+        skip: Option<Expr>,
+        limit: Option<Expr>,
     },
     Create {
         patterns: Vec<Pattern>,
         intermediate_clauses: Vec<IntermediateClause>,
         return_clause: Option<ReturnClause>,
         order_by: Vec<SortItem>,
-        skip: Option<u64>,
-        limit: Option<u64>,
+        skip: Option<Expr>,
+        limit: Option<Expr>,
     },
 }
 

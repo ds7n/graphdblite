@@ -100,7 +100,7 @@ fn parse_match_with_order_by_and_limit() {
         Statement::Match(m) => {
             assert_eq!(m.order_by.len(), 1);
             assert!(m.order_by[0].descending);
-            assert_eq!(m.limit, Some(10));
+            assert_eq!(m.limit, Some(Expr::Literal(LiteralValue::I64(10))));
         }
         _ => panic!("expected Match"),
     }

@@ -372,18 +372,18 @@ fn parse_multi_clause(
                 let mut on_match = Vec::new();
                 for child in inner.into_inner() {
                     match child.as_rule() {
-                        Rule::pattern => merge_pattern = Some(parse_pattern(child)?),
+                        Rule::pattern_item => merge_pattern = Some(parse_pattern_item(child)?),
                         Rule::on_create_clause => {
                             for grandchild in child.into_inner() {
-                                if grandchild.as_rule() == Rule::property_assignment_list {
-                                    on_create = parse_assignment_list(grandchild)?;
+                                if grandchild.as_rule() == Rule::assignment_list {
+                                    on_create = parse_set_item_list(grandchild)?;
                                 }
                             }
                         }
                         Rule::on_match_clause => {
                             for grandchild in child.into_inner() {
-                                if grandchild.as_rule() == Rule::property_assignment_list {
-                                    on_match = parse_assignment_list(grandchild)?;
+                                if grandchild.as_rule() == Rule::assignment_list {
+                                    on_match = parse_set_item_list(grandchild)?;
                                 }
                             }
                         }
@@ -550,18 +550,18 @@ fn parse_match_merge(
         match inner.as_rule() {
             Rule::pattern_list => patterns = parse_pattern_list(inner)?,
             Rule::where_clause => where_clause = Some(parse_where(inner)?),
-            Rule::pattern => merge_pattern = Some(parse_pattern(inner)?),
+            Rule::pattern_item => merge_pattern = Some(parse_pattern_item(inner)?),
             Rule::on_create_clause => {
                 for child in inner.into_inner() {
-                    if child.as_rule() == Rule::property_assignment_list {
-                        on_create = parse_assignment_list(child)?;
+                    if child.as_rule() == Rule::assignment_list {
+                        on_create = parse_set_item_list(child)?;
                     }
                 }
             }
             Rule::on_match_clause => {
                 for child in inner.into_inner() {
-                    if child.as_rule() == Rule::property_assignment_list {
-                        on_match = parse_assignment_list(child)?;
+                    if child.as_rule() == Rule::assignment_list {
+                        on_match = parse_set_item_list(child)?;
                     }
                 }
             }
@@ -868,18 +868,18 @@ fn parse_merge(pair: pest::iterators::Pair<Rule>) -> crate::types::Result<MergeS
 
     for inner in pair.into_inner() {
         match inner.as_rule() {
-            Rule::pattern => pattern = Some(parse_pattern(inner)?),
+            Rule::pattern_item => pattern = Some(parse_pattern_item(inner)?),
             Rule::on_create_clause => {
                 for child in inner.into_inner() {
-                    if child.as_rule() == Rule::property_assignment_list {
-                        on_create = parse_assignment_list(child)?;
+                    if child.as_rule() == Rule::assignment_list {
+                        on_create = parse_set_item_list(child)?;
                     }
                 }
             }
             Rule::on_match_clause => {
                 for child in inner.into_inner() {
-                    if child.as_rule() == Rule::property_assignment_list {
-                        on_match = parse_assignment_list(child)?;
+                    if child.as_rule() == Rule::assignment_list {
+                        on_match = parse_set_item_list(child)?;
                     }
                 }
             }
@@ -1017,7 +1017,9 @@ fn parse_rel_pattern(pair: pest::iterators::Pair<Rule>) -> crate::types::Result<
     let direction = match inner.as_rule() {
         Rule::rel_right | Rule::rel_right_bare => RelDirection::Outgoing,
         Rule::rel_left | Rule::rel_left_bare => RelDirection::Incoming,
-        Rule::rel_undirected | Rule::rel_undirected_bare => RelDirection::Undirected,
+        Rule::rel_undirected | Rule::rel_undirected_bare | Rule::rel_both_bare => {
+            RelDirection::Undirected
+        }
         _ => unreachable!(),
     };
 
@@ -1061,18 +1063,30 @@ fn parse_rel_pattern(pair: pest::iterators::Pair<Rule>) -> crate::types::Result<
 
 fn parse_var_length(pair: pest::iterators::Pair<Rule>) -> crate::types::Result<(u32, u32)> {
     for inner in pair.into_inner() {
-        if inner.as_rule() == Rule::int_range {
-            let nums: Vec<u32> = inner
-                .into_inner()
-                .filter(|p| p.as_rule() == Rule::integer)
-                .map(|p| p.as_str().parse::<u32>().unwrap())
-                .collect();
-            if nums.len() == 2 {
-                return Ok((nums[0], nums[1]));
-            } else if nums.len() == 1 {
-                // Open-ended range like *1.. — use default max traversal depth.
-                return Ok((nums[0], 15));
+        match inner.as_rule() {
+            Rule::int_range => {
+                // int_range = { integer? ~ ".." ~ integer? }
+                // Use raw text to distinguish "1.." from "..3" when only one integer present.
+                let raw = inner.as_str().trim();
+                let nums: Vec<u32> = inner
+                    .into_inner()
+                    .filter(|p| p.as_rule() == Rule::integer)
+                    .map(|p| p.as_str().parse::<u32>().unwrap())
+                    .collect();
+                match nums.len() {
+                    2 => return Ok((nums[0], nums[1])),
+                    1 if raw.starts_with("..") => return Ok((1, nums[0])),
+                    1 => return Ok((nums[0], 15)),
+                    0 => return Ok((1, 15)),
+                    _ => {}
+                }
             }
+            Rule::fixed_length => {
+                let n = inner.as_str().parse::<u32>().unwrap();
+                return Ok((n, n));
+            }
+            Rule::property_map => {} // handled by caller
+            _ => {}
         }
     }
     // Bare * with no range — default to 1..15 to prevent unbounded traversal.
@@ -1106,6 +1120,7 @@ fn parse_where(pair: pest::iterators::Pair<Rule>) -> crate::types::Result<Expr> 
 
 fn parse_with(pair: pest::iterators::Pair<Rule>) -> crate::types::Result<WithClause> {
     let mut items = Vec::new();
+    let mut distinct = false;
     let mut order_by = Vec::new();
     let mut skip = None;
     let mut limit = None;
@@ -1113,6 +1128,7 @@ fn parse_with(pair: pest::iterators::Pair<Rule>) -> crate::types::Result<WithCla
 
     for inner in pair.into_inner() {
         match inner.as_rule() {
+            Rule::distinct_keyword => distinct = true,
             Rule::return_items => {
                 items = inner
                     .into_inner()
@@ -1155,6 +1171,7 @@ fn parse_with(pair: pest::iterators::Pair<Rule>) -> crate::types::Result<WithCla
 
     Ok(WithClause {
         items,
+        distinct,
         order_by,
         skip,
         limit,
@@ -1370,47 +1387,20 @@ fn parse_order_by(pair: pest::iterators::Pair<Rule>) -> crate::types::Result<Vec
         .collect()
 }
 
-fn parse_skip(pair: pest::iterators::Pair<Rule>) -> crate::types::Result<u64> {
-    let int_str = pair
+fn parse_skip(pair: pest::iterators::Pair<Rule>) -> crate::types::Result<Expr> {
+    let expr_pair = pair
         .into_inner()
-        .find(|p| p.as_rule() == Rule::integer)
-        .unwrap()
-        .as_str();
-    int_str
-        .parse()
-        .map_err(|e| GraphError::Serialization(format!("invalid skip: {e}")))
+        .find(|p| p.as_rule() == Rule::expr)
+        .unwrap();
+    parse_expr(expr_pair)
 }
 
-fn parse_limit(pair: pest::iterators::Pair<Rule>) -> crate::types::Result<u64> {
-    let int_str = pair
+fn parse_limit(pair: pest::iterators::Pair<Rule>) -> crate::types::Result<Expr> {
+    let expr_pair = pair
         .into_inner()
-        .find(|p| p.as_rule() == Rule::integer)
-        .unwrap()
-        .as_str();
-    int_str
-        .parse()
-        .map_err(|e| GraphError::Serialization(format!("invalid limit: {e}")))
-}
-
-fn parse_assignment_list(
-    pair: pest::iterators::Pair<Rule>,
-) -> crate::types::Result<Vec<Assignment>> {
-    pair.into_inner()
-        .filter(|p| p.as_rule() == Rule::assignment)
-        .map(|p| {
-            let mut children = p.into_inner();
-            let prop_access = children.next().unwrap();
-            let mut prop_parts = prop_access.into_inner();
-            let variable = prop_parts.next().unwrap().as_str().to_string();
-            let property = prop_parts.next().unwrap().as_str().to_string();
-            let value = parse_expr(children.next().unwrap())?;
-            Ok(Assignment {
-                variable,
-                property,
-                value,
-            })
-        })
-        .collect()
+        .find(|p| p.as_rule() == Rule::expr)
+        .unwrap();
+    parse_expr(expr_pair)
 }
 
 // === Expression parsing ===
@@ -2613,22 +2603,6 @@ fn resolve_optional_match(
     })
 }
 
-fn resolve_assignments(
-    assignments: &[Assignment],
-    params: &HashMap<String, Value>,
-) -> crate::types::Result<Vec<Assignment>> {
-    assignments
-        .iter()
-        .map(|a| {
-            Ok(Assignment {
-                variable: a.variable.clone(),
-                property: a.property.clone(),
-                value: resolve_expr(&a.value, params)?,
-            })
-        })
-        .collect()
-}
-
 fn resolve_set_items(
     items: &[SetItem],
     params: &HashMap<String, Value>,
@@ -2696,9 +2670,10 @@ fn resolve_intermediate_clauses(
         .map(|c| match c {
             IntermediateClause::With(w) => Ok(IntermediateClause::With(WithClause {
                 items: resolve_return_items(&w.items, params)?,
+                distinct: w.distinct,
                 order_by: w.order_by.clone(),
-                skip: w.skip,
-                limit: w.limit,
+                skip: w.skip.as_ref().map(|e| resolve_expr(e, params)).transpose()?,
+                limit: w.limit.as_ref().map(|e| resolve_expr(e, params)).transpose()?,
                 where_clause: w
                     .where_clause
                     .as_ref()
@@ -2729,15 +2704,15 @@ fn resolve_intermediate_clauses(
 type ResolvedReturn = (
     Option<ReturnClause>,
     Vec<SortItem>,
-    Option<u64>,
-    Option<u64>,
+    Option<Expr>,
+    Option<Expr>,
 );
 
 fn resolve_optional_return(
     return_clause: &Option<ReturnClause>,
     order_by: &[SortItem],
-    skip: Option<u64>,
-    limit: Option<u64>,
+    skip: &Option<Expr>,
+    limit: &Option<Expr>,
     params: &HashMap<String, Value>,
 ) -> crate::types::Result<ResolvedReturn> {
     let rc: Option<ReturnClause> = return_clause
@@ -2750,7 +2725,9 @@ fn resolve_optional_return(
         })
         .transpose()?;
     let ob = resolve_sort_items(order_by, params)?;
-    Ok((rc, ob, skip, limit))
+    let s = skip.as_ref().map(|e| resolve_expr(e, params)).transpose()?;
+    let l = limit.as_ref().map(|e| resolve_expr(e, params)).transpose()?;
+    Ok((rc, ob, s, l))
 }
 
 /// Substitute all `$name` parameters in a parsed statement with literal values.
@@ -2780,12 +2757,12 @@ pub fn resolve_params(
                 distinct: m.return_clause.distinct,
             },
             order_by: resolve_sort_items(&m.order_by, params)?,
-            skip: m.skip,
-            limit: m.limit,
+            skip: m.skip.as_ref().map(|e| resolve_expr(e, params)).transpose()?,
+            limit: m.limit.as_ref().map(|e| resolve_expr(e, params)).transpose()?,
         })),
         Statement::Create(c) => {
             let (return_clause, order_by, skip, limit) =
-                resolve_optional_return(&c.return_clause, &c.order_by, c.skip, c.limit, params)?;
+                resolve_optional_return(&c.return_clause, &c.order_by, &c.skip, &c.limit, params)?;
             Ok(Statement::Create(CreateStatement {
                 patterns: resolve_patterns(&c.patterns, params)?,
                 return_clause,
@@ -2798,8 +2775,8 @@ pub fn resolve_params(
             let (return_clause, order_by, skip, limit) = resolve_optional_return(
                 &mc.return_clause,
                 &mc.order_by,
-                mc.skip,
-                mc.limit,
+                &mc.skip,
+                &mc.limit,
                 params,
             )?;
             Ok(Statement::MatchCreate(MatchCreateStatement {
@@ -2820,8 +2797,8 @@ pub fn resolve_params(
             let (return_clause, order_by, skip, limit) = resolve_optional_return(
                 &mm.return_clause,
                 &mm.order_by,
-                mm.skip,
-                mm.limit,
+                &mm.skip,
+                &mm.limit,
                 params,
             )?;
             Ok(Statement::MatchMerge(MatchMergeStatement {
@@ -2832,8 +2809,8 @@ pub fn resolve_params(
                     .map(|e| resolve_expr(e, params))
                     .transpose()?,
                 merge_pattern: resolve_pattern(&mm.merge_pattern, params)?,
-                on_create: resolve_assignments(&mm.on_create, params)?,
-                on_match: resolve_assignments(&mm.on_match, params)?,
+                on_create: resolve_set_items(&mm.on_create, params)?,
+                on_match: resolve_set_items(&mm.on_match, params)?,
                 return_clause,
                 order_by,
                 skip,
@@ -2842,7 +2819,7 @@ pub fn resolve_params(
         }
         Statement::Delete(d) => {
             let (return_clause, order_by, skip, limit) =
-                resolve_optional_return(&d.return_clause, &d.order_by, d.skip, d.limit, params)?;
+                resolve_optional_return(&d.return_clause, &d.order_by, &d.skip, &d.limit, params)?;
             Ok(Statement::Delete(DeleteStatement {
                 patterns: resolve_patterns(&d.patterns, params)?,
                 optional_patterns: d
@@ -2865,7 +2842,7 @@ pub fn resolve_params(
         }
         Statement::Set(s) => {
             let (return_clause, order_by, skip, limit) =
-                resolve_optional_return(&s.return_clause, &s.order_by, s.skip, s.limit, params)?;
+                resolve_optional_return(&s.return_clause, &s.order_by, &s.skip, &s.limit, params)?;
             Ok(Statement::Set(SetStatement {
                 patterns: resolve_patterns(&s.patterns, params)?,
                 optional_patterns: s
@@ -2891,7 +2868,7 @@ pub fn resolve_params(
         }
         Statement::Remove(r) => {
             let (return_clause, order_by, skip, limit) =
-                resolve_optional_return(&r.return_clause, &r.order_by, r.skip, r.limit, params)?;
+                resolve_optional_return(&r.return_clause, &r.order_by, &r.skip, &r.limit, params)?;
             Ok(Statement::Remove(RemoveStatement {
                 patterns: resolve_patterns(&r.patterns, params)?,
                 optional_patterns: r
@@ -2913,11 +2890,11 @@ pub fn resolve_params(
         }
         Statement::Merge(m) => {
             let (return_clause, order_by, skip, limit) =
-                resolve_optional_return(&m.return_clause, &m.order_by, m.skip, m.limit, params)?;
+                resolve_optional_return(&m.return_clause, &m.order_by, &m.skip, &m.limit, params)?;
             Ok(Statement::Merge(MergeStatement {
                 pattern: resolve_pattern(&m.pattern, params)?,
-                on_create: resolve_assignments(&m.on_create, params)?,
-                on_match: resolve_assignments(&m.on_match, params)?,
+                on_create: resolve_set_items(&m.on_create, params)?,
+                on_match: resolve_set_items(&m.on_match, params)?,
                 return_clause,
                 order_by,
                 skip,
@@ -2947,8 +2924,8 @@ pub fn resolve_params(
                         distinct: return_clause.distinct,
                     },
                     order_by: resolve_sort_items(order_by, params)?,
-                    skip: *skip,
-                    limit: *limit,
+                    skip: skip.as_ref().map(|e| resolve_expr(e, params)).transpose()?,
+                    limit: limit.as_ref().map(|e| resolve_expr(e, params)).transpose()?,
                 },
                 UnwindBody::Create {
                     patterns,
@@ -2959,7 +2936,7 @@ pub fn resolve_params(
                     limit,
                 } => {
                     let (rc, ob, s, l) =
-                        resolve_optional_return(return_clause, order_by, *skip, *limit, params)?;
+                        resolve_optional_return(return_clause, order_by, skip, limit, params)?;
                     UnwindBody::Create {
                         patterns: resolve_patterns(patterns, params)?,
                         intermediate_clauses: resolve_intermediate_clauses(
@@ -2985,8 +2962,8 @@ pub fn resolve_params(
                 distinct: r.return_clause.distinct,
             },
             order_by: resolve_sort_items(&r.order_by, params)?,
-            skip: r.skip,
-            limit: r.limit,
+            skip: r.skip.as_ref().map(|e| resolve_expr(e, params)).transpose()?,
+            limit: r.limit.as_ref().map(|e| resolve_expr(e, params)).transpose()?,
         })),
         Statement::MultiClause(mc) => {
             let clauses = mc
@@ -3007,8 +2984,8 @@ pub fn resolve_params(
                     })
                     .transpose()?,
                 order_by: resolve_sort_items(&mc.order_by, params)?,
-                skip: mc.skip,
-                limit: mc.limit,
+                skip: mc.skip.as_ref().map(|e| resolve_expr(e, params)).transpose()?,
+                limit: mc.limit.as_ref().map(|e| resolve_expr(e, params)).transpose()?,
             }))
         }
         Statement::Explain(inner) => {
@@ -3057,14 +3034,15 @@ fn resolve_clause(
             on_match,
         } => Ok(Clause::Merge {
             pattern: resolve_pattern(pattern, params)?,
-            on_create: resolve_assignments(on_create, params)?,
-            on_match: resolve_assignments(on_match, params)?,
+            on_create: resolve_set_items(on_create, params)?,
+            on_match: resolve_set_items(on_match, params)?,
         }),
         Clause::With(with) => Ok(Clause::With(WithClause {
             items: resolve_return_items(&with.items, params)?,
+            distinct: with.distinct,
             order_by: resolve_sort_items(&with.order_by, params)?,
-            skip: with.skip,
-            limit: with.limit,
+            skip: with.skip.as_ref().map(|e| resolve_expr(e, params)).transpose()?,
+            limit: with.limit.as_ref().map(|e| resolve_expr(e, params)).transpose()?,
             where_clause: with
                 .where_clause
                 .as_ref()

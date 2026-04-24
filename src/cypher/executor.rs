@@ -2,7 +2,7 @@ use std::collections::HashMap;
 
 use rusqlite::Connection;
 
-use crate::cypher::ast::{Expr, LiteralValue, PatternElement};
+use crate::cypher::ast::{Expr, LiteralValue, PatternElement, SetItem};
 use crate::cypher::eval::{eval_expr, eval_predicate, expr_to_column_name};
 use crate::cypher::ir::*;
 use crate::cypher::record::Record;
@@ -1660,11 +1660,102 @@ fn exec_remove(
     Ok(records)
 }
 
+/// Apply a single SetItem to a node in a MERGE ON CREATE/ON MATCH context.
+fn apply_merge_set_item_node(
+    conn: &Connection,
+    item: &SetItem,
+    node_id: NodeId,
+    rec: &Record,
+) -> Result<()> {
+    match item {
+        SetItem::Property(assignment) => {
+            let old = node::get_node(conn, node_id)?;
+            let mut a_rec = rec.clone();
+            a_rec.set(assignment.variable.clone(), Value::I64(node_id.0 as i64));
+            let val = eval_expr(&assignment.value, &a_rec, conn)?;
+            node::set_node_property(conn, node_id, &assignment.property, val.clone())?;
+            let mut new_props = old.properties.clone();
+            new_props.insert(assignment.property.clone(), val);
+            index::update_indexes_for_node(
+                conn,
+                node_id,
+                old.labels.first().map(|s| s.as_str()).unwrap_or(""),
+                Some(&old.properties),
+                &new_props,
+            )?;
+        }
+        SetItem::Label { variable: _, labels } => {
+            for label in labels {
+                node::add_node_label(conn, node_id, label)?;
+            }
+        }
+        SetItem::MapMerge { variable: _, value } => {
+            let val = eval_expr(value, rec, conn)?;
+            if let Value::Map(map) = val {
+                for (k, v) in &map {
+                    node::set_node_property(conn, node_id, k, v.clone())?;
+                }
+            }
+        }
+        SetItem::MapOverwrite { variable: _, value } => {
+            let val = eval_expr(value, rec, conn)?;
+            if let Value::Map(map) = val {
+                // Clear existing properties and set new ones.
+                let old = node::get_node(conn, node_id)?;
+                for key in old.properties.keys() {
+                    node::set_node_property(conn, node_id, key, Value::Null)?;
+                }
+                for (k, v) in &map {
+                    node::set_node_property(conn, node_id, k, v.clone())?;
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Apply a single SetItem to an edge in a MERGE ON CREATE/ON MATCH context.
+fn apply_merge_set_item_edge(
+    conn: &Connection,
+    item: &SetItem,
+    src_id: NodeId,
+    dst_id: NodeId,
+    edge_type: &str,
+    rec: &Record,
+) -> Result<()> {
+    match item {
+        SetItem::Property(assignment) => {
+            let val = eval_expr(&assignment.value, rec, conn)?;
+            edge::set_edge_property(conn, src_id, dst_id, edge_type, &assignment.property, val)?;
+        }
+        SetItem::Label { .. } => {
+            // Labels on edges are not standard Cypher; ignore.
+        }
+        SetItem::MapMerge { variable: _, value } => {
+            let val = eval_expr(value, rec, conn)?;
+            if let Value::Map(map) = val {
+                for (k, v) in &map {
+                    edge::set_edge_property(conn, src_id, dst_id, edge_type, k, v.clone())?;
+                }
+            }
+        }
+        SetItem::MapOverwrite { variable: _, value } => {
+            let val = eval_expr(value, rec, conn)?;
+            if let Value::Map(map) = val {
+                for (k, v) in &map {
+                    edge::set_edge_property(conn, src_id, dst_id, edge_type, k, v.clone())?;
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
 fn exec_merge(
     conn: &Connection,
     pattern: &crate::cypher::ast::Pattern,
-    on_create: &[crate::cypher::ast::Assignment],
-    on_match: &[crate::cypher::ast::Assignment],
+    on_create: &[SetItem],
+    on_match: &[SetItem],
 ) -> Result<Vec<Record>> {
     if pattern.elements.len() == 1 {
         return exec_merge_node(conn, pattern, on_create, on_match);
@@ -1677,8 +1768,8 @@ fn exec_merge(
 fn exec_merge_node(
     conn: &Connection,
     pattern: &crate::cypher::ast::Pattern,
-    on_create: &[crate::cypher::ast::Assignment],
-    on_match: &[crate::cypher::ast::Assignment],
+    on_create: &[SetItem],
+    on_match: &[SetItem],
 ) -> Result<Vec<Record>> {
     let node_pat = match pattern.elements.first() {
         Some(PatternElement::Node(n)) => n,
@@ -1692,21 +1783,9 @@ fn exec_merge_node(
 
     match matched {
         Some(n) => {
-            for assignment in on_match {
-                let old = node::get_node(conn, n.id)?;
-                let mut rec = Record::new();
-                rec.set(assignment.variable.clone(), Value::I64(n.id.0 as i64));
-                let val = eval_expr(&assignment.value, &rec, conn)?;
-                node::set_node_property(conn, n.id, &assignment.property, val.clone())?;
-                let mut new_props = old.properties.clone();
-                new_props.insert(assignment.property.clone(), val);
-                index::update_indexes_for_node(
-                    conn,
-                    n.id,
-                    old.labels.first().map(|s| s.as_str()).unwrap_or(""),
-                    Some(&old.properties),
-                    &new_props,
-                )?;
+            let rec = Record::new();
+            for item in on_match {
+                apply_merge_set_item_node(conn, item, n.id, &rec)?;
             }
             let mut rec = Record::new();
             rec.set(alias.to_string(), Value::I64(n.id.0 as i64));
@@ -1728,21 +1807,9 @@ fn exec_merge_node(
             let id = node::create_node(conn, &labels, props.clone())?;
             index::update_indexes_for_node(conn, id, label, None, &props)?;
 
-            for assignment in on_create {
-                let old = node::get_node(conn, id)?;
-                let mut rec = Record::new();
-                rec.set(assignment.variable.clone(), Value::I64(id.0 as i64));
-                let val = eval_expr(&assignment.value, &rec, conn)?;
-                node::set_node_property(conn, id, &assignment.property, val.clone())?;
-                let mut new_props = old.properties.clone();
-                new_props.insert(assignment.property.clone(), val);
-                index::update_indexes_for_node(
-                    conn,
-                    id,
-                    old.labels.first().map(|s| s.as_str()).unwrap_or(""),
-                    Some(&old.properties),
-                    &new_props,
-                )?;
+            let rec = Record::new();
+            for item in on_create {
+                apply_merge_set_item_node(conn, item, id, &rec)?;
             }
 
             let mut rec = Record::new();
@@ -1757,8 +1824,8 @@ fn exec_merge_node(
 fn exec_merge_relationship(
     conn: &Connection,
     pattern: &crate::cypher::ast::Pattern,
-    on_create: &[crate::cypher::ast::Assignment],
-    on_match: &[crate::cypher::ast::Assignment],
+    on_create: &[SetItem],
+    on_match: &[SetItem],
 ) -> Result<Vec<Record>> {
     let src_pat = match &pattern.elements[0] {
         PatternElement::Node(n) => n,
@@ -1790,28 +1857,26 @@ fn exec_merge_relationship(
             props.insert(key.clone(), val);
         }
         edge::create_edge(conn, src_id, dst_id, &edge_type, props)?;
-        for assignment in on_create {
-            let mut rec = Record::new();
-            if let Some(ref v) = src_pat.variable {
-                rec.set(v.clone(), Value::I64(src_id.0 as i64));
-            }
-            if let Some(ref v) = dst_pat.variable {
-                rec.set(v.clone(), Value::I64(dst_id.0 as i64));
-            }
-            let val = eval_expr(&assignment.value, &rec, conn)?;
-            edge::set_edge_property(conn, src_id, dst_id, &edge_type, &assignment.property, val)?;
+        let mut rec = Record::new();
+        if let Some(ref v) = src_pat.variable {
+            rec.set(v.clone(), Value::I64(src_id.0 as i64));
+        }
+        if let Some(ref v) = dst_pat.variable {
+            rec.set(v.clone(), Value::I64(dst_id.0 as i64));
+        }
+        for item in on_create {
+            apply_merge_set_item_edge(conn, item, src_id, dst_id, &edge_type, &rec)?;
         }
     } else {
-        for assignment in on_match {
-            let mut rec = Record::new();
-            if let Some(ref v) = src_pat.variable {
-                rec.set(v.clone(), Value::I64(src_id.0 as i64));
-            }
-            if let Some(ref v) = dst_pat.variable {
-                rec.set(v.clone(), Value::I64(dst_id.0 as i64));
-            }
-            let val = eval_expr(&assignment.value, &rec, conn)?;
-            edge::set_edge_property(conn, src_id, dst_id, &edge_type, &assignment.property, val)?;
+        let mut rec = Record::new();
+        if let Some(ref v) = src_pat.variable {
+            rec.set(v.clone(), Value::I64(src_id.0 as i64));
+        }
+        if let Some(ref v) = dst_pat.variable {
+            rec.set(v.clone(), Value::I64(dst_id.0 as i64));
+        }
+        for item in on_match {
+            apply_merge_set_item_edge(conn, item, src_id, dst_id, &edge_type, &rec)?;
         }
     }
 
@@ -1857,8 +1922,8 @@ fn exec_match_merge(
     conn: &Connection,
     input: &LogicalOp,
     merge_pattern: &crate::cypher::ast::Pattern,
-    on_create: &[crate::cypher::ast::Assignment],
-    on_match: &[crate::cypher::ast::Assignment],
+    on_create: &[SetItem],
+    on_match: &[SetItem],
     ctx: &ExecContext,
 ) -> Result<Vec<Record>> {
     let records = exec(conn, input, ctx)?;
@@ -1885,11 +1950,8 @@ fn exec_match_merge(
             let mut out_rec = rec.clone();
 
             if let Some(n) = matched {
-                for assignment in on_match {
-                    let mut a_rec = Record::new();
-                    a_rec.set(alias.to_string(), Value::I64(n.id.0 as i64));
-                    let val = eval_expr(&assignment.value, &a_rec, conn)?;
-                    node::set_node_property(conn, n.id, &assignment.property, val)?;
+                for item in on_match {
+                    apply_merge_set_item_node(conn, item, n.id, rec)?;
                 }
                 out_rec.set(alias.to_string(), Value::I64(n.id.0 as i64));
                 out_rec.set(format!("{alias}.__id"), Value::I64(n.id.0 as i64));
@@ -1901,11 +1963,8 @@ fn exec_match_merge(
                 };
                 let id = node::create_node(conn, &labels, props.clone())?;
                 index::update_indexes_for_node(conn, id, label, None, &props)?;
-                for assignment in on_create {
-                    let mut a_rec = Record::new();
-                    a_rec.set(alias.to_string(), Value::I64(id.0 as i64));
-                    let val = eval_expr(&assignment.value, &a_rec, conn)?;
-                    node::set_node_property(conn, id, &assignment.property, val)?;
+                for item in on_create {
+                    apply_merge_set_item_node(conn, item, id, rec)?;
                 }
                 out_rec.set(alias.to_string(), Value::I64(id.0 as i64));
                 out_rec.set(format!("{alias}.__id"), Value::I64(id.0 as i64));
@@ -1965,28 +2024,12 @@ fn exec_match_merge(
                 props.insert(key.clone(), val);
             }
             edge::create_edge(conn, src_id, dst_id, &edge_type, props)?;
-            for assignment in on_create {
-                let val = eval_expr(&assignment.value, rec, conn)?;
-                edge::set_edge_property(
-                    conn,
-                    src_id,
-                    dst_id,
-                    &edge_type,
-                    &assignment.property,
-                    val,
-                )?;
+            for item in on_create {
+                apply_merge_set_item_edge(conn, item, src_id, dst_id, &edge_type, rec)?;
             }
         } else {
-            for assignment in on_match {
-                let val = eval_expr(&assignment.value, rec, conn)?;
-                edge::set_edge_property(
-                    conn,
-                    src_id,
-                    dst_id,
-                    &edge_type,
-                    &assignment.property,
-                    val,
-                )?;
+            for item in on_match {
+                apply_merge_set_item_edge(conn, item, src_id, dst_id, &edge_type, rec)?;
             }
         }
 

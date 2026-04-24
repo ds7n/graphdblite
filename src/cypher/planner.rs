@@ -1634,7 +1634,10 @@ fn check_expr_variables(expr: &Expr, scope: &HashSet<String>) -> crate::types::R
         Expr::Quantifier { list_expr, .. } => {
             check_expr_variables(list_expr, scope)?;
         }
-        Expr::Exists { .. } | Expr::ExistsSubquery(_) | Expr::PatternPredicate(_) => {}
+        Expr::Exists { .. }
+        | Expr::ExistsSubquery(_)
+        | Expr::PatternPredicate(_)
+        | Expr::PatternComprehension { .. } => {}
         Expr::DotAccess { expr, .. } => {
             check_expr_variables(expr, scope)?;
         }

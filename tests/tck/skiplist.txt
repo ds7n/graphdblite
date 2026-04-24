@@ -42,12 +42,8 @@ List12 - List Comprehension::[3] Size of list comprehension
 List12 - List Comprehension::[4] Returning a list comprehension
 List12 - List Comprehension::[5] Using a list comprehension in a WITH
 List12 - List Comprehension::[7] Fail when using aggregation in list comprehension
-List6 - List size::[10] Get node degree via size of pattern comprehension that specifies multiple relationship types
 List6 - List size::[5] Fail for `size()` on paths
 List6 - List size::[6] Fail for `size()` on pattern predicates
-List6 - List size::[7] Using size of pattern comprehension to test existence
-List6 - List size::[8] Get node degree via size of pattern comprehension
-List6 - List size::[9] Get node degree via size of pattern comprehension that specifies a relationship type
 Literals8 - Maps::[22] Fail on a map containing unquoted string
 Map1 - Static value access::[3] Statically access a field of a map resulting from an expression
 Map2 - Dynamic Value Access::[7] Fail at runtime when trying to index into a map with a non-string
@@ -130,17 +126,6 @@ Pattern1 - Pattern predicate::[11] Fail on checking self pattern
 Pattern1 - Pattern predicate::[22] Fail on using pattern in RETURN projection
 Pattern1 - Pattern predicate::[23] Fail on using pattern in WITH projection
 Pattern1 - Pattern predicate::[24] Fail on using pattern in right-hand side of SET
-Pattern2 - Pattern Comprehension::[10] Use a pattern comprehension in RETURN
-Pattern2 - Pattern Comprehension::[11] Use a pattern comprehension and ORDER BY
-Pattern2 - Pattern Comprehension::[1] Return a pattern comprehension
-Pattern2 - Pattern Comprehension::[2] Return a pattern comprehension with label predicate
-Pattern2 - Pattern Comprehension::[3] Return a pattern comprehension with bound nodes
-Pattern2 - Pattern Comprehension::[4] Introduce a new node variable in pattern comprehension
-Pattern2 - Pattern Comprehension::[5] Introduce a new relationship variable in pattern comprehension
-Pattern2 - Pattern Comprehension::[6] Aggregate on a pattern comprehension
-Pattern2 - Pattern Comprehension::[7] Use a pattern comprehension inside a list comprehension
-Pattern2 - Pattern Comprehension::[8] Use a pattern comprehension in WITH
-Pattern2 - Pattern Comprehension::[9] Use a variable-length pattern comprehension in WITH
 Quantifier1 - None quantifier::[15] Fail none quantifier on type mismatch between list elements and predicate
 Quantifier1 - None quantifier::[8] None quantifier on list containing nodes
 Quantifier1 - None quantifier::[9] None quantifier on list containing relationships

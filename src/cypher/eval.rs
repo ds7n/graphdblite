@@ -296,6 +296,19 @@ pub fn eval_expr(expr: &Expr, record: &Record, conn: &Connection) -> crate::type
             list_expr,
             predicate,
         } => eval_quantifier(*kind, variable, list_expr, predicate, record, conn),
+        Expr::PatternComprehension {
+            path_variable,
+            pattern,
+            where_clause,
+            map_expr,
+        } => eval_pattern_comprehension(
+            path_variable.as_deref(),
+            pattern,
+            where_clause.as_deref(),
+            map_expr,
+            record,
+            conn,
+        ),
         Expr::Exists {
             patterns,
             where_clause,
@@ -1414,6 +1427,98 @@ fn eval_quantifier(
     }
 }
 
+/// Evaluate a pattern comprehension: [(p = )? pattern (WHERE pred)? | expr].
+///
+/// Plans and executes the pattern as a correlated subquery, evaluating the
+/// map expression for each matching row and collecting results into a list.
+fn eval_pattern_comprehension(
+    path_variable: Option<&str>,
+    pattern: &crate::cypher::ast::Pattern,
+    where_clause: Option<&Expr>,
+    map_expr: &Expr,
+    record: &Record,
+    conn: &Connection,
+) -> crate::types::Result<Value> {
+    use crate::cypher::executor::exec_correlated_subquery;
+    use crate::cypher::ir::LogicalOp;
+    use crate::cypher::planner::plan_patterns;
+
+    // If a path variable is requested, set it on the pattern so the planner
+    // emits a MaterializePath operator.
+    let mut pat = pattern.clone();
+    if let Some(pv) = path_variable {
+        pat.path_variable = Some(pv.to_string());
+    }
+
+    // Plan the pattern into a scan/expand chain.
+    let mut op = plan_patterns(conn, std::slice::from_ref(&pat))?;
+
+    // Apply the optional WHERE filter.
+    if let Some(predicate) = where_clause {
+        op = LogicalOp::Filter {
+            input: Box::new(op),
+            predicate: predicate.clone(),
+        };
+    }
+
+    // Build a clean outer record for correlated execution.
+    // 1. Only include bindings that are relevant (named variables, not internal
+    //    _anon_* or _path_rel_* aliases) to avoid alias collisions.
+    // 2. Flatten Node values into the internal record format (alias -> I64(id),
+    //    alias.__id, alias.__label, etc.) so exec_correlated can bind them.
+    let mut outer_rec = Record::new();
+    for (k, v) in &record.fields {
+        // Skip internal anonymous aliases from outer scopes.
+        if k.starts_with("_anon_") || k.starts_with("_path_rel_") {
+            continue;
+        }
+        match v {
+            Value::Node(n) => {
+                outer_rec.set(k.clone(), Value::I64(n.id.0 as i64));
+                outer_rec.set(format!("{k}.__id"), Value::I64(n.id.0 as i64));
+                outer_rec.set(
+                    format!("{k}.__label"),
+                    Value::String(n.labels.join(":")),
+                );
+                outer_rec.set(
+                    format!("{k}.__labels"),
+                    Value::List(n.labels.iter().map(|l| Value::String(l.clone())).collect()),
+                );
+                for (pk, pv) in &n.properties {
+                    outer_rec.set(format!("{k}.{pk}"), pv.clone());
+                }
+            }
+            _ => {
+                // Skip internal metadata keys from anonymous aliases.
+                let base = k.split('.').next().unwrap_or(k);
+                if base.starts_with("_anon_") || base.starts_with("_path_rel_") {
+                    continue;
+                }
+                outer_rec.set(k.clone(), v.clone());
+            }
+        }
+    }
+
+    // Execute the plan as a correlated subquery, passing outer bindings.
+    let rows = exec_correlated_subquery(conn, &op, &outer_rec)?;
+
+    // For each matching row, evaluate the map expression.
+    let mut results = Vec::new();
+    for row in &rows {
+        // Merge the outer record with the inner row so the map expression
+        // can reference both outer and inner variables.
+        let mut merged = record.clone();
+        for (k, v) in &row.fields {
+            merged.set(k.clone(), v.clone());
+        }
+
+        let val = eval_expr(map_expr, &merged, conn)?;
+        results.push(val);
+    }
+
+    Ok(Value::List(results))
+}
+
 /// Evaluate an EXISTS { pattern [WHERE expr] } subquery.
 ///
 /// Plans and executes the subquery patterns against the current record's
@@ -2012,6 +2117,7 @@ pub fn expr_to_column_name(expr: &Expr) -> String {
         Expr::IsNull(inner) => format!("{} IS NULL", expr_to_column_name(inner)),
         Expr::IsNotNull(inner) => format!("{} IS NOT NULL", expr_to_column_name(inner)),
         Expr::Not(inner) => format!("NOT {}", expr_to_column_name(inner)),
+        Expr::PatternComprehension { .. } => "_expr".to_string(),
         Expr::HasLabel(var, labels) => {
             let label_str: Vec<String> = labels.iter().map(|l| format!(":{l}")).collect();
             format!("{var}{}", label_str.join(""))

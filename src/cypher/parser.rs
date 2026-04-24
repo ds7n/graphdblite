@@ -1961,6 +1961,7 @@ fn parse_atom_expr(pair: pest::iterators::Pair<Rule>) -> crate::types::Result<Ex
             Ok(Expr::HasLabel(var, labels))
         }
         Rule::literal => parse_literal(pair),
+        Rule::pattern_comprehension => parse_pattern_comprehension(pair),
         Rule::list_comprehension => parse_list_comprehension(pair),
         Rule::list_literal => {
             let items: crate::types::Result<Vec<Expr>> = pair
@@ -2251,6 +2252,58 @@ fn parse_list_comprehension(pair: pest::iterators::Pair<Rule>) -> crate::types::
     })
 }
 
+/// Parse a pattern comprehension: [(p = )? pattern (WHERE pred)? | expr].
+fn parse_pattern_comprehension(pair: pest::iterators::Pair<Rule>) -> crate::types::Result<Expr> {
+    let mut path_variable: Option<String> = None;
+    let mut pattern = None;
+    let mut where_clause = None;
+    let mut map_expr = None;
+
+    // Track whether the first ident is the path variable (before `=`).
+    // Grammar: "[" ~ (ident ~ "=")? ~ pattern ~ (WHERE ~ bool_expr)? ~ "|" ~ expr ~ "]"
+    // The inner pairs will be: (ident)? pattern (bool_expr)? expr
+    let mut inner_pairs: Vec<_> = pair.into_inner().collect();
+
+    // The last pair is always the map_expr (the expr after `|`).
+    // The grammar guarantees at least a pattern and an expr.
+    let mut i = 0;
+    while i < inner_pairs.len() {
+        let rule = inner_pairs[i].as_rule();
+        match rule {
+            Rule::ident => {
+                // This is the path variable (the `p = ` part).
+                path_variable = Some(strip_backticks(inner_pairs[i].as_str()).to_string());
+                i += 1;
+            }
+            Rule::pattern => {
+                pattern = Some(parse_pattern(inner_pairs.remove(i))?);
+            }
+            Rule::bool_expr => {
+                where_clause = Some(Box::new(parse_bool_expr(inner_pairs.remove(i))?));
+            }
+            Rule::expr => {
+                map_expr = Some(Box::new(parse_expr(inner_pairs.remove(i))?));
+            }
+            _ => {
+                i += 1;
+            }
+        }
+    }
+
+    Ok(Expr::PatternComprehension {
+        path_variable,
+        pattern: pattern.ok_or_else(|| {
+            GraphError::Serialization("missing pattern in pattern comprehension".to_string())
+        })?,
+        where_clause,
+        map_expr: map_expr.ok_or_else(|| {
+            GraphError::Serialization(
+                "missing map expression in pattern comprehension".to_string(),
+            )
+        })?,
+    })
+}
+
 /// Parse a quantifier predicate: none/single/any/all(x IN list WHERE pred).
 fn parse_quantifier_expr(pair: pest::iterators::Pair<Rule>) -> crate::types::Result<Expr> {
     let mut kind = None;
@@ -2339,6 +2392,7 @@ fn humanize_rule_name(rule: &str) -> &str {
         "case_expr" => "a CASE expression",
         "exists_subquery" => "an EXISTS { } subquery",
         "exists_full_subquery" => "an EXISTS { MATCH ... } subquery",
+        "pattern_comprehension" => "a pattern comprehension like [(n)-->() | expr]",
         "list_comprehension" => "a list comprehension like [x IN list | expr]",
         "comp_op" => "a comparison operator (=, <>, <, >)",
         "alias" => "an alias (AS name)",
@@ -2471,6 +2525,20 @@ fn resolve_expr(expr: &Expr, params: &HashMap<String, Value>) -> crate::types::R
                 .as_ref()
                 .map(|m| resolve_expr(m, params).map(Box::new))
                 .transpose()?,
+        }),
+        Expr::PatternComprehension {
+            path_variable,
+            pattern,
+            where_clause,
+            map_expr,
+        } => Ok(Expr::PatternComprehension {
+            path_variable: path_variable.clone(),
+            pattern: resolve_pattern(pattern, params)?,
+            where_clause: where_clause
+                .as_ref()
+                .map(|w| resolve_expr(w, params).map(Box::new))
+                .transpose()?,
+            map_expr: Box::new(resolve_expr(map_expr, params)?),
         }),
         Expr::Quantifier {
             kind,

@@ -330,7 +330,7 @@ add_op = { "+" | "-" }
 mul_op = { "*" | "/" | "%" }
 atom_expr = { atom_primary ~ (subscript | dot_access)* }
 dot_access = { "." ~ property_key }
-atom_primary = _{ case_expr | quantifier_expr | dotted_function_call | function_call | property_access | has_label_expr | literal | list_comprehension | list_literal | map_literal | star | parameter | unary_minus_expr | "(" ~ expr ~ ")" | variable }
+atom_primary = _{ case_expr | quantifier_expr | dotted_function_call | function_call | property_access | has_label_expr | literal | pattern_comprehension | list_comprehension | list_literal | map_literal | star | parameter | unary_minus_expr | "(" ~ expr ~ ")" | variable }
 unary_minus_expr = { "-" ~ atom_expr }
 
 has_label_expr = { ident ~ label_spec }
@@ -357,6 +357,8 @@ slice_from = { expr ~ ".." }
 slice_to = { ".." ~ expr }
 
 parameter = { "$" ~ ident }
+
+pattern_comprehension = { "[" ~ (ident ~ "=")? ~ pattern ~ (^"WHERE" ~ bool_expr)? ~ "|" ~ expr ~ "]" }
 
 list_comprehension = { "[" ~ ident ~ ^"IN" ~ expr ~ list_comp_where? ~ list_comp_map? ~ "]" }
 list_comp_where = { ^"WHERE" ~ bool_expr }

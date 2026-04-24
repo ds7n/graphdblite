@@ -3511,3 +3511,40 @@ fn e2e_with_order_by_and_limit() {
     assert_eq!(results[0].get("age"), Some(&Value::I64(25)));
     tx.commit().unwrap();
 }
+
+#[test]
+fn test_pattern_comprehension_nested_in_list_comprehension() {
+    let mut db = Database::open_memory().unwrap();
+    {
+        let tx = db.begin_write().unwrap();
+        tx.query(
+            "CREATE (n1:X {n: 1}), (m1:Y), (i1:Y), (i2:Y) CREATE (n1)-[:T]->(m1), (m1)-[:T]->(i1), (m1)-[:T]->(i2)",
+        ).unwrap();
+        tx.query(
+            "CREATE (n2:X {n: 2}), (m2), (i3:L), (i4:Y) CREATE (n2)-[:T]->(m2), (m2)-[:T]->(i3), (m2)-[:T]->(i4)",
+        ).unwrap();
+        tx.commit().unwrap();
+    }
+    let reader = db.begin_read().unwrap();
+
+    let result = reader.query(
+        "MATCH p = (n:X)-->() RETURN n.n AS nn, [x IN nodes(p) | size([(x)-->(:Y) | 1])] AS list",
+    ).unwrap();
+
+    for row in &result {
+        if row.get("nn") == Some(&Value::I64(1)) {
+            assert_eq!(
+                row.get("list"),
+                Some(&Value::List(vec![Value::I64(1), Value::I64(2)])),
+                "For n=1, expected [1, 2]"
+            );
+        }
+        if row.get("nn") == Some(&Value::I64(2)) {
+            assert_eq!(
+                row.get("list"),
+                Some(&Value::List(vec![Value::I64(0), Value::I64(1)])),
+                "For n=2, expected [0, 1]"
+            );
+        }
+    }
+}

@@ -7,13 +7,13 @@ Last updated: 2026-04-23
 Full openCypher TCK vendored (220 feature files, commit `677cbaf`).
 
 ```
-181 features parsed (1 parse error: Match5.feature)
-3344 total scenario instances running
-3273 passed
-  71 skipped (cucumber-level)
- 257 skiplisted (known failures)
+186 features parsed (1 parse error: Match5.feature)
+3469 total scenario instances running
+3397 passed
+  72 skipped (cucumber-level)
+ 219 skiplisted (known failures)
  ────
-3273/3530 unique scenarios passing (92.7% of total, 95.0% of non-framework-skipped)
+3397/3616 unique scenarios passing (94.0% of total, 95.8% of non-framework-skipped)
 ```
 
 ## Pass rate by area
@@ -71,27 +71,26 @@ Regenerate with: `uv run tests/tck/analyze_blockers.py`
 
 | Sole | Impact | Construct |
 |-----:|-------:|-----------|
-| 40 | 97 | write-result (CREATE/MERGE ... RETURN) |
-| 6 | 33 | error validation |
-| 6 | 7 | duration.between/inX |
+| 34 | 82 | write-result (CREATE/MERGE ... RETURN) |
+| 9 | 36 | error validation |
 | 2 | 8 | CREATE (no RETURN) |
-| 2 | 9 | temporal types |
+| 2 | 7 | temporal types |
 | 1 | 6 | aggregation (non-count) |
 | 1 | 3 | list indexing [n] |
+| 1 | 1 | duration.between/inX |
 
 ### High-impact (in scenarios with ≤2 missing constructs)
 
 | Impact | Construct |
 |-------:|-----------|
-| 97 | write-result (CREATE/MERGE ... RETURN) |
-| 33 | error validation |
-| 12 | var-length rel `*` |
+| 82 | write-result (CREATE/MERGE ... RETURN) |
+| 36 | error validation |
 | 12 | MERGE |
-| 9 | ORDER BY |
-| 9 | temporal types |
+| 9 | var-length rel `*` |
 | 8 | CREATE (no RETURN) |
 | 8 | DELETE/DETACH DELETE |
-| 7 | duration.between/inX |
+| 8 | ORDER BY |
+| 7 | temporal types |
 | 6 | aggregation (non-count) |
 | 6 | SET property/label |
 
@@ -101,11 +100,21 @@ Regenerate with: `uv run tests/tck/analyze_blockers.py`
 
 ## Skiplist
 
-`skiplist.txt` lists 257 known-failing `Feature::Scenario` pairs.
+`skiplist.txt` lists 219 known-failing `Feature::Scenario` pairs.
 The harness filters these out and exits non-zero only if a *non-skiplisted*
 scenario fails — making the TCK a regression gate.
 
 ## History
+
+### Phase 25 — Pattern comprehension, temporal fixes, grammar batch (2026-04-23)
+
+- [x] Pattern comprehension `[(n)-[:R]->(m) | m.name]` — grammar, parser, AST, evaluator (correlated subquery)
+- [x] Batch grammar fixes: WITH DISTINCT, var-length `*..N`/`*N`, SKIP/LIMIT expressions, `<-->`, ON MATCH/CREATE SET labels, MERGE path binding
+- [x] Fix CypherTime offset preservation in temporal arithmetic
+- [x] Fix duration map constructor fractional cascading
+- [x] Fix WITH...MATCH grammar path (unblocked ~40 multi-clause scenarios)
+- [x] Batch unskip sweep: 124 scenarios newly passing
+- Result: 3273 → 3397 passing scenarios (+124), skiplist 257 → 219
 
 ### Phase 24 — Grammar fixes, EXISTS subquery (2026-04-23)
 

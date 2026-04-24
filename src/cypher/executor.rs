@@ -2885,11 +2885,7 @@ fn compare_values_for_sort(a: &Value, b: &Value) -> std::cmp::Ordering {
 ///
 /// Strips the top-level projection/sort/limit layers since EXISTS only
 /// cares about row existence, not projected values.
-pub fn exec_correlated_exists(
-    conn: &Connection,
-    plan: &LogicalOp,
-    outer: &Record,
-) -> Result<bool> {
+pub fn exec_correlated_exists(conn: &Connection, plan: &LogicalOp, outer: &Record) -> Result<bool> {
     let rows = exec_correlated(conn, plan, outer, &ExecContext::default())?;
     Ok(!rows.is_empty())
 }

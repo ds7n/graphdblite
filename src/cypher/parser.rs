@@ -2506,7 +2506,9 @@ fn resolve_expr(expr: &Expr, params: &HashMap<String, Value>) -> crate::types::R
         Expr::ExistsSubquery(stmt) => {
             // Parameters inside the subquery statement are resolved via
             // resolve_params which handles all statement types.
-            Ok(Expr::ExistsSubquery(Box::new(resolve_params(stmt, params)?)))
+            Ok(Expr::ExistsSubquery(Box::new(resolve_params(
+                stmt, params,
+            )?)))
         }
         Expr::MapLiteral(pairs) => {
             let resolved: crate::types::Result<Vec<(String, Expr)>> = pairs

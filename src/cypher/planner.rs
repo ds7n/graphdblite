@@ -1144,8 +1144,7 @@ fn plan_with(input: LogicalOp, with: &WithClause) -> crate::types::Result<Logica
                 std::collections::HashSet::new();
             for item in &with.items {
                 if is_aggregate_fn(&item.expr) {
-                    projected_agg_cols
-                        .insert(crate::cypher::eval::expr_to_column_name(&item.expr));
+                    projected_agg_cols.insert(crate::cypher::eval::expr_to_column_name(&item.expr));
                     if let Some(ref alias) = item.alias {
                         projected_agg_cols.insert(alias.clone());
                     }
@@ -1158,8 +1157,7 @@ fn plan_with(input: LogicalOp, with: &WithClause) -> crate::types::Result<Logica
                 let mut agg_calls = Vec::new();
                 collect_aggregate_calls(&sort_item.expr, &mut agg_calls);
                 for agg_expr in &agg_calls {
-                    let agg_col =
-                        crate::cypher::eval::expr_to_column_name(agg_expr);
+                    let agg_col = crate::cypher::eval::expr_to_column_name(agg_expr);
                     if !projected_agg_cols.contains(&agg_col) {
                         return Err(GraphError::syntax(
                             "UndefinedVariable: ORDER BY contains an aggregation that is not projected in WITH".to_string(),

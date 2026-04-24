@@ -1358,8 +1358,8 @@ fn exec_delete(
     detach: bool,
     ctx: &ExecContext,
 ) -> Result<Vec<Record>> {
-    let records = exec(conn, input, ctx)?;
-    for rec in &records {
+    let mut records = exec(conn, input, ctx)?;
+    for rec in &mut records {
         for var in variables {
             // Check if this is a relationship variable (has edge identity metadata).
             let edge_src_key = format!("{var}.__src");
@@ -1371,12 +1371,19 @@ fn exec_delete(
                 rec.get(&edge_type_key),
             ) {
                 edge::delete_edge(conn, NodeId(*src as u64), NodeId(*dst as u64), label)?;
+                // Mark entity as deleted for downstream access checks.
+                rec.set(format!("{var}.__deleted"), Value::Bool(true));
             } else if let Some(Value::I64(id)) = rec.get(var) {
                 let node_id = NodeId(*id as u64);
                 if !detach && node::node_has_edges(conn, node_id)? {
-                    return Err(GraphError::HasEdges(node_id));
+                    return Err(GraphError::constraint(format!(
+                        "DeleteConnectedNode: cannot delete node {} because it still has relationships. Use DETACH DELETE.",
+                        node_id
+                    )));
                 }
                 node::delete_node(conn, node_id)?;
+                // Mark entity as deleted for downstream access checks.
+                rec.set(format!("{var}.__deleted"), Value::Bool(true));
             }
             // Skip if value is Null (from OPTIONAL MATCH with no match).
         }

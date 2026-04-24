@@ -1135,7 +1135,7 @@ fn e2e_plain_delete_fails_on_node_with_edges() {
     let result = tx.query("MATCH (n:Person) WHERE n.name = 'Charlie' DELETE n");
     assert!(result.is_err());
     let err = result.unwrap_err();
-    assert!(err.to_string().contains("still has edges"));
+    assert!(err.to_string().contains("still has relationships"));
     tx.commit().unwrap();
 }
 
@@ -1897,8 +1897,8 @@ fn e2e_delete_node_with_edges_fails() {
         .unwrap_err();
     let msg = err.to_string();
     assert!(
-        msg.contains("still has edges"),
-        "expected HasEdges error, got: {msg}"
+        msg.contains("still has relationships"),
+        "expected DeleteConnectedNode error, got: {msg}"
     );
     tx.commit().unwrap();
 }

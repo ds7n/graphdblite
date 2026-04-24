@@ -267,6 +267,11 @@ fn plan_match(conn: &Connection, stmt: &MatchStatement) -> crate::types::Result<
     // Validate that RETURN items only reference variables in scope.
     validate_return_variables(&stmt.return_clause.items, &scope_vars)?;
 
+    // Check for aggregation in list comprehensions.
+    for item in &stmt.return_clause.items {
+        validate_no_aggregation_in_list_comp(&item.expr)?;
+    }
+
     // Check if RETURN contains aggregates.
     let has_aggregates = stmt
         .return_clause
@@ -286,6 +291,17 @@ fn plan_match(conn: &Connection, stmt: &MatchStatement) -> crate::types::Result<
     // ORDER BY before projection so sort expressions can reference
     // pre-projection variables (e.g. RETURN n.num AS prop ORDER BY n.num).
     if !stmt.order_by.is_empty() {
+        // Reject aggregation in ORDER BY when RETURN has no aggregation.
+        if !has_aggregates {
+            validate_no_aggregation_in_order_by(&stmt.order_by)?;
+        } else {
+            // With aggregates: reject ORDER BY that mixes aggregates with
+            // non-returned variables.
+            validate_return_order_by_with_aggregates(&stmt.return_clause.items, &stmt.order_by)?;
+        }
+        // Validate DISTINCT + ORDER BY scope.
+        validate_distinct_order_by(&stmt.return_clause.items, &stmt.order_by, stmt.return_clause.distinct)?;
+
         op = LogicalOp::Sort {
             input: Box::new(op),
             items: stmt.order_by.clone(),
@@ -332,6 +348,11 @@ fn plan_return(conn: &Connection, stmt: &ReturnStatement) -> crate::types::Resul
     let mut op: LogicalOp = LogicalOp::SingleRow;
 
     check_duplicate_columns(&stmt.return_clause.items)?;
+
+    // Check for aggregation in list comprehensions.
+    for item in &stmt.return_clause.items {
+        validate_no_aggregation_in_list_comp(&item.expr)?;
+    }
 
     let has_aggregates = stmt
         .return_clause
@@ -388,6 +409,9 @@ fn plan_return(conn: &Connection, stmt: &ReturnStatement) -> crate::types::Resul
 }
 
 fn plan_create(conn: &Connection, stmt: &CreateStatement) -> crate::types::Result<LogicalOp> {
+    // Validate CREATE patterns: no undefined variables, relationships have type + direction.
+    validate_create_patterns(&stmt.patterns, &HashSet::new())?;
+
     let mut ops = Vec::new();
     let mut seen = HashSet::new();
 
@@ -413,6 +437,10 @@ fn plan_match_create(
     conn: &Connection,
     stmt: &MatchCreateStatement,
 ) -> crate::types::Result<LogicalOp> {
+    let match_vars = collect_pattern_variables(&stmt.patterns);
+    // Validate CREATE patterns with MATCH variables in scope.
+    validate_create_patterns(&stmt.create_patterns, &match_vars)?;
+
     let mut op = plan_patterns(conn, &stmt.patterns)?;
 
     if let Some(ref predicate) = stmt.where_clause {
@@ -442,6 +470,13 @@ fn plan_match_create(
 }
 
 fn plan_delete(conn: &Connection, stmt: &DeleteStatement) -> crate::types::Result<LogicalOp> {
+    // Validate DELETE variables are in scope (including OPTIONAL MATCH vars).
+    let mut match_vars = collect_pattern_variables(&stmt.patterns);
+    for opt in &stmt.optional_patterns {
+        match_vars.extend(collect_pattern_variables(&opt.patterns));
+    }
+    validate_delete_variables(&stmt.variables, &match_vars)?;
+
     let mut op = plan_patterns(conn, &stmt.patterns)?;
 
     let mut bound_vars = collect_pattern_variables(&stmt.patterns);
@@ -477,6 +512,13 @@ fn plan_delete(conn: &Connection, stmt: &DeleteStatement) -> crate::types::Resul
 }
 
 fn plan_set(conn: &Connection, stmt: &SetStatement) -> crate::types::Result<LogicalOp> {
+    // Validate SET variable references are in scope (including OPTIONAL MATCH vars).
+    let mut match_vars = collect_pattern_variables(&stmt.patterns);
+    for opt in &stmt.optional_patterns {
+        match_vars.extend(collect_pattern_variables(&opt.patterns));
+    }
+    validate_set_variables(&stmt.items, &match_vars)?;
+
     let mut op = if stmt.patterns.is_empty() {
         LogicalOp::SingleRow
     } else {
@@ -759,6 +801,9 @@ fn plan_unwind(conn: &Connection, stmt: &UnwindStatement) -> crate::types::Resul
 }
 
 fn plan_merge(conn: &Connection, stmt: &MergeStatement) -> crate::types::Result<LogicalOp> {
+    // Validate MERGE pattern + ON CREATE/ON MATCH SET variables.
+    validate_merge_pattern(&stmt.pattern, &HashSet::new(), &stmt.on_create, &stmt.on_match)?;
+
     let len = stmt.pattern.elements.len();
     match len {
         // Single node MERGE: MERGE (n:Label {props})
@@ -819,6 +864,12 @@ fn plan_match_merge(
     conn: &Connection,
     stmt: &MatchMergeStatement,
 ) -> crate::types::Result<LogicalOp> {
+    let match_vars = collect_pattern_variables(&stmt.patterns);
+    // Validate MERGE pattern + ON CREATE/ON MATCH SET variables.
+    validate_merge_pattern(&stmt.merge_pattern, &match_vars, &stmt.on_create, &stmt.on_match)?;
+    // Validate VariableAlreadyBound: MERGE re-creating already-bound nodes/rels.
+    validate_merge_variable_rebinding(&stmt.merge_pattern, &match_vars)?;
+
     let mut op = plan_patterns(conn, &stmt.patterns)?;
 
     if let Some(ref predicate) = stmt.where_clause {
@@ -856,6 +907,8 @@ fn plan_multi_clause(
     let mut scope_vars: HashSet<String> = HashSet::new();
     let mut var_types: std::collections::HashMap<String, VarKind> =
         std::collections::HashMap::new();
+    // Track WITH-bound variable value kinds for VariableTypeConflict detection.
+    let mut with_value_kinds: HashMap<String, WithValueKind> = HashMap::new();
 
     for clause in &stmt.clauses {
         match clause {
@@ -864,6 +917,44 @@ fn plan_multi_clause(
                 optional_patterns,
                 where_clause,
             } => {
+                // Check VariableTypeConflict: WITH-bound scalars used as node/rel/path.
+                // Also check VariableAlreadyBound: path variable re-assignment.
+                for pat in patterns.iter() {
+                    if let Some(ref path_var) = pat.path_variable {
+                        if with_value_kinds.contains_key(path_var) {
+                            // Path variable re-assigned — VariableAlreadyBound.
+                            return Err(GraphError::syntax(format!(
+                                "VariableAlreadyBound: variable `{path_var}` already bound"
+                            )));
+                        }
+                    }
+                    for elem in &pat.elements {
+                        match elem {
+                            PatternElement::Node(n) => {
+                                if let Some(ref var) = n.variable {
+                                    if let Some(&kind) = with_value_kinds.get(var) {
+                                        if kind == WithValueKind::Scalar {
+                                            return Err(GraphError::syntax(format!(
+                                                "VariableTypeConflict: variable `{var}` already defined as a scalar value"
+                                            )));
+                                        }
+                                    }
+                                }
+                            }
+                            PatternElement::Relationship(r) => {
+                                if let Some(ref var) = r.variable {
+                                    if let Some(&kind) = with_value_kinds.get(var) {
+                                        if kind == WithValueKind::Scalar {
+                                            return Err(GraphError::syntax(format!(
+                                                "VariableTypeConflict: variable `{var}` already defined as a scalar value"
+                                            )));
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
                 // Validate variable-type consistency (node vs rel vs path) across all clauses.
                 validate_variable_types_with_map(patterns, &mut var_types)?;
                 let match_op = plan_patterns(conn, patterns)?;
@@ -921,6 +1012,8 @@ fn plan_multi_clause(
                 }
             }
             Clause::Create { patterns } => {
+                // Validate CREATE property expressions, relationship types, and direction.
+                validate_create_patterns(patterns, &scope_vars)?;
                 // Validate VariableAlreadyBound: in a CREATE pattern, if a node
                 // variable is already in scope AND the pattern tries to create a
                 // new node (standalone node or node with labels/properties), that's an error.
@@ -980,6 +1073,10 @@ fn plan_multi_clause(
                 on_create,
                 on_match,
             } => {
+                // Validate MERGE pattern: relationship types, ON CREATE/ON MATCH variables.
+                validate_merge_pattern(pattern, &scope_vars, on_create, on_match)?;
+                // Validate VariableAlreadyBound for MERGE.
+                validate_merge_variable_rebinding(pattern, &scope_vars)?;
                 // Reject variable-length relationships in MERGE patterns.
                 for el in &pattern.elements {
                     if let PatternElement::Relationship(rel) = el {
@@ -1007,18 +1104,55 @@ fn plan_multi_clause(
                 scope_vars.extend(collect_pattern_variables(std::slice::from_ref(pattern)));
             }
             Clause::With(with) => {
+                // Validate WITH ORDER BY references only in-scope variables.
+                // The ORDER BY is evaluated BEFORE projection, so it can reference
+                // the input scope (scope_vars) plus the WITH projection itself.
+                if !with.order_by.is_empty() && !scope_vars.is_empty() {
+                    // Build combined scope: input scope + WITH projection aliases.
+                    let mut order_scope = scope_vars.clone();
+                    for item in &with.items {
+                        if let Some(ref alias) = item.alias {
+                            order_scope.insert(alias.clone());
+                        }
+                        order_scope.insert(crate::cypher::eval::expr_to_column_name(&item.expr));
+                    }
+                    for sort_item in &with.order_by {
+                        if !is_aggregate_fn(&sort_item.expr) {
+                            check_expr_variables(&sort_item.expr, &order_scope).map_err(|_| {
+                                GraphError::syntax(
+                                    "UndefinedVariable: ORDER BY references a variable not in scope"
+                                )
+                            })?;
+                        }
+                    }
+                }
+
                 let input = op.take().unwrap_or(LogicalOp::EmptyRow);
                 op = Some(plan_with(conn, input, with)?);
                 // WITH resets scope.
                 let old_scope = scope_vars.clone();
                 scope_vars.clear();
+                with_value_kinds.clear();
                 for item in &with.items {
                     if let Expr::Star = &item.expr {
                         scope_vars = old_scope.clone();
-                    } else if let Some(ref alias) = item.alias {
-                        scope_vars.insert(alias.clone());
-                    } else if let Expr::Variable(var) = &item.expr {
-                        scope_vars.insert(var.clone());
+                        // WITH * passes through existing kinds.
+                    } else {
+                        let var_name = if let Some(ref alias) = item.alias {
+                            scope_vars.insert(alias.clone());
+                            alias.clone()
+                        } else if let Expr::Variable(var) = &item.expr {
+                            scope_vars.insert(var.clone());
+                            var.clone()
+                        } else if let Expr::Property(var, prop) = &item.expr {
+                            let col = format!("{var}.{prop}");
+                            scope_vars.insert(col.clone());
+                            col
+                        } else {
+                            continue;
+                        };
+                        let kind = infer_with_value_kind(&item.expr);
+                        with_value_kinds.insert(var_name, kind);
                     }
                 }
             }
@@ -1032,6 +1166,8 @@ fn plan_multi_clause(
                 scope_vars.insert(unwind.alias.clone());
             }
             Clause::Set { items } => {
+                // Validate SET variable references are in scope.
+                validate_set_variables(items, &scope_vars)?;
                 let input = op
                     .take()
                     .ok_or_else(|| GraphError::semantic("SET requires preceding MATCH"))?;
@@ -1073,6 +1209,8 @@ fn plan_multi_clause(
                 });
             }
             Clause::Delete { variables, detach } => {
+                // Validate DELETE variable references are in scope.
+                validate_delete_variables(variables, &scope_vars)?;
                 let input = op
                     .take()
                     .ok_or_else(|| GraphError::semantic("DELETE requires preceding MATCH"))?;
@@ -1223,6 +1361,11 @@ fn plan_with(
 
     // Apply ORDER BY.
     if !with.order_by.is_empty() {
+        // When WITH does NOT have aggregates, reject ORDER BY with aggregation.
+        if !has_aggregates {
+            validate_no_aggregation_in_order_by(&with.order_by)?;
+        }
+
         // When WITH has aggregates, reject ORDER BY expressions that contain
         // aggregate function calls not present in the projection.  These are
         // semantically undefined because the grouping already consumed the
@@ -1680,6 +1823,377 @@ fn collect_pattern_variables(patterns: &[Pattern]) -> HashSet<String> {
         }
     }
     vars
+}
+
+/// Validate that CREATE patterns don't reference undefined variables in property
+/// expressions and that relationships have exactly one type and a direction.
+fn validate_create_patterns(
+    patterns: &[Pattern],
+    scope: &HashSet<String>,
+) -> crate::types::Result<()> {
+    // Use a shared scope so variables from earlier patterns are visible in later ones.
+    let mut local_scope: HashSet<String> = scope.clone();
+    for pattern in patterns {
+        for elem in &pattern.elements {
+            match elem {
+                PatternElement::Node(n) => {
+                    // Check property expressions for undefined variables.
+                    for expr in n.properties.values() {
+                        check_expr_variables(expr, &local_scope)?;
+                    }
+                    if let Some(ref var) = n.variable {
+                        local_scope.insert(var.clone());
+                    }
+                }
+                PatternElement::Relationship(rel) => {
+                    // CREATE relationships must have exactly one type.
+                    if rel.rel_types.is_empty() {
+                        return Err(GraphError::syntax(
+                            "NoSingleRelationshipType: a relationship must have exactly one type in CREATE"
+                        ));
+                    }
+                    if rel.rel_types.len() > 1 {
+                        return Err(GraphError::syntax(
+                            "NoSingleRelationshipType: a relationship must have exactly one type in CREATE"
+                        ));
+                    }
+                    // CREATE relationships must be directed.
+                    if rel.direction == RelDirection::Undirected {
+                        return Err(GraphError::syntax(
+                            "RequiresDirectedRelationship: only directed relationships are supported in CREATE"
+                        ));
+                    }
+                    // Check property expressions for undefined variables.
+                    for expr in rel.properties.values() {
+                        check_expr_variables(expr, &local_scope)?;
+                    }
+                    if let Some(ref var) = rel.variable {
+                        local_scope.insert(var.clone());
+                    }
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Validate that MERGE patterns have valid relationship types (exactly one) and
+/// check for undefined variables in ON CREATE/ON MATCH SET items.
+fn validate_merge_pattern(
+    pattern: &Pattern,
+    scope: &HashSet<String>,
+    on_create: &[SetItem],
+    on_match: &[SetItem],
+) -> crate::types::Result<()> {
+    // Collect merge-pattern variables.
+    let mut merge_vars = scope.clone();
+    for elem in &pattern.elements {
+        match elem {
+            PatternElement::Node(n) => {
+                if let Some(ref var) = n.variable {
+                    merge_vars.insert(var.clone());
+                }
+            }
+            PatternElement::Relationship(rel) => {
+                // MERGE relationships must have exactly one type.
+                if rel.rel_types.is_empty() {
+                    return Err(GraphError::syntax(
+                        "NoSingleRelationshipType: a relationship must have exactly one type in MERGE"
+                    ));
+                }
+                if rel.rel_types.len() > 1 {
+                    return Err(GraphError::syntax(
+                        "NoSingleRelationshipType: a relationship must have exactly one type in MERGE"
+                    ));
+                }
+                if let Some(ref var) = rel.variable {
+                    merge_vars.insert(var.clone());
+                }
+            }
+        }
+    }
+    // Validate ON CREATE SET / ON MATCH SET variable references.
+    for item in on_create.iter().chain(on_match.iter()) {
+        match item {
+            SetItem::Property(a) => {
+                if !merge_vars.contains(&a.variable) {
+                    return Err(GraphError::syntax(format!(
+                        "UndefinedVariable: {}",
+                        a.variable
+                    )));
+                }
+                check_expr_variables(&a.value, &merge_vars)?;
+            }
+            SetItem::Label { variable, .. } => {
+                if !merge_vars.contains(variable) {
+                    return Err(GraphError::syntax(format!(
+                        "UndefinedVariable: {variable}"
+                    )));
+                }
+            }
+            SetItem::MapOverwrite { variable, value } | SetItem::MapMerge { variable, value } => {
+                if !merge_vars.contains(variable) {
+                    return Err(GraphError::syntax(format!(
+                        "UndefinedVariable: {variable}"
+                    )));
+                }
+                check_expr_variables(value, &merge_vars)?;
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Validate that SET items don't reference undefined variables.
+fn validate_set_variables(
+    items: &[SetItem],
+    scope: &HashSet<String>,
+) -> crate::types::Result<()> {
+    for item in items {
+        match item {
+            SetItem::Property(a) => {
+                if !scope.contains(&a.variable) {
+                    return Err(GraphError::syntax(format!(
+                        "UndefinedVariable: {}",
+                        a.variable
+                    )));
+                }
+                check_expr_variables(&a.value, scope)?;
+            }
+            SetItem::Label { variable, .. } => {
+                if !scope.contains(variable) {
+                    return Err(GraphError::syntax(format!(
+                        "UndefinedVariable: {variable}"
+                    )));
+                }
+            }
+            SetItem::MapOverwrite { variable, value } | SetItem::MapMerge { variable, value } => {
+                if !scope.contains(variable) {
+                    return Err(GraphError::syntax(format!(
+                        "UndefinedVariable: {variable}"
+                    )));
+                }
+                check_expr_variables(value, scope)?;
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Validate that DELETE variable references are in scope.
+fn validate_delete_variables(
+    variables: &[String],
+    scope: &HashSet<String>,
+) -> crate::types::Result<()> {
+    for var in variables {
+        if !scope.contains(var) {
+            return Err(GraphError::syntax(format!(
+                "UndefinedVariable: {var}"
+            )));
+        }
+    }
+    Ok(())
+}
+
+/// Check if ORDER BY contains aggregate functions when the RETURN/WITH itself
+/// does not use aggregation. This is invalid per openCypher spec.
+fn validate_no_aggregation_in_order_by(
+    order_by: &[SortItem],
+) -> crate::types::Result<()> {
+    for item in order_by {
+        if is_aggregate_fn(&item.expr) {
+            return Err(GraphError::syntax(
+                "InvalidAggregation: aggregation functions are not allowed in ORDER BY when there is no aggregation in the preceding WITH/RETURN"
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// Check if ORDER BY after RETURN with aggregates references non-returned
+/// non-aggregate expressions (variables consumed by aggregation).
+fn validate_return_order_by_with_aggregates(
+    return_items: &[ReturnItem],
+    order_by: &[SortItem],
+) -> crate::types::Result<()> {
+    // Build set of returned column names/exprs.
+    let mut returned_cols: HashSet<String> = HashSet::new();
+    for item in return_items {
+        returned_cols.insert(crate::cypher::eval::expr_to_column_name(&item.expr));
+        if let Some(ref alias) = item.alias {
+            returned_cols.insert(alias.clone());
+        }
+    }
+
+    for sort_item in order_by {
+        // If the ORDER BY expression itself is an aggregate, that's InvalidAggregation
+        // when the aggregate isn't in the RETURN projection.
+        if is_aggregate_fn(&sort_item.expr) {
+            // Check if any non-aggregate subexpressions reference non-returned variables.
+            let mut non_agg_leaves = Vec::new();
+            collect_non_aggregate_leaves(&sort_item.expr, &mut non_agg_leaves);
+            for leaf in &non_agg_leaves {
+                let col = crate::cypher::eval::expr_to_column_name(leaf);
+                if !returned_cols.contains(&col) {
+                    return Err(GraphError::syntax(
+                        "UndefinedVariable: ORDER BY references a variable not in RETURN"
+                    ));
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Validate that RETURN DISTINCT + ORDER BY only sorts by columns in the DISTINCT projection.
+fn validate_distinct_order_by(
+    return_items: &[ReturnItem],
+    order_by: &[SortItem],
+    distinct: bool,
+) -> crate::types::Result<()> {
+    if !distinct || order_by.is_empty() {
+        return Ok(());
+    }
+    // Build set of projected columns and returned variable names.
+    let mut projected: HashSet<String> = HashSet::new();
+    let mut returned_vars: HashSet<String> = HashSet::new();
+    for item in return_items {
+        if let Some(ref alias) = item.alias {
+            projected.insert(alias.clone());
+        }
+        projected.insert(crate::cypher::eval::expr_to_column_name(&item.expr));
+        // Track bare variable names so ORDER BY can access their properties.
+        if let Expr::Variable(var) = &item.expr {
+            returned_vars.insert(var.clone());
+        }
+    }
+    for sort_item in order_by {
+        let col = crate::cypher::eval::expr_to_column_name(&sort_item.expr);
+        if projected.contains(&col) {
+            continue;
+        }
+        // Allow property access on returned variables (e.g. ORDER BY a.name when RETURN DISTINCT a).
+        if let Expr::Property(var, _) = &sort_item.expr {
+            if returned_vars.contains(var) {
+                continue;
+            }
+        }
+        return Err(GraphError::syntax(
+            "UndefinedVariable: ORDER BY references a variable not in RETURN DISTINCT"
+        ));
+    }
+    Ok(())
+}
+
+/// Check for aggregation functions in a list comprehension mapping expression.
+fn validate_no_aggregation_in_list_comp(expr: &Expr) -> crate::types::Result<()> {
+    match expr {
+        Expr::ListComprehension { map_expr, filter, list_expr, .. } => {
+            if let Some(ref me) = map_expr {
+                if is_aggregate_fn(me) {
+                    return Err(GraphError::syntax(
+                        "InvalidAggregation: aggregation functions are not allowed in list comprehension"
+                    ));
+                }
+                validate_no_aggregation_in_list_comp(me)?;
+            }
+            if let Some(ref fe) = filter {
+                validate_no_aggregation_in_list_comp(fe)?;
+            }
+            validate_no_aggregation_in_list_comp(list_expr)?;
+        }
+        Expr::FunctionCall { args, .. } => {
+            for arg in args {
+                validate_no_aggregation_in_list_comp(arg)?;
+            }
+        }
+        Expr::BinaryOp { left, right, .. } => {
+            validate_no_aggregation_in_list_comp(left)?;
+            validate_no_aggregation_in_list_comp(right)?;
+        }
+        Expr::Not(inner) | Expr::IsNull(inner) | Expr::IsNotNull(inner) => {
+            validate_no_aggregation_in_list_comp(inner)?;
+        }
+        Expr::List(items) => {
+            for item in items {
+                validate_no_aggregation_in_list_comp(item)?;
+            }
+        }
+        _ => {}
+    }
+    Ok(())
+}
+
+/// Track the "kind" of a variable bound by WITH (scalar value vs node/rel/path).
+/// Used to detect VariableTypeConflict when a scalar-bound variable is later
+/// used as a node or relationship in MATCH.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[allow(dead_code)]
+enum WithValueKind {
+    Scalar,   // literal, property access, list, etc.
+    Node,
+    Relationship,
+    Path,
+}
+
+/// Infer the kind of value a WITH/RETURN expression produces.
+fn infer_with_value_kind(expr: &Expr) -> WithValueKind {
+    match expr {
+        Expr::Literal(_) => WithValueKind::Scalar,
+        Expr::List(_) => WithValueKind::Scalar,
+        Expr::MapLiteral(_) => WithValueKind::Scalar,
+        Expr::Property(_, _) => WithValueKind::Scalar,
+        Expr::BinaryOp { .. } => WithValueKind::Scalar,
+        Expr::FunctionCall { .. } => WithValueKind::Scalar,
+        Expr::Index { .. } => WithValueKind::Scalar,
+        Expr::Slice { .. } => WithValueKind::Scalar,
+        _ => WithValueKind::Node, // Variables pass through — could be node/rel/path
+    }
+}
+
+/// Validate that MERGE node variables that are already bound aren't being
+/// re-created with new labels or predicates.
+fn validate_merge_variable_rebinding(
+    pattern: &Pattern,
+    scope: &HashSet<String>,
+) -> crate::types::Result<()> {
+    // Check for single-node MERGE with already-bound variable.
+    if pattern.elements.len() == 1 {
+        if let PatternElement::Node(n) = &pattern.elements[0] {
+            if let Some(ref var) = n.variable {
+                if scope.contains(var) {
+                    return Err(GraphError::syntax(format!(
+                        "VariableAlreadyBound: variable `{var}` already bound"
+                    )));
+                }
+            }
+        }
+    }
+    // For relationship MERGE patterns, check relationship variable rebinding
+    // and check node rebinding with new labels.
+    if pattern.elements.len() == 3 {
+        for elem in &pattern.elements {
+            if let PatternElement::Relationship(rel) = elem {
+                if let Some(ref var) = rel.variable {
+                    if scope.contains(var) {
+                        return Err(GraphError::syntax(format!(
+                            "VariableAlreadyBound: variable `{var}` already bound"
+                        )));
+                    }
+                }
+            }
+            if let PatternElement::Node(n) = elem {
+                if let Some(ref var) = n.variable {
+                    if scope.contains(var) && !n.labels.is_empty() {
+                        return Err(GraphError::syntax(format!(
+                            "VariableAlreadyBound: variable `{var}` already bound"
+                        )));
+                    }
+                }
+            }
+        }
+    }
+    Ok(())
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

@@ -12,6 +12,15 @@ pub fn eval_expr(expr: &Expr, record: &Record, conn: &Connection) -> crate::type
         Expr::Literal(lit) => Ok(literal_to_value(lit)),
         Expr::Variable(name) => Ok(record.get(name).cloned().unwrap_or(Value::Null)),
         Expr::Property(var, prop) => {
+            // Check if the entity has been deleted (e.g. DELETE n RETURN n.prop).
+            if record.get(&format!("{var}.__deleted")) == Some(&Value::Bool(true)) {
+                return Err(GraphError::Query(crate::types::QueryError::EntityNotFound {
+                    phase: crate::types::QueryPhase::Runtime,
+                    message: format!(
+                        "DeletedEntityAccess: cannot access property `{prop}` on deleted entity `{var}`"
+                    ),
+                }));
+            }
             // If the variable is explicitly bound to Null (e.g. from OPTIONAL MATCH),
             // property access should return Null per Cypher's null propagation rules.
             if record.get(var) == Some(&Value::Null) {
@@ -383,6 +392,21 @@ fn eval_function_call(
     conn: &Connection,
 ) -> crate::types::Result<Value> {
     let name_lower = name.to_ascii_lowercase();
+
+    // Check for deleted entity access in function arguments.
+    // Note: type() and id() are allowed on deleted entities per openCypher spec.
+    if matches!(name_lower.as_str(), "labels" | "keys" | "properties") {
+        if let Some(Expr::Variable(var)) = args.first() {
+            if record.get(&format!("{var}.__deleted")) == Some(&Value::Bool(true)) {
+                return Err(GraphError::Query(crate::types::QueryError::EntityNotFound {
+                    phase: crate::types::QueryPhase::Runtime,
+                    message: format!(
+                        "DeletedEntityAccess: cannot call {name}() on deleted entity `{var}`"
+                    ),
+                }));
+            }
+        }
+    }
 
     // If this is an aggregate function, check for a pre-computed value in the
     // record (placed by the Aggregate executor). This allows expressions like

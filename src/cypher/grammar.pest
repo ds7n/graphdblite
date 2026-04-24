@@ -60,7 +60,7 @@ multi_clause_any = _{
 
 multi_match_clause = { ^"MATCH" ~ pattern_list ~ where_clause? ~ optional_match_clause* }
 multi_create_clause = { ^"CREATE" ~ create_pattern_list }
-multi_merge_clause = { ^"MERGE" ~ pattern ~ on_create_clause? ~ on_match_clause? }
+multi_merge_clause = { ^"MERGE" ~ pattern_item ~ on_create_clause? ~ on_match_clause? }
 multi_unwind_clause = { ^"UNWIND" ~ expr ~ ^"AS" ~ ident }
 multi_set_clause = { ^"SET" ~ assignment_list }
 multi_remove_clause = { ^"REMOVE" ~ remove_item_list }
@@ -102,7 +102,7 @@ match_part = {
     (optional_match_clause+)
 }
 
-with_clause = { ^"WITH" ~ return_items ~ order_by_clause? ~ skip_clause? ~ limit_clause? ~ where_clause? }
+with_clause = { ^"WITH" ~ distinct_keyword? ~ return_items ~ order_by_clause? ~ skip_clause? ~ limit_clause? ~ where_clause? }
 
 optional_match_clause = { ^"OPTIONAL" ~ ^"MATCH" ~ pattern_list ~ where_clause? }
 
@@ -158,7 +158,7 @@ match_create_stmt = {
 match_merge_stmt = {
     ^"MATCH" ~ pattern_list ~
     where_clause? ~
-    ^"MERGE" ~ pattern ~
+    ^"MERGE" ~ pattern_item ~
     on_create_clause? ~
     on_match_clause? ~
     (return_clause ~ order_by_clause? ~ skip_clause? ~ limit_clause?)?
@@ -212,14 +212,14 @@ remove_label = { ident ~ label_spec }
 // === MERGE statement ===
 
 merge_stmt = {
-    ^"MERGE" ~ pattern ~
+    ^"MERGE" ~ pattern_item ~
     on_create_clause? ~
     on_match_clause? ~
     (return_clause ~ order_by_clause? ~ skip_clause? ~ limit_clause?)?
 }
 
-on_create_clause = { ^"ON" ~ ^"CREATE" ~ ^"SET" ~ property_assignment_list }
-on_match_clause = { ^"ON" ~ ^"MATCH" ~ ^"SET" ~ property_assignment_list }
+on_create_clause = { ^"ON" ~ ^"CREATE" ~ ^"SET" ~ assignment_list }
+on_match_clause = { ^"ON" ~ ^"MATCH" ~ ^"SET" ~ assignment_list }
 
 // === Patterns ===
 
@@ -233,19 +233,21 @@ pattern = { node_pattern ~ (rel_pattern ~ node_pattern)* }
 node_pattern = { "(" ~ ident? ~ label_spec? ~ property_map? ~ ")" }
 label_spec = { (":" ~ symbolic_name)+ }
 
-rel_pattern = { rel_right | rel_left | rel_undirected | rel_right_bare | rel_left_bare | rel_undirected_bare }
+rel_pattern = { rel_right | rel_left | rel_undirected | rel_right_bare | rel_both_bare | rel_left_bare | rel_undirected_bare }
 rel_right = { "-[" ~ rel_detail ~ "]->" }
 rel_left = { "<-[" ~ rel_detail ~ "]-" }
 rel_undirected = { "-[" ~ rel_detail ~ "]-" }
 rel_right_bare = { "-->" }
 rel_left_bare = { "<--" }
+rel_both_bare = { "<-->" }
 rel_undirected_bare = { "--" }
 
 rel_detail = { ident? ~ rel_type_spec? ~ property_map? ~ var_length? }
 rel_type_spec = { ":" ~ symbolic_name ~ ("|" ~ symbolic_name)* }
 
-var_length = { "*" ~ int_range? }
-int_range = { integer ~ ".." ~ integer? }
+var_length = { "*" ~ (int_range | fixed_length)? ~ property_map? }
+int_range = { integer? ~ ".." ~ integer? }
+fixed_length = { integer }
 
 // === Clauses ===
 
@@ -262,8 +264,8 @@ sort_items = { sort_item ~ ("," ~ sort_item)* }
 sort_item = { expr ~ sort_direction? }
 sort_direction = { ^"DESCENDING" | ^"ASCENDING" | ^"DESC" | ^"ASC" }
 
-skip_clause = { ^"SKIP" ~ integer }
-limit_clause = { ^"LIMIT" ~ integer }
+skip_clause = { ^"SKIP" ~ expr }
+limit_clause = { ^"LIMIT" ~ expr }
 
 // === Expressions ===
 

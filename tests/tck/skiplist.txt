@@ -47,6 +47,8 @@ List6 - List size::[6] Fail for `size()` on pattern predicates
 Literals8 - Maps::[22] Fail on a map containing unquoted string
 Map1 - Static value access::[3] Statically access a field of a map resulting from an expression
 Map2 - Dynamic Value Access::[7] Fail at runtime when trying to index into a map with a non-string
+Match1 - Match nodes::[11] Fail when matching a node variable bound to a value
+Match2 - Match relationships::[13] Fail when matching a relationship variable bound to a value
 Match2 - Match relationships::[7] Matching twice with conflicting relationship types on same relationship
 Match3 - Match fixed length patterns::[10] Matching using self-referencing pattern returns no result
 Match3 - Match fixed length patterns::[15] Mixing directed and undirected pattern parts with self-relationship, simple
@@ -75,6 +77,7 @@ Match6 - Match named paths scenarios::[16] Return a var length path
 Match6 - Match named paths scenarios::[17] Return a named var length path of length zero
 Match6 - Match named paths scenarios::[19] Variable length relationship without lower bound
 Match6 - Match named paths scenarios::[20] Variable length relationship without bounds
+Match6 - Match named paths scenarios::[25] Fail when matching a path variable bound to a value
 Match6 - Match named paths scenarios::[8] Respecting direction when matching non-existent path with multiple directions
 Match6 - Match named paths scenarios::[9] Longer path query should return results in written order
 Match7 - Optional match::[11] Return two subgraphs with bound undirected relationship and optional relationship
@@ -180,18 +183,10 @@ Set2 - Set a Property to Null::[2] Setting a node property to null removes the e
 Set2 - Set a Property to Null::[3] Setting a relationship property to null removes the existing property
 Temporal1 - Create Temporal Values from a Map::[12] Should construct duration
 Temporal10 - Compute Durations Between two Temporal Values::[10] Should handle large durations in seconds
-Temporal10 - Compute Durations Between two Temporal Values::[11] Should handle when seconds and subseconds have different signs
-Temporal10 - Compute Durations Between two Temporal Values::[1] Should split between boundaries correctly
-Temporal10 - Compute Durations Between two Temporal Values::[2] Should compute duration between two temporals
-Temporal10 - Compute Durations Between two Temporal Values::[3] Should compute duration between two temporals in months
-Temporal10 - Compute Durations Between two Temporal Values::[4] Should compute duration between two temporals in days
-Temporal10 - Compute Durations Between two Temporal Values::[5] Should compute duration between two temporals in seconds
-Temporal10 - Compute Durations Between two Temporal Values::[6] Should compute duration between if they differ only by a fraction of a second and the first comes after the second.
 Temporal10 - Compute Durations Between two Temporal Values::[8] Should handle durations at daylight saving time day
 Temporal10 - Compute Durations Between two Temporal Values::[9] Should handle large durations
 Temporal2 - Create Temporal Values from a String::[7] Should parse duration from string
 Temporal5 - Access Components of Temporal Values::[6] Should provide accessors for date time
-Temporal8 - Compute Arithmetic Operations on Temporal Values::[1] Should add or subtract duration to or from date
 Temporal8 - Compute Arithmetic Operations on Temporal Values::[2] Should add or subtract duration to or from local time
 Temporal8 - Compute Arithmetic Operations on Temporal Values::[3] Should add or subtract duration to or from time
 Temporal8 - Compute Arithmetic Operations on Temporal Values::[4] Should add or subtract duration to or from local date time

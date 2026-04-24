@@ -7,13 +7,13 @@ Last updated: 2026-04-23
 Full openCypher TCK vendored (220 feature files, commit `677cbaf`).
 
 ```
-180 features parsed (1 parse error: Match5.feature)
-3304 total scenario instances running
-3233 passed
+181 features parsed (1 parse error: Match5.feature)
+3344 total scenario instances running
+3273 passed
   71 skipped (cucumber-level)
- 318 skiplisted (known failures)
+ 257 skiplisted (known failures)
  ────
-3233/3466 unique scenarios passing (93.3%)
+3273/3530 unique scenarios passing (92.7% of total, 95.0% of non-framework-skipped)
 ```
 
 ## Pass rate by area
@@ -71,42 +71,65 @@ Regenerate with: `uv run tests/tck/analyze_blockers.py`
 
 | Sole | Impact | Construct |
 |-----:|-------:|-----------|
-| 89 | 183 | write-result (CREATE/MERGE ... RETURN) |
-| 8 | 9 | duration.between/inX |
-| 3 | 29 | error validation |
-| 3 | 18 | temporal types |
-| 1 | 7 | CREATE (no RETURN) |
-| 1 | 10 | aggregation (non-count) |
+| 40 | 97 | write-result (CREATE/MERGE ... RETURN) |
+| 6 | 33 | error validation |
+| 6 | 7 | duration.between/inX |
+| 2 | 8 | CREATE (no RETURN) |
+| 2 | 9 | temporal types |
+| 1 | 6 | aggregation (non-count) |
 | 1 | 3 | list indexing [n] |
 
 ### High-impact (in scenarios with ≤2 missing constructs)
 
 | Impact | Construct |
 |-------:|-----------|
-| 183 | write-result (CREATE/MERGE ... RETURN) |
-| 29 | error validation |
-| 22 | var-length rel `*` |
-| 19 | OPTIONAL MATCH |
-| 18 | temporal types |
-| 15 | DELETE/DETACH DELETE |
-| 13 | SET property/label |
+| 97 | write-result (CREATE/MERGE ... RETURN) |
+| 33 | error validation |
+| 12 | var-length rel `*` |
 | 12 | MERGE |
-| 10 | aggregation (non-count) |
-| 10 | ORDER BY |
-| 9 | duration.between/inX |
-| 8 | IS NULL / IS NOT NULL |
+| 9 | ORDER BY |
+| 9 | temporal types |
+| 8 | CREATE (no RETURN) |
+| 8 | DELETE/DETACH DELETE |
+| 7 | duration.between/inX |
+| 6 | aggregation (non-count) |
+| 6 | SET property/label |
 
 ### Zero-blocker scenarios (2)
 
-- Temporal1::[13]: timezone offset with second precision (`+02:05:59`)
+- Harness/comparison issues
 
 ## Skiplist
 
-`skiplist.txt` lists 444 known-failing `Feature::Scenario` pairs.
+`skiplist.txt` lists 257 known-failing `Feature::Scenario` pairs.
 The harness filters these out and exits non-zero only if a *non-skiplisted*
 scenario fails — making the TCK a regression gate.
 
 ## History
+
+### Phase 24 — Grammar fixes, EXISTS subquery (2026-04-23)
+
+- [x] Allow function names (`sum`, `count`, `min`, `max`, etc.) as bare variable identifiers via `fn_name_as_ident` grammar rule
+- [x] Expand `multi_clause_stmt` Pattern C: DELETE/SET/REMOVE after 2+ non-write clauses (no CREATE/MERGE required)
+- [x] Add `EXISTS { MATCH ... WHERE ... }` full existential subquery (grammar, parser, AST, eval, executor)
+- [x] Fix: reject non-projected aggregates in WITH ORDER BY
+- [x] Batch unskip: 25 scenarios newly passing
+- Result: 3248 → 3273 passing scenarios (+25), skiplist 282 → 257
+
+### Phase 23 — WITH WHERE, pattern predicates, relationship property filter (2026-04-23)
+
+- [x] Pass 20 more TCK scenarios — WITH WHERE + pattern predicates
+- [x] Filter on relationship inline properties in MATCH patterns
+- Result: 3208 → 3248 passing scenarios (+40), skiplist 322 → 282
+
+### Phase 22 — TCK session 2026-04-22/23 (87.2% → 93.7%)
+
+- [x] ASCENDING/DESCENDING keywords, temporal storage round-trip, named paths
+- [x] CREATE direction fix, WITH WHERE before projection, pattern predicates
+- [x] Side-effect fingerprinting, variable-length relationships, AS alias with keywords
+- [x] Math/string functions, ORDER BY before projection, DELETE/REMOVE grammar
+- [x] Relationship property filter, multi-arg column names, undirected label dedup
+- Result: 3022 → 3248 passing scenarios (+226), skiplist 444 → 282
 
 ### Phase 21 — Temporal extensions (2026-04-20)
 

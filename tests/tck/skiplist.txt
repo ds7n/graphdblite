@@ -28,11 +28,7 @@ Delete5 - Delete clause interoperation with built-in data types::[5] Detach dele
 Delete5 - Delete clause interoperation with built-in data types::[6] Delete relationships from nested map/list
 Delete5 - Delete clause interoperation with built-in data types::[7] Delete paths from nested map/list
 Delete5 - Delete clause interoperation with built-in data types::[8] Failing when using undefined variable in DELETE
-ExistentialSubquery2 - Full existential subquery::[1] Full existential subquery
 ExistentialSubquery2 - Full existential subquery::[2] Full existential subquery with aggregation
-ExistentialSubquery3 - Nested existential subquery::[1] Nested simple existential subquery
-ExistentialSubquery3 - Nested existential subquery::[2] Nested full existential subquery
-ExistentialSubquery3 - Nested existential subquery::[3] Nested full existential subquery with pattern predicate
 Graph4 - Edge relationship type::[6] `type()` failing on invalid arguments
 Graph5 - Node and edge label expressions::[2] Single-labels expression on relationships
 Graph6 - Static property access::[4] Statically access a property of a node resulting from an expression

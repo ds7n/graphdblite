@@ -1556,6 +1556,7 @@ fn parse_cmp_primary(pair: pest::iterators::Pair<Rule>) -> crate::types::Result<
     match inner.as_rule() {
         Rule::case_expr => parse_case_expr(inner),
         Rule::exists_subquery => parse_exists_subquery(inner),
+        Rule::exists_full_subquery => parse_exists_full_subquery(inner),
         Rule::pattern_predicate => {
             let pattern = parse_pattern(inner)?;
             Ok(Expr::PatternPredicate(pattern))
@@ -1678,6 +1679,101 @@ fn parse_exists_subquery(pair: pest::iterators::Pair<Rule>) -> crate::types::Res
         patterns,
         where_clause,
     })
+}
+
+/// Parse EXISTS { MATCH ... [WITH ...] [RETURN ...] } full subquery.
+fn parse_exists_full_subquery(pair: pest::iterators::Pair<Rule>) -> crate::types::Result<Expr> {
+    let mut patterns = Vec::new();
+    let mut where_clause = None;
+    let mut intermediate_clauses = Vec::new();
+    let mut return_clause = None;
+    let mut order_by = Vec::new();
+    let mut skip = None;
+    let mut limit = None;
+    let mut first_match = true;
+
+    for inner in pair.into_inner() {
+        match inner.as_rule() {
+            Rule::pattern_list => {
+                if first_match {
+                    patterns = parse_pattern_list(inner)?;
+                    first_match = false;
+                } else {
+                    // Additional MATCH after WITH
+                    let mp_patterns = parse_pattern_list(inner)?;
+                    intermediate_clauses.push(IntermediateClause::Match(IntermediateMatch {
+                        patterns: mp_patterns,
+                        optional_patterns: vec![],
+                        where_clause: None,
+                    }));
+                }
+            }
+            Rule::where_clause => {
+                let w = parse_where(inner)?;
+                // If we've already seen intermediate clauses, this WHERE belongs
+                // to the last intermediate match.
+                if let Some(IntermediateClause::Match(ref mut im)) = intermediate_clauses.last_mut()
+                {
+                    if im.where_clause.is_none() {
+                        im.where_clause = Some(w);
+                    } else {
+                        where_clause = Some(w);
+                    }
+                } else {
+                    where_clause = Some(w);
+                }
+            }
+            Rule::with_clause => {
+                intermediate_clauses.push(IntermediateClause::With(parse_with(inner)?))
+            }
+            Rule::unwind_clause => {
+                intermediate_clauses.push(IntermediateClause::Unwind(parse_unwind_clause(inner)?))
+            }
+            Rule::return_clause => return_clause = Some(parse_return(inner)?),
+            Rule::order_by_clause => order_by = parse_order_by(inner)?,
+            Rule::skip_clause => skip = Some(parse_skip(inner)?),
+            Rule::limit_clause => limit = Some(parse_limit(inner)?),
+            Rule::multi_set_clause
+            | Rule::multi_delete_clause
+            | Rule::multi_remove_clause
+            | Rule::multi_create_clause
+            | Rule::multi_merge_clause => {
+                return Err(GraphError::syntax(
+                    "InvalidClauseComposition: EXISTS subquery cannot contain updating clauses"
+                        .to_string(),
+                ));
+            }
+            _ => {}
+        }
+    }
+
+    if patterns.is_empty() {
+        return Err(GraphError::Serialization(
+            "EXISTS subquery requires at least one MATCH pattern".to_string(),
+        ));
+    }
+
+    // If there's no RETURN clause, synthesize one that returns true (the
+    // existence check only cares whether rows are produced, not what).
+    let rc = return_clause.unwrap_or_else(|| ReturnClause {
+        distinct: false,
+        items: vec![ReturnItem {
+            expr: Expr::Literal(LiteralValue::Bool(true)),
+            alias: Some("__exists".to_string()),
+        }],
+    });
+
+    let stmt = MatchStatement {
+        patterns,
+        optional_patterns: vec![],
+        where_clause,
+        intermediate_clauses,
+        return_clause: rc,
+        order_by,
+        skip,
+        limit,
+    };
+    Ok(Expr::ExistsSubquery(Box::new(Statement::Match(stmt))))
 }
 
 fn parse_comp_op(pair: pest::iterators::Pair<Rule>) -> crate::types::Result<BinOp> {
@@ -2252,6 +2348,7 @@ fn humanize_rule_name(rule: &str) -> &str {
         "case_else_clause" => "an ELSE value",
         "case_expr" => "a CASE expression",
         "exists_subquery" => "an EXISTS { } subquery",
+        "exists_full_subquery" => "an EXISTS { MATCH ... } subquery",
         "list_comprehension" => "a list comprehension like [x IN list | expr]",
         "comp_op" => "a comparison operator (=, <>, <, >)",
         "alias" => "an alias (AS name)",
@@ -2406,6 +2503,11 @@ fn resolve_expr(expr: &Expr, params: &HashMap<String, Value>) -> crate::types::R
                 .map(|w| resolve_expr(w, params).map(Box::new))
                 .transpose()?,
         }),
+        Expr::ExistsSubquery(stmt) => {
+            // Parameters inside the subquery statement are resolved via
+            // resolve_params which handles all statement types.
+            Ok(Expr::ExistsSubquery(Box::new(resolve_params(stmt, params)?)))
+        }
         Expr::MapLiteral(pairs) => {
             let resolved: crate::types::Result<Vec<(String, Expr)>> = pairs
                 .iter()

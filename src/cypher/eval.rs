@@ -2130,6 +2130,7 @@ pub fn expr_to_column_name(expr: &Expr) -> String {
 fn eval_temporal_add(left: &Value, right: &Value) -> Option<crate::types::Result<Value>> {
     use crate::temporal::{
         CypherDate, CypherDateTime, CypherDuration, CypherLocalDateTime, CypherLocalTime,
+        CypherTime,
     };
     use chrono::{Months, NaiveDateTime};
 
@@ -2165,6 +2166,13 @@ fn eval_temporal_add(left: &Value, right: &Value) -> Option<crate::types::Result
                 + chrono::Duration::seconds(dur.seconds)
                 + chrono::Duration::nanoseconds(dur.nanos);
             Some(Ok(Value::LocalTime(CypherLocalTime(time))))
+        }
+        (Value::Time(t), Value::Duration(dur))
+        | (Value::Duration(dur), Value::Time(t)) => {
+            let time = t.0
+                + chrono::Duration::seconds(dur.seconds)
+                + chrono::Duration::nanoseconds(dur.nanos);
+            Some(Ok(Value::Time(CypherTime(time, t.1))))
         }
         (Value::LocalDateTime(dt), Value::Duration(dur))
         | (Value::Duration(dur), Value::LocalDateTime(dt)) => {

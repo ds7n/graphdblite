@@ -29,6 +29,15 @@ fn get_i64(map: &BTreeMap<String, Value>, key: &str) -> Option<i64> {
     }
 }
 
+/// Extract a numeric value as `f64` from a map (handles both I64 and F64).
+fn get_f64(map: &BTreeMap<String, Value>, key: &str) -> Option<f64> {
+    match map.get(key) {
+        Some(Value::I64(n)) => Some(*n as f64),
+        Some(Value::F64(n)) => Some(*n),
+        _ => None,
+    }
+}
+
 /// Parse a timezone offset string into a `FixedOffset`.
 fn parse_offset(s: &str) -> Result<FixedOffset> {
     if s == "Z" || s == "z" {
@@ -938,13 +947,14 @@ impl<'de> Deserialize<'de> for CypherTime {
 
 impl CypherTime {
     /// Parse a time with offset from an ISO 8601 string.
+    /// When no offset is present, defaults to UTC (+00:00).
     pub fn from_iso_string(s: &str) -> Result<Self> {
         let (time_part, off_part) = split_time_offset(s);
-        let off_str = off_part.ok_or_else(|| {
-            GraphError::Serialization(format!("CypherTime requires an offset: {s}"))
-        })?;
         let t = parse_time_str(time_part)?;
-        let off = parse_offset(off_str)?;
+        let off = match off_part {
+            Some(o) => parse_offset(o)?,
+            None => FixedOffset::east_opt(0).unwrap(),
+        };
         Ok(CypherTime(t, off))
     }
 
@@ -1445,13 +1455,23 @@ impl fmt::Display for CypherDuration {
         let years = self.months / 12;
         let months = self.months % 12;
 
+        // Normalize seconds and nanos so they have the same sign.
+        // E.g. seconds=-86400, nanos=100000000 → seconds=-86399, nanos=-900000000
+        // which represents -86399.9s total.
+        let (total_seconds, nanos) = if self.seconds < 0 && self.nanos > 0 {
+            (self.seconds + 1, self.nanos - 1_000_000_000)
+        } else if self.seconds > 0 && self.nanos < 0 {
+            (self.seconds - 1, self.nanos + 1_000_000_000)
+        } else {
+            (self.seconds, self.nanos)
+        };
+
         // Decompose seconds into hours, minutes, seconds.
         // Rust % preserves sign, so e.g. -60 % 3600 = -60, -60 / 60 = -1.
-        let hours = self.seconds / 3600;
-        let rem = self.seconds % 3600;
+        let hours = total_seconds / 3600;
+        let rem = total_seconds % 3600;
         let minutes = rem / 60;
         let secs = rem % 60;
-        let nanos = self.nanos;
 
         let has_date_part = years != 0 || months != 0 || self.days != 0;
         let has_time_part = hours != 0 || minutes != 0 || secs != 0 || nanos != 0;
@@ -1619,25 +1639,41 @@ impl CypherDuration {
 
     /// Build from a property map.
     pub fn from_map(map: &BTreeMap<String, Value>) -> Result<Self> {
-        let years = get_i64(map, "years").unwrap_or(0);
-        let mons = get_i64(map, "months").unwrap_or(0);
-        let weeks = get_i64(map, "weeks").unwrap_or(0);
-        let days = get_i64(map, "days").unwrap_or(0);
-        let hours = get_i64(map, "hours").unwrap_or(0);
-        let minutes = get_i64(map, "minutes").unwrap_or(0);
-        let secs = get_i64(map, "seconds").unwrap_or(0);
-        let millis = get_i64(map, "milliseconds").unwrap_or(0);
-        let micros = get_i64(map, "microseconds").unwrap_or(0);
-        let ns = get_i64(map, "nanoseconds").unwrap_or(0);
+        // Use f64 to support fractional values. Fractions cascade down:
+        // years → months (×12), months → days (×30), days → hours (×24),
+        // hours → minutes (×60), minutes → seconds (×60),
+        // seconds → nanos (×10^9).
+        let years = get_f64(map, "years").unwrap_or(0.0);
+        let mons = get_f64(map, "months").unwrap_or(0.0);
+        let weeks = get_f64(map, "weeks").unwrap_or(0.0);
+        let days = get_f64(map, "days").unwrap_or(0.0);
+        let hours = get_f64(map, "hours").unwrap_or(0.0);
+        let minutes = get_f64(map, "minutes").unwrap_or(0.0);
+        let secs = get_f64(map, "seconds").unwrap_or(0.0);
+        let millis = get_f64(map, "milliseconds").unwrap_or(0.0);
+        let micros = get_f64(map, "microseconds").unwrap_or(0.0);
+        let ns = get_f64(map, "nanoseconds").unwrap_or(0.0);
 
-        let total_months = years * 12 + mons;
-        let total_days = weeks * 7 + days;
-        let mut total_seconds = hours * 3600 + minutes * 60 + secs;
-        let mut total_nanos = millis * 1_000_000 + micros * 1_000 + ns;
+        // Cascade: truncate each level, push fraction to next unit down.
+        let months_f = years * 12.0 + mons;
+        let total_months = months_f.trunc() as i64;
+        let frac_months = months_f - months_f.trunc();
 
-        // Fold nanos into seconds when they cross the 1-second boundary.
-        total_seconds += total_nanos / 1_000_000_000;
-        total_nanos %= 1_000_000_000;
+        let days_f = weeks * 7.0 + days + frac_months * 30.0;
+        let total_days = days_f.trunc() as i64;
+        let frac_days = days_f - days_f.trunc();
+
+        // Accumulate time from fractional days downward into nanos.
+        let nanos_from_time = (hours + frac_days * 24.0) * 3_600_000_000_000.0
+            + minutes * 60_000_000_000.0
+            + secs * 1_000_000_000.0
+            + millis * 1_000_000.0
+            + micros * 1_000.0
+            + ns;
+        let total_nanos_i = nanos_from_time.round() as i64;
+
+        let mut total_seconds = total_nanos_i / 1_000_000_000;
+        let mut total_nanos = total_nanos_i % 1_000_000_000;
 
         // Ensure seconds and nanos have the same sign.
         if total_seconds > 0 && total_nanos < 0 {

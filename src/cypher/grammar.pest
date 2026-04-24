@@ -79,7 +79,7 @@ return_stmt = {
 
 with_stmt = {
     with_clause ~
-    ((with_clause ~ match_part?) | unwind_clause)* ~
+    ((with_clause ~ match_part?) | match_part | unwind_clause)* ~
     return_clause ~
     order_by_clause? ~
     skip_clause? ~

@@ -1476,10 +1476,7 @@ fn eval_pattern_comprehension(
             Value::Node(n) => {
                 outer_rec.set(k.clone(), Value::I64(n.id.0 as i64));
                 outer_rec.set(format!("{k}.__id"), Value::I64(n.id.0 as i64));
-                outer_rec.set(
-                    format!("{k}.__label"),
-                    Value::String(n.labels.join(":")),
-                );
+                outer_rec.set(format!("{k}.__label"), Value::String(n.labels.join(":")));
                 outer_rec.set(
                     format!("{k}.__labels"),
                     Value::List(n.labels.iter().map(|l| Value::String(l.clone())).collect()),
@@ -2167,8 +2164,7 @@ fn eval_temporal_add(left: &Value, right: &Value) -> Option<crate::types::Result
                 + chrono::Duration::nanoseconds(dur.nanos);
             Some(Ok(Value::LocalTime(CypherLocalTime(time))))
         }
-        (Value::Time(t), Value::Duration(dur))
-        | (Value::Duration(dur), Value::Time(t)) => {
+        (Value::Time(t), Value::Duration(dur)) | (Value::Duration(dur), Value::Time(t)) => {
             let time = t.0
                 + chrono::Duration::seconds(dur.seconds)
                 + chrono::Duration::nanoseconds(dur.nanos);

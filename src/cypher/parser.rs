@@ -2297,9 +2297,7 @@ fn parse_pattern_comprehension(pair: pest::iterators::Pair<Rule>) -> crate::type
         })?,
         where_clause,
         map_expr: map_expr.ok_or_else(|| {
-            GraphError::Serialization(
-                "missing map expression in pattern comprehension".to_string(),
-            )
+            GraphError::Serialization("missing map expression in pattern comprehension".to_string())
         })?,
     })
 }
@@ -2740,8 +2738,16 @@ fn resolve_intermediate_clauses(
                 items: resolve_return_items(&w.items, params)?,
                 distinct: w.distinct,
                 order_by: w.order_by.clone(),
-                skip: w.skip.as_ref().map(|e| resolve_expr(e, params)).transpose()?,
-                limit: w.limit.as_ref().map(|e| resolve_expr(e, params)).transpose()?,
+                skip: w
+                    .skip
+                    .as_ref()
+                    .map(|e| resolve_expr(e, params))
+                    .transpose()?,
+                limit: w
+                    .limit
+                    .as_ref()
+                    .map(|e| resolve_expr(e, params))
+                    .transpose()?,
                 where_clause: w
                     .where_clause
                     .as_ref()
@@ -2794,7 +2800,10 @@ fn resolve_optional_return(
         .transpose()?;
     let ob = resolve_sort_items(order_by, params)?;
     let s = skip.as_ref().map(|e| resolve_expr(e, params)).transpose()?;
-    let l = limit.as_ref().map(|e| resolve_expr(e, params)).transpose()?;
+    let l = limit
+        .as_ref()
+        .map(|e| resolve_expr(e, params))
+        .transpose()?;
     Ok((rc, ob, s, l))
 }
 
@@ -2825,8 +2834,16 @@ pub fn resolve_params(
                 distinct: m.return_clause.distinct,
             },
             order_by: resolve_sort_items(&m.order_by, params)?,
-            skip: m.skip.as_ref().map(|e| resolve_expr(e, params)).transpose()?,
-            limit: m.limit.as_ref().map(|e| resolve_expr(e, params)).transpose()?,
+            skip: m
+                .skip
+                .as_ref()
+                .map(|e| resolve_expr(e, params))
+                .transpose()?,
+            limit: m
+                .limit
+                .as_ref()
+                .map(|e| resolve_expr(e, params))
+                .transpose()?,
         })),
         Statement::Create(c) => {
             let (return_clause, order_by, skip, limit) =
@@ -2993,7 +3010,10 @@ pub fn resolve_params(
                     },
                     order_by: resolve_sort_items(order_by, params)?,
                     skip: skip.as_ref().map(|e| resolve_expr(e, params)).transpose()?,
-                    limit: limit.as_ref().map(|e| resolve_expr(e, params)).transpose()?,
+                    limit: limit
+                        .as_ref()
+                        .map(|e| resolve_expr(e, params))
+                        .transpose()?,
                 },
                 UnwindBody::Create {
                     patterns,
@@ -3030,8 +3050,16 @@ pub fn resolve_params(
                 distinct: r.return_clause.distinct,
             },
             order_by: resolve_sort_items(&r.order_by, params)?,
-            skip: r.skip.as_ref().map(|e| resolve_expr(e, params)).transpose()?,
-            limit: r.limit.as_ref().map(|e| resolve_expr(e, params)).transpose()?,
+            skip: r
+                .skip
+                .as_ref()
+                .map(|e| resolve_expr(e, params))
+                .transpose()?,
+            limit: r
+                .limit
+                .as_ref()
+                .map(|e| resolve_expr(e, params))
+                .transpose()?,
         })),
         Statement::MultiClause(mc) => {
             let clauses = mc
@@ -3052,8 +3080,16 @@ pub fn resolve_params(
                     })
                     .transpose()?,
                 order_by: resolve_sort_items(&mc.order_by, params)?,
-                skip: mc.skip.as_ref().map(|e| resolve_expr(e, params)).transpose()?,
-                limit: mc.limit.as_ref().map(|e| resolve_expr(e, params)).transpose()?,
+                skip: mc
+                    .skip
+                    .as_ref()
+                    .map(|e| resolve_expr(e, params))
+                    .transpose()?,
+                limit: mc
+                    .limit
+                    .as_ref()
+                    .map(|e| resolve_expr(e, params))
+                    .transpose()?,
             }))
         }
         Statement::Explain(inner) => {
@@ -3109,8 +3145,16 @@ fn resolve_clause(
             items: resolve_return_items(&with.items, params)?,
             distinct: with.distinct,
             order_by: resolve_sort_items(&with.order_by, params)?,
-            skip: with.skip.as_ref().map(|e| resolve_expr(e, params)).transpose()?,
-            limit: with.limit.as_ref().map(|e| resolve_expr(e, params)).transpose()?,
+            skip: with
+                .skip
+                .as_ref()
+                .map(|e| resolve_expr(e, params))
+                .transpose()?,
+            limit: with
+                .limit
+                .as_ref()
+                .map(|e| resolve_expr(e, params))
+                .transpose()?,
             where_clause: with
                 .where_clause
                 .as_ref()

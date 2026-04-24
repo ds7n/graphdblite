@@ -394,6 +394,13 @@ pub enum Expr {
         filter: Option<Box<Expr>>,
         map_expr: Option<Box<Expr>>,
     },
+    /// Pattern comprehension: [(p = )? pattern (WHERE pred)? | expr]
+    PatternComprehension {
+        path_variable: Option<String>,
+        pattern: Pattern,
+        where_clause: Option<Box<Expr>>,
+        map_expr: Box<Expr>,
+    },
     /// EXISTS { pattern [WHERE expr] } subquery predicate.
     Exists {
         patterns: Vec<Pattern>,

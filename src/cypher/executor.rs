@@ -2598,6 +2598,54 @@ fn exec_correlated(
             exec_aggregate_over_records(conn, &records, group_keys, aggregates)
         }
 
+        // MaterializePath: push correlation into the input, then materialize paths.
+        LogicalOp::MaterializePath {
+            input,
+            path_alias,
+            node_aliases,
+            rel_aliases,
+        } => {
+            let records = exec_correlated(conn, input, outer, ctx)?;
+            let mut results = Vec::new();
+            for rec in records {
+                let mut has_null = false;
+                let mut nodes = Vec::new();
+                for alias in node_aliases {
+                    if rec.get(alias) == Some(&Value::Null) {
+                        has_null = true;
+                        break;
+                    }
+                    if let Some(Value::I64(id)) = rec.get(&format!("{alias}.__id")) {
+                        match node::get_node(conn, NodeId(*id as u64)) {
+                            Ok(n) => nodes.push(n),
+                            Err(_) => break,
+                        }
+                    }
+                }
+                let mut edges = Vec::new();
+                for alias in rel_aliases {
+                    if rec.get(alias) == Some(&Value::Null) {
+                        has_null = true;
+                        break;
+                    }
+                    if let Some(Value::Edge(e)) = build_compound_binding(&rec, alias) {
+                        edges.push(e);
+                    }
+                }
+                let mut new_rec = rec;
+                if has_null {
+                    new_rec.set(path_alias.to_string(), Value::Null);
+                } else if !nodes.is_empty() {
+                    new_rec.set(
+                        path_alias.to_string(),
+                        Value::Path(crate::types::PathValue { nodes, edges }),
+                    );
+                }
+                results.push(new_rec);
+            }
+            Ok(results)
+        }
+
         // Fallback: execute normally (no correlation pushdown).
         _ => exec(conn, plan, ctx),
     }
@@ -2931,6 +2979,16 @@ fn compare_values_for_sort(a: &Value, b: &Value) -> std::cmp::Ordering {
 pub fn exec_correlated_exists(conn: &Connection, plan: &LogicalOp, outer: &Record) -> Result<bool> {
     let rows = exec_correlated(conn, plan, outer, &ExecContext::default())?;
     Ok(!rows.is_empty())
+}
+
+/// Execute a correlated subquery and return all matching rows.
+/// Used by pattern comprehensions to collect all matches.
+pub fn exec_correlated_subquery(
+    conn: &Connection,
+    plan: &LogicalOp,
+    outer: &Record,
+) -> Result<Vec<Record>> {
+    exec_correlated(conn, plan, outer, &ExecContext::default())
 }
 
 /// For leaf/pipeline operators we iterate one record at a time. For operators

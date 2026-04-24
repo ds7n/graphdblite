@@ -1684,7 +1684,10 @@ fn apply_merge_set_item_node(
                 &new_props,
             )?;
         }
-        SetItem::Label { variable: _, labels } => {
+        SetItem::Label {
+            variable: _,
+            labels,
+        } => {
             for label in labels {
                 node::add_node_label(conn, node_id, label)?;
             }

@@ -4,8 +4,8 @@ use rusqlite::Connection;
 
 use crate::cypher::ast::*;
 use crate::cypher::ir::*;
-use crate::index;
 use crate::cypher::record::Record;
+use crate::index;
 use crate::types::{Direction, GraphError, Value};
 
 /// Evaluate a SKIP/LIMIT expression to a u64 at plan time.
@@ -434,7 +434,8 @@ fn plan_match_create(
     };
 
     if let Some(ref rc) = stmt.return_clause {
-        result = apply_return_projection(conn, result, rc, &stmt.order_by, &stmt.skip, &stmt.limit)?;
+        result =
+            apply_return_projection(conn, result, rc, &stmt.order_by, &stmt.skip, &stmt.limit)?;
     }
 
     Ok(result)
@@ -835,7 +836,8 @@ fn plan_match_merge(
     };
 
     if let Some(ref rc) = stmt.return_clause {
-        result = apply_return_projection(conn, result, rc, &stmt.order_by, &stmt.skip, &stmt.limit)?;
+        result =
+            apply_return_projection(conn, result, rc, &stmt.order_by, &stmt.skip, &stmt.limit)?;
     }
 
     Ok(result)
@@ -1090,7 +1092,8 @@ fn plan_multi_clause(
         if !scope_vars.is_empty() {
             validate_return_variables(&rc.items, &scope_vars)?;
         }
-        result = apply_return_projection(conn, result, rc, &stmt.order_by, &stmt.skip, &stmt.limit)?;
+        result =
+            apply_return_projection(conn, result, rc, &stmt.order_by, &stmt.skip, &stmt.limit)?;
     }
 
     Ok(result)
@@ -1133,7 +1136,11 @@ fn substitute_aliases(expr: &Expr, aliases: &std::collections::HashMap<String, E
     }
 }
 
-fn plan_with(conn: &Connection, input: LogicalOp, with: &WithClause) -> crate::types::Result<LogicalOp> {
+fn plan_with(
+    conn: &Connection,
+    input: LogicalOp,
+    with: &WithClause,
+) -> crate::types::Result<LogicalOp> {
     let mut op = input;
 
     check_duplicate_columns(&with.items)?;

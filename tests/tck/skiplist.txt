@@ -249,8 +249,6 @@ WithOrderBy3 - Order by multiple expressions::[8] Fail on sorting by any number 
 WithOrderBy3 - Order by multiple expressions::[8] Fail on sorting by any number of undefined variables in any position #Example: never defined
 WithOrderBy3 - Order by multiple expressions::[8] Fail on sorting by any number of undefined variables in any position #Example: out of scope
 WithOrderBy4 - Order by in combination with projection and aliasing::[8] Sort by non-projected existing variable
-WithOrderBy4 - Order by in combination with projection and aliasing::[13] Fail on sorting by a non-projected aggregation on a variable
-WithOrderBy4 - Order by in combination with projection and aliasing::[14] Fail on sorting by a non-projected aggregation on an expression
 WithOrderBy4 - Order by in combination with projection and aliasing::[19] Fail if not projected variables are used inside an order by item which contains an aggregation expression
 WithSkipLimit2 - Limit::[2] Handle dependencies across WITH with LIMIT
 WithSkipLimit3 - Skip and limit::[2] Get rows in the middle by param

@@ -1134,6 +1134,41 @@ fn plan_with(input: LogicalOp, with: &WithClause) -> crate::types::Result<Logica
 
     // Apply ORDER BY.
     if !with.order_by.is_empty() {
+        // When WITH has aggregates, reject ORDER BY expressions that contain
+        // aggregate function calls not present in the projection.  These are
+        // semantically undefined because the grouping already consumed the
+        // underlying rows.  (TCK: WithOrderBy4 [13], [14])
+        if has_aggregates {
+            // Collect column names for aggregate expressions in the projection.
+            let mut projected_agg_cols: std::collections::HashSet<String> =
+                std::collections::HashSet::new();
+            for item in &with.items {
+                if is_aggregate_fn(&item.expr) {
+                    projected_agg_cols
+                        .insert(crate::cypher::eval::expr_to_column_name(&item.expr));
+                    if let Some(ref alias) = item.alias {
+                        projected_agg_cols.insert(alias.clone());
+                    }
+                }
+            }
+
+            for sort_item in &with.order_by {
+                // Extract all aggregate function call sub-expressions from
+                // the ORDER BY item and verify each one is projected.
+                let mut agg_calls = Vec::new();
+                collect_aggregate_calls(&sort_item.expr, &mut agg_calls);
+                for agg_expr in &agg_calls {
+                    let agg_col =
+                        crate::cypher::eval::expr_to_column_name(agg_expr);
+                    if !projected_agg_cols.contains(&agg_col) {
+                        return Err(GraphError::syntax(
+                            "UndefinedVariable: ORDER BY contains an aggregation that is not projected in WITH".to_string(),
+                        ));
+                    }
+                }
+            }
+        }
+
         op = LogicalOp::Sort {
             input: Box::new(op),
             items: with.order_by.clone(),
@@ -2105,6 +2140,43 @@ fn is_aggregate_fn(expr: &Expr) -> bool {
         Expr::BinaryOp { left, right, .. } => is_aggregate_fn(left) || is_aggregate_fn(right),
         Expr::Not(inner) | Expr::IsNull(inner) | Expr::IsNotNull(inner) => is_aggregate_fn(inner),
         _ => false,
+    }
+}
+
+/// Collect all aggregate function call sub-expressions from an expression tree.
+/// Stops recursing into aggregate function arguments (aggregates don't nest).
+fn collect_aggregate_calls<'a>(expr: &'a Expr, out: &mut Vec<&'a Expr>) {
+    match expr {
+        Expr::FunctionCall { name, .. }
+            if matches!(
+                name.to_ascii_lowercase().as_str(),
+                "count"
+                    | "sum"
+                    | "avg"
+                    | "min"
+                    | "max"
+                    | "collect"
+                    | "percentiledisc"
+                    | "percentilecont"
+                    | "stdev"
+                    | "stdevp"
+            ) =>
+        {
+            out.push(expr);
+        }
+        Expr::FunctionCall { args, .. } => {
+            for arg in args {
+                collect_aggregate_calls(arg, out);
+            }
+        }
+        Expr::BinaryOp { left, right, .. } => {
+            collect_aggregate_calls(left, out);
+            collect_aggregate_calls(right, out);
+        }
+        Expr::Not(inner) | Expr::IsNull(inner) | Expr::IsNotNull(inner) => {
+            collect_aggregate_calls(inner, out);
+        }
+        _ => {}
     }
 }
 

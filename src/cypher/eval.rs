@@ -303,6 +303,7 @@ pub fn eval_expr(expr: &Expr, record: &Record, conn: &Connection) -> crate::type
         Expr::PatternPredicate(pattern) => {
             eval_exists(std::slice::from_ref(pattern), None, record, conn)
         }
+        Expr::ExistsSubquery(stmt) => eval_exists_subquery(stmt, record, conn),
         Expr::MapLiteral(pairs) => {
             let mut map = std::collections::BTreeMap::new();
             for (k, expr) in pairs {
@@ -1448,6 +1449,25 @@ fn eval_exists(
 
     // Short-circuit: return true on the first matching row.
     let found = execute_first_match(conn, &op, &outer_bindings)?;
+    Ok(Value::Bool(found))
+}
+
+/// Evaluate an EXISTS { MATCH ... [WITH ...] [RETURN ...] } full subquery predicate.
+/// Plans the inner statement and executes it as a correlated subquery using the
+/// outer record's bindings. Returns true if at least one row is produced.
+fn eval_exists_subquery(
+    stmt: &crate::cypher::ast::Statement,
+    record: &Record,
+    conn: &Connection,
+) -> crate::types::Result<Value> {
+    use crate::cypher::executor::exec_correlated_exists;
+    use crate::cypher::planner::plan;
+
+    let base_plan = plan(conn, stmt)?;
+
+    // Execute the subquery as a correlated subquery, pushing the outer
+    // record's bindings down so nested expressions can see them.
+    let found = exec_correlated_exists(conn, &base_plan, record)?;
     Ok(Value::Bool(found))
 }
 

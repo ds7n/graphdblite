@@ -281,7 +281,7 @@ comp_suffix = { comp_op ~ predicate_expr }
 
 // Predicate expressions: cmp_primary with optional IS NULL / IS NOT NULL / IN / string predicate suffix.
 predicate_expr = { cmp_primary ~ (is_not_null_suffix | is_null_suffix | in_suffix | string_pred_suffix)? }
-cmp_primary = { exists_subquery | pattern_predicate | add_expr | "(" ~ expr ~ ")" }
+cmp_primary = { exists_full_subquery | exists_subquery | pattern_predicate | add_expr | "(" ~ expr ~ ")" }
 pattern_predicate = { node_pattern ~ (rel_pattern ~ node_pattern)+ }
 is_not_null_suffix = { is_kw ~ not_kw ~ null_kw }
 is_null_suffix = { is_kw ~ null_kw }
@@ -295,6 +295,7 @@ null_kw = @{ ^"NULL" ~ !(ASCII_ALPHANUMERIC | "_") }
 not_kw = @{ ^"NOT" ~ !(ASCII_ALPHANUMERIC | "_") }
 
 exists_subquery = { ^"EXISTS" ~ "{" ~ pattern_list ~ where_clause? ~ "}" }
+exists_full_subquery = { ^"EXISTS" ~ "{" ~ ^"MATCH" ~ pattern_list ~ where_clause? ~ ((with_clause ~ (^"MATCH" ~ pattern_list ~ where_clause?)?) | unwind_clause | multi_set_clause | multi_delete_clause | multi_remove_clause | multi_create_clause | multi_merge_clause)* ~ (return_clause ~ order_by_clause? ~ skip_clause? ~ limit_clause?)? ~ "}" }
 
 case_expr = {
     ^"CASE"

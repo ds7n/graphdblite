@@ -398,6 +398,8 @@ pub enum Expr {
         patterns: Vec<Pattern>,
         where_clause: Option<Box<Expr>>,
     },
+    /// EXISTS { MATCH ... [WITH ...] RETURN ... } full existential subquery.
+    ExistsSubquery(Box<Statement>),
     /// Map literal: {key: expr, key2: expr2, ...}. Keys are preserved in
     /// source order for error messages; evaluation sorts them into a
     /// BTreeMap.

@@ -2427,7 +2427,15 @@ fn exec_correlated(
             let records = exec_correlated(conn, input, outer, ctx)?;
             let mut results = Vec::new();
             for rec in records {
-                if eval_predicate(predicate, &rec, conn)? {
+                // Merge outer bindings into the record so nested EXISTS
+                // predicates can see variables from enclosing scopes.
+                let mut merged = rec.clone();
+                for (k, v) in &outer.fields {
+                    if !merged.fields.contains_key(k) {
+                        merged.set(k.clone(), v.clone());
+                    }
+                }
+                if eval_predicate(predicate, &merged, conn)? {
                     results.push(rec);
                 }
             }
@@ -2468,9 +2476,159 @@ fn exec_correlated(
             Ok(results)
         }
 
+        // Project: push correlation into the input, then apply projection
+        // normally via the non-correlated exec path for the Project node alone.
+        LogicalOp::Project {
+            input,
+            items,
+            emit_compound,
+        } => {
+            let input_records = exec_correlated(conn, input, outer, ctx)?;
+            let mut results = Vec::new();
+            for rec in &input_records {
+                let mut projected = Record::new();
+                for item in items {
+                    match &item.expr {
+                        Expr::Star => {
+                            for (key, val) in &rec.fields {
+                                projected.set(key.clone(), val.clone());
+                            }
+                        }
+                        _ => {
+                            let val = crate::cypher::eval::eval_expr(&item.expr, rec, conn)?;
+                            let col = item
+                                .alias
+                                .clone()
+                                .or_else(|| {
+                                    if let Expr::Variable(v) = &item.expr {
+                                        Some(v.clone())
+                                    } else {
+                                        None
+                                    }
+                                })
+                                .unwrap_or_else(|| format!("{:?}", item.expr));
+                            projected.set(col, val);
+                            // Carry forward internal metadata for bound variables.
+                            if let Expr::Variable(v) = &item.expr {
+                                let alias = item.alias.as_deref().unwrap_or(v.as_str());
+                                for (key, val) in &rec.fields {
+                                    if key.starts_with(&format!("{v}.")) {
+                                        let suffix = &key[v.len()..];
+                                        projected.set(format!("{alias}{suffix}"), val.clone());
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                if *emit_compound {
+                    // For final RETURN, also build compound node/relationship values.
+                    let mut compound = Record::new();
+                    let bound_vars = compound_binding_vars(&projected);
+                    for var in &bound_vars {
+                        if let Some(cv) = build_compound_binding(&projected, var) {
+                            compound.set(var.clone(), cv);
+                        }
+                    }
+                    // Also carry non-compound columns.
+                    for (key, val) in &projected.fields {
+                        if !key.contains('.') && !bound_vars.contains(key) {
+                            compound.set(key.clone(), val.clone());
+                        }
+                    }
+                    results.push(compound);
+                } else {
+                    results.push(projected);
+                }
+            }
+            Ok(results)
+        }
+
+        // Aggregate: push correlation into the input, then aggregate.
+        LogicalOp::Aggregate {
+            input,
+            group_keys,
+            aggregates,
+        } => {
+            // Execute the input with correlation, then aggregate the results.
+            let records = exec_correlated(conn, input, outer, ctx)?;
+            exec_aggregate_over_records(conn, &records, group_keys, aggregates)
+        }
+
         // Fallback: execute normally (no correlation pushdown).
         _ => exec(conn, plan, ctx),
     }
+}
+
+/// Aggregate pre-computed records (used by correlated execution).
+/// Reuses the existing `compute_aggregate` function.
+fn exec_aggregate_over_records(
+    conn: &Connection,
+    records: &[Record],
+    group_keys: &[Expr],
+    aggregates: &[AggregateExpr],
+) -> Result<Vec<Record>> {
+    if group_keys.is_empty() {
+        // Global aggregation over all records.
+        let mut result = Record::new();
+        for agg in aggregates {
+            let val = compute_aggregate(agg, records, conn)?;
+            let alias = agg
+                .alias
+                .clone()
+                .unwrap_or_else(|| format!("{:?}", agg.function));
+            result.set(alias, val);
+        }
+        return Ok(vec![result]);
+    }
+
+    // Group by keys.
+    let mut groups: Vec<(Vec<Value>, Vec<Record>)> = Vec::new();
+    for rec in records {
+        let key: Vec<Value> = group_keys
+            .iter()
+            .map(|k| eval_expr(k, rec, conn).unwrap_or(Value::Null))
+            .collect();
+        if let Some(group) = groups.iter_mut().find(|(k, _)| k == &key) {
+            group.1.push(rec.clone());
+        } else {
+            groups.push((key, vec![rec.clone()]));
+        }
+    }
+
+    let mut results = Vec::new();
+    for (key_vals, group_recs) in &groups {
+        let mut result = Record::new();
+        // Set group key columns.
+        for (i, k) in group_keys.iter().enumerate() {
+            let col = match k {
+                Expr::Variable(v) => v.clone(),
+                _ => format!("{k:?}"),
+            };
+            result.set(col.clone(), key_vals[i].clone());
+            // Carry forward internal metadata for group keys.
+            if let Expr::Variable(v) = k {
+                if let Some(first) = group_recs.first() {
+                    for (fk, fv) in &first.fields {
+                        if fk.starts_with(&format!("{v}.")) {
+                            result.set(fk.clone(), fv.clone());
+                        }
+                    }
+                }
+            }
+        }
+        // Compute aggregates.
+        for agg in aggregates {
+            let val = compute_aggregate(agg, group_recs, conn)?;
+            let alias = agg
+                .alias
+                .clone()
+                .unwrap_or_else(|| format!("{:?}", agg.function));
+            result.set(alias, val);
+        }
+        results.push(result);
+    }
+    Ok(results)
 }
 
 /// Materialize a `PathValue` by resolving each node and each hop's edge.
@@ -2721,6 +2879,21 @@ fn compare_values_for_sort(a: &Value, b: &Value) -> std::cmp::Ordering {
 /// bindings.  Short-circuits on the first hit instead of materializing the
 /// entire result set, which is the key optimisation for EXISTS subqueries.
 ///
+/// Execute a plan as a correlated subquery, pushing the outer record's
+/// bindings down so inner scans and filters can see them. Returns true
+/// if at least one row is produced.
+///
+/// Strips the top-level projection/sort/limit layers since EXISTS only
+/// cares about row existence, not projected values.
+pub fn exec_correlated_exists(
+    conn: &Connection,
+    plan: &LogicalOp,
+    outer: &Record,
+) -> Result<bool> {
+    let rows = exec_correlated(conn, plan, outer, &ExecContext::default())?;
+    Ok(!rows.is_empty())
+}
+
 /// For leaf/pipeline operators we iterate one record at a time. For operators
 /// we don't special-case we fall back to `execute()` + linear scan.
 pub fn execute_first_match(

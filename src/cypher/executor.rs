@@ -221,9 +221,9 @@ fn exec(conn: &Connection, plan: &LogicalOp, ctx: &ExecContext) -> Result<Vec<Re
 
         LogicalOp::Delete {
             input,
-            variables,
+            exprs,
             detach,
-        } => exec_delete(conn, input, variables, *detach, ctx),
+        } => exec_delete(conn, input, exprs, *detach, ctx),
 
         LogicalOp::SetProperty { input, assignments } => {
             exec_set_property(conn, input, assignments, ctx)
@@ -1354,41 +1354,111 @@ fn exec_match_create(
 fn exec_delete(
     conn: &Connection,
     input: &LogicalOp,
-    variables: &[String],
+    exprs: &[Expr],
     detach: bool,
     ctx: &ExecContext,
 ) -> Result<Vec<Record>> {
     let mut records = exec(conn, input, ctx)?;
     for rec in &mut records {
-        for var in variables {
-            // Check if this is a relationship variable (has edge identity metadata).
-            let edge_src_key = format!("{var}.__src");
-            let edge_dst_key = format!("{var}.__dst");
-            let edge_type_key = format!("{var}.__type");
-            if let (Some(Value::I64(src)), Some(Value::I64(dst)), Some(Value::String(label))) = (
-                rec.get(&edge_src_key),
-                rec.get(&edge_dst_key),
-                rec.get(&edge_type_key),
-            ) {
-                edge::delete_edge(conn, NodeId(*src as u64), NodeId(*dst as u64), label)?;
-                // Mark entity as deleted for downstream access checks.
-                rec.set(format!("{var}.__deleted"), Value::Bool(true));
-            } else if let Some(Value::I64(id)) = rec.get(var) {
-                let node_id = NodeId(*id as u64);
-                if !detach && node::node_has_edges(conn, node_id)? {
-                    return Err(GraphError::constraint(format!(
-                        "DeleteConnectedNode: cannot delete node {} because it still has relationships. Use DETACH DELETE.",
-                        node_id
-                    )));
-                }
-                node::delete_node(conn, node_id)?;
-                // Mark entity as deleted for downstream access checks.
-                rec.set(format!("{var}.__deleted"), Value::Bool(true));
+        for expr in exprs {
+            // For simple variable references, use the compound-binding-aware path.
+            if let Expr::Variable(var) = expr {
+                delete_var_entity(conn, rec, var, detach)?;
+            } else {
+                // Evaluate the expression to get the entity value.
+                let val = eval_expr(expr, rec, conn)?;
+                delete_value_entity(conn, &val, detach)?;
             }
-            // Skip if value is Null (from OPTIONAL MATCH with no match).
         }
     }
     Ok(records)
+}
+
+/// Delete an entity bound to a variable name, handling compound bindings
+/// (node/edge metadata in the record) and marking deleted for downstream checks.
+fn delete_var_entity(
+    conn: &Connection,
+    rec: &mut Record,
+    var: &str,
+    detach: bool,
+) -> Result<()> {
+    // Check if this is a relationship variable (has edge identity metadata).
+    let edge_src_key = format!("{var}.__src");
+    let edge_dst_key = format!("{var}.__dst");
+    let edge_type_key = format!("{var}.__type");
+    if let (Some(Value::I64(src)), Some(Value::I64(dst)), Some(Value::String(label))) = (
+        rec.get(&edge_src_key),
+        rec.get(&edge_dst_key),
+        rec.get(&edge_type_key),
+    ) {
+        let _ = edge::delete_edge(conn, NodeId(*src as u64), NodeId(*dst as u64), label);
+        rec.set(format!("{var}.__deleted"), Value::Bool(true));
+    } else if let Some(Value::I64(id)) = rec.get(var) {
+        let node_id = NodeId(*id as u64);
+        if !detach && node::node_has_edges(conn, node_id)? {
+            return Err(GraphError::constraint(format!(
+                "DeleteConnectedNode: cannot delete node {} because it still has relationships. Use DETACH DELETE.",
+                node_id
+            )));
+        }
+        let _ = node::delete_node(conn, node_id);
+        rec.set(format!("{var}.__deleted"), Value::Bool(true));
+    } else if let Some(val) = rec.get(var).cloned() {
+        // Variable holds a materialized Node/Edge/Path value.
+        delete_value_entity(conn, &val, detach)?;
+    }
+    // Skip if value is Null (from OPTIONAL MATCH with no match).
+    Ok(())
+}
+
+/// Delete an entity from a Value (Node, Edge, Path, or I64 node ID).
+fn delete_value_entity(conn: &Connection, val: &Value, detach: bool) -> Result<()> {
+    match val {
+        Value::Node(n) => {
+            let node_id = n.id;
+            if !detach && node::node_has_edges(conn, node_id)? {
+                return Err(GraphError::constraint(format!(
+                    "DeleteConnectedNode: cannot delete node {} because it still has relationships. Use DETACH DELETE.",
+                    node_id
+                )));
+            }
+            let _ = node::delete_node(conn, node_id);
+        }
+        Value::Edge(e) => {
+            let _ = edge::delete_edge(conn, e.src, e.dst, &e.label);
+        }
+        Value::Path(p) => {
+            // Delete all edges first, then all nodes.
+            for e in &p.edges {
+                let _ = edge::delete_edge(conn, e.src, e.dst, &e.label);
+            }
+            for n in &p.nodes {
+                if detach {
+                    let _ = node::delete_node(conn, n.id);
+                } else if node::node_has_edges(conn, n.id)? {
+                    return Err(GraphError::constraint(format!(
+                        "DeleteConnectedNode: cannot delete node {} because it still has relationships. Use DETACH DELETE.",
+                        n.id
+                    )));
+                } else {
+                    let _ = node::delete_node(conn, n.id);
+                }
+            }
+        }
+        Value::I64(id) => {
+            let node_id = NodeId(*id as u64);
+            if !detach && node::node_has_edges(conn, node_id)? {
+                return Err(GraphError::constraint(format!(
+                    "DeleteConnectedNode: cannot delete node {} because it still has relationships. Use DETACH DELETE.",
+                    node_id
+                )));
+            }
+            let _ = node::delete_node(conn, node_id);
+        }
+        Value::Null => {} // OPTIONAL MATCH no-match
+        _ => {}
+    }
+    Ok(())
 }
 
 fn exec_set_property(
@@ -1700,24 +1770,20 @@ fn apply_merge_set_item_node(
             }
         }
         SetItem::MapMerge { variable: _, value } => {
-            let val = eval_expr(value, rec, conn)?;
-            if let Value::Map(map) = val {
-                for (k, v) in &map {
-                    node::set_node_property(conn, node_id, k, v.clone())?;
-                }
+            let map = resolve_to_map(value, rec, conn)?;
+            for (k, v) in &map {
+                node::set_node_property(conn, node_id, k, v.clone())?;
             }
         }
         SetItem::MapOverwrite { variable: _, value } => {
-            let val = eval_expr(value, rec, conn)?;
-            if let Value::Map(map) = val {
-                // Clear existing properties and set new ones.
-                let old = node::get_node(conn, node_id)?;
-                for key in old.properties.keys() {
-                    node::set_node_property(conn, node_id, key, Value::Null)?;
-                }
-                for (k, v) in &map {
-                    node::set_node_property(conn, node_id, k, v.clone())?;
-                }
+            let map = resolve_to_map(value, rec, conn)?;
+            // Clear existing properties and set new ones.
+            let old = node::get_node(conn, node_id)?;
+            for key in old.properties.keys() {
+                node::set_node_property(conn, node_id, key, Value::Null)?;
+            }
+            for (k, v) in &map {
+                node::set_node_property(conn, node_id, k, v.clone())?;
             }
         }
     }
@@ -1742,23 +1808,47 @@ fn apply_merge_set_item_edge(
             // Labels on edges are not standard Cypher; ignore.
         }
         SetItem::MapMerge { variable: _, value } => {
-            let val = eval_expr(value, rec, conn)?;
-            if let Value::Map(map) = val {
-                for (k, v) in &map {
-                    edge::set_edge_property(conn, src_id, dst_id, edge_type, k, v.clone())?;
-                }
+            let map = resolve_to_map(value, rec, conn)?;
+            for (k, v) in &map {
+                edge::set_edge_property(conn, src_id, dst_id, edge_type, k, v.clone())?;
             }
         }
         SetItem::MapOverwrite { variable: _, value } => {
-            let val = eval_expr(value, rec, conn)?;
-            if let Value::Map(map) = val {
-                for (k, v) in &map {
-                    edge::set_edge_property(conn, src_id, dst_id, edge_type, k, v.clone())?;
-                }
+            let map = resolve_to_map(value, rec, conn)?;
+            // For overwrite on edges, clear existing props then set new ones.
+            let old_props = edge::get_edge_properties(conn, src_id, dst_id, edge_type)?;
+            for key in old_props.keys() {
+                edge::set_edge_property(
+                    conn, src_id, dst_id, edge_type, key, Value::Null,
+                )?;
+            }
+            for (k, v) in &map {
+                edge::set_edge_property(conn, src_id, dst_id, edge_type, k, v.clone())?;
             }
         }
     }
     Ok(())
+}
+
+/// Resolve an expression to a property map. If the expression evaluates to a
+/// node ID, load that node's properties. If it evaluates to an edge, use the
+/// edge's properties. If it's already a map, use it directly.
+fn resolve_to_map(expr: &Expr, rec: &Record, conn: &Connection) -> Result<Properties> {
+    let val = eval_expr(expr, rec, conn)?;
+    match val {
+        Value::Map(map) => Ok(map.into_iter().collect()),
+        Value::Node(n) => Ok(n.properties),
+        Value::Edge(e) => Ok(e.properties),
+        Value::I64(id) => {
+            // Could be a node ID — try to load its properties.
+            match node::get_node(conn, NodeId(id as u64)) {
+                Ok(n) => Ok(n.properties),
+                Err(_) => Ok(Properties::new()),
+            }
+        }
+        Value::Null => Ok(Properties::new()),
+        _ => Ok(Properties::new()),
+    }
 }
 
 fn exec_merge(
@@ -1789,7 +1879,21 @@ fn exec_merge_node(
     let label = node_pat.labels.first().map(|s| s.as_str()).unwrap_or("");
     let alias = node_pat.variable.as_deref().unwrap_or("_merge");
 
-    let matched = find_merge_match(conn, label, &node_pat.properties)?;
+    // Pre-evaluate properties.
+    let dummy_rec = Record::new();
+    let mut props = Properties::new();
+    for (key, expr) in &node_pat.properties {
+        let val = eval_expr(expr, &dummy_rec, conn)?;
+        // Null property in MERGE is MergeReadOwnWrites.
+        if val == Value::Null {
+            return Err(GraphError::semantic(
+                "MergeReadOwnWrites: MERGE with null property value",
+            ));
+        }
+        props.insert(key.clone(), val);
+    }
+
+    let matched = find_merge_match_evaluated(conn, label, &props)?;
 
     match matched {
         Some(n) => {
@@ -1803,12 +1907,6 @@ fn exec_merge_node(
             Ok(vec![rec])
         }
         None => {
-            let mut props = Properties::new();
-            let dummy_rec = Record::new();
-            for (key, expr) in &node_pat.properties {
-                let val = eval_expr(expr, &dummy_rec, conn)?;
-                props.insert(key.clone(), val);
-            }
             let labels: Vec<String> = if label.is_empty() {
                 vec![]
             } else {
@@ -1858,15 +1956,32 @@ fn exec_merge_relationship(
     let src_id = find_or_create_merge_node(conn, src_label, &src_pat.properties)?;
     let dst_id = find_or_create_merge_node(conn, dst_label, &dst_pat.properties)?;
 
-    // Find or create the edge.
-    if !edge::edge_exists(conn, src_id, dst_id, &edge_type)? {
-        let mut props = Properties::new();
-        let dummy_rec = Record::new();
-        for (key, expr) in &rel.properties {
-            let val = eval_expr(expr, &dummy_rec, conn)?;
-            props.insert(key.clone(), val);
+    // Pre-evaluate edge properties and check for null.
+    let mut edge_props = Properties::new();
+    let dummy_rec = Record::new();
+    for (key, expr) in &rel.properties {
+        let val = eval_expr(expr, &dummy_rec, conn)?;
+        if val == Value::Null {
+            return Err(GraphError::semantic(
+                "MergeReadOwnWrites: MERGE with null property value",
+            ));
         }
-        edge::create_edge(conn, src_id, dst_id, &edge_type, props)?;
+        edge_props.insert(key.clone(), val);
+    }
+
+    // Find or create the edge (checking properties too).
+    let edge_match = if edge::edge_exists(conn, src_id, dst_id, &edge_type)? {
+        if edge_props.is_empty() {
+            true
+        } else {
+            let existing_props = edge::get_edge_properties(conn, src_id, dst_id, &edge_type)?;
+            edge_props.iter().all(|(k, v)| existing_props.get(k) == Some(v))
+        }
+    } else {
+        false
+    };
+    if !edge_match {
+        edge::create_edge(conn, src_id, dst_id, &edge_type, edge_props)?;
         let mut rec = Record::new();
         if let Some(ref v) = src_pat.variable {
             rec.set(v.clone(), Value::I64(src_id.0 as i64));
@@ -1906,16 +2021,21 @@ fn find_or_create_merge_node(
     label: &str,
     properties: &HashMap<String, Expr>,
 ) -> Result<NodeId> {
-    let matched = find_merge_match(conn, label, properties)?;
+    let dummy_rec = Record::new();
+    let mut props = Properties::new();
+    for (key, expr) in properties {
+        let val = eval_expr(expr, &dummy_rec, conn)?;
+        if val == Value::Null {
+            return Err(GraphError::semantic(
+                "MergeReadOwnWrites: MERGE with null property value",
+            ));
+        }
+        props.insert(key.clone(), val);
+    }
+    let matched = find_merge_match_evaluated(conn, label, &props)?;
     match matched {
         Some(n) => Ok(n.id),
         None => {
-            let mut props = Properties::new();
-            let dummy_rec = Record::new();
-            for (key, expr) in properties {
-                let val = eval_expr(expr, &dummy_rec, conn)?;
-                props.insert(key.clone(), val);
-            }
             let labels: Vec<String> = if label.is_empty() {
                 vec![]
             } else {
@@ -1953,9 +2073,15 @@ fn exec_match_merge(
             let mut props = Properties::new();
             for (key, expr) in &node_pat.properties {
                 let val = eval_expr(expr, rec, conn)?;
+                // Null property in MERGE is MergeReadOwnWrites.
+                if val == Value::Null {
+                    return Err(GraphError::semantic(
+                        "MergeReadOwnWrites: MERGE with null property value",
+                    ));
+                }
                 props.insert(key.clone(), val);
             }
-            let matched = find_merge_match(conn, label, &node_pat.properties)?;
+            let matched = find_merge_match_evaluated(conn, label, &props)?;
             let alias = node_pat.variable.as_deref().unwrap_or("_merge");
             let mut out_rec = rec.clone();
 
@@ -2014,6 +2140,10 @@ fn exec_match_merge(
         .as_deref()
         .ok_or_else(|| GraphError::semantic("MERGE relationship target must have a variable"))?;
     let edge_type = rel.rel_types.first().cloned().unwrap_or_default();
+    let undirected = matches!(
+        rel.direction,
+        crate::cypher::ast::RelDirection::Undirected
+    );
 
     for rec in &records {
         let src_id = match rec.get(src_var) {
@@ -2027,33 +2157,79 @@ fn exec_match_merge(
 
         let mut out_rec = rec.clone();
 
-        if !edge::edge_exists(conn, src_id, dst_id, &edge_type)? {
-            let mut props = Properties::new();
-            for (key, expr) in &rel.properties {
-                let val = eval_expr(expr, rec, conn)?;
-                props.insert(key.clone(), val);
+        // Pre-evaluate merge pattern edge properties.
+        let mut merge_edge_props = Properties::new();
+        for (key, expr) in &rel.properties {
+            let val = eval_expr(expr, rec, conn)?;
+            if val == Value::Null {
+                return Err(GraphError::semantic(
+                    "MergeReadOwnWrites: MERGE with null property value",
+                ));
             }
-            edge::create_edge(conn, src_id, dst_id, &edge_type, props)?;
+            merge_edge_props.insert(key.clone(), val);
+        }
+
+        // Check edge existence including property match.
+        // For undirected MERGE, check both directions.
+        let check_edge_match =
+            |s: NodeId, d: NodeId| -> Result<bool> {
+                if !edge::edge_exists(conn, s, d, &edge_type)? {
+                    return Ok(false);
+                }
+                if merge_edge_props.is_empty() {
+                    return Ok(true);
+                }
+                let existing_props =
+                    edge::get_edge_properties(conn, s, d, &edge_type)?;
+                Ok(merge_edge_props
+                    .iter()
+                    .all(|(k, v)| existing_props.get(k) == Some(v)))
+            };
+
+        // Find which direction matched (for binding the relationship).
+        let (edge_match, match_src, match_dst) =
+            if check_edge_match(src_id, dst_id)? {
+                (true, src_id, dst_id)
+            } else if undirected && check_edge_match(dst_id, src_id)? {
+                (true, dst_id, src_id)
+            } else {
+                (false, src_id, dst_id)
+            };
+
+        if !edge_match {
+            // For undirected MERGE, default to outgoing (src→dst).
+            edge::create_edge(
+                conn,
+                src_id,
+                dst_id,
+                &edge_type,
+                merge_edge_props,
+            )?;
             for item in on_create {
                 apply_merge_set_item_edge(conn, item, src_id, dst_id, &edge_type, rec)?;
             }
         } else {
             for item in on_match {
-                apply_merge_set_item_edge(conn, item, src_id, dst_id, &edge_type, rec)?;
+                apply_merge_set_item_edge(conn, item, match_src, match_dst, &edge_type, rec)?;
             }
         }
 
         // Bind the relationship variable (if any) so RETURN can reference it.
+        let (bind_src, bind_dst) = if edge_match {
+            (match_src, match_dst)
+        } else {
+            (src_id, dst_id)
+        };
         if let Some(ref r_alias) = rel.variable {
             out_rec.set(r_alias.clone(), Value::String(edge_type.clone()));
-            out_rec.set(format!("{r_alias}.__src"), Value::I64(src_id.0 as i64));
-            out_rec.set(format!("{r_alias}.__dst"), Value::I64(dst_id.0 as i64));
+            out_rec.set(format!("{r_alias}.__src"), Value::I64(bind_src.0 as i64));
+            out_rec.set(format!("{r_alias}.__dst"), Value::I64(bind_dst.0 as i64));
             out_rec.set(
                 format!("{r_alias}.__type"),
                 Value::String(edge_type.clone()),
             );
             // Include edge properties in the record.
-            let edge_props = edge::get_edge_properties(conn, src_id, dst_id, &edge_type)?;
+            let edge_props = edge::get_edge_properties(conn, bind_src, bind_dst, &edge_type)?;
             for (key, val) in &edge_props {
                 out_rec.set(format!("{r_alias}.{key}"), val.clone());
             }
@@ -2836,51 +3012,77 @@ fn exec_shortest_path(
     Ok(results)
 }
 
-/// Find a node matching a MERGE pattern, using index lookup when available.
-fn find_merge_match(
+/// Find a node matching label + pre-evaluated property values.
+fn find_merge_match_evaluated(
     conn: &Connection,
     label: &str,
-    properties: &HashMap<String, Expr>,
+    properties: &Properties,
 ) -> Result<Option<crate::types::Node>> {
-    // Try to find an indexed property with a literal value.
+    // Try to find an indexed property.
     let indexes = index::list_indexes_for_label(conn, label)?;
     let indexed_props: Vec<&str> = indexes.iter().map(|(_, p)| p.as_str()).collect();
 
-    for (key, expr) in properties {
-        if let Expr::Literal(lit) = expr {
-            if indexed_props.contains(&key.as_str()) {
-                let value = literal_to_value(lit);
-                let ids = index::index_lookup(conn, label, key, &value)?;
-                // Filter candidates by remaining properties.
-                for id in ids {
-                    let n = node::get_node(conn, id)?;
-                    let all_match = properties.iter().all(|(k, e)| {
-                        let expected = match e {
-                            Expr::Literal(l) => literal_to_value(l),
-                            _ => return false,
-                        };
-                        n.properties.get(k) == Some(&expected)
-                    });
-                    if all_match {
-                        return Ok(Some(n));
-                    }
+    for (key, value) in properties {
+        if indexed_props.contains(&key.as_str()) {
+            let ids = index::index_lookup(conn, label, key, value)?;
+            // Filter candidates by remaining properties.
+            for id in ids {
+                let n = node::get_node(conn, id)?;
+                let all_match = properties.iter().all(|(k, expected)| {
+                    n.properties.get(k) == Some(expected)
+                });
+                if all_match {
+                    return Ok(Some(n));
                 }
-                return Ok(None);
             }
+            return Ok(None);
         }
     }
 
     // No index available — fall back to label scan.
     let existing = node::find_nodes_by_label(conn, label)?;
     Ok(existing.into_iter().find(|n| {
-        properties.iter().all(|(key, expr)| {
-            let expected = match expr {
-                Expr::Literal(lit) => literal_to_value(lit),
-                _ => return false,
-            };
-            n.properties.get(key) == Some(&expected)
+        properties.iter().all(|(key, expected)| {
+            n.properties.get(key) == Some(expected)
         })
     }))
+}
+
+/// Find ALL nodes matching label + pre-evaluated property values.
+#[allow(dead_code)]
+fn find_merge_matches_evaluated(
+    conn: &Connection,
+    label: &str,
+    properties: &Properties,
+) -> Result<Vec<crate::types::Node>> {
+    // Try indexed lookup first.
+    let indexes = index::list_indexes_for_label(conn, label)?;
+    let indexed_props: Vec<&str> = indexes.iter().map(|(_, p)| p.as_str()).collect();
+
+    for (key, value) in properties {
+        if indexed_props.contains(&key.as_str()) {
+            let ids = index::index_lookup(conn, label, key, value)?;
+            let mut matches = Vec::new();
+            for id in ids {
+                let n = node::get_node(conn, id)?;
+                let all_match = properties.iter().all(|(k, expected)| {
+                    n.properties.get(k) == Some(expected)
+                });
+                if all_match {
+                    matches.push(n);
+                }
+            }
+            return Ok(matches);
+        }
+    }
+
+    // No index — label scan.
+    let existing = node::find_nodes_by_label(conn, label)?;
+    Ok(existing.into_iter().filter(|n| {
+        properties.iter().all(|(key, expected)| {
+            n.properties.get(key) == Some(expected)
+        })
+    }).collect())
 }
 
 pub(crate) fn literal_to_value(lit: &LiteralValue) -> Value {

@@ -50,7 +50,7 @@ pub enum Clause {
         items: Vec<RemoveItem>,
     },
     Delete {
-        variables: Vec<String>,
+        exprs: Vec<Expr>,
         detach: bool,
     },
 }
@@ -134,7 +134,7 @@ pub struct DeleteStatement {
     pub optional_patterns: Vec<OptionalMatch>,
     pub where_clause: Option<Expr>,
     pub detach: bool,
-    pub variables: Vec<String>,
+    pub exprs: Vec<Expr>,
     pub return_clause: Option<ReturnClause>,
     pub order_by: Vec<SortItem>,
     pub skip: Option<Expr>,

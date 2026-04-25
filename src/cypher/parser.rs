@@ -427,21 +427,21 @@ fn parse_multi_clause(
             }
             Rule::multi_delete_clause => {
                 let mut detach = false;
-                let mut variables = Vec::new();
+                let mut exprs = Vec::new();
                 for child in inner.into_inner() {
                     match child.as_rule() {
                         Rule::detach_keyword => detach = true,
-                        Rule::ident_list => {
-                            for id in child.into_inner() {
-                                if id.as_rule() == Rule::ident {
-                                    variables.push(strip_backticks(id.as_str()).to_string());
+                        Rule::delete_expr_list => {
+                            for expr_pair in child.into_inner() {
+                                if expr_pair.as_rule() == Rule::expr {
+                                    exprs.push(parse_expr(expr_pair)?);
                                 }
                             }
                         }
                         _ => {}
                     }
                 }
-                clauses.push(Clause::Delete { variables, detach });
+                clauses.push(Clause::Delete { exprs, detach });
             }
             Rule::return_clause => return_clause = Some(parse_return(inner)?),
             Rule::order_by_clause => order_by = parse_order_by(inner)?,
@@ -592,7 +592,7 @@ fn parse_delete(pair: pest::iterators::Pair<Rule>) -> crate::types::Result<Delet
     let mut optional_patterns = Vec::new();
     let mut where_clause = None;
     let mut detach = false;
-    let mut variables = Vec::new();
+    let mut exprs = Vec::new();
     let mut return_clause = None;
     let mut order_by = Vec::new();
     let mut skip = None;
@@ -606,10 +606,10 @@ fn parse_delete(pair: pest::iterators::Pair<Rule>) -> crate::types::Result<Delet
             }
             Rule::where_clause => where_clause = Some(parse_where(inner)?),
             Rule::detach_keyword => detach = true,
-            Rule::ident_list => {
-                for id in inner.into_inner() {
-                    if id.as_rule() == Rule::ident {
-                        variables.push(strip_backticks(id.as_str()).to_string());
+            Rule::delete_expr_list => {
+                for expr_pair in inner.into_inner() {
+                    if expr_pair.as_rule() == Rule::expr {
+                        exprs.push(parse_expr(expr_pair)?);
                     }
                 }
             }
@@ -626,7 +626,7 @@ fn parse_delete(pair: pest::iterators::Pair<Rule>) -> crate::types::Result<Delet
         optional_patterns,
         where_clause,
         detach,
-        variables,
+        exprs,
         return_clause,
         order_by,
         skip,
@@ -2918,7 +2918,7 @@ pub fn resolve_params(
                     .map(|e| resolve_expr(e, params))
                     .transpose()?,
                 detach: d.detach,
-                variables: d.variables.clone(),
+                exprs: d.exprs.iter().map(|e| resolve_expr(e, params)).collect::<crate::types::Result<Vec<_>>>()?,
                 return_clause,
                 order_by,
                 skip,
@@ -3171,8 +3171,8 @@ fn resolve_clause(
         Clause::Remove { items } => Ok(Clause::Remove {
             items: items.clone(),
         }),
-        Clause::Delete { variables, detach } => Ok(Clause::Delete {
-            variables: variables.clone(),
+        Clause::Delete { exprs, detach } => Ok(Clause::Delete {
+            exprs: exprs.iter().map(|e| resolve_expr(e, params)).collect::<crate::types::Result<Vec<_>>>()?,
             detach: *detach,
         }),
     }

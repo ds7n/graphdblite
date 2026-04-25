@@ -60,11 +60,12 @@ multi_clause_any = _{
 
 multi_match_clause = { ^"MATCH" ~ pattern_list ~ where_clause? ~ optional_match_clause* }
 multi_create_clause = { ^"CREATE" ~ create_pattern_list }
-multi_merge_clause = { ^"MERGE" ~ pattern_item ~ on_create_clause? ~ on_match_clause? }
+multi_merge_clause = { ^"MERGE" ~ pattern_item ~ (on_create_clause ~ on_match_clause? | on_match_clause ~ on_create_clause?)? }
 multi_unwind_clause = { ^"UNWIND" ~ expr ~ ^"AS" ~ ident }
 multi_set_clause = { ^"SET" ~ assignment_list }
 multi_remove_clause = { ^"REMOVE" ~ remove_item_list }
-multi_delete_clause = { detach_keyword? ~ ^"DELETE" ~ ident_list }
+multi_delete_clause = { detach_keyword? ~ ^"DELETE" ~ delete_expr_list }
+delete_expr_list = { expr ~ ("," ~ expr)* }
 
 // === Standalone RETURN (no preceding MATCH) ===
 
@@ -159,8 +160,7 @@ match_merge_stmt = {
     ^"MATCH" ~ pattern_list ~
     where_clause? ~
     ^"MERGE" ~ pattern_item ~
-    on_create_clause? ~
-    on_match_clause? ~
+    (on_create_clause ~ on_match_clause? | on_match_clause ~ on_create_clause?)? ~
     (return_clause ~ order_by_clause? ~ skip_clause? ~ limit_clause?)?
 }
 
@@ -169,7 +169,7 @@ match_merge_stmt = {
 delete_stmt = {
     (^"MATCH" ~ pattern_list ~ optional_match_clause* | optional_match_clause+) ~
     where_clause? ~
-    detach_keyword? ~ ^"DELETE" ~ ident_list ~
+    detach_keyword? ~ ^"DELETE" ~ delete_expr_list ~
     (return_clause ~ order_by_clause? ~ skip_clause? ~ limit_clause?)?
 }
 
@@ -213,8 +213,7 @@ remove_label = { ident ~ label_spec }
 
 merge_stmt = {
     ^"MERGE" ~ pattern_item ~
-    on_create_clause? ~
-    on_match_clause? ~
+    (on_create_clause ~ on_match_clause? | on_match_clause ~ on_create_clause?)? ~
     (return_clause ~ order_by_clause? ~ skip_clause? ~ limit_clause?)?
 }
 
@@ -378,7 +377,7 @@ variable = { ident }
 star = { "*" }
 
 function_call = { function_name ~ "(" ~ function_args ~ ")" }
-function_name = @{ ^"count" | ^"sum" | ^"avg" | ^"min" | ^"max" | ^"collect" | ^"percentileDisc" | ^"percentileCont" | ^"stDev" | ^"stDevP" | ^"length" | ^"nodes" | ^"relationships" | ^"toLower" | ^"toUpper" | ^"toBoolean" | ^"toString" | ^"toInteger" | ^"toFloat" | ^"keys" | ^"labels" | ^"id" | ^"coalesce" | ^"type" | ^"head" | ^"tail" | ^"last" | ^"size" | ^"abs" | ^"sqrt" | ^"sign" | ^"ceil" | ^"floor" | ^"round" | ^"log" | ^"log10" | ^"exp" | ^"e" | ^"pi" | ^"substring" | ^"left" | ^"right" | ^"lTrim" | ^"rTrim" | ^"replace" | ^"split" | ^"trim" | ^"reverse" | ^"range" | ^"rand" | ^"properties" | ^"localdatetime" | ^"localtime" | ^"datetime" | ^"date" | ^"duration" | ^"time" | ^"startNode" | ^"endNode" | ^"exists" }
+function_name = @{ ^"count" | ^"sum" | ^"avg" | ^"min" | ^"max" | ^"collect" | ^"percentileDisc" | ^"percentileCont" | ^"stDev" | ^"stDevP" | ^"length" | ^"nodes" | ^"relationships" | ^"toLower" | ^"toUpper" | ^"toBoolean" | ^"toString" | ^"toInteger" | ^"toFloat" | ^"keys" | ^"labels" | ^"id" | ^"coalesce" | ^"type" | ^"head" | ^"tail" | ^"last" | ^"size" | ^"abs" | ^"sqrt" | ^"sign" | ^"ceil" | ^"floor" | ^"round" | ^"log10" | ^"log" | ^"startNode" | ^"endNode" | ^"exists" | ^"exp" | ^"e" | ^"pi" | ^"substring" | ^"left" | ^"right" | ^"lTrim" | ^"rTrim" | ^"replace" | ^"split" | ^"trim" | ^"reverse" | ^"range" | ^"rand" | ^"properties" | ^"localdatetime" | ^"localtime" | ^"datetime" | ^"date" | ^"duration" | ^"time" }
 function_args = { star | distinct_keyword ~ expr_list | expr_list | "" }
 expr_list = { expr ~ ("," ~ expr)* }
 
@@ -403,11 +402,11 @@ function_name_word = _{
     ^"length" | ^"nodes" | ^"relationships" |
     ^"toLower" | ^"toUpper" | ^"toBoolean" | ^"toString" | ^"toInteger" | ^"toFloat" |
     ^"keys" | ^"labels" | ^"id" | ^"coalesce" | ^"type" | ^"head" | ^"tail" | ^"last" | ^"size" |
-    ^"abs" | ^"sqrt" | ^"sign" | ^"ceil" | ^"floor" | ^"round" | ^"log" | ^"log10" | ^"exp" | ^"e" | ^"pi" |
+    ^"abs" | ^"sqrt" | ^"sign" | ^"ceil" | ^"floor" | ^"round" | ^"log10" | ^"log" |
+    ^"startNode" | ^"endNode" | ^"exists" | ^"exp" | ^"e" | ^"pi" |
     ^"substring" | ^"left" | ^"right" | ^"lTrim" | ^"rTrim" | ^"replace" | ^"split" | ^"trim" | ^"reverse" |
     ^"range" | ^"rand" | ^"properties" |
-    ^"localdatetime" | ^"localtime" | ^"datetime" | ^"date" | ^"duration" | ^"time" |
-    ^"startNode" | ^"endNode" | ^"exists"
+    ^"localdatetime" | ^"localtime" | ^"datetime" | ^"date" | ^"duration" | ^"time"
 }
 plain_ident = @{ !keyword ~ (ASCII_ALPHA | "_") ~ (ASCII_ALPHANUMERIC | "_")* }
 backtick_ident = @{ "`" ~ (!"`" ~ ANY)+ ~ "`" }

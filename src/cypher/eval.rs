@@ -1062,7 +1062,9 @@ fn eval_function_call(
                             if st == 0 {
                                 return Err(GraphError::Query(QueryError::ArgumentError {
                                     phase: QueryPhase::Runtime,
-                                    message: "NumberOutOfRange: step argument to range() cannot be zero".to_string(),
+                                    message:
+                                        "NumberOutOfRange: step argument to range() cannot be zero"
+                                            .to_string(),
                                 }));
                             }
                             st

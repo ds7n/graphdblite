@@ -459,7 +459,11 @@ fn exec_expand(
                         for (key, _val) in &new_rec.fields {
                             if key.ends_with(".__src") && key != &format!("{r_alias}.__src") {
                                 let other_alias = &key[..key.len() - 6];
-                                if let (Some(Value::I64(os)), Some(Value::I64(od)), Some(Value::String(ot))) = (
+                                if let (
+                                    Some(Value::I64(os)),
+                                    Some(Value::I64(od)),
+                                    Some(Value::String(ot)),
+                                ) = (
                                     new_rec.get(key),
                                     new_rec.get(&format!("{other_alias}.__dst")),
                                     new_rec.get(&format!("{other_alias}.__type")),

@@ -341,7 +341,11 @@ impl<'a> RecordIter for ExpandIter<'a> {
                     for (key, _) in &new_rec.fields {
                         if key.ends_with(".__src") && !key.starts_with(&format!("{r_alias}.")) {
                             let oa = &key[..key.len() - 6];
-                            if let (Some(Value::I64(os)), Some(Value::I64(od)), Some(Value::String(ot))) = (
+                            if let (
+                                Some(Value::I64(os)),
+                                Some(Value::I64(od)),
+                                Some(Value::String(ot)),
+                            ) = (
                                 new_rec.get(key),
                                 new_rec.get(&format!("{oa}.__dst")),
                                 new_rec.get(&format!("{oa}.__type")),

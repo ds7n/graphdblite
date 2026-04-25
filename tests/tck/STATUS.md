@@ -1,19 +1,19 @@
 # TCK Conformance Status
 
-Last updated: 2026-04-23
+Last updated: 2026-04-25
 
 ## Current pass rate
 
 Full openCypher TCK vendored (220 feature files, commit `677cbaf`).
 
 ```
-186 features parsed (1 parse error: Match5.feature)
-3469 total scenario instances running
-3397 passed
+187 features parsed (1 parse error: Match5.feature)
+3529 total scenario instances running
+3457 passed
   72 skipped (cucumber-level)
- 219 skiplisted (known failures)
+ 182 skiplisted (known failures)
  ────
-3397/3616 unique scenarios passing (94.0% of total, 95.8% of non-framework-skipped)
+3457/3639 unique scenarios passing (95.0% of total, 97.4% of non-framework-skipped)
 ```
 
 ## Pass rate by area
@@ -71,9 +71,9 @@ Regenerate with: `uv run tests/tck/analyze_blockers.py`
 
 | Sole | Impact | Construct |
 |-----:|-------:|-----------|
-| 34 | 82 | write-result (CREATE/MERGE ... RETURN) |
-| 9 | 36 | error validation |
-| 2 | 8 | CREATE (no RETURN) |
+| 34 | 76 | write-result (CREATE/MERGE ... RETURN) |
+| 9 | 22 | error validation |
+| 2 | 3 | CREATE (no RETURN) |
 | 2 | 7 | temporal types |
 | 1 | 6 | aggregation (non-count) |
 | 1 | 3 | list indexing [n] |
@@ -83,16 +83,14 @@ Regenerate with: `uv run tests/tck/analyze_blockers.py`
 
 | Impact | Construct |
 |-------:|-----------|
-| 82 | write-result (CREATE/MERGE ... RETURN) |
-| 36 | error validation |
-| 12 | MERGE |
+| 76 | write-result (CREATE/MERGE ... RETURN) |
+| 22 | error validation |
 | 9 | var-length rel `*` |
-| 8 | CREATE (no RETURN) |
-| 8 | DELETE/DETACH DELETE |
-| 8 | ORDER BY |
 | 7 | temporal types |
 | 6 | aggregation (non-count) |
-| 6 | SET property/label |
+| 5 | MERGE |
+| 5 | ORDER BY |
+| 5 | SET property/label |
 
 ### Zero-blocker scenarios (2)
 
@@ -100,11 +98,20 @@ Regenerate with: `uv run tests/tck/analyze_blockers.py`
 
 ## Skiplist
 
-`skiplist.txt` lists 219 known-failing `Feature::Scenario` pairs.
+`skiplist.txt` lists 182 known-failing `Feature::Scenario` pairs.
 The harness filters these out and exits non-zero only if a *non-skiplisted*
 scenario fails — making the TCK a regression gate.
 
 ## History
+
+### Phase 27 — MERGE + DELETE execution, error validation (2026-04-25)
+
+- [x] Error validation: UndefinedVariable, NoSingleRelationshipType, VariableAlreadyBound, InvalidAggregation, VariableTypeConflict, DeletedEntityAccess, DeleteConnectedNode
+- [x] MERGE: undirected relationship matching, property evaluation, null property rejection, ON CREATE/MATCH map operations
+- [x] DELETE from expressions: grammar+executor support for DELETE of list/map/path items
+- [x] startNode()/endNode() function implementation
+- [x] Grammar: ON CREATE/ON MATCH clause order flexibility
+- Result: 3397 → 3457 passing scenarios (+60), skiplist 219 → 182
 
 ### Phase 25 — Pattern comprehension, temporal fixes, grammar batch (2026-04-23)
 

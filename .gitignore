@@ -27,5 +27,7 @@ bindings/python/python/graphdblite/*.so
 bindings/python/python/graphdblite/*.dylib
 bindings/python/python/graphdblite/__pycache__/
 
-# Plans (working docs, not tracked)
+# Working docs (not tracked)
 plans/
+TODO.md
+CLAUDE.md

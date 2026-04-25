@@ -207,7 +207,7 @@ pub fn plan(conn: &Connection, stmt: &Statement) -> crate::types::Result<Logical
 
 fn plan_match(conn: &Connection, stmt: &MatchStatement) -> crate::types::Result<LogicalOp> {
     // Validate variable-type consistency across patterns before planning.
-    let var_types = validate_variable_types(&stmt.patterns)?;
+    let mut var_types = validate_variable_types(&stmt.patterns)?;
 
     // Validate function argument types against known variable kinds.
     for item in &stmt.return_clause.items {
@@ -280,7 +280,10 @@ fn plan_match(conn: &Connection, stmt: &MatchStatement) -> crate::types::Result<
             IntermediateClause::With(with) => {
                 op = plan_with(conn, op, with)?;
                 // WITH resets scope to only the projected aliases.
+                // Also reset variable type tracking — WITH starts a new scope
+                // where variables can be reused with different types.
                 scope_vars.clear();
+                var_types.clear();
                 for item in &with.items {
                     if let Expr::Star = &item.expr {
                         // WITH * keeps all prior variables in scope.
@@ -301,6 +304,9 @@ fn plan_match(conn: &Connection, stmt: &MatchStatement) -> crate::types::Result<
                 scope_vars.insert(unwind.alias.clone());
             }
             IntermediateClause::Match(im) => {
+                // Validate variable-type consistency for consecutive MATCHes
+                // (not separated by WITH, which resets scope).
+                validate_variable_types_with_map(&im.patterns, &mut var_types)?;
                 op = plan_intermediate_match_with_scope(conn, op, im, &scope_vars)?;
                 scope_vars.extend(collect_pattern_variables(&im.patterns));
                 for opt in &im.optional_patterns {
@@ -1588,17 +1594,33 @@ pub fn plan_patterns(conn: &Connection, patterns: &[Pattern]) -> crate::types::R
         regular = reordered;
     }
 
-    // Build cross-product chain from regular patterns.
+    // Build join chain from regular patterns.
+    // Use CorrelatedJoin when patterns share variables (e.g.
+    // `(a)-[:A]->(b), (b)-[:B]->(a)`) so the shared variables are
+    // bound from the left side. Use CrossProduct for independent patterns.
     let mut op: Option<LogicalOp> = None;
+    let mut bound_vars: HashSet<String> = HashSet::new();
     for pattern in &regular {
         let right = plan_single_pattern(conn, pattern)?;
+        let pattern_vars = collect_pattern_variables(std::slice::from_ref(*pattern));
+        let shared = pattern_vars.intersection(&bound_vars).count() > 0;
         op = Some(match op.take() {
             None => right,
-            Some(left) => LogicalOp::CrossProduct {
-                left: Box::new(left),
-                right: Box::new(right),
-            },
+            Some(left) => {
+                if shared {
+                    LogicalOp::CorrelatedJoin {
+                        input: Box::new(left),
+                        right: Box::new(right),
+                    }
+                } else {
+                    LogicalOp::CrossProduct {
+                        left: Box::new(left),
+                        right: Box::new(right),
+                    }
+                }
+            }
         });
+        bound_vars.extend(pattern_vars);
     }
 
     // Apply shortest-path patterns last (they need bound variables).
@@ -2435,6 +2457,9 @@ fn plan_optional_match(
 /// Plan a single pattern: (a:Label)-[:TYPE]->(b:Label)
 fn plan_single_pattern(conn: &Connection, pattern: &Pattern) -> crate::types::Result<LogicalOp> {
     let mut op: Option<LogicalOp> = None;
+    // Track node aliases already introduced so we can add identity filters
+    // when a variable reappears (e.g. cyclic pattern `(a)-[:R]->(b)-[:S]->(a)`).
+    let mut seen_node_aliases: HashSet<String> = HashSet::new();
 
     let mut i = 0;
     while i < pattern.elements.len() {
@@ -2449,6 +2474,7 @@ fn plan_single_pattern(conn: &Connection, pattern: &Pattern) -> crate::types::Re
 
                     let scan = plan_node_scan(conn, node, &alias)?;
                     op = Some(scan);
+                    seen_node_aliases.insert(alias);
                 }
                 // Subsequent nodes after a relationship are handled in the rel branch.
                 i += 1;
@@ -2539,6 +2565,8 @@ fn plan_single_pattern(conn: &Connection, pattern: &Pattern) -> crate::types::Re
                         });
                     }
                 }
+
+                seen_node_aliases.insert(dst_alias);
 
                 i += 2; // skip rel + dst node
             }

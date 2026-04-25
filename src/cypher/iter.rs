@@ -288,8 +288,20 @@ impl<'a> RecordIter for ExpandIter<'a> {
                 )?
             };
 
+            // If the destination alias is already bound (cyclic pattern),
+            // only keep expansions matching the bound node.
+            let bound_dst = rec.get(&self.dst_alias).and_then(|v| match v {
+                Value::I64(id) => Some(NodeId(*id as u64)),
+                _ => None,
+            });
+
             let mut expanded = Vec::with_capacity(dst_ids.len());
             for dst_id in dst_ids {
+                if let Some(required) = bound_dst {
+                    if dst_id != required {
+                        continue;
+                    }
+                }
                 let dst_node = node::get_node(self.conn, dst_id)?;
                 let mut new_rec = rec.clone();
                 new_rec.set(self.dst_alias.clone(), Value::I64(dst_id.0 as i64));
@@ -319,6 +331,33 @@ impl<'a> RecordIter for ExpandIter<'a> {
                         Direction::Incoming => (dst_id, src_id),
                         _ => (src_id, dst_id),
                     };
+
+                    // Relationship uniqueness: skip if another named rel in
+                    // this record already uses the same edge. Normalize to
+                    // (min, max, type) for direction-independent comparison.
+                    let (es, ed) = (edge_src.0 as i64, edge_dst.0 as i64);
+                    let ek = (es.min(ed), es.max(ed), label);
+                    let mut dup = false;
+                    for (key, _) in &new_rec.fields {
+                        if key.ends_with(".__src") && !key.starts_with(&format!("{r_alias}.")) {
+                            let oa = &key[..key.len() - 6];
+                            if let (Some(Value::I64(os)), Some(Value::I64(od)), Some(Value::String(ot))) = (
+                                new_rec.get(key),
+                                new_rec.get(&format!("{oa}.__dst")),
+                                new_rec.get(&format!("{oa}.__type")),
+                            ) {
+                                let ok = ((*os).min(*od), (*os).max(*od), ot.as_str());
+                                if ok == ek {
+                                    dup = true;
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                    if dup {
+                        continue;
+                    }
+
                     new_rec.set(format!("{r_alias}.__src"), Value::I64(edge_src.0 as i64));
                     new_rec.set(format!("{r_alias}.__dst"), Value::I64(edge_dst.0 as i64));
                     new_rec.set(

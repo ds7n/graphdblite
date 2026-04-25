@@ -5,9 +5,6 @@ Call1 - Basic procedure calling::[13] Standalone call to unknown procedure shoul
 Call1 - Basic procedure calling::[14] In-query call to unknown procedure should fail
 Comparison1 - Equality::[14] Direction of traversed relationship is not significant for path equality, simple
 Comparison2 - Half-bounded Range::[3] Comparing across types yields null, except numbers
-CountingSubgraphMatches1 - Matching subgraph patterns and count the number of matches::[10] Mixing directed and undirected pattern parts with self-relationship, count
-CountingSubgraphMatches1 - Matching subgraph patterns and count the number of matches::[11] Mixing directed and undirected pattern parts with self-relationship, undirected count
-CountingSubgraphMatches1 - Matching subgraph patterns and count the number of matches::[9] Counting directed self-relationships
 Create3 - Interoperation with other clauses::[3] MATCH-CREATE-WITH-CREATE
 Create3 - Interoperation with other clauses::[7] WITH-CREATE: Nodes are not created when aliases are applied to variable names multiple times
 Create4 - Large Create Query::[2] Many CREATE clauses
@@ -36,18 +33,7 @@ Map2 - Dynamic Value Access::[7] Fail at runtime when trying to index into a map
 Match1 - Match nodes::[11] Fail when matching a node variable bound to a value
 Match2 - Match relationships::[13] Fail when matching a relationship variable bound to a value
 Match2 - Match relationships::[7] Matching twice with conflicting relationship types on same relationship
-Match3 - Match fixed length patterns::[10] Matching using self-referencing pattern returns no result
-Match3 - Match fixed length patterns::[15] Mixing directed and undirected pattern parts with self-relationship, simple
-Match3 - Match fixed length patterns::[16] Mixing directed and undirected pattern parts with self-relationship, undirected
-Match3 - Match fixed length patterns::[17] Handling cyclic patterns
-Match3 - Match fixed length patterns::[18] Handling cyclic patterns when separated into two parts
-Match3 - Match fixed length patterns::[19] Two bound nodes pointing to the same node
-Match3 - Match fixed length patterns::[20] Three bound nodes pointing to the same node
-Match3 - Match fixed length patterns::[21] Three bound nodes pointing to the same node with extra connections
-Match3 - Match fixed length patterns::[22] Returning bound nodes that are not part of the pattern
-Match3 - Match fixed length patterns::[23] Matching disconnected patterns
 Match3 - Match fixed length patterns::[30] Fail when using a list or nodes as a node
-Match3 - Match fixed length patterns::[5] Return two subgraphs with bound undirected relationship
 Match3 - Match fixed length patterns::[8] Matching using relationship predicate with multiples of the same type
 Match4 - Match variable length patterns scenarios::[4] Matching longer variable length paths
 Match4 - Match variable length patterns scenarios::[5] Matching variable length pattern with property predicate
@@ -70,7 +56,6 @@ Match7 - Optional match::[11] Return two subgraphs with bound undirected relatio
 Match7 - Optional match::[12] Variable length optional relationships
 Match7 - Optional match::[14] Variable length optional relationships with length predicates
 Match8 - Match clause interoperation with other clauses::[2] Counting rows after MATCH, MERGE, OPTIONAL MATCH
-Match8 - Match clause interoperation with other clauses::[3] Matching and disregarding output, then matching again
 Match9 - Match deprecated scenarios::[1] Variable length relationship variables are lists of relationships
 Match9 - Match deprecated scenarios::[9] Optionally matching named paths with variable length patterns
 MatchWhere2 - Filter multiple variables::[1] Filter nodes with conjunctive two-part property predicate on multi variables with multiple bindings
@@ -164,3 +149,10 @@ WithOrderBy4 - Order by in combination with projection and aliasing::[8] Sort by
 WithSkipLimit2 - Limit::[2] Handle dependencies across WITH with LIMIT
 WithWhere2 - Filter multiple variables::[1] Filter nodes with conjunctive two-part property predicate on multi variables with multiple bindings
 WithWhere2 - Filter multiple variables::[2] Filter node with conjunctive multi-part property predicates on multi variables with multiple bindings
+MatchWhere1 - Filter single variable::[14] Fail when filtering path with property predicate
+Match3 - Match fixed length patterns::[5] Return two subgraphs with bound undirected relationship
+Match3 - Match fixed length patterns::[20] Three bound nodes pointing to the same node
+Match3 - Match fixed length patterns::[21] Three bound nodes pointing to the same node with extra connections
+Match8 - Match clause interoperation with other clauses::[3] Matching and disregarding output, then matching again
+CountingSubgraphMatches1 - Matching subgraph patterns and count the number of matches::[10] Mixing directed and undirected pattern parts with self-relationship, count
+CountingSubgraphMatches1 - Matching subgraph patterns and count the number of matches::[11] Mixing directed and undirected pattern parts with self-relationship, undirected count

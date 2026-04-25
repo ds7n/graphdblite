@@ -99,7 +99,7 @@ with_stmt = {
 
 match_stmt = {
     match_part ~
-    ((with_clause ~ match_part?) | unwind_clause)* ~
+    (match_part | (with_clause ~ match_part?) | unwind_clause)* ~
     return_clause ~
     order_by_clause? ~
     skip_clause? ~

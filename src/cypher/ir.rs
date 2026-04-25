@@ -113,10 +113,10 @@ pub enum LogicalOp {
         create_ops: Vec<LogicalOp>,
     },
 
-    /// Delete nodes/edges bound to variables.
+    /// Delete nodes/edges/paths bound to variables or expressions.
     Delete {
         input: Box<LogicalOp>,
-        variables: Vec<String>,
+        exprs: Vec<crate::cypher::ast::Expr>,
         detach: bool,
     },
 

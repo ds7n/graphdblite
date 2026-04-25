@@ -479,7 +479,7 @@ fn plan_delete(conn: &Connection, stmt: &DeleteStatement) -> crate::types::Resul
     for opt in &stmt.optional_patterns {
         match_vars.extend(collect_pattern_variables(&opt.patterns));
     }
-    validate_delete_variables(&stmt.variables, &match_vars)?;
+    validate_delete_exprs(&stmt.exprs, &match_vars)?;
 
     let mut op = plan_patterns(conn, &stmt.patterns)?;
 
@@ -504,7 +504,7 @@ fn plan_delete(conn: &Connection, stmt: &DeleteStatement) -> crate::types::Resul
 
     let mut op = LogicalOp::Delete {
         input: Box::new(op),
-        variables: stmt.variables.clone(),
+        exprs: stmt.exprs.clone(),
         detach: stmt.detach,
     };
 
@@ -1222,15 +1222,15 @@ fn plan_multi_clause(
                     items: items.clone(),
                 });
             }
-            Clause::Delete { variables, detach } => {
-                // Validate DELETE variable references are in scope.
-                validate_delete_variables(variables, &scope_vars)?;
+            Clause::Delete { exprs, detach } => {
+                // Validate DELETE expression references are in scope.
+                validate_delete_exprs(exprs, &scope_vars)?;
                 let input = op
                     .take()
                     .ok_or_else(|| GraphError::semantic("DELETE requires preceding MATCH"))?;
                 op = Some(LogicalOp::Delete {
                     input: Box::new(input),
-                    variables: variables.clone(),
+                    exprs: exprs.clone(),
                     detach: *detach,
                 });
             }
@@ -1984,16 +1984,59 @@ fn validate_set_variables(items: &[SetItem], scope: &HashSet<String>) -> crate::
 }
 
 /// Validate that DELETE variable references are in scope.
-fn validate_delete_variables(
-    variables: &[String],
+fn validate_delete_exprs(
+    exprs: &[crate::cypher::ast::Expr],
     scope: &HashSet<String>,
 ) -> crate::types::Result<()> {
-    for var in variables {
-        if !scope.contains(var) {
-            return Err(GraphError::syntax(format!("UndefinedVariable: {var}")));
+    use crate::cypher::ast::Expr;
+    for expr in exprs {
+        match expr {
+            Expr::Variable(var) => {
+                if !scope.contains(var) {
+                    return Err(GraphError::syntax(format!("UndefinedVariable: {var}")));
+                }
+            }
+            // HasLabel expression (e.g. `n:Person`) is not a valid DELETE target.
+            Expr::HasLabel(..) => {
+                return Err(GraphError::syntax(
+                    "InvalidDelete: cannot delete a label predicate expression",
+                ));
+            }
+            // Literal expressions are not valid DELETE targets.
+            Expr::Literal(_) => {
+                return Err(GraphError::syntax(
+                    "InvalidArgumentType: DELETE requires a node, relationship, or path",
+                ));
+            }
+            // Binary/arithmetic expressions are not valid DELETE targets.
+            Expr::BinaryOp { .. } => {
+                return Err(GraphError::syntax(
+                    "InvalidArgumentType: DELETE requires a node, relationship, or path",
+                ));
+            }
+            // Property access (e.g. nodes.key), index (e.g. friends[0]) — valid.
+            // DotAccess (e.g. rels.key.key[0]) — valid.
+            _ => {
+                if let Some(root) = extract_root_variable(expr) {
+                    if !scope.contains(&root) {
+                        return Err(GraphError::syntax(format!("UndefinedVariable: {root}")));
+                    }
+                }
+            }
         }
     }
     Ok(())
+}
+
+/// Extract the root variable name from an expression tree.
+fn extract_root_variable(expr: &crate::cypher::ast::Expr) -> Option<String> {
+    use crate::cypher::ast::Expr;
+    match expr {
+        Expr::Variable(v) => Some(v.clone()),
+        Expr::Property(v, _) => Some(v.clone()),
+        Expr::Index { expr: base, .. } => extract_root_variable(base),
+        _ => None,
+    }
 }
 
 /// Check if ORDER BY contains aggregate functions when the RETURN/WITH itself

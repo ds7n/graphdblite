@@ -971,15 +971,48 @@ fn eval_function_call(
             }
         }
         "startNode" | "startnode" => {
+            // startNode(r) — get the start node of a relationship.
+            // First try the argument as a compound edge binding.
+            if let Some(Expr::Variable(var)) = args.first() {
+                let src_key = format!("{var}.__src");
+                if let Some(Value::I64(src_id)) = record.get(&src_key) {
+                    let node_id = crate::types::NodeId(*src_id as u64);
+                    if let Ok(n) = crate::node::get_node(conn, node_id) {
+                        return Ok(Value::Node(n));
+                    }
+                }
+            }
             let arg = eval_single_arg(args, record, conn)?;
             match arg {
+                Value::Edge(e) => {
+                    match crate::node::get_node(conn, e.src) {
+                        Ok(n) => Ok(Value::Node(n)),
+                        Err(_) => Ok(Value::Null),
+                    }
+                }
                 Value::Null => Ok(Value::Null),
                 _ => Ok(Value::Null),
             }
         }
         "endNode" | "endnode" => {
+            // endNode(r) — get the end node of a relationship.
+            if let Some(Expr::Variable(var)) = args.first() {
+                let dst_key = format!("{var}.__dst");
+                if let Some(Value::I64(dst_id)) = record.get(&dst_key) {
+                    let node_id = crate::types::NodeId(*dst_id as u64);
+                    if let Ok(n) = crate::node::get_node(conn, node_id) {
+                        return Ok(Value::Node(n));
+                    }
+                }
+            }
             let arg = eval_single_arg(args, record, conn)?;
             match arg {
+                Value::Edge(e) => {
+                    match crate::node::get_node(conn, e.dst) {
+                        Ok(n) => Ok(Value::Node(n)),
+                        Err(_) => Ok(Value::Null),
+                    }
+                }
                 Value::Null => Ok(Value::Null),
                 _ => Ok(Value::Null),
             }

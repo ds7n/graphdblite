@@ -402,11 +402,25 @@ fn exec_expand(
             edge_types.iter().map(|s| s.as_str()).collect()
         };
 
+        // If the destination alias is already bound in the record (cyclic
+        // pattern like `(a)-[:R]->(b)-[:S]->(a)`), we must only keep
+        // expansions where the destination equals the bound node.
+        let bound_dst_id = rec.get(dst_alias).and_then(|v| match v {
+            Value::I64(id) => Some(NodeId(*id as u64)),
+            _ => None,
+        });
+
         for &label in &labels {
             if !var_length {
                 // Single hop — direct neighbor lookup.
                 let neighbors = edge::get_neighbors(conn, src_id, label, direction)?;
                 for dst_id in neighbors {
+                    // Skip if destination doesn't match the already-bound node.
+                    if let Some(required) = bound_dst_id {
+                        if dst_id != required {
+                            continue;
+                        }
+                    }
                     let dst_node = node::get_node(conn, dst_id)?;
                     let mut new_rec = rec.clone();
                     new_rec.set(dst_alias.to_string(), Value::I64(dst_id.0 as i64));
@@ -434,6 +448,34 @@ fn exec_expand(
                             Direction::Incoming => (dst_id, src_id),
                             _ => (src_id, dst_id),
                         };
+
+                        // Relationship uniqueness: within a MATCH pattern,
+                        // different named relationship variables must refer to
+                        // different edges. Normalize to (min, max, type) for
+                        // direction-independent comparison.
+                        let (es, ed) = (edge_src.0 as i64, edge_dst.0 as i64);
+                        let edge_key = (es.min(ed), es.max(ed), label);
+                        let mut duplicate = false;
+                        for (key, _val) in &new_rec.fields {
+                            if key.ends_with(".__src") && key != &format!("{r_alias}.__src") {
+                                let other_alias = &key[..key.len() - 6];
+                                if let (Some(Value::I64(os)), Some(Value::I64(od)), Some(Value::String(ot))) = (
+                                    new_rec.get(key),
+                                    new_rec.get(&format!("{other_alias}.__dst")),
+                                    new_rec.get(&format!("{other_alias}.__type")),
+                                ) {
+                                    let other_key = ((*os).min(*od), (*os).max(*od), ot.as_str());
+                                    if other_key == edge_key {
+                                        duplicate = true;
+                                        break;
+                                    }
+                                }
+                            }
+                        }
+                        if duplicate {
+                            continue;
+                        }
+
                         // Bind the relationship variable itself (for IS NULL checks, etc.).
                         new_rec.set(r_alias.to_string(), Value::String(label.to_string()));
                         new_rec.set(format!("{r_alias}.__src"), Value::I64(edge_src.0 as i64));

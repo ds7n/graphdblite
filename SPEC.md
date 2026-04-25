@@ -128,7 +128,7 @@ All bindings expose: `open`, `open_memory`, `begin_read`, `begin_write`, `query`
 
 ### TCK conformance
 - Full openCypher TCK vendored (220 feature files, 3663 scenarios)
-- **95.5% pass rate** (3497/3663), 166 skiplisted — as of 2026-04-25
+- **95.7% pass rate** (3505/3663), 158 skiplisted — as of 2026-04-25
 - Regenerate stats: `cargo test --test tck 2>&1 > /tmp/tck_output.txt && uv run tests/tck/analyze.py /tmp/tck_output.txt`
 - Regenerate blocker analysis: `uv run tests/tck/analyze_blockers.py`
 
@@ -153,7 +153,7 @@ All bindings expose: `open`, `open_memory`, `begin_read`, `begin_write`, `query`
 ### Scale
 Designed for datasets in the **low millions of nodes** with moderate edge density. 10M nodes is achievable for indexed point-lookups; full label scans at that scale will be slow. 100M+ nodes would require rearchitecting the scan layer (streaming from SQLite instead of materializing), replacing linear-scan dedup with `HashSet`, and making adjacency lists appendable without full rewrite.
 
-### TCK gaps (166 skiplisted scenarios)
+### TCK gaps (158 skiplisted scenarios)
 The remaining TCK failures span several specific sub-features:
 - Path binding in MERGE/CREATE (`p = (a)-[:R]->(b)`)
 - Multi-hop CREATE patterns with complex direction chains

@@ -398,12 +398,14 @@ fn eval_function_call(
     if matches!(name_lower.as_str(), "labels" | "keys" | "properties") {
         if let Some(Expr::Variable(var)) = args.first() {
             if record.get(&format!("{var}.__deleted")) == Some(&Value::Bool(true)) {
-                return Err(GraphError::Query(crate::types::QueryError::EntityNotFound {
-                    phase: crate::types::QueryPhase::Runtime,
-                    message: format!(
-                        "DeletedEntityAccess: cannot call {name}() on deleted entity `{var}`"
-                    ),
-                }));
+                return Err(GraphError::Query(
+                    crate::types::QueryError::EntityNotFound {
+                        phase: crate::types::QueryPhase::Runtime,
+                        message: format!(
+                            "DeletedEntityAccess: cannot call {name}() on deleted entity `{var}`"
+                        ),
+                    },
+                ));
             }
         }
     }

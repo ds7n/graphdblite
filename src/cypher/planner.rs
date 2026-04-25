@@ -300,7 +300,11 @@ fn plan_match(conn: &Connection, stmt: &MatchStatement) -> crate::types::Result<
             validate_return_order_by_with_aggregates(&stmt.return_clause.items, &stmt.order_by)?;
         }
         // Validate DISTINCT + ORDER BY scope.
-        validate_distinct_order_by(&stmt.return_clause.items, &stmt.order_by, stmt.return_clause.distinct)?;
+        validate_distinct_order_by(
+            &stmt.return_clause.items,
+            &stmt.order_by,
+            stmt.return_clause.distinct,
+        )?;
 
         op = LogicalOp::Sort {
             input: Box::new(op),
@@ -802,7 +806,12 @@ fn plan_unwind(conn: &Connection, stmt: &UnwindStatement) -> crate::types::Resul
 
 fn plan_merge(conn: &Connection, stmt: &MergeStatement) -> crate::types::Result<LogicalOp> {
     // Validate MERGE pattern + ON CREATE/ON MATCH SET variables.
-    validate_merge_pattern(&stmt.pattern, &HashSet::new(), &stmt.on_create, &stmt.on_match)?;
+    validate_merge_pattern(
+        &stmt.pattern,
+        &HashSet::new(),
+        &stmt.on_create,
+        &stmt.on_match,
+    )?;
 
     let len = stmt.pattern.elements.len();
     match len {
@@ -866,7 +875,12 @@ fn plan_match_merge(
 ) -> crate::types::Result<LogicalOp> {
     let match_vars = collect_pattern_variables(&stmt.patterns);
     // Validate MERGE pattern + ON CREATE/ON MATCH SET variables.
-    validate_merge_pattern(&stmt.merge_pattern, &match_vars, &stmt.on_create, &stmt.on_match)?;
+    validate_merge_pattern(
+        &stmt.merge_pattern,
+        &match_vars,
+        &stmt.on_create,
+        &stmt.on_match,
+    )?;
     // Validate VariableAlreadyBound: MERGE re-creating already-bound nodes/rels.
     validate_merge_variable_rebinding(&stmt.merge_pattern, &match_vars)?;
 
@@ -1926,16 +1940,12 @@ fn validate_merge_pattern(
             }
             SetItem::Label { variable, .. } => {
                 if !merge_vars.contains(variable) {
-                    return Err(GraphError::syntax(format!(
-                        "UndefinedVariable: {variable}"
-                    )));
+                    return Err(GraphError::syntax(format!("UndefinedVariable: {variable}")));
                 }
             }
             SetItem::MapOverwrite { variable, value } | SetItem::MapMerge { variable, value } => {
                 if !merge_vars.contains(variable) {
-                    return Err(GraphError::syntax(format!(
-                        "UndefinedVariable: {variable}"
-                    )));
+                    return Err(GraphError::syntax(format!("UndefinedVariable: {variable}")));
                 }
                 check_expr_variables(value, &merge_vars)?;
             }
@@ -1945,10 +1955,7 @@ fn validate_merge_pattern(
 }
 
 /// Validate that SET items don't reference undefined variables.
-fn validate_set_variables(
-    items: &[SetItem],
-    scope: &HashSet<String>,
-) -> crate::types::Result<()> {
+fn validate_set_variables(items: &[SetItem], scope: &HashSet<String>) -> crate::types::Result<()> {
     for item in items {
         match item {
             SetItem::Property(a) => {
@@ -1962,16 +1969,12 @@ fn validate_set_variables(
             }
             SetItem::Label { variable, .. } => {
                 if !scope.contains(variable) {
-                    return Err(GraphError::syntax(format!(
-                        "UndefinedVariable: {variable}"
-                    )));
+                    return Err(GraphError::syntax(format!("UndefinedVariable: {variable}")));
                 }
             }
             SetItem::MapOverwrite { variable, value } | SetItem::MapMerge { variable, value } => {
                 if !scope.contains(variable) {
-                    return Err(GraphError::syntax(format!(
-                        "UndefinedVariable: {variable}"
-                    )));
+                    return Err(GraphError::syntax(format!("UndefinedVariable: {variable}")));
                 }
                 check_expr_variables(value, scope)?;
             }
@@ -1987,9 +1990,7 @@ fn validate_delete_variables(
 ) -> crate::types::Result<()> {
     for var in variables {
         if !scope.contains(var) {
-            return Err(GraphError::syntax(format!(
-                "UndefinedVariable: {var}"
-            )));
+            return Err(GraphError::syntax(format!("UndefinedVariable: {var}")));
         }
     }
     Ok(())
@@ -1997,9 +1998,7 @@ fn validate_delete_variables(
 
 /// Check if ORDER BY contains aggregate functions when the RETURN/WITH itself
 /// does not use aggregation. This is invalid per openCypher spec.
-fn validate_no_aggregation_in_order_by(
-    order_by: &[SortItem],
-) -> crate::types::Result<()> {
+fn validate_no_aggregation_in_order_by(order_by: &[SortItem]) -> crate::types::Result<()> {
     for item in order_by {
         if is_aggregate_fn(&item.expr) {
             return Err(GraphError::syntax(
@@ -2036,7 +2035,7 @@ fn validate_return_order_by_with_aggregates(
                 let col = crate::cypher::eval::expr_to_column_name(leaf);
                 if !returned_cols.contains(&col) {
                     return Err(GraphError::syntax(
-                        "UndefinedVariable: ORDER BY references a variable not in RETURN"
+                        "UndefinedVariable: ORDER BY references a variable not in RETURN",
                     ));
                 }
             }
@@ -2079,7 +2078,7 @@ fn validate_distinct_order_by(
             }
         }
         return Err(GraphError::syntax(
-            "UndefinedVariable: ORDER BY references a variable not in RETURN DISTINCT"
+            "UndefinedVariable: ORDER BY references a variable not in RETURN DISTINCT",
         ));
     }
     Ok(())
@@ -2088,7 +2087,12 @@ fn validate_distinct_order_by(
 /// Check for aggregation functions in a list comprehension mapping expression.
 fn validate_no_aggregation_in_list_comp(expr: &Expr) -> crate::types::Result<()> {
     match expr {
-        Expr::ListComprehension { map_expr, filter, list_expr, .. } => {
+        Expr::ListComprehension {
+            map_expr,
+            filter,
+            list_expr,
+            ..
+        } => {
             if let Some(ref me) = map_expr {
                 if is_aggregate_fn(me) {
                     return Err(GraphError::syntax(
@@ -2130,7 +2134,7 @@ fn validate_no_aggregation_in_list_comp(expr: &Expr) -> crate::types::Result<()>
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[allow(dead_code)]
 enum WithValueKind {
-    Scalar,   // literal, property access, list, etc.
+    Scalar, // literal, property access, list, etc.
     Node,
     Relationship,
     Path,

@@ -77,16 +77,17 @@ fn resolve_sort_aliases(expr: &Expr, items: &[ReturnItem]) -> Expr {
             op: *op,
             right: Box::new(resolve_sort_aliases(right, items)),
         },
-        Expr::Not(inner) => {
-            Expr::Not(Box::new(resolve_sort_aliases(inner, items)))
-        }
+        Expr::Not(inner) => Expr::Not(Box::new(resolve_sort_aliases(inner, items))),
         Expr::FunctionCall {
             name,
             args,
             distinct,
         } => Expr::FunctionCall {
             name: name.clone(),
-            args: args.iter().map(|a| resolve_sort_aliases(a, items)).collect(),
+            args: args
+                .iter()
+                .map(|a| resolve_sort_aliases(a, items))
+                .collect(),
             distinct: *distinct,
         },
         _ => expr.clone(),
@@ -676,8 +677,7 @@ fn plan_remove(conn: &Connection, stmt: &RemoveStatement) -> crate::types::Resul
 
     // Optional MATCH clauses.
     for opt_match in &stmt.optional_patterns {
-        let (right, new_aliases, opt_filter) =
-            plan_optional_match(conn, opt_match, &bound_vars)?;
+        let (right, new_aliases, opt_filter) = plan_optional_match(conn, opt_match, &bound_vars)?;
         op = LogicalOp::LeftOuterJoin {
             input: Box::new(op),
             right: Box::new(right),

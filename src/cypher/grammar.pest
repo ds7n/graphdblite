@@ -39,6 +39,14 @@ multi_clause_stmt = {
     (multi_delete_clause | multi_set_clause | multi_remove_clause) ~
     multi_clause_any* ~
     (return_clause ~ order_by_clause? ~ skip_clause? ~ limit_clause?)?)
+    |
+    // Pattern D: 1 non-write clause + DELETE/SET/REMOVE + at least one more clause
+    // Handles: MATCH...REMOVE...WITH...RETURN, MATCH...SET...WITH...RETURN, etc.
+    // The trailing clause(s) make it unambiguously multi-clause (not a simple set/remove/delete stmt).
+    (multi_clause_non_write ~
+    (multi_delete_clause | multi_set_clause | multi_remove_clause) ~
+    multi_clause_any+ ~
+    (return_clause ~ order_by_clause? ~ skip_clause? ~ limit_clause?)?)
 }
 
 // Non-write clause (MATCH, WITH, UNWIND) — used for leading clauses.

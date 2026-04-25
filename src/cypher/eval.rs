@@ -1039,10 +1039,34 @@ fn eval_function_call(
                 .get(2)
                 .map(|a| eval_expr(a, record, conn))
                 .transpose()?;
+            // Validate argument types.
+            for (label, val) in [("start", &start)]
+                .into_iter()
+                .chain(end.as_ref().map(|v| ("end", v)))
+                .chain(step.as_ref().map(|v| ("step", v)))
+            {
+                if !matches!(val, Value::I64(_) | Value::Null) {
+                    return Err(GraphError::Query(QueryError::ArgumentError {
+                        phase: QueryPhase::Runtime,
+                        message: format!(
+                            "InvalidArgumentType: range() {label} argument must be an integer, got {}",
+                            value_type_name(val)
+                        ),
+                    }));
+                }
+            }
             match (start, end) {
                 (Value::I64(s), Some(Value::I64(e))) => {
                     let step = match step {
-                        Some(Value::I64(st)) if st != 0 => st,
+                        Some(Value::I64(st)) => {
+                            if st == 0 {
+                                return Err(GraphError::Query(QueryError::ArgumentError {
+                                    phase: QueryPhase::Runtime,
+                                    message: "NumberOutOfRange: step argument to range() cannot be zero".to_string(),
+                                }));
+                            }
+                            st
+                        }
                         _ => 1,
                     };
                     let mut result = Vec::new();

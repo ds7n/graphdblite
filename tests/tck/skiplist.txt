@@ -23,8 +23,6 @@ Graph5 - Node and edge label expressions::[2] Single-labels expression on relati
 Graph6 - Static property access::[4] Statically access a property of a node resulting from an expression
 Graph6 - Static property access::[8] Statically access a property of a relationship resulting from an expression
 List11 - Create a list from a range::[3] Create an empty list if range direction and step direction are inconsistent
-List11 - Create a list from a range::[4] Fail on invalid arguments for `range()`
-List11 - Create a list from a range::[5] Fail on invalid argument types for `range()`
 List12 - List Comprehension::[1] Collect and extract using a list comprehension
 List12 - List Comprehension::[2] Collect and filter using a list comprehension
 List12 - List Comprehension::[3] Size of list comprehension

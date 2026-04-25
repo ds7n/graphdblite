@@ -222,9 +222,7 @@ fn format_plan_tree(conn: &Connection, plan: &LogicalOp, depth: usize, lines: &m
         }
         LogicalOp::CreateSequence { ops } => format!("CreateSequence ({} ops)", ops.len()),
         LogicalOp::MatchCreate { .. } => "MatchCreate".to_string(),
-        LogicalOp::Delete {
-            exprs, detach, ..
-        } => {
+        LogicalOp::Delete { exprs, detach, .. } => {
             let d = if *detach { "DETACH " } else { "" };
             format!("{d}Delete {exprs:?}")
         }

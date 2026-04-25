@@ -1376,12 +1376,7 @@ fn exec_delete(
 
 /// Delete an entity bound to a variable name, handling compound bindings
 /// (node/edge metadata in the record) and marking deleted for downstream checks.
-fn delete_var_entity(
-    conn: &Connection,
-    rec: &mut Record,
-    var: &str,
-    detach: bool,
-) -> Result<()> {
+fn delete_var_entity(conn: &Connection, rec: &mut Record, var: &str, detach: bool) -> Result<()> {
     // Check if this is a relationship variable (has edge identity metadata).
     let edge_src_key = format!("{var}.__src");
     let edge_dst_key = format!("{var}.__dst");
@@ -1818,9 +1813,7 @@ fn apply_merge_set_item_edge(
             // For overwrite on edges, clear existing props then set new ones.
             let old_props = edge::get_edge_properties(conn, src_id, dst_id, edge_type)?;
             for key in old_props.keys() {
-                edge::set_edge_property(
-                    conn, src_id, dst_id, edge_type, key, Value::Null,
-                )?;
+                edge::set_edge_property(conn, src_id, dst_id, edge_type, key, Value::Null)?;
             }
             for (k, v) in &map {
                 edge::set_edge_property(conn, src_id, dst_id, edge_type, k, v.clone())?;
@@ -1975,7 +1968,9 @@ fn exec_merge_relationship(
             true
         } else {
             let existing_props = edge::get_edge_properties(conn, src_id, dst_id, &edge_type)?;
-            edge_props.iter().all(|(k, v)| existing_props.get(k) == Some(v))
+            edge_props
+                .iter()
+                .all(|(k, v)| existing_props.get(k) == Some(v))
         }
     } else {
         false
@@ -2140,10 +2135,7 @@ fn exec_match_merge(
         .as_deref()
         .ok_or_else(|| GraphError::semantic("MERGE relationship target must have a variable"))?;
     let edge_type = rel.rel_types.first().cloned().unwrap_or_default();
-    let undirected = matches!(
-        rel.direction,
-        crate::cypher::ast::RelDirection::Undirected
-    );
+    let undirected = matches!(rel.direction, crate::cypher::ast::RelDirection::Undirected);
 
     for rec in &records {
         let src_id = match rec.get(src_var) {
@@ -2171,40 +2163,31 @@ fn exec_match_merge(
 
         // Check edge existence including property match.
         // For undirected MERGE, check both directions.
-        let check_edge_match =
-            |s: NodeId, d: NodeId| -> Result<bool> {
-                if !edge::edge_exists(conn, s, d, &edge_type)? {
-                    return Ok(false);
-                }
-                if merge_edge_props.is_empty() {
-                    return Ok(true);
-                }
-                let existing_props =
-                    edge::get_edge_properties(conn, s, d, &edge_type)?;
-                Ok(merge_edge_props
-                    .iter()
-                    .all(|(k, v)| existing_props.get(k) == Some(v)))
-            };
+        let check_edge_match = |s: NodeId, d: NodeId| -> Result<bool> {
+            if !edge::edge_exists(conn, s, d, &edge_type)? {
+                return Ok(false);
+            }
+            if merge_edge_props.is_empty() {
+                return Ok(true);
+            }
+            let existing_props = edge::get_edge_properties(conn, s, d, &edge_type)?;
+            Ok(merge_edge_props
+                .iter()
+                .all(|(k, v)| existing_props.get(k) == Some(v)))
+        };
 
         // Find which direction matched (for binding the relationship).
-        let (edge_match, match_src, match_dst) =
-            if check_edge_match(src_id, dst_id)? {
-                (true, src_id, dst_id)
-            } else if undirected && check_edge_match(dst_id, src_id)? {
-                (true, dst_id, src_id)
-            } else {
-                (false, src_id, dst_id)
-            };
+        let (edge_match, match_src, match_dst) = if check_edge_match(src_id, dst_id)? {
+            (true, src_id, dst_id)
+        } else if undirected && check_edge_match(dst_id, src_id)? {
+            (true, dst_id, src_id)
+        } else {
+            (false, src_id, dst_id)
+        };
 
         if !edge_match {
             // For undirected MERGE, default to outgoing (src→dst).
-            edge::create_edge(
-                conn,
-                src_id,
-                dst_id,
-                &edge_type,
-                merge_edge_props,
-            )?;
+            edge::create_edge(conn, src_id, dst_id, &edge_type, merge_edge_props)?;
             for item in on_create {
                 apply_merge_set_item_edge(conn, item, src_id, dst_id, &edge_type, rec)?;
             }
@@ -3028,9 +3011,9 @@ fn find_merge_match_evaluated(
             // Filter candidates by remaining properties.
             for id in ids {
                 let n = node::get_node(conn, id)?;
-                let all_match = properties.iter().all(|(k, expected)| {
-                    n.properties.get(k) == Some(expected)
-                });
+                let all_match = properties
+                    .iter()
+                    .all(|(k, expected)| n.properties.get(k) == Some(expected));
                 if all_match {
                     return Ok(Some(n));
                 }
@@ -3042,9 +3025,9 @@ fn find_merge_match_evaluated(
     // No index available — fall back to label scan.
     let existing = node::find_nodes_by_label(conn, label)?;
     Ok(existing.into_iter().find(|n| {
-        properties.iter().all(|(key, expected)| {
-            n.properties.get(key) == Some(expected)
-        })
+        properties
+            .iter()
+            .all(|(key, expected)| n.properties.get(key) == Some(expected))
     }))
 }
 
@@ -3065,9 +3048,9 @@ fn find_merge_matches_evaluated(
             let mut matches = Vec::new();
             for id in ids {
                 let n = node::get_node(conn, id)?;
-                let all_match = properties.iter().all(|(k, expected)| {
-                    n.properties.get(k) == Some(expected)
-                });
+                let all_match = properties
+                    .iter()
+                    .all(|(k, expected)| n.properties.get(k) == Some(expected));
                 if all_match {
                     matches.push(n);
                 }
@@ -3078,11 +3061,14 @@ fn find_merge_matches_evaluated(
 
     // No index — label scan.
     let existing = node::find_nodes_by_label(conn, label)?;
-    Ok(existing.into_iter().filter(|n| {
-        properties.iter().all(|(key, expected)| {
-            n.properties.get(key) == Some(expected)
+    Ok(existing
+        .into_iter()
+        .filter(|n| {
+            properties
+                .iter()
+                .all(|(key, expected)| n.properties.get(key) == Some(expected))
         })
-    }).collect())
+        .collect())
 }
 
 pub(crate) fn literal_to_value(lit: &LiteralValue) -> Value {

@@ -3548,4 +3548,3 @@ fn test_pattern_comprehension_nested_in_list_comprehension() {
         }
     }
 }
-

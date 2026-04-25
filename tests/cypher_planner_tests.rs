@@ -163,7 +163,10 @@ fn plan_delete() {
     let op = plan_query("MATCH (n:Person) WHERE n.name = 'Alice' DELETE n");
     match op {
         LogicalOp::Delete { exprs, .. } => {
-            assert_eq!(exprs, vec![graphdblite::cypher::ast::Expr::Variable("n".to_string())]);
+            assert_eq!(
+                exprs,
+                vec![graphdblite::cypher::ast::Expr::Variable("n".to_string())]
+            );
         }
         _ => panic!("expected Delete"),
     }

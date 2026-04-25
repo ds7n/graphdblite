@@ -2918,7 +2918,11 @@ pub fn resolve_params(
                     .map(|e| resolve_expr(e, params))
                     .transpose()?,
                 detach: d.detach,
-                exprs: d.exprs.iter().map(|e| resolve_expr(e, params)).collect::<crate::types::Result<Vec<_>>>()?,
+                exprs: d
+                    .exprs
+                    .iter()
+                    .map(|e| resolve_expr(e, params))
+                    .collect::<crate::types::Result<Vec<_>>>()?,
                 return_clause,
                 order_by,
                 skip,
@@ -3172,7 +3176,10 @@ fn resolve_clause(
             items: items.clone(),
         }),
         Clause::Delete { exprs, detach } => Ok(Clause::Delete {
-            exprs: exprs.iter().map(|e| resolve_expr(e, params)).collect::<crate::types::Result<Vec<_>>>()?,
+            exprs: exprs
+                .iter()
+                .map(|e| resolve_expr(e, params))
+                .collect::<crate::types::Result<Vec<_>>>()?,
             detach: *detach,
         }),
     }

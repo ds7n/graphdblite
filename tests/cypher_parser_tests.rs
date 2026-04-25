@@ -173,7 +173,10 @@ fn parse_delete() {
     match stmt {
         Statement::Delete(d) => {
             assert!(d.where_clause.is_some());
-            assert_eq!(d.exprs, vec![graphdblite::cypher::ast::Expr::Variable("n".to_string())]);
+            assert_eq!(
+                d.exprs,
+                vec![graphdblite::cypher::ast::Expr::Variable("n".to_string())]
+            );
         }
         _ => panic!("expected Delete"),
     }

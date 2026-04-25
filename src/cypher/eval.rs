@@ -984,12 +984,10 @@ fn eval_function_call(
             }
             let arg = eval_single_arg(args, record, conn)?;
             match arg {
-                Value::Edge(e) => {
-                    match crate::node::get_node(conn, e.src) {
-                        Ok(n) => Ok(Value::Node(n)),
-                        Err(_) => Ok(Value::Null),
-                    }
-                }
+                Value::Edge(e) => match crate::node::get_node(conn, e.src) {
+                    Ok(n) => Ok(Value::Node(n)),
+                    Err(_) => Ok(Value::Null),
+                },
                 Value::Null => Ok(Value::Null),
                 _ => Ok(Value::Null),
             }
@@ -1007,12 +1005,10 @@ fn eval_function_call(
             }
             let arg = eval_single_arg(args, record, conn)?;
             match arg {
-                Value::Edge(e) => {
-                    match crate::node::get_node(conn, e.dst) {
-                        Ok(n) => Ok(Value::Node(n)),
-                        Err(_) => Ok(Value::Null),
-                    }
-                }
+                Value::Edge(e) => match crate::node::get_node(conn, e.dst) {
+                    Ok(n) => Ok(Value::Node(n)),
+                    Err(_) => Ok(Value::Null),
+                },
                 Value::Null => Ok(Value::Null),
                 _ => Ok(Value::Null),
             }

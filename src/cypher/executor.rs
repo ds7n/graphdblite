@@ -1486,14 +1486,22 @@ fn exec_set_property(
                 )?;
                 // Update record so downstream RETURN sees the new value.
                 let prop_key = format!("{var}.{}", assignment.property);
-                rec.set(prop_key, val);
+                if val == Value::Null {
+                    rec.fields.swap_remove(&prop_key);
+                } else {
+                    rec.set(prop_key, val);
+                }
             } else if let Some(Value::I64(id)) = rec.get(var) {
                 let node_id = NodeId(*id as u64);
                 let old = node::get_node(conn, node_id)?;
                 let val = eval_expr(&assignment.value, rec, conn)?;
                 node::set_node_property(conn, node_id, &assignment.property, val.clone())?;
                 let mut new_props = old.properties.clone();
-                new_props.insert(assignment.property.clone(), val.clone());
+                if val == Value::Null {
+                    new_props.remove(&assignment.property);
+                } else {
+                    new_props.insert(assignment.property.clone(), val.clone());
+                }
                 index::update_indexes_for_node(
                     conn,
                     node_id,
@@ -1503,7 +1511,11 @@ fn exec_set_property(
                 )?;
                 // Update record so downstream RETURN sees the new value.
                 let prop_key = format!("{var}.{}", assignment.property);
-                rec.set(prop_key, val);
+                if val == Value::Null {
+                    rec.fields.swap_remove(&prop_key);
+                } else {
+                    rec.set(prop_key, val);
+                }
             }
         }
     }
@@ -1681,7 +1693,7 @@ fn exec_remove(
                         )?;
                         // Update record to reflect removal.
                         let prop_key = format!("{variable}.{property}");
-                        rec.set(prop_key, Value::Null);
+                        rec.fields.swap_remove(&prop_key);
                     } else if let Some(Value::I64(id)) = rec.get(variable) {
                         let id = *id;
                         let node_id = NodeId(id as u64);
@@ -1698,7 +1710,7 @@ fn exec_remove(
                         )?;
                         // Update record to reflect removal.
                         let prop_key = format!("{variable}.{property}");
-                        rec.set(prop_key, Value::Null);
+                        rec.fields.swap_remove(&prop_key);
                     }
                 }
                 crate::cypher::ast::RemoveItem::Label { variable, labels } => {

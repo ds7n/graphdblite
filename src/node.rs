@@ -100,7 +100,11 @@ pub fn set_node_property(conn: &Connection, id: NodeId, key: &str, value: Value)
         kv::get(conn, kv::TABLE_NODES, &id.to_be_bytes())?.ok_or(GraphError::NodeNotFound(id))?;
     let mut record: NodeRecord =
         rmp_serde::from_slice(&data).map_err(|e| GraphError::Serialization(e.to_string()))?;
-    record.properties.insert(key.to_string(), value);
+    if value == Value::Null {
+        record.properties.remove(key);
+    } else {
+        record.properties.insert(key.to_string(), value);
+    }
     let new_data =
         rmp_serde::to_vec(&record).map_err(|e| GraphError::Serialization(e.to_string()))?;
     let label_col = record.labels.join(":");

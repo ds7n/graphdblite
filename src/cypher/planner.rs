@@ -57,6 +57,42 @@ fn eval_skip_limit(expr: &Expr, conn: &Connection) -> crate::types::Result<u64> 
     }
 }
 
+/// Resolve RETURN-alias references within a sort expression.
+///
+/// Sort happens BEFORE projection, so ORDER BY expressions that reference
+/// RETURN aliases (e.g. `ORDER BY x` where `RETURN foo.num AS x`) must be
+/// rewritten to use the original expression (`foo.num`).
+fn resolve_sort_aliases(expr: &Expr, items: &[ReturnItem]) -> Expr {
+    match expr {
+        Expr::Variable(name) => {
+            for item in items {
+                if item.alias.as_deref() == Some(name) {
+                    return item.expr.clone();
+                }
+            }
+            expr.clone()
+        }
+        Expr::BinaryOp { left, op, right } => Expr::BinaryOp {
+            left: Box::new(resolve_sort_aliases(left, items)),
+            op: *op,
+            right: Box::new(resolve_sort_aliases(right, items)),
+        },
+        Expr::Not(inner) => {
+            Expr::Not(Box::new(resolve_sort_aliases(inner, items)))
+        }
+        Expr::FunctionCall {
+            name,
+            args,
+            distinct,
+        } => Expr::FunctionCall {
+            name: name.clone(),
+            args: args.iter().map(|a| resolve_sort_aliases(a, items)).collect(),
+            distinct: *distinct,
+        },
+        _ => expr.clone(),
+    }
+}
+
 /// Apply RETURN projection (+ DISTINCT, ORDER BY, SKIP, LIMIT) to a plan operator.
 fn apply_return_projection(
     conn: &Connection,
@@ -82,10 +118,20 @@ fn apply_return_projection(
 
     // Sort BEFORE projection so ORDER BY can reference pre-projection variables.
     // The Project that follows will discard sort-only columns.
+    // Resolve alias references: if ORDER BY references a RETURN alias (e.g.
+    // `ORDER BY x` where RETURN has `foo.num AS x`), substitute the original
+    // expression so the sort can evaluate against the pre-projection record.
     if !order_by.is_empty() {
+        let resolved: Vec<SortItem> = order_by
+            .iter()
+            .map(|si| SortItem {
+                expr: resolve_sort_aliases(&si.expr, &return_clause.items),
+                descending: si.descending,
+            })
+            .collect();
         op = LogicalOp::Sort {
             input: Box::new(op),
-            items: order_by.to_vec(),
+            items: resolved,
         };
     }
 
@@ -306,9 +352,21 @@ fn plan_match(conn: &Connection, stmt: &MatchStatement) -> crate::types::Result<
             stmt.return_clause.distinct,
         )?;
 
+        // Resolve alias references: if ORDER BY references a RETURN alias
+        // (e.g. `ORDER BY x` where RETURN has `foo.num AS x`), substitute
+        // the original expression so the sort evaluates against pre-projection
+        // record keys.
+        let resolved: Vec<SortItem> = stmt
+            .order_by
+            .iter()
+            .map(|si| SortItem {
+                expr: resolve_sort_aliases(&si.expr, &stmt.return_clause.items),
+                descending: si.descending,
+            })
+            .collect();
         op = LogicalOp::Sort {
             input: Box::new(op),
-            items: stmt.order_by.clone(),
+            items: resolved,
         };
     }
 
@@ -606,16 +664,21 @@ fn plan_set(conn: &Connection, stmt: &SetStatement) -> crate::types::Result<Logi
 fn plan_remove(conn: &Connection, stmt: &RemoveStatement) -> crate::types::Result<LogicalOp> {
     let mut op = plan_patterns(conn, &stmt.patterns)?;
 
+    // Collect variables bound by the required MATCH so OPTIONAL MATCH can
+    // distinguish shared vs. new aliases.
+    let mut bound_vars = collect_pattern_variables(&stmt.patterns);
+
     // Optional MATCH clauses.
     for opt_match in &stmt.optional_patterns {
         let (right, new_aliases, opt_filter) =
-            plan_optional_match(conn, opt_match, &HashSet::new())?;
+            plan_optional_match(conn, opt_match, &bound_vars)?;
         op = LogicalOp::LeftOuterJoin {
             input: Box::new(op),
             right: Box::new(right),
-            optional_aliases: new_aliases,
+            optional_aliases: new_aliases.clone(),
             opt_filter,
         };
+        bound_vars.extend(new_aliases);
     }
 
     if let Some(ref predicate) = stmt.where_clause {

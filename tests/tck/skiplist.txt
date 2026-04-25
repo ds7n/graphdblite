@@ -107,14 +107,6 @@ Quantifier3 - Any quantifier::[9] Any quantifier on list containing relationship
 Quantifier4 - All quantifier::[15] Fail all quantifier on type mismatch between list elements and predicate
 Quantifier4 - All quantifier::[8] All quantifier on list containing nodes
 Quantifier4 - All quantifier::[9] All quantifier on list containing relationships
-Remove1 - Remove a Property::[4] Remove multiple relationship properties
-Remove1 - Remove a Property::[6] Ignore null when removing property from a relationship
-Remove3 - Persistence of remove clause side effects::[12] Filtering after removing a label from nodes affects the result set but not the side effects
-Remove3 - Persistence of remove clause side effects::[14] Aggregating in `WITH` after removing a label from nodes affects the result set but not the side effects
-Remove3 - Persistence of remove clause side effects::[19] Filtering after removing a property from relationships affects the result set but not the side effects
-Remove3 - Persistence of remove clause side effects::[21] Aggregating in `WITH` after removing a property from relationships affects the result set but not the side effects
-Remove3 - Persistence of remove clause side effects::[5] Filtering after removing a property from nodes affects the result set but not the side effects
-Remove3 - Persistence of remove clause side effects::[7] Aggregating in `WITH` after removing a property from nodes affects the result set but not the side effects
 Return2 - Return single expression (correctly projecting an expression)::[12] Projecting a list of nodes and relationships
 Return2 - Return single expression (correctly projecting an expression)::[13] Projecting a map of nodes and relationships
 Return2 - Return single expression (correctly projecting an expression)::[15] Fail when returning properties of deleted nodes
@@ -132,15 +124,9 @@ Return6 - Implicit grouping with aggregates::[5] Aggregates inside normal functi
 Return6 - Implicit grouping with aggregates::[8] Handle aggregation on functions
 ReturnOrderBy1 - Order by a single variable (correct order of values according to their type)::[11] ORDER BY should order distinct types in the expected order
 ReturnOrderBy1 - Order by a single variable (correct order of values according to their type)::[12] ORDER BY DESC should order distinct types in the expected order
-ReturnOrderBy2 - Order by a single expression (order of projection)::[9] Using aliased DISTINCT expression in ORDER BY
-ReturnOrderBy5 - Order by in combination with column renaming::[1] Renaming columns before ORDER BY should return results in ascending order
-ReturnSkipLimit2 - Limit::[7] Limit to more rows than actual results 1
 Set1 - Set a Property::[10] Failing when setting a list of maps as a property
 Set1 - Set a Property::[3] Set a property by selecting the node using a simple expression
 Set1 - Set a Property::[4] Set a property by selecting the relationship using a simple expression
-Set2 - Set a Property to Null::[1] Setting a node property to null removes the existing property
-Set2 - Set a Property to Null::[2] Setting a node property to null removes the existing property, but not before SET
-Set2 - Set a Property to Null::[3] Setting a relationship property to null removes the existing property
 Temporal1 - Create Temporal Values from a Map::[12] Should construct duration
 Temporal10 - Compute Durations Between two Temporal Values::[10] Should handle large durations in seconds
 Temporal10 - Compute Durations Between two Temporal Values::[8] Should handle durations at daylight saving time day

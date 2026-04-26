@@ -200,6 +200,8 @@ fn value_equal(a: &Value, b: &Value) -> bool {
         (Value::Duration(d), Value::String(s)) | (Value::String(s), Value::Duration(d)) => {
             d.to_string() == *s
         }
+        // NaN == NaN for TCK comparison purposes.
+        (Value::F64(fa), Value::F64(fb)) if fa.is_nan() && fb.is_nan() => true,
         _ => a == b,
     }
 }
@@ -276,6 +278,10 @@ impl<'a> Parser<'a> {
             Some('n') if self.rest().starts_with("null") => {
                 self.advance(4);
                 Ok(Value::Null)
+            }
+            Some('N') if self.rest().starts_with("NaN") => {
+                self.advance(3);
+                Ok(Value::F64(f64::NAN))
             }
             Some('t') if self.rest().starts_with("true") => {
                 self.advance(4);

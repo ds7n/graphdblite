@@ -2070,6 +2070,7 @@ fn parse_subscript(base: Expr, pair: pest::iterators::Pair<Rule>) -> crate::type
 
 /// Parse a dotted function call: `datetime.fromepoch(args)`, `duration.between(args)`, etc.
 fn parse_dotted_function_call(pair: pest::iterators::Pair<Rule>) -> crate::types::Result<Expr> {
+    let original_text = pair.as_str().to_string();
     let mut name = String::new();
     let mut args = Vec::new();
 
@@ -2100,10 +2101,12 @@ fn parse_dotted_function_call(pair: pest::iterators::Pair<Rule>) -> crate::types
         name,
         args,
         distinct: false,
+        original_text: Some(original_text),
     })
 }
 
 fn parse_function_call(pair: pest::iterators::Pair<Rule>) -> crate::types::Result<Expr> {
+    let original_text = pair.as_str().to_string();
     let mut name = String::new();
     let mut args = Vec::new();
     let mut distinct = false;
@@ -2136,6 +2139,7 @@ fn parse_function_call(pair: pest::iterators::Pair<Rule>) -> crate::types::Resul
         name,
         args,
         distinct,
+        original_text: Some(original_text),
     })
 }
 
@@ -2470,6 +2474,7 @@ fn resolve_expr(expr: &Expr, params: &HashMap<String, Value>) -> crate::types::R
             name,
             args,
             distinct,
+            original_text,
         } => {
             let resolved: crate::types::Result<Vec<Expr>> =
                 args.iter().map(|a| resolve_expr(a, params)).collect();
@@ -2477,6 +2482,7 @@ fn resolve_expr(expr: &Expr, params: &HashMap<String, Value>) -> crate::types::R
                 name: name.clone(),
                 args: resolved?,
                 distinct: *distinct,
+                original_text: original_text.clone(),
             })
         }
         Expr::Case {

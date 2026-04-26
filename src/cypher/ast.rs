@@ -378,6 +378,8 @@ pub enum Expr {
         name: String,
         args: Vec<Expr>,
         distinct: bool,
+        /// Original source text for column naming (preserves whitespace/case).
+        original_text: Option<String>,
     },
     /// CASE [operand] WHEN cond THEN result ... ELSE default END
     Case {

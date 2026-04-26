@@ -445,6 +445,7 @@ fn eval_function_call(
             name: name.to_string(),
             args: args.to_vec(),
             distinct: false,
+            original_text: None,
         });
         if let Some(val) = record.get(&col) {
             return Ok(val.clone());
@@ -2137,7 +2138,11 @@ pub fn expr_to_column_name(expr: &Expr) -> String {
             name,
             args,
             distinct,
+            original_text,
         } => {
+            if let Some(text) = original_text {
+                return text.clone();
+            }
             let dist_prefix = if *distinct { "DISTINCT " } else { "" };
             if args.is_empty() || matches!(args[0], Expr::Star) {
                 format!("{name}(*)")

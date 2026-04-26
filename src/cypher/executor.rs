@@ -446,7 +446,14 @@ fn exec_expand(
                     if let Some(r_alias) = rel_alias {
                         let (edge_src, edge_dst) = match direction {
                             Direction::Incoming => (dst_id, src_id),
-                            _ => (src_id, dst_id),
+                            Direction::Outgoing => (src_id, dst_id),
+                            Direction::Both => {
+                                if edge::edge_exists(conn, src_id, dst_id, label).unwrap_or(false) {
+                                    (src_id, dst_id)
+                                } else {
+                                    (dst_id, src_id)
+                                }
+                            }
                         };
 
                         // Relationship uniqueness: within a MATCH pattern,
@@ -1234,9 +1241,8 @@ fn exec_create_sequence(conn: &Connection, ops: &[LogicalOp]) -> Result<Vec<Reco
                 properties,
             } => {
                 let mut props = Properties::new();
-                let dummy_rec = Record::new();
                 for (key, expr) in properties {
-                    let val = eval_expr(expr, &dummy_rec, conn)?;
+                    let val = eval_expr(expr, &last_record, conn)?;
                     if val == Value::Null {
                         continue;
                     }
@@ -1249,6 +1255,9 @@ fn exec_create_sequence(conn: &Connection, ops: &[LogicalOp]) -> Result<Vec<Reco
                     bindings.insert(alias.clone(), id);
                     last_record.set(alias.clone(), Value::I64(id.0 as i64));
                     last_record.set(format!("{alias}.__id"), Value::I64(id.0 as i64));
+                    for (k, v) in &props {
+                        last_record.set(format!("{alias}.{k}"), v.clone());
+                    }
                 }
             }
             LogicalOp::CreateEdge {
@@ -1265,9 +1274,8 @@ fn exec_create_sequence(conn: &Connection, ops: &[LogicalOp]) -> Result<Vec<Reco
                     GraphError::semantic(format!("unbound variable: {dst_alias}"))
                 })?;
                 let mut props = Properties::new();
-                let dummy_rec = Record::new();
                 for (key, expr) in properties {
-                    let val = eval_expr(expr, &dummy_rec, conn)?;
+                    let val = eval_expr(expr, &last_record, conn)?;
                     if val == Value::Null {
                         continue;
                     }
@@ -2298,7 +2306,27 @@ fn exec_unwind(
             Value::List(items) => {
                 for item in items {
                     let mut new_rec = rec.clone();
-                    new_rec.set(alias.to_string(), item);
+                    // Expand nodes/edges into flat bindings for property access.
+                    match &item {
+                        Value::Node(n) => {
+                            let node_rec = node_to_record(n, alias);
+                            for (k, v) in &node_rec.fields {
+                                new_rec.set(k.clone(), v.clone());
+                            }
+                        }
+                        Value::Edge(e) => {
+                            new_rec.set(alias.to_string(), Value::Edge(e.clone()));
+                            new_rec.set(format!("{alias}.__src"), Value::I64(e.src.0 as i64));
+                            new_rec.set(format!("{alias}.__dst"), Value::I64(e.dst.0 as i64));
+                            new_rec.set(format!("{alias}.__type"), Value::String(e.label.clone()));
+                            for (k, v) in &e.properties {
+                                new_rec.set(format!("{alias}.{k}"), v.clone());
+                            }
+                        }
+                        _ => {
+                            new_rec.set(alias.to_string(), item);
+                        }
+                    }
                     results.push(new_rec);
                 }
             }
@@ -2590,6 +2618,10 @@ fn exec_correlated(
                 // If the relationship is already bound, skip the scan and use
                 // the bound edge directly.
                 if let Some((rel_src, rel_dst, ref rel_type)) = bound_rel {
+                    // Check that the bound relationship type matches the pattern constraint.
+                    if !edge_types.is_empty() && !edge_types.iter().any(|t| t == rel_type) {
+                        continue;
+                    }
                     // Check that this source node matches the edge's source.
                     let (expected_src, expected_dst) = match direction {
                         Direction::Incoming => (rel_dst, rel_src),
@@ -2667,7 +2699,16 @@ fn exec_correlated(
                         if let Some(r_alias) = rel_alias {
                             let (edge_src, edge_dst) = match direction {
                                 Direction::Incoming => (dst_id, src_id),
-                                _ => (src_id, dst_id),
+                                Direction::Outgoing => (src_id, dst_id),
+                                Direction::Both => {
+                                    if edge::edge_exists(conn, src_id, dst_id, label)
+                                        .unwrap_or(false)
+                                    {
+                                        (src_id, dst_id)
+                                    } else {
+                                        (dst_id, src_id)
+                                    }
+                                }
                             };
                             new_rec.set(r_alias.to_string(), Value::String(label.to_string()));
                             new_rec.set(format!("{r_alias}.__src"), Value::I64(edge_src.0 as i64));
@@ -3168,8 +3209,8 @@ fn type_rank(v: &Value) -> u8 {
         Value::Map(_) => 0,
         Value::Node(_) => 1,
         Value::Edge(_) => 2,
-        Value::Path(_) => 3,
-        Value::List(_) => 4,
+        Value::List(_) => 3,
+        Value::Path(_) => 4,
         Value::String(_) => 5,
         Value::Bool(_) => 6,
         Value::I64(_) | Value::F64(_) => 7,
@@ -3188,7 +3229,14 @@ fn compare_values_for_sort(a: &Value, b: &Value) -> std::cmp::Ordering {
     match (a, b) {
         (Value::Bool(a), Value::Bool(b)) => a.cmp(b),
         (Value::I64(a), Value::I64(b)) => a.cmp(b),
-        (Value::F64(a), Value::F64(b)) => a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal),
+        (Value::F64(a), Value::F64(b)) => match (a.is_nan(), b.is_nan()) {
+            (true, true) => std::cmp::Ordering::Equal,
+            (true, false) => std::cmp::Ordering::Greater, // NaN sorts after numbers
+            (false, true) => std::cmp::Ordering::Less,
+            (false, false) => a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal),
+        },
+        (Value::I64(_), Value::F64(b)) if b.is_nan() => std::cmp::Ordering::Less,
+        (Value::F64(a), Value::I64(_)) if a.is_nan() => std::cmp::Ordering::Greater,
         (Value::I64(a), Value::F64(b)) => (*a as f64)
             .partial_cmp(b)
             .unwrap_or(std::cmp::Ordering::Equal),
@@ -3448,6 +3496,9 @@ fn agg_fn_name(f: AggregateFunction) -> &'static str {
 /// `expr_to_column_name` produces for the original `FunctionCall` expression.
 fn agg_col_name(agg: &AggregateExpr) -> String {
     agg.alias.clone().unwrap_or_else(|| {
+        if let Some(ref text) = agg.original_call_text {
+            return text.clone();
+        }
         let name = if agg.original_name.is_empty() {
             agg_fn_name(agg.function).to_string()
         } else {
@@ -3457,6 +3508,7 @@ fn agg_col_name(agg: &AggregateExpr) -> String {
             name,
             args: vec![agg.input.clone()],
             distinct: agg.distinct,
+            original_text: None,
         };
         expr_to_column_name(&expr)
     })

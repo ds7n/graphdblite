@@ -251,6 +251,7 @@ pub struct ExpandIter<'a> {
     direction: Direction,
     min_hops: u32,
     max_hops: u32,
+    var_length: bool,
     /// Buffer of expanded records from the current input record.
     buffer: std::vec::IntoIter<Record>,
 }
@@ -274,20 +275,6 @@ impl<'a> RecordIter for ExpandIter<'a> {
                 _ => continue,
             };
 
-            let label = self.edge_types.first().map(|s| s.as_str()).unwrap_or("");
-            let dst_ids = if self.min_hops == 1 && self.max_hops == 1 {
-                edge::get_neighbors(self.conn, src_id, label, self.direction)?
-            } else {
-                edge::traverse(
-                    self.conn,
-                    src_id,
-                    label,
-                    self.direction,
-                    self.min_hops,
-                    self.max_hops,
-                )?
-            };
-
             // If the destination alias is already bound (cyclic pattern),
             // only keep expansions matching the bound node.
             let bound_dst = rec.get(&self.dst_alias).and_then(|v| match v {
@@ -295,97 +282,177 @@ impl<'a> RecordIter for ExpandIter<'a> {
                 _ => None,
             });
 
-            let mut expanded = Vec::with_capacity(dst_ids.len());
-            for dst_id in dst_ids {
-                if let Some(required) = bound_dst {
-                    if dst_id != required {
-                        continue;
-                    }
-                }
-                let dst_node = node::get_node(self.conn, dst_id)?;
-                let mut new_rec = rec.clone();
-                new_rec.set(self.dst_alias.clone(), Value::I64(dst_id.0 as i64));
-                for (key, val) in &dst_node.properties {
-                    new_rec.set(format!("{}.{key}", self.dst_alias), val.clone());
-                }
-                new_rec.set(
-                    format!("{}.__label", self.dst_alias),
-                    Value::String(dst_node.labels.join(":")),
-                );
-                new_rec.set(
-                    format!("{}.__labels", self.dst_alias),
-                    Value::List(
-                        dst_node
-                            .labels
-                            .iter()
-                            .map(|l| Value::String(l.clone()))
-                            .collect(),
-                    ),
-                );
-                new_rec.set(
-                    format!("{}.__id", self.dst_alias),
-                    Value::I64(dst_id.0 as i64),
-                );
-                if let Some(ref r_alias) = self.rel_alias {
-                    let (edge_src, edge_dst) = match self.direction {
-                        Direction::Incoming => (dst_id, src_id),
-                        Direction::Outgoing => (src_id, dst_id),
-                        Direction::Both => {
-                            // Determine actual edge direction by checking storage.
-                            if edge::edge_exists(self.conn, src_id, dst_id, label).unwrap_or(false)
-                            {
-                                (src_id, dst_id)
-                            } else {
-                                (dst_id, src_id)
-                            }
-                        }
-                    };
+            let mut expanded = Vec::new();
 
-                    // Relationship uniqueness: skip if another named rel in
-                    // this record already uses the same edge. Normalize to
-                    // (min, max, type) for direction-independent comparison.
-                    let (es, ed) = (edge_src.0 as i64, edge_dst.0 as i64);
-                    let ek = (es.min(ed), es.max(ed), label);
-                    let mut dup = false;
-                    for (key, _) in &new_rec.fields {
-                        if key.ends_with(".__src") && !key.starts_with(&format!("{r_alias}.")) {
-                            let oa = &key[..key.len() - 6];
-                            if let (
-                                Some(Value::I64(os)),
-                                Some(Value::I64(od)),
-                                Some(Value::String(ot)),
-                            ) = (
-                                new_rec.get(key),
-                                new_rec.get(&format!("{oa}.__dst")),
-                                new_rec.get(&format!("{oa}.__type")),
-                            ) {
-                                let ok = ((*os).min(*od), (*os).max(*od), ot.as_str());
-                                if ok == ek {
-                                    dup = true;
-                                    break;
+            if self.var_length {
+                // Variable-length traversal — returns full paths with edge details.
+                let _owned_labels: Vec<String>;
+                let labels: Vec<&str> = if self.edge_types.is_empty() {
+                    let all = edge::get_all_edge_labels(self.conn, src_id, self.direction)?;
+                    _owned_labels = all.into_iter().map(|(l, _)| l).collect();
+                    _owned_labels.iter().map(|s| s.as_str()).collect()
+                } else {
+                    self.edge_types.iter().map(|s| s.as_str()).collect()
+                };
+                let paths = edge::traverse_paths(
+                    self.conn,
+                    src_id,
+                    &labels,
+                    self.direction,
+                    self.min_hops,
+                    self.max_hops,
+                )?;
+                for (dst_id, steps) in paths {
+                    if let Some(required) = bound_dst {
+                        if dst_id != required {
+                            continue;
+                        }
+                    }
+                    let dst_node = node::get_node(self.conn, dst_id)?;
+                    let mut new_rec = rec.clone();
+                    new_rec.set(self.dst_alias.clone(), Value::I64(dst_id.0 as i64));
+                    for (key, val) in &dst_node.properties {
+                        new_rec.set(format!("{}.{key}", self.dst_alias), val.clone());
+                    }
+                    new_rec.set(
+                        format!("{}.__label", self.dst_alias),
+                        Value::String(dst_node.labels.join(":")),
+                    );
+                    new_rec.set(
+                        format!("{}.__labels", self.dst_alias),
+                        Value::List(
+                            dst_node
+                                .labels
+                                .iter()
+                                .map(|l| Value::String(l.clone()))
+                                .collect(),
+                        ),
+                    );
+                    new_rec.set(
+                        format!("{}.__id", self.dst_alias),
+                        Value::I64(dst_id.0 as i64),
+                    );
+                    // Bind relationship variable as a list of edges.
+                    if let Some(ref r_alias) = self.rel_alias {
+                        let edge_list: Vec<Value> = steps
+                            .iter()
+                            .map(|step| {
+                                let props = edge::get_edge_properties(
+                                    self.conn,
+                                    step.edge_src,
+                                    step.edge_dst,
+                                    &step.edge_label,
+                                )
+                                .unwrap_or_default();
+                                Value::Edge(crate::types::Edge {
+                                    src: step.edge_src,
+                                    dst: step.edge_dst,
+                                    label: step.edge_label.clone(),
+                                    properties: props,
+                                })
+                            })
+                            .collect();
+                        new_rec.set(r_alias.to_string(), Value::List(edge_list));
+                    }
+                    expanded.push(new_rec);
+                }
+            } else {
+                // Single-hop expansion.
+                let label = self.edge_types.first().map(|s| s.as_str()).unwrap_or("");
+                let dst_ids = edge::get_neighbors(self.conn, src_id, label, self.direction)?;
+
+                for dst_id in dst_ids {
+                    if let Some(required) = bound_dst {
+                        if dst_id != required {
+                            continue;
+                        }
+                    }
+                    let dst_node = node::get_node(self.conn, dst_id)?;
+                    let mut new_rec = rec.clone();
+                    new_rec.set(self.dst_alias.clone(), Value::I64(dst_id.0 as i64));
+                    for (key, val) in &dst_node.properties {
+                        new_rec.set(format!("{}.{key}", self.dst_alias), val.clone());
+                    }
+                    new_rec.set(
+                        format!("{}.__label", self.dst_alias),
+                        Value::String(dst_node.labels.join(":")),
+                    );
+                    new_rec.set(
+                        format!("{}.__labels", self.dst_alias),
+                        Value::List(
+                            dst_node
+                                .labels
+                                .iter()
+                                .map(|l| Value::String(l.clone()))
+                                .collect(),
+                        ),
+                    );
+                    new_rec.set(
+                        format!("{}.__id", self.dst_alias),
+                        Value::I64(dst_id.0 as i64),
+                    );
+                    if let Some(ref r_alias) = self.rel_alias {
+                        let (edge_src, edge_dst) = match self.direction {
+                            Direction::Incoming => (dst_id, src_id),
+                            Direction::Outgoing => (src_id, dst_id),
+                            Direction::Both => {
+                                // Determine actual edge direction by checking storage.
+                                if edge::edge_exists(self.conn, src_id, dst_id, label)
+                                    .unwrap_or(false)
+                                {
+                                    (src_id, dst_id)
+                                } else {
+                                    (dst_id, src_id)
+                                }
+                            }
+                        };
+
+                        // Relationship uniqueness: skip if another named rel in
+                        // this record already uses the same edge. Normalize to
+                        // (min, max, type) for direction-independent comparison.
+                        let (es, ed) = (edge_src.0 as i64, edge_dst.0 as i64);
+                        let ek = (es.min(ed), es.max(ed), label);
+                        let mut dup = false;
+                        for (key, _) in &new_rec.fields {
+                            if key.ends_with(".__src") && !key.starts_with(&format!("{r_alias}.")) {
+                                let oa = &key[..key.len() - 6];
+                                if let (
+                                    Some(Value::I64(os)),
+                                    Some(Value::I64(od)),
+                                    Some(Value::String(ot)),
+                                ) = (
+                                    new_rec.get(key),
+                                    new_rec.get(&format!("{oa}.__dst")),
+                                    new_rec.get(&format!("{oa}.__type")),
+                                ) {
+                                    let ok = ((*os).min(*od), (*os).max(*od), ot.as_str());
+                                    if ok == ek {
+                                        dup = true;
+                                        break;
+                                    }
                                 }
                             }
                         }
-                    }
-                    if dup {
-                        continue;
-                    }
+                        if dup {
+                            continue;
+                        }
 
-                    new_rec.set(format!("{r_alias}.__src"), Value::I64(edge_src.0 as i64));
-                    new_rec.set(format!("{r_alias}.__dst"), Value::I64(edge_dst.0 as i64));
-                    new_rec.set(
-                        format!("{r_alias}.__type"),
-                        Value::String(label.to_string()),
-                    );
-                    if let Ok(props) =
-                        edge::get_edge_properties(self.conn, edge_src, edge_dst, label)
-                    {
-                        for (key, val) in &props {
-                            new_rec.set(format!("{r_alias}.{key}"), val.clone());
+                        new_rec.set(format!("{r_alias}.__src"), Value::I64(edge_src.0 as i64));
+                        new_rec.set(format!("{r_alias}.__dst"), Value::I64(edge_dst.0 as i64));
+                        new_rec.set(
+                            format!("{r_alias}.__type"),
+                            Value::String(label.to_string()),
+                        );
+                        if let Ok(props) =
+                            edge::get_edge_properties(self.conn, edge_src, edge_dst, label)
+                        {
+                            for (key, val) in &props {
+                                new_rec.set(format!("{r_alias}.{key}"), val.clone());
+                            }
                         }
                     }
+                    expanded.push(new_rec);
                 }
-                expanded.push(new_rec);
             }
             self.buffer = expanded.into_iter();
         }
@@ -484,7 +551,7 @@ pub fn build_iter<'a>(
             direction,
             min_hops,
             max_hops,
-            ..
+            var_length,
         } => {
             let input_iter = build_iter(conn, input)?;
             Ok(Box::new(ExpandIter {
@@ -497,6 +564,7 @@ pub fn build_iter<'a>(
                 direction: *direction,
                 min_hops: *min_hops,
                 max_hops: *max_hops,
+                var_length: *var_length,
                 buffer: Vec::new().into_iter(),
             }))
         }

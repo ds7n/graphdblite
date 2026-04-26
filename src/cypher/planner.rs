@@ -281,7 +281,7 @@ fn plan_match(conn: &Connection, stmt: &MatchStatement) -> crate::types::Result<
     for clause in &stmt.intermediate_clauses {
         match clause {
             IntermediateClause::With(with) => {
-                op = plan_with(conn, op, with)?;
+                op = plan_with_scoped(conn, op, with, Some(&scope_vars))?;
                 // WITH resets scope to only the projected aliases.
                 // Also reset variable type tracking — WITH starts a new scope
                 // where variables can be reused with different types.
@@ -1366,6 +1366,15 @@ fn plan_with(
     input: LogicalOp,
     with: &WithClause,
 ) -> crate::types::Result<LogicalOp> {
+    plan_with_scoped(conn, input, with, None)
+}
+
+fn plan_with_scoped(
+    conn: &Connection,
+    input: LogicalOp,
+    with: &WithClause,
+    input_scope: Option<&HashSet<String>>,
+) -> crate::types::Result<LogicalOp> {
     let mut op = input;
 
     check_duplicate_columns(&with.items)?;
@@ -1398,6 +1407,9 @@ fn plan_with(
         // pre-projection aggregate columns (group keys are named by
         // expr_to_column_name, matching the original expression).
         if !with.order_by.is_empty() {
+            if let Some(scope) = input_scope {
+                validate_with_order_by_scope_input(scope, &with.items, &with.order_by)?;
+            }
             // Reject ORDER BY with aggregation not in the projection.
             let mut projected_agg_cols: std::collections::HashSet<String> =
                 std::collections::HashSet::new();
@@ -1469,6 +1481,9 @@ fn plan_with(
         // pre-projection variables (e.g. ORDER BY a.name when WITH projects a.name AS name).
         if !with.order_by.is_empty() && !has_aggregates {
             validate_no_aggregation_in_order_by(&with.order_by)?;
+            if let Some(scope) = input_scope {
+                validate_with_order_by_scope_input(scope, &with.items, &with.order_by)?;
+            }
             let resolved: Vec<SortItem> = with
                 .order_by
                 .iter()
@@ -2220,6 +2235,70 @@ fn validate_distinct_order_by(
         return Err(GraphError::syntax(
             "UndefinedVariable: ORDER BY references a variable not in RETURN DISTINCT",
         ));
+    }
+    Ok(())
+}
+
+/// Validate that ORDER BY in WITH only references variables available in the
+/// input scope (from the prior clause). The input scope is what was projected
+/// by the previous WITH/MATCH, so variables dropped earlier are caught.
+fn validate_with_order_by_scope_input(
+    input_scope: &HashSet<String>,
+    with_items: &[ReturnItem],
+    order_by: &[SortItem],
+) -> crate::types::Result<()> {
+    // The effective scope for ORDER BY is the input scope plus any aliases
+    // defined by the WITH items (for aggregate aliases like `count(*) AS c`).
+    let mut scope = input_scope.clone();
+    for item in with_items {
+        if let Some(ref alias) = item.alias {
+            scope.insert(alias.clone());
+        }
+        if matches!(item.expr, Expr::Star) {
+            return Ok(()); // WITH * — skip validation.
+        }
+    }
+    for sort_item in order_by {
+        validate_expr_in_scope(&sort_item.expr, &scope)?;
+    }
+    Ok(())
+}
+
+/// Check that all variable references in an expression are in the given scope.
+fn validate_expr_in_scope(expr: &Expr, scope: &HashSet<String>) -> crate::types::Result<()> {
+    match expr {
+        Expr::Variable(name) => {
+            if !scope.contains(name) {
+                return Err(GraphError::syntax(format!(
+                    "UndefinedVariable: variable `{name}` not defined"
+                )));
+            }
+        }
+        Expr::Property(var, _) => {
+            if !scope.contains(var) {
+                return Err(GraphError::syntax(format!(
+                    "UndefinedVariable: variable `{var}` not defined"
+                )));
+            }
+        }
+        Expr::BinaryOp { left, right, .. } => {
+            validate_expr_in_scope(left, scope)?;
+            validate_expr_in_scope(right, scope)?;
+        }
+        Expr::FunctionCall { args, .. } => {
+            for arg in args {
+                validate_expr_in_scope(arg, scope)?;
+            }
+        }
+        Expr::Not(inner) | Expr::IsNull(inner) | Expr::IsNotNull(inner) => {
+            validate_expr_in_scope(inner, scope)?;
+        }
+        Expr::List(items) => {
+            for item in items {
+                validate_expr_in_scope(item, scope)?;
+            }
+        }
+        _ => {} // Literals, Star, etc. — always valid.
     }
     Ok(())
 }

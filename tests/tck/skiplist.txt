@@ -4,17 +4,12 @@ Aggregation6 - Percentiles::[5] `percentileDisc()` failing in more involved quer
 Call1 - Basic procedure calling::[13] Standalone call to unknown procedure should fail
 Call1 - Basic procedure calling::[14] In-query call to unknown procedure should fail
 Comparison1 - Equality::[14] Direction of traversed relationship is not significant for path equality, simple
-Comparison2 - Half-bounded Range::[3] Comparing across types yields null, except numbers
 CountingSubgraphMatches1 - Matching subgraph patterns and count the number of matches::[10] Mixing directed and undirected pattern parts with self-relationship, count
 CountingSubgraphMatches1 - Matching subgraph patterns and count the number of matches::[11] Mixing directed and undirected pattern parts with self-relationship, undirected count
 Create3 - Interoperation with other clauses::[3] MATCH-CREATE-WITH-CREATE
 Create3 - Interoperation with other clauses::[7] WITH-CREATE: Nodes are not created when aliases are applied to variable names multiple times
 Create4 - Large Create Query::[2] Many CREATE clauses
 Create5 - Multiple hops create patterns::[5] Create a pattern with multiple hops and varying directions
-Delete5 - Delete clause interoperation with built-in data types::[2] Delete relationship from a list
-Delete5 - Delete clause interoperation with built-in data types::[4] Delete relationships from a map
-Delete5 - Delete clause interoperation with built-in data types::[5] Detach delete nodes from nested map/list
-Delete5 - Delete clause interoperation with built-in data types::[6] Delete relationships from nested map/list
 Delete5 - Delete clause interoperation with built-in data types::[7] Delete paths from nested map/list
 ExistentialSubquery2 - Full existential subquery::[2] Full existential subquery with aggregation
 Graph4 - Edge relationship type::[6] `type()` failing on invalid arguments
@@ -33,12 +28,15 @@ Map1 - Static value access::[3] Statically access a field of a map resulting fro
 Map2 - Dynamic Value Access::[7] Fail at runtime when trying to index into a map with a non-string
 Match1 - Match nodes::[11] Fail when matching a node variable bound to a value
 Match2 - Match relationships::[13] Fail when matching a relationship variable bound to a value
-Match2 - Match relationships::[7] Matching twice with conflicting relationship types on same relationship
 Match3 - Match fixed length patterns::[30] Fail when using a list or nodes as a node
 Match4 - Match variable length patterns scenarios::[4] Matching longer variable length paths
 Match4 - Match variable length patterns scenarios::[5] Matching variable length pattern with property predicate
 Match4 - Match variable length patterns scenarios::[7] Matching variable length patterns including a bound relationship
 Match4 - Match variable length patterns scenarios::[8] Matching relationships into a list and matching variable length using the list
+Match4 - Match variable length patterns::[4] Matching longer variable length paths
+Match4 - Match variable length patterns::[5] Matching variable length pattern with property predicate
+Match4 - Match variable length patterns::[7] Matching variable length patterns including a bound relationship
+Match4 - Match variable length patterns::[8] Matching relationships into a list and matching variable length using the list
 Match6 - Match named paths scenarios::[14] Named path with undirected fixed variable length pattern
 Match6 - Match named paths scenarios::[15] Variable-length named path
 Match6 - Match named paths scenarios::[16] Return a var length path
@@ -46,13 +44,19 @@ Match6 - Match named paths scenarios::[17] Return a named var length path of len
 Match6 - Match named paths scenarios::[19] Variable length relationship without lower bound
 Match6 - Match named paths scenarios::[20] Variable length relationship without bounds
 Match6 - Match named paths scenarios::[25] Fail when matching a path variable bound to a value
-Match7 - Optional match::[11] Return two subgraphs with bound undirected relationship and optional relationship
+Match6 - Match named paths::[15] Variable-length named path
+Match6 - Match named paths::[16] Return a var length path
+Match6 - Match named paths::[17] Return a named var length path of length zero
+Match6 - Match named paths::[19] Variable length relationship without lower bound
+Match6 - Match named paths::[20] Variable length relationship without bounds
+Match6 - Match named paths::[25] Fail when matching a path variable bound to a value
 Match7 - Optional match::[12] Variable length optional relationships
 Match7 - Optional match::[14] Variable length optional relationships with length predicates
 Match8 - Match clause interoperation with other clauses::[2] Counting rows after MATCH, MERGE, OPTIONAL MATCH
 Match8 - Match clause interoperation with other clauses::[3] Matching and disregarding output, then matching again
 Match9 - Match deprecated scenarios::[1] Variable length relationship variables are lists of relationships
 Match9 - Match deprecated scenarios::[9] Optionally matching named paths with variable length patterns
+Match9 - Match deprecated::[9] Optionally matching named paths with variable length patterns
 MatchWhere1 - Filter single variable::[14] Fail when filtering path with property predicate
 MatchWhere2 - Filter multiple variables::[1] Filter nodes with conjunctive two-part property predicate on multi variables with multiple bindings
 MatchWhere2 - Filter multiple variables::[2] Filter node with conjunctive multi-part property predicates on multi variables with multiple bindings
@@ -106,21 +110,7 @@ Temporal8 - Compute Arithmetic Operations on Temporal Values::[4] Should add or 
 Temporal8 - Compute Arithmetic Operations on Temporal Values::[5] Should add or subtract duration to or from date time
 Temporal8 - Compute Arithmetic Operations on Temporal Values::[6] Should add or subtract durations
 Temporal8 - Compute Arithmetic Operations on Temporal Values::[7] Should multiply or divide durations by numbers
-TypeConversion1 - To Boolean::[5] Fail `toBoolean()` on invalid types #Example: relationship
-TypeConversion2 - To Integer::[8] Fail `toInteger()` on invalid types #Example: node
-TypeConversion2 - To Integer::[8] Fail `toInteger()` on invalid types #Example: relationship
-TypeConversion3 - To Float::[6] Fail `toFloat()` on invalid types #Example: node
-TypeConversion3 - To Float::[6] Fail `toFloat()` on invalid types #Example: relationship
-TypeConversion4 - To String::[10] Fail `toString()` on invalid types #Example: node
-TypeConversion4 - To String::[10] Fail `toString()` on invalid types #Example: relationship
 Unwind1::[12] Unwind does not remove variables from scope
-WithOrderBy1 - Order by a single variable::[46] Fail on sorting by an undefined variable #Example: never defined
-WithOrderBy1 - Order by a single variable::[46] Fail on sorting by an undefined variable #Example: out of scope
-WithOrderBy3 - Order by multiple expressions::[8] Fail on sorting by any number of undefined variables in any position #Example: mixed
-WithOrderBy3 - Order by multiple expressions::[8] Fail on sorting by any number of undefined variables in any position #Example: never defined
-WithOrderBy3 - Order by multiple expressions::[8] Fail on sorting by any number of undefined variables in any position #Example: out of scope
 WithOrderBy4 - Order by in combination with projection and aliasing::[19] Fail if not projected variables are used inside an order by item which contains an aggregation expression
-WithOrderBy4 - Order by in combination with projection and aliasing::[8] Sort by non-projected existing variable
-WithSkipLimit2 - Limit::[2] Handle dependencies across WITH with LIMIT
 WithWhere2 - Filter multiple variables::[1] Filter nodes with conjunctive two-part property predicate on multi variables with multiple bindings
 WithWhere2 - Filter multiple variables::[2] Filter node with conjunctive multi-part property predicates on multi variables with multiple bindings

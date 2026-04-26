@@ -2891,7 +2891,7 @@ fn is_aggregate_fn(expr: &Expr) -> bool {
         Expr::BinaryOp { left, right, .. } => is_aggregate_fn(left) || is_aggregate_fn(right),
         Expr::Not(inner) | Expr::IsNull(inner) | Expr::IsNotNull(inner) => is_aggregate_fn(inner),
         Expr::MapLiteral(pairs) => pairs.iter().any(|(_, v)| is_aggregate_fn(v)),
-        Expr::List(items) => items.iter().any(|item| is_aggregate_fn(item)),
+        Expr::List(items) => items.iter().any(is_aggregate_fn),
         _ => false,
     }
 }

@@ -10,7 +10,16 @@ use crate::types::{GraphError, QueryError, QueryPhase, Value};
 pub fn eval_expr(expr: &Expr, record: &Record, conn: &Connection) -> crate::types::Result<Value> {
     match expr {
         Expr::Literal(lit) => Ok(literal_to_value(lit)),
-        Expr::Variable(name) => Ok(record.get(name).cloned().unwrap_or(Value::Null)),
+        Expr::Variable(name) => {
+            // Try to reconstruct a full Node/Edge value from compound bindings
+            // (e.g. n.__id, n.__label, n.prop) so that variables resolve to rich
+            // objects when used in RETURN lists, maps, or comparisons.
+            if let Some(compound) = crate::cypher::executor::build_compound_binding(record, name) {
+                Ok(compound)
+            } else {
+                Ok(record.get(name).cloned().unwrap_or(Value::Null))
+            }
+        }
         Expr::Property(var, prop) => {
             // Check if the entity has been deleted (e.g. DELETE n RETURN n.prop).
             if record.get(&format!("{var}.__deleted")) == Some(&Value::Bool(true)) {
@@ -222,6 +231,12 @@ pub fn eval_expr(expr: &Expr, record: &Record, conn: &Connection) -> crate::type
                     .all(|lbl| node_labels.contains(&Value::String(lbl.clone())));
                 Ok(Value::Bool(has_all))
             } else {
+                // Check if var is an edge binding — compare __type against labels.
+                let type_key = format!("{var}.__type");
+                if let Some(Value::String(rel_type)) = record.get(&type_key) {
+                    let has_all = labels.iter().all(|lbl| lbl == rel_type);
+                    return Ok(Value::Bool(has_all));
+                }
                 // Fallback: look up from database.
                 let id_key = format!("{var}.__id");
                 if let Some(Value::I64(id)) = record.get(&id_key) {
@@ -2198,7 +2213,14 @@ pub fn expr_to_column_name(expr: &Expr) -> String {
         Expr::PatternComprehension { .. } => "_expr".to_string(),
         Expr::HasLabel(var, labels) => {
             let label_str: Vec<String> = labels.iter().map(|l| format!(":{l}")).collect();
-            format!("{var}{}", label_str.join(""))
+            format!("({var}{})", label_str.join(""))
+        }
+        Expr::MapLiteral(pairs) => {
+            let inner: Vec<String> = pairs
+                .iter()
+                .map(|(k, v)| format!("{k}: {}", expr_to_column_name(v)))
+                .collect();
+            format!("{{{}}}", inner.join(", "))
         }
         _ => "_expr".to_string(),
     }

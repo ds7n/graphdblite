@@ -2890,6 +2890,8 @@ fn is_aggregate_fn(expr: &Expr) -> bool {
         // Recursively check sub-expressions (e.g. `count(a) > 0`).
         Expr::BinaryOp { left, right, .. } => is_aggregate_fn(left) || is_aggregate_fn(right),
         Expr::Not(inner) | Expr::IsNull(inner) | Expr::IsNotNull(inner) => is_aggregate_fn(inner),
+        Expr::MapLiteral(pairs) => pairs.iter().any(|(_, v)| is_aggregate_fn(v)),
+        Expr::List(items) => items.iter().any(|item| is_aggregate_fn(item)),
         _ => false,
     }
 }
@@ -2926,6 +2928,16 @@ fn collect_aggregate_calls<'a>(expr: &'a Expr, out: &mut Vec<&'a Expr>) {
         }
         Expr::Not(inner) | Expr::IsNull(inner) | Expr::IsNotNull(inner) => {
             collect_aggregate_calls(inner, out);
+        }
+        Expr::MapLiteral(pairs) => {
+            for (_, v) in pairs {
+                collect_aggregate_calls(v, out);
+            }
+        }
+        Expr::List(items) => {
+            for item in items {
+                collect_aggregate_calls(item, out);
+            }
         }
         _ => {}
     }
@@ -3016,11 +3028,21 @@ fn collect_non_aggregate_leaves<'a>(expr: &'a Expr, leaves: &mut Vec<&'a Expr>) 
             collect_non_aggregate_leaves(inner, leaves);
         }
         // Constants don't need grouping.
-        Expr::Literal(_) | Expr::Star | Expr::List(_) => {}
+        Expr::Literal(_) | Expr::Star => {}
         // Non-aggregate functions are fine if their args are constants/grouped.
         Expr::FunctionCall { args, .. } => {
             for arg in args {
                 collect_non_aggregate_leaves(arg, leaves);
+            }
+        }
+        Expr::MapLiteral(pairs) => {
+            for (_, v) in pairs {
+                collect_non_aggregate_leaves(v, leaves);
+            }
+        }
+        Expr::List(items) => {
+            for item in items {
+                collect_non_aggregate_leaves(item, leaves);
             }
         }
         _ => {
@@ -3078,6 +3100,16 @@ fn extract_nested_aggregates(expr: &Expr, aggregates: &mut Vec<AggregateExpr>) {
         }
         Expr::Not(inner) | Expr::IsNull(inner) | Expr::IsNotNull(inner) => {
             extract_nested_aggregates(inner, aggregates);
+        }
+        Expr::MapLiteral(pairs) => {
+            for (_, v) in pairs {
+                extract_nested_aggregates(v, aggregates);
+            }
+        }
+        Expr::List(items) => {
+            for item in items {
+                extract_nested_aggregates(item, aggregates);
+            }
         }
         _ => {}
     }

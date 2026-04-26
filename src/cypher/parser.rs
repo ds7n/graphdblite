@@ -1036,7 +1036,10 @@ fn parse_rel_pattern(pair: pest::iterators::Pair<Rule>) -> crate::types::Result<
                     Rule::rel_type_spec => {
                         for rt in detail.into_inner() {
                             if rt.as_rule() == Rule::symbolic_name {
-                                rel_types.push(rt.as_str().to_string());
+                                let t = rt.as_str().to_string();
+                                if !rel_types.contains(&t) {
+                                    rel_types.push(t);
+                                }
                             }
                         }
                     }

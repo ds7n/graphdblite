@@ -250,7 +250,7 @@ rel_both_bare = { "<-->" }
 rel_undirected_bare = { "--" }
 
 rel_detail = { ident? ~ rel_type_spec? ~ property_map? ~ var_length? }
-rel_type_spec = { ":" ~ symbolic_name ~ ("|" ~ symbolic_name)* }
+rel_type_spec = { ":" ~ symbolic_name ~ ("|" ~ ":"? ~ symbolic_name)* }
 
 var_length = { "*" ~ (int_range | fixed_length)? ~ property_map? }
 int_range = { integer? ~ ".." ~ integer? }

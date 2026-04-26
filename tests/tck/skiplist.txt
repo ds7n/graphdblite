@@ -5,6 +5,8 @@ Call1 - Basic procedure calling::[13] Standalone call to unknown procedure shoul
 Call1 - Basic procedure calling::[14] In-query call to unknown procedure should fail
 Comparison1 - Equality::[14] Direction of traversed relationship is not significant for path equality, simple
 Comparison2 - Half-bounded Range::[3] Comparing across types yields null, except numbers
+CountingSubgraphMatches1 - Matching subgraph patterns and count the number of matches::[10] Mixing directed and undirected pattern parts with self-relationship, count
+CountingSubgraphMatches1 - Matching subgraph patterns and count the number of matches::[11] Mixing directed and undirected pattern parts with self-relationship, undirected count
 Create3 - Interoperation with other clauses::[3] MATCH-CREATE-WITH-CREATE
 Create3 - Interoperation with other clauses::[7] WITH-CREATE: Nodes are not created when aliases are applied to variable names multiple times
 Create4 - Large Create Query::[2] Many CREATE clauses
@@ -16,7 +18,6 @@ Delete5 - Delete clause interoperation with built-in data types::[6] Delete rela
 Delete5 - Delete clause interoperation with built-in data types::[7] Delete paths from nested map/list
 ExistentialSubquery2 - Full existential subquery::[2] Full existential subquery with aggregation
 Graph4 - Edge relationship type::[6] `type()` failing on invalid arguments
-Graph5 - Node and edge label expressions::[2] Single-labels expression on relationships
 Graph6 - Static property access::[4] Statically access a property of a node resulting from an expression
 Graph6 - Static property access::[8] Statically access a property of a relationship resulting from an expression
 List11 - Create a list from a range::[3] Create an empty list if range direction and step direction are inconsistent
@@ -34,15 +35,11 @@ Match1 - Match nodes::[11] Fail when matching a node variable bound to a value
 Match2 - Match relationships::[13] Fail when matching a relationship variable bound to a value
 Match2 - Match relationships::[7] Matching twice with conflicting relationship types on same relationship
 Match3 - Match fixed length patterns::[30] Fail when using a list or nodes as a node
-Match3 - Match fixed length patterns::[8] Matching using relationship predicate with multiples of the same type
+Match3 - Match fixed length patterns::[5] Return two subgraphs with bound undirected relationship
 Match4 - Match variable length patterns scenarios::[4] Matching longer variable length paths
 Match4 - Match variable length patterns scenarios::[5] Matching variable length pattern with property predicate
 Match4 - Match variable length patterns scenarios::[7] Matching variable length patterns including a bound relationship
 Match4 - Match variable length patterns scenarios::[8] Matching relationships into a list and matching variable length using the list
-Match6 - Match named paths scenarios::[10] Named path with alternating directed/undirected relationships
-Match6 - Match named paths scenarios::[11] Named path with multiple alternating directed/undirected relationships
-Match6 - Match named paths scenarios::[12] Matching path with multiple bidirectional relationships
-Match6 - Match named paths scenarios::[13] Matching path with both directions should respect other directions
 Match6 - Match named paths scenarios::[14] Named path with undirected fixed variable length pattern
 Match6 - Match named paths scenarios::[15] Variable-length named path
 Match6 - Match named paths scenarios::[16] Return a var length path
@@ -50,14 +47,14 @@ Match6 - Match named paths scenarios::[17] Return a named var length path of len
 Match6 - Match named paths scenarios::[19] Variable length relationship without lower bound
 Match6 - Match named paths scenarios::[20] Variable length relationship without bounds
 Match6 - Match named paths scenarios::[25] Fail when matching a path variable bound to a value
-Match6 - Match named paths scenarios::[8] Respecting direction when matching non-existent path with multiple directions
-Match6 - Match named paths scenarios::[9] Longer path query should return results in written order
 Match7 - Optional match::[11] Return two subgraphs with bound undirected relationship and optional relationship
 Match7 - Optional match::[12] Variable length optional relationships
 Match7 - Optional match::[14] Variable length optional relationships with length predicates
 Match8 - Match clause interoperation with other clauses::[2] Counting rows after MATCH, MERGE, OPTIONAL MATCH
+Match8 - Match clause interoperation with other clauses::[3] Matching and disregarding output, then matching again
 Match9 - Match deprecated scenarios::[1] Variable length relationship variables are lists of relationships
 Match9 - Match deprecated scenarios::[9] Optionally matching named paths with variable length patterns
+MatchWhere1 - Filter single variable::[14] Fail when filtering path with property predicate
 MatchWhere2 - Filter multiple variables::[1] Filter nodes with conjunctive two-part property predicate on multi variables with multiple bindings
 MatchWhere2 - Filter multiple variables::[2] Filter node with conjunctive multi-part property predicates on multi variables with multiple bindings
 Merge1 - Merge node::[13] Merge should bind a path
@@ -90,16 +87,11 @@ Quantifier3 - Any quantifier::[9] Any quantifier on list containing relationship
 Quantifier4 - All quantifier::[15] Fail all quantifier on type mismatch between list elements and predicate
 Quantifier4 - All quantifier::[8] All quantifier on list containing nodes
 Quantifier4 - All quantifier::[9] All quantifier on list containing relationships
-Return2 - Return single expression (correctly projecting an expression)::[12] Projecting a list of nodes and relationships
-Return2 - Return single expression (correctly projecting an expression)::[13] Projecting a map of nodes and relationships
 Return2 - Return single expression (correctly projecting an expression)::[15] Fail when returning properties of deleted nodes
 Return2 - Return single expression (correctly projecting an expression)::[17] Fail when returning properties of deleted relationships
-Return2 - Return single expression (correctly projecting an expression)::[8] Returning label predicate expression
-Return2 - Return single expression (correctly projecting an expression)::[9] Returning a projected map
 Return4 - Column renaming::[11] Reusing variable names in RETURN
 Return4 - Column renaming::[4] Keeping used expression 1
 Return4 - Column renaming::[6] Keeping used expression 3
-Return4 - Column renaming::[9] Handle subexpression in aggregation also occurring as standalone expression with nested aggregation in a literal map
 Return6 - Implicit grouping with aggregates::[10] Multiple aggregates on same variable
 Return6 - Implicit grouping with aggregates::[15] Using `rand()` in aggregations
 Return6 - Implicit grouping with aggregates::[16] Aggregation on complex expressions
@@ -149,10 +141,3 @@ WithOrderBy4 - Order by in combination with projection and aliasing::[8] Sort by
 WithSkipLimit2 - Limit::[2] Handle dependencies across WITH with LIMIT
 WithWhere2 - Filter multiple variables::[1] Filter nodes with conjunctive two-part property predicate on multi variables with multiple bindings
 WithWhere2 - Filter multiple variables::[2] Filter node with conjunctive multi-part property predicates on multi variables with multiple bindings
-MatchWhere1 - Filter single variable::[14] Fail when filtering path with property predicate
-Match3 - Match fixed length patterns::[5] Return two subgraphs with bound undirected relationship
-Match3 - Match fixed length patterns::[20] Three bound nodes pointing to the same node
-Match3 - Match fixed length patterns::[21] Three bound nodes pointing to the same node with extra connections
-Match8 - Match clause interoperation with other clauses::[3] Matching and disregarding output, then matching again
-CountingSubgraphMatches1 - Matching subgraph patterns and count the number of matches::[10] Mixing directed and undirected pattern parts with self-relationship, count
-CountingSubgraphMatches1 - Matching subgraph patterns and count the number of matches::[11] Mixing directed and undirected pattern parts with self-relationship, undirected count

@@ -2716,7 +2716,12 @@ fn exec_correlated(
             let left_records = exec_correlated(conn, left, outer, ctx)?;
             let mut results = Vec::new();
             for l in &left_records {
-                let right_records = exec_correlated(conn, right, outer, ctx)?;
+                // Merge left record with outer so the right side sees both.
+                let mut merged = outer.clone();
+                for (key, val) in &l.fields {
+                    merged.set(key.clone(), val.clone());
+                }
+                let right_records = exec_correlated(conn, right, &merged, ctx)?;
                 for r in &right_records {
                     let mut combined = l.clone();
                     for (key, val) in &r.fields {
@@ -2732,7 +2737,12 @@ fn exec_correlated(
             let left_records = exec_correlated(conn, input, outer, ctx)?;
             let mut results = Vec::new();
             for l in &left_records {
-                let right_records = exec_correlated(conn, right, l, ctx)?;
+                // Merge outer into left so the right side sees both scopes.
+                let mut merged = outer.clone();
+                for (key, val) in &l.fields {
+                    merged.set(key.clone(), val.clone());
+                }
+                let right_records = exec_correlated(conn, right, &merged, ctx)?;
                 for r in &right_records {
                     let mut combined = l.clone();
                     for (key, val) in &r.fields {

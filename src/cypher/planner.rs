@@ -82,6 +82,7 @@ fn resolve_sort_aliases(expr: &Expr, items: &[ReturnItem]) -> Expr {
             name,
             args,
             distinct,
+            original_text,
         } => Expr::FunctionCall {
             name: name.clone(),
             args: args
@@ -89,6 +90,7 @@ fn resolve_sort_aliases(expr: &Expr, items: &[ReturnItem]) -> Expr {
                 .map(|a| resolve_sort_aliases(a, items))
                 .collect(),
             distinct: *distinct,
+            original_text: original_text.clone(),
         },
         _ => expr.clone(),
     }
@@ -1345,6 +1347,7 @@ fn substitute_aliases(expr: &Expr, aliases: &std::collections::HashMap<String, E
             name,
             args,
             distinct,
+            original_text,
         } => Expr::FunctionCall {
             name: name.clone(),
             args: args
@@ -1352,6 +1355,7 @@ fn substitute_aliases(expr: &Expr, aliases: &std::collections::HashMap<String, E
                 .map(|a| substitute_aliases(a, aliases))
                 .collect(),
             distinct: *distinct,
+            original_text: original_text.clone(),
         },
         _ => expr.clone(),
     }
@@ -1390,6 +1394,40 @@ fn plan_with(
             group_keys,
             aggregates,
         };
+        // Sort between Aggregate and Project so ORDER BY can reference
+        // pre-projection aggregate columns (group keys are named by
+        // expr_to_column_name, matching the original expression).
+        if !with.order_by.is_empty() {
+            // Reject ORDER BY with aggregation not in the projection.
+            let mut projected_agg_cols: std::collections::HashSet<String> =
+                std::collections::HashSet::new();
+            for item in &with.items {
+                if is_aggregate_fn(&item.expr) {
+                    projected_agg_cols.insert(crate::cypher::eval::expr_to_column_name(&item.expr));
+                    if let Some(ref alias) = item.alias {
+                        projected_agg_cols.insert(alias.clone());
+                    }
+                }
+            }
+            for sort_item in &with.order_by {
+                let mut agg_calls = Vec::new();
+                collect_aggregate_calls(&sort_item.expr, &mut agg_calls);
+                for agg_expr in &agg_calls {
+                    let agg_col = crate::cypher::eval::expr_to_column_name(agg_expr);
+                    if !projected_agg_cols.contains(&agg_col) {
+                        return Err(GraphError::syntax(
+                            "UndefinedVariable: ORDER BY contains an aggregation that is not projected in WITH".to_string(),
+                        ));
+                    }
+                }
+            }
+            // Don't resolve aliases here — aggregate results are stored
+            // under alias names, so ORDER BY c evaluates directly against "c".
+            op = LogicalOp::Sort {
+                input: Box::new(op),
+                items: with.order_by.clone(),
+            };
+        }
     }
 
     if let Some(ref predicate) = with.where_clause {
@@ -1427,7 +1465,23 @@ fn plan_with(
             };
         }
     } else {
-        // No WHERE — just project.
+        // No WHERE — Sort before Project so ORDER BY can reference
+        // pre-projection variables (e.g. ORDER BY a.name when WITH projects a.name AS name).
+        if !with.order_by.is_empty() && !has_aggregates {
+            validate_no_aggregation_in_order_by(&with.order_by)?;
+            let resolved: Vec<SortItem> = with
+                .order_by
+                .iter()
+                .map(|si| SortItem {
+                    expr: resolve_sort_aliases(&si.expr, &with.items),
+                    descending: si.descending,
+                })
+                .collect();
+            op = LogicalOp::Sort {
+                input: Box::new(op),
+                items: resolved,
+            };
+        }
         op = LogicalOp::Project {
             input: Box::new(op),
             items: with.items.clone(),
@@ -1442,51 +1496,9 @@ fn plan_with(
         };
     }
 
-    // Apply ORDER BY.
-    if !with.order_by.is_empty() {
-        // When WITH does NOT have aggregates, reject ORDER BY with aggregation.
-        if !has_aggregates {
-            validate_no_aggregation_in_order_by(&with.order_by)?;
-        }
-
-        // When WITH has aggregates, reject ORDER BY expressions that contain
-        // aggregate function calls not present in the projection.  These are
-        // semantically undefined because the grouping already consumed the
-        // underlying rows.  (TCK: WithOrderBy4 [13], [14])
-        if has_aggregates {
-            // Collect column names for aggregate expressions in the projection.
-            let mut projected_agg_cols: std::collections::HashSet<String> =
-                std::collections::HashSet::new();
-            for item in &with.items {
-                if is_aggregate_fn(&item.expr) {
-                    projected_agg_cols.insert(crate::cypher::eval::expr_to_column_name(&item.expr));
-                    if let Some(ref alias) = item.alias {
-                        projected_agg_cols.insert(alias.clone());
-                    }
-                }
-            }
-
-            for sort_item in &with.order_by {
-                // Extract all aggregate function call sub-expressions from
-                // the ORDER BY item and verify each one is projected.
-                let mut agg_calls = Vec::new();
-                collect_aggregate_calls(&sort_item.expr, &mut agg_calls);
-                for agg_expr in &agg_calls {
-                    let agg_col = crate::cypher::eval::expr_to_column_name(agg_expr);
-                    if !projected_agg_cols.contains(&agg_col) {
-                        return Err(GraphError::syntax(
-                            "UndefinedVariable: ORDER BY contains an aggregation that is not projected in WITH".to_string(),
-                        ));
-                    }
-                }
-            }
-        }
-
-        op = LogicalOp::Sort {
-            input: Box::new(op),
-            items: with.order_by.clone(),
-        };
-    }
+    // Note: ORDER BY for both aggregate and non-aggregate cases is handled
+    // above (before Project) so sort expressions can reference pre-projection
+    // variables/columns.
 
     // Apply SKIP.
     if let Some(ref expr) = with.skip {
@@ -2874,19 +2886,26 @@ fn get_last_alias(op: &Option<LogicalOp>) -> String {
 /// Returns true if the expression is an aggregate function call (count, sum, avg, etc.).
 fn is_aggregate_fn(expr: &Expr) -> bool {
     match expr {
-        Expr::FunctionCall { name, .. } => matches!(
-            name.to_ascii_lowercase().as_str(),
-            "count"
-                | "sum"
-                | "avg"
-                | "min"
-                | "max"
-                | "collect"
-                | "percentiledisc"
-                | "percentilecont"
-                | "stdev"
-                | "stdevp"
-        ),
+        Expr::FunctionCall { name, args, .. } => {
+            if matches!(
+                name.to_ascii_lowercase().as_str(),
+                "count"
+                    | "sum"
+                    | "avg"
+                    | "min"
+                    | "max"
+                    | "collect"
+                    | "percentiledisc"
+                    | "percentilecont"
+                    | "stdev"
+                    | "stdevp"
+            ) {
+                true
+            } else {
+                // Check if any argument contains an aggregate (e.g. size(collect(a))).
+                args.iter().any(is_aggregate_fn)
+            }
+        }
         // Recursively check sub-expressions (e.g. `count(a) > 0`).
         Expr::BinaryOp { left, right, .. } => is_aggregate_fn(left) || is_aggregate_fn(right),
         Expr::Not(inner) | Expr::IsNull(inner) | Expr::IsNotNull(inner) => is_aggregate_fn(inner),
@@ -2963,6 +2982,7 @@ fn split_aggregates(items: &[ReturnItem]) -> crate::types::Result<(Vec<Expr>, Ve
             name,
             args,
             distinct,
+            original_text,
         } = &item.expr
         {
             if let Some(function) = parse_agg_name(name) {
@@ -2983,6 +3003,7 @@ fn split_aggregates(items: &[ReturnItem]) -> crate::types::Result<(Vec<Expr>, Ve
                     distinct: *distinct,
                     extra_arg,
                     original_name: name.clone(),
+                    original_call_text: original_text.clone(),
                 });
                 continue;
             }
@@ -3076,6 +3097,7 @@ fn extract_nested_aggregates(expr: &Expr, aggregates: &mut Vec<AggregateExpr>) {
             name,
             args,
             distinct,
+            original_text,
         } => {
             if let Some(function) = parse_agg_name(name) {
                 let input = args.first().cloned().unwrap_or(Expr::Star);
@@ -3087,6 +3109,7 @@ fn extract_nested_aggregates(expr: &Expr, aggregates: &mut Vec<AggregateExpr>) {
                     distinct: *distinct,
                     extra_arg,
                     original_name: name.clone(),
+                    original_call_text: original_text.clone(),
                 });
                 return; // Don't recurse into aggregate arguments.
             }

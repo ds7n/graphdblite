@@ -329,7 +329,16 @@ impl<'a> RecordIter for ExpandIter<'a> {
                 if let Some(ref r_alias) = self.rel_alias {
                     let (edge_src, edge_dst) = match self.direction {
                         Direction::Incoming => (dst_id, src_id),
-                        _ => (src_id, dst_id),
+                        Direction::Outgoing => (src_id, dst_id),
+                        Direction::Both => {
+                            // Determine actual edge direction by checking storage.
+                            if edge::edge_exists(self.conn, src_id, dst_id, label).unwrap_or(false)
+                            {
+                                (src_id, dst_id)
+                            } else {
+                                (dst_id, src_id)
+                            }
+                        }
                     };
 
                     // Relationship uniqueness: skip if another named rel in

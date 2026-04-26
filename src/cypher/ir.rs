@@ -228,6 +228,8 @@ pub struct AggregateExpr {
     pub extra_arg: Option<Expr>,
     /// Original function name as written in the query (preserves case).
     pub original_name: String,
+    /// Original full function call text for column naming (preserves whitespace).
+    pub original_call_text: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

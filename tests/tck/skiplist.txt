@@ -35,7 +35,6 @@ Match1 - Match nodes::[11] Fail when matching a node variable bound to a value
 Match2 - Match relationships::[13] Fail when matching a relationship variable bound to a value
 Match2 - Match relationships::[7] Matching twice with conflicting relationship types on same relationship
 Match3 - Match fixed length patterns::[30] Fail when using a list or nodes as a node
-Match3 - Match fixed length patterns::[5] Return two subgraphs with bound undirected relationship
 Match4 - Match variable length patterns scenarios::[4] Matching longer variable length paths
 Match4 - Match variable length patterns scenarios::[5] Matching variable length pattern with property predicate
 Match4 - Match variable length patterns scenarios::[7] Matching variable length patterns including a bound relationship
@@ -89,16 +88,9 @@ Quantifier4 - All quantifier::[8] All quantifier on list containing nodes
 Quantifier4 - All quantifier::[9] All quantifier on list containing relationships
 Return2 - Return single expression (correctly projecting an expression)::[15] Fail when returning properties of deleted nodes
 Return2 - Return single expression (correctly projecting an expression)::[17] Fail when returning properties of deleted relationships
-Return4 - Column renaming::[11] Reusing variable names in RETURN
-Return4 - Column renaming::[4] Keeping used expression 1
-Return4 - Column renaming::[6] Keeping used expression 3
-Return6 - Implicit grouping with aggregates::[10] Multiple aggregates on same variable
 Return6 - Implicit grouping with aggregates::[15] Using `rand()` in aggregations
 Return6 - Implicit grouping with aggregates::[16] Aggregation on complex expressions
-Return6 - Implicit grouping with aggregates::[5] Aggregates inside normal functions
 Return6 - Implicit grouping with aggregates::[8] Handle aggregation on functions
-ReturnOrderBy1 - Order by a single variable (correct order of values according to their type)::[11] ORDER BY should order distinct types in the expected order
-ReturnOrderBy1 - Order by a single variable (correct order of values according to their type)::[12] ORDER BY DESC should order distinct types in the expected order
 Set1 - Set a Property::[10] Failing when setting a list of maps as a property
 Set1 - Set a Property::[3] Set a property by selecting the node using a simple expression
 Set1 - Set a Property::[4] Set a property by selecting the relationship using a simple expression
@@ -122,17 +114,8 @@ TypeConversion3 - To Float::[6] Fail `toFloat()` on invalid types #Example: rela
 TypeConversion4 - To String::[10] Fail `toString()` on invalid types #Example: node
 TypeConversion4 - To String::[10] Fail `toString()` on invalid types #Example: relationship
 Unwind1::[12] Unwind does not remove variables from scope
-Unwind1::[5] Unwinding a collected expression
-With2 - Forward single expression::[1] Forwarding a property to express a join
-With4 - Variable aliasing::[6] Reusing variable names in WITH
-WithOrderBy1 - Order by a single variable::[21] Sort distinct types in ascending order
-WithOrderBy1 - Order by a single variable::[22] Sort distinct types in descending order
 WithOrderBy1 - Order by a single variable::[46] Fail on sorting by an undefined variable #Example: never defined
 WithOrderBy1 - Order by a single variable::[46] Fail on sorting by an undefined variable #Example: out of scope
-WithOrderBy2 - Order by a single expression::[21] Sort by an expression that is only partially orderable on a non-distinct binding table
-WithOrderBy2 - Order by a single expression::[22] Sort by an expression that is only partially orderable on a non-distinct binding table, but used as a grouping key
-WithOrderBy2 - Order by a single expression::[23] Sort by an expression that is only partially orderable on a non-distinct binding table, but used in parts as a grouping key
-WithOrderBy2 - Order by a single expression::[24] Sort by an expression that is only partially orderable on a non-distinct binding table, but made distinct
 WithOrderBy3 - Order by multiple expressions::[8] Fail on sorting by any number of undefined variables in any position #Example: mixed
 WithOrderBy3 - Order by multiple expressions::[8] Fail on sorting by any number of undefined variables in any position #Example: never defined
 WithOrderBy3 - Order by multiple expressions::[8] Fail on sorting by any number of undefined variables in any position #Example: out of scope

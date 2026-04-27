@@ -500,89 +500,112 @@ fn exec_expand(
                             continue;
                         }
                     }
-                    let dst_node = node::get_node(conn, dst_id)?;
-                    let mut new_rec = rec.clone();
-                    new_rec.set(dst_alias.to_string(), Value::I64(dst_id.0 as i64));
-                    for (key, val) in &dst_node.properties {
-                        new_rec.set(format!("{dst_alias}.{key}"), val.clone());
-                    }
-                    new_rec.set(
-                        format!("{dst_alias}.__label"),
-                        Value::String(dst_node.labels.join(":")),
-                    );
-                    new_rec.set(
-                        format!("{dst_alias}.__labels"),
-                        Value::List(
-                            dst_node
-                                .labels
-                                .iter()
-                                .map(|l| Value::String(l.clone()))
-                                .collect(),
-                        ),
-                    );
-                    new_rec.set(format!("{dst_alias}.__id"), Value::I64(dst_id.0 as i64));
-                    // Bind relationship properties and identity when a rel variable is present.
-                    if let Some(r_alias) = rel_alias {
-                        let (edge_src, edge_dst) = match direction {
-                            Direction::Incoming => (dst_id, src_id),
-                            Direction::Outgoing => (src_id, dst_id),
-                            Direction::Both => {
-                                if edge::edge_exists(conn, src_id, dst_id, label).unwrap_or(false) {
-                                    (src_id, dst_id)
-                                } else {
-                                    (dst_id, src_id)
-                                }
-                            }
-                        };
 
-                        // Relationship uniqueness: within a MATCH pattern,
-                        // different named relationship variables must refer to
-                        // different edges. Normalize to (min, max, type) for
-                        // direction-independent comparison.
-                        let (es, ed) = (edge_src.0 as i64, edge_dst.0 as i64);
-                        let edge_key = (es.min(ed), es.max(ed), label);
-                        let mut duplicate = false;
-                        for (key, _val) in &new_rec.fields {
-                            if key.ends_with(".__src") && key != &format!("{r_alias}.__src") {
-                                let other_alias = &key[..key.len() - 6];
-                                if let (
-                                    Some(Value::I64(os)),
-                                    Some(Value::I64(od)),
-                                    Some(Value::String(ot)),
-                                ) = (
-                                    new_rec.get(key),
-                                    new_rec.get(&format!("{other_alias}.__dst")),
-                                    new_rec.get(&format!("{other_alias}.__type")),
-                                ) {
-                                    let other_key = ((*os).min(*od), (*os).max(*od), ot.as_str());
-                                    if other_key == edge_key {
-                                        duplicate = true;
-                                        break;
+                    let (edge_src, edge_dst) = match direction {
+                        Direction::Incoming => (dst_id, src_id),
+                        Direction::Outgoing => (src_id, dst_id),
+                        Direction::Both => {
+                            if edge::edge_exists(conn, src_id, dst_id, label).unwrap_or(false) {
+                                (src_id, dst_id)
+                            } else {
+                                (dst_id, src_id)
+                            }
+                        }
+                    };
+
+                    // Get all parallel edges for this (src, dst, label) pair.
+                    let all_edges = edge::get_all_edge_props(conn, edge_src, edge_dst, label)?;
+                    // If no edges found (shouldn't happen since neighbor exists),
+                    // fall back to a single empty-props edge.
+                    let edge_list: Vec<(u64, Properties)> = if all_edges.is_empty() {
+                        vec![(0, Properties::new())]
+                    } else {
+                        all_edges
+                    };
+
+                    let dst_node = node::get_node(conn, dst_id)?;
+
+                    for (edge_seq, edge_props) in &edge_list {
+                        let mut new_rec = rec.clone();
+                        new_rec.set(dst_alias.to_string(), Value::I64(dst_id.0 as i64));
+                        for (key, val) in &dst_node.properties {
+                            new_rec.set(format!("{dst_alias}.{key}"), val.clone());
+                        }
+                        new_rec.set(
+                            format!("{dst_alias}.__label"),
+                            Value::String(dst_node.labels.join(":")),
+                        );
+                        new_rec.set(
+                            format!("{dst_alias}.__labels"),
+                            Value::List(
+                                dst_node
+                                    .labels
+                                    .iter()
+                                    .map(|l| Value::String(l.clone()))
+                                    .collect(),
+                            ),
+                        );
+                        new_rec.set(format!("{dst_alias}.__id"), Value::I64(dst_id.0 as i64));
+
+                        if let Some(r_alias) = rel_alias {
+                            // Relationship uniqueness: within a MATCH pattern,
+                            // different named relationship variables must refer to
+                            // different edges. Include edge_seq in the uniqueness key
+                            // so parallel edges are distinguished.
+                            let (es, ed) = (edge_src.0 as i64, edge_dst.0 as i64);
+                            let edge_key = (es.min(ed), es.max(ed), label, *edge_seq);
+                            let mut duplicate = false;
+                            for (key, _val) in &new_rec.fields {
+                                if key.ends_with(".__src") && key != &format!("{r_alias}.__src") {
+                                    let other_alias = &key[..key.len() - 6];
+                                    let other_seq =
+                                        match new_rec.get(&format!("{other_alias}.__edge_seq")) {
+                                            Some(Value::I64(s)) => *s as u64,
+                                            _ => 0,
+                                        };
+                                    if let (
+                                        Some(Value::I64(os)),
+                                        Some(Value::I64(od)),
+                                        Some(Value::String(ot)),
+                                    ) = (
+                                        new_rec.get(key),
+                                        new_rec.get(&format!("{other_alias}.__dst")),
+                                        new_rec.get(&format!("{other_alias}.__type")),
+                                    ) {
+                                        let other_key = (
+                                            (*os).min(*od),
+                                            (*os).max(*od),
+                                            ot.as_str(),
+                                            other_seq,
+                                        );
+                                        if other_key == edge_key {
+                                            duplicate = true;
+                                            break;
+                                        }
                                     }
                                 }
                             }
-                        }
-                        if duplicate {
-                            continue;
-                        }
+                            if duplicate {
+                                continue;
+                            }
 
-                        // Bind the relationship variable itself (for IS NULL checks, etc.).
-                        new_rec.set(r_alias.to_string(), Value::String(label.to_string()));
-                        new_rec.set(format!("{r_alias}.__src"), Value::I64(edge_src.0 as i64));
-                        new_rec.set(format!("{r_alias}.__dst"), Value::I64(edge_dst.0 as i64));
-                        new_rec.set(
-                            format!("{r_alias}.__type"),
-                            Value::String(label.to_string()),
-                        );
-                        if let Ok(props) =
-                            edge::get_edge_properties(conn, edge_src, edge_dst, label)
-                        {
-                            for (key, val) in &props {
+                            new_rec.set(r_alias.to_string(), Value::String(label.to_string()));
+                            new_rec.set(format!("{r_alias}.__src"), Value::I64(edge_src.0 as i64));
+                            new_rec.set(format!("{r_alias}.__dst"), Value::I64(edge_dst.0 as i64));
+                            new_rec.set(
+                                format!("{r_alias}.__type"),
+                                Value::String(label.to_string()),
+                            );
+                            new_rec.set(
+                                format!("{r_alias}.__edge_seq"),
+                                Value::I64(*edge_seq as i64),
+                            );
+                            for (key, val) in edge_props {
                                 new_rec.set(format!("{r_alias}.{key}"), val.clone());
                             }
                         }
+                        results.push(new_rec);
                     }
-                    results.push(new_rec);
                 }
             }
         }
@@ -1477,7 +1500,20 @@ fn delete_var_entity(conn: &Connection, rec: &mut Record, var: &str, detach: boo
         rec.get(&edge_dst_key),
         rec.get(&edge_type_key),
     ) {
-        let _ = edge::delete_edge(conn, NodeId(*src as u64), NodeId(*dst as u64), label);
+        // If a specific edge sequence is known, delete only that parallel edge.
+        // Otherwise delete all edges between (src, dst, label).
+        let edge_seq_key = format!("{var}.__edge_seq");
+        if let Some(Value::I64(seq)) = rec.get(&edge_seq_key) {
+            let _ = edge::delete_single_edge(
+                conn,
+                NodeId(*src as u64),
+                NodeId(*dst as u64),
+                label,
+                *seq as u64,
+            );
+        } else {
+            let _ = edge::delete_edge(conn, NodeId(*src as u64), NodeId(*dst as u64), label);
+        }
         rec.set(format!("{var}.__deleted"), Value::Bool(true));
     } else if let Some(Value::I64(id)) = rec.get(var) {
         let node_id = NodeId(*id as u64);
@@ -1567,14 +1603,27 @@ fn exec_set_property(
                 rec.get(&edge_type_key),
             ) {
                 let val = eval_expr(&assignment.value, rec, conn)?;
-                edge::set_edge_property(
-                    conn,
-                    NodeId(*src as u64),
-                    NodeId(*dst as u64),
-                    label,
-                    &assignment.property,
-                    val.clone(),
-                )?;
+                let edge_seq_key = format!("{var}.__edge_seq");
+                if let Some(Value::I64(seq)) = rec.get(&edge_seq_key) {
+                    edge::set_edge_property_at(
+                        conn,
+                        NodeId(*src as u64),
+                        NodeId(*dst as u64),
+                        label,
+                        *seq as u64,
+                        &assignment.property,
+                        val.clone(),
+                    )?;
+                } else {
+                    edge::set_edge_property(
+                        conn,
+                        NodeId(*src as u64),
+                        NodeId(*dst as u64),
+                        label,
+                        &assignment.property,
+                        val.clone(),
+                    )?;
+                }
                 // Update record so downstream RETURN sees the new value.
                 let prop_key = format!("{var}.{}", assignment.property);
                 if val == Value::Null {
@@ -1774,14 +1823,28 @@ fn exec_remove(
                         let dst = *dst;
                         let label = label.clone();
                         // Remove edge property by setting to Null.
-                        edge::set_edge_property(
-                            conn,
-                            NodeId(src as u64),
-                            NodeId(dst as u64),
-                            &label,
-                            property,
-                            Value::Null,
-                        )?;
+                        let edge_seq_key = format!("{variable}.__edge_seq");
+                        if let Some(Value::I64(seq)) = rec.get(&edge_seq_key) {
+                            let seq = *seq;
+                            edge::set_edge_property_at(
+                                conn,
+                                NodeId(src as u64),
+                                NodeId(dst as u64),
+                                &label,
+                                seq as u64,
+                                property,
+                                Value::Null,
+                            )?;
+                        } else {
+                            edge::set_edge_property(
+                                conn,
+                                NodeId(src as u64),
+                                NodeId(dst as u64),
+                                &label,
+                                property,
+                                Value::Null,
+                            )?;
+                        }
                         // Update record to reflect removal.
                         let prop_key = format!("{variable}.{property}");
                         rec.fields.swap_remove(&prop_key);
@@ -1920,6 +1983,50 @@ fn apply_merge_set_item_edge(
             }
             for (k, v) in &map {
                 edge::set_edge_property(conn, src_id, dst_id, edge_type, k, v.clone())?;
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Apply a single SetItem to a specific parallel edge by sequence number.
+fn apply_merge_set_item_edge_at(
+    conn: &Connection,
+    item: &SetItem,
+    src_id: NodeId,
+    dst_id: NodeId,
+    edge_type: &str,
+    seq: u64,
+    rec: &Record,
+) -> Result<()> {
+    match item {
+        SetItem::Property(assignment) => {
+            let val = eval_expr(&assignment.value, rec, conn)?;
+            edge::set_edge_property_at(
+                conn,
+                src_id,
+                dst_id,
+                edge_type,
+                seq,
+                &assignment.property,
+                val,
+            )?;
+        }
+        SetItem::Label { .. } => {}
+        SetItem::MapMerge { variable: _, value } => {
+            let map = resolve_to_map(value, rec, conn)?;
+            for (k, v) in &map {
+                edge::set_edge_property_at(conn, src_id, dst_id, edge_type, seq, k, v.clone())?;
+            }
+        }
+        SetItem::MapOverwrite { variable: _, value } => {
+            let map = resolve_to_map(value, rec, conn)?;
+            let old_props = edge::get_edge_properties_at(conn, src_id, dst_id, edge_type, seq)?;
+            for key in old_props.keys() {
+                edge::set_edge_property_at(conn, src_id, dst_id, edge_type, seq, key, Value::Null)?;
+            }
+            for (k, v) in &map {
+                edge::set_edge_property_at(conn, src_id, dst_id, edge_type, seq, k, v.clone())?;
             }
         }
     }
@@ -2264,64 +2371,84 @@ fn exec_match_merge(
             merge_edge_props.insert(key.clone(), val);
         }
 
-        // Check edge existence including property match.
-        // For undirected MERGE, check both directions.
-        let check_edge_match = |s: NodeId, d: NodeId| -> Result<bool> {
-            if !edge::edge_exists(conn, s, d, &edge_type)? {
-                return Ok(false);
-            }
+        // Find all matching edges (possibly multiple parallel edges).
+        // Each matching edge produces one output row.
+        let find_matching_edges = |s: NodeId, d: NodeId| -> Result<Vec<(u64, Properties)>> {
+            let all = edge::get_all_edge_props(conn, s, d, &edge_type)?;
             if merge_edge_props.is_empty() {
-                return Ok(true);
+                return Ok(all);
             }
-            let existing_props = edge::get_edge_properties(conn, s, d, &edge_type)?;
-            Ok(merge_edge_props
-                .iter()
-                .all(|(k, v)| existing_props.get(k) == Some(v)))
+            Ok(all
+                .into_iter()
+                .filter(|(_, props)| {
+                    merge_edge_props
+                        .iter()
+                        .all(|(k, v)| props.get(k) == Some(v))
+                })
+                .collect())
         };
 
-        // Find which direction matched (for binding the relationship).
-        let (edge_match, match_src, match_dst) = if check_edge_match(src_id, dst_id)? {
-            (true, src_id, dst_id)
-        } else if undirected && check_edge_match(dst_id, src_id)? {
-            (true, dst_id, src_id)
-        } else {
-            (false, src_id, dst_id)
-        };
+        // Collect matches from forward direction, and reverse for undirected.
+        let mut matched_edges: Vec<(NodeId, NodeId, u64, Properties)> = Vec::new();
+        for (seq, props) in find_matching_edges(src_id, dst_id)? {
+            matched_edges.push((src_id, dst_id, seq, props));
+        }
+        if undirected {
+            for (seq, props) in find_matching_edges(dst_id, src_id)? {
+                matched_edges.push((dst_id, src_id, seq, props));
+            }
+        }
 
-        if !edge_match {
-            // For undirected MERGE, default to outgoing (src→dst).
+        if matched_edges.is_empty() {
+            // No match — create new edge.
             edge::create_edge(conn, src_id, dst_id, &edge_type, merge_edge_props)?;
             for item in on_create {
                 apply_merge_set_item_edge(conn, item, src_id, dst_id, &edge_type, rec)?;
             }
+            // Bind the relationship variable for the newly created edge.
+            if let Some(ref r_alias) = rel.variable {
+                out_rec.set(r_alias.clone(), Value::String(edge_type.clone()));
+                out_rec.set(format!("{r_alias}.__src"), Value::I64(src_id.0 as i64));
+                out_rec.set(format!("{r_alias}.__dst"), Value::I64(dst_id.0 as i64));
+                out_rec.set(
+                    format!("{r_alias}.__type"),
+                    Value::String(edge_type.clone()),
+                );
+                let edge_props = edge::get_edge_properties(conn, src_id, dst_id, &edge_type)?;
+                for (key, val) in &edge_props {
+                    out_rec.set(format!("{r_alias}.{key}"), val.clone());
+                }
+            }
+            result.push(out_rec);
         } else {
-            for item in on_match {
-                apply_merge_set_item_edge(conn, item, match_src, match_dst, &edge_type, rec)?;
+            // One or more matches — produce one row per matching edge.
+            for (m_src, m_dst, m_seq, _) in &matched_edges {
+                for item in on_match {
+                    apply_merge_set_item_edge_at(
+                        conn, item, *m_src, *m_dst, &edge_type, *m_seq, rec,
+                    )?;
+                }
+            }
+            for (m_src, m_dst, m_seq, _) in &matched_edges {
+                let mut match_rec = rec.clone();
+                if let Some(ref r_alias) = rel.variable {
+                    match_rec.set(r_alias.clone(), Value::String(edge_type.clone()));
+                    match_rec.set(format!("{r_alias}.__src"), Value::I64(m_src.0 as i64));
+                    match_rec.set(format!("{r_alias}.__dst"), Value::I64(m_dst.0 as i64));
+                    match_rec.set(
+                        format!("{r_alias}.__type"),
+                        Value::String(edge_type.clone()),
+                    );
+                    match_rec.set(format!("{r_alias}.__edge_seq"), Value::I64(*m_seq as i64));
+                    let edge_props =
+                        edge::get_edge_properties_at(conn, *m_src, *m_dst, &edge_type, *m_seq)?;
+                    for (key, val) in &edge_props {
+                        match_rec.set(format!("{r_alias}.{key}"), val.clone());
+                    }
+                }
+                result.push(match_rec);
             }
         }
-
-        // Bind the relationship variable (if any) so RETURN can reference it.
-        let (bind_src, bind_dst) = if edge_match {
-            (match_src, match_dst)
-        } else {
-            (src_id, dst_id)
-        };
-        if let Some(ref r_alias) = rel.variable {
-            out_rec.set(r_alias.clone(), Value::String(edge_type.clone()));
-            out_rec.set(format!("{r_alias}.__src"), Value::I64(bind_src.0 as i64));
-            out_rec.set(format!("{r_alias}.__dst"), Value::I64(bind_dst.0 as i64));
-            out_rec.set(
-                format!("{r_alias}.__type"),
-                Value::String(edge_type.clone()),
-            );
-            // Include edge properties in the record.
-            let edge_props = edge::get_edge_properties(conn, bind_src, bind_dst, &edge_type)?;
-            for (key, val) in &edge_props {
-                out_rec.set(format!("{r_alias}.{key}"), val.clone());
-            }
-        }
-
-        result.push(out_rec);
     }
 
     Ok(result)

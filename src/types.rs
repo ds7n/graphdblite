@@ -205,12 +205,36 @@ impl fmt::Display for Value {
                     for lbl in &first.labels {
                         write!(f, ":{lbl}")?;
                     }
+                    if !first.properties.is_empty() {
+                        if first.labels.is_empty() {
+                            write!(f, "{{")?;
+                        } else {
+                            write!(f, " {{")?;
+                        }
+                        fmt_properties(&first.properties, f)?;
+                        write!(f, "}}")?;
+                    }
                     write!(f, ")")?;
                 }
                 for (edge, node) in p.edges.iter().zip(p.nodes.iter().skip(1)) {
-                    write!(f, "-[:{}]->(", edge.label)?;
+                    write!(f, "-[:{}", edge.label)?;
+                    if !edge.properties.is_empty() {
+                        write!(f, " {{")?;
+                        fmt_properties(&edge.properties, f)?;
+                        write!(f, "}}")?;
+                    }
+                    write!(f, "]->(")?;
                     for lbl in &node.labels {
                         write!(f, ":{lbl}")?;
+                    }
+                    if !node.properties.is_empty() {
+                        if node.labels.is_empty() {
+                            write!(f, "{{")?;
+                        } else {
+                            write!(f, " {{")?;
+                        }
+                        fmt_properties(&node.properties, f)?;
+                        write!(f, "}}")?;
                     }
                     write!(f, ")")?;
                 }

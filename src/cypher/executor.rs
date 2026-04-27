@@ -2101,16 +2101,13 @@ fn exec_merge_node(
 
     let matched = find_merge_match_evaluated(conn, label, &props)?;
 
-    match matched {
+    let node_id = match matched {
         Some(n) => {
             let rec = Record::new();
             for item in on_match {
                 apply_merge_set_item_node(conn, item, n.id, &rec)?;
             }
-            let mut rec = Record::new();
-            rec.set(alias.to_string(), Value::I64(n.id.0 as i64));
-            rec.set(format!("{alias}.__id"), Value::I64(n.id.0 as i64));
-            Ok(vec![rec])
+            n.id
         }
         None => {
             let labels: Vec<String> = if label.is_empty() {
@@ -2125,13 +2122,21 @@ fn exec_merge_node(
             for item in on_create {
                 apply_merge_set_item_node(conn, item, id, &rec)?;
             }
-
-            let mut rec = Record::new();
-            rec.set(alias.to_string(), Value::I64(id.0 as i64));
-            rec.set(format!("{alias}.__id"), Value::I64(id.0 as i64));
-            Ok(vec![rec])
+            id
         }
+    };
+
+    let mut rec = Record::new();
+    rec.set(alias.to_string(), Value::I64(node_id.0 as i64));
+    rec.set(format!("{alias}.__id"), Value::I64(node_id.0 as i64));
+
+    // Bind path variable if present: MERGE p = (a {props})
+    if let Some(ref path_var) = pattern.path_variable {
+        let n = node::get_node(conn, node_id)?;
+        rec.set(path_var.clone(), Value::Path(PathValue::single(n)));
     }
+
+    Ok(vec![rec])
 }
 
 /// Relationship MERGE: find-or-create nodes and the edge between them.
@@ -2220,6 +2225,24 @@ fn exec_merge_relationship(
     if let Some(ref v) = dst_pat.variable {
         rec.set(v.clone(), Value::I64(dst_id.0 as i64));
     }
+
+    // Bind path variable if present: MERGE p = (a)-[:R]->(b)
+    if let Some(ref path_var) = pattern.path_variable {
+        let src_node = node::get_node(conn, src_id)?;
+        let dst_node = node::get_node(conn, dst_id)?;
+        let edge_props = edge::get_edge_properties(conn, src_id, dst_id, &edge_type)?;
+        let path = PathValue {
+            nodes: vec![src_node, dst_node],
+            edges: vec![crate::types::Edge {
+                src: src_id,
+                dst: dst_id,
+                label: edge_type.clone(),
+                properties: edge_props,
+            }],
+        };
+        rec.set(path_var.clone(), Value::Path(path));
+    }
+
     Ok(vec![rec])
 }
 
@@ -2293,12 +2316,13 @@ fn exec_match_merge(
             let alias = node_pat.variable.as_deref().unwrap_or("_merge");
             let mut out_rec = rec.clone();
 
-            if let Some(n) = matched {
+            let node_id = if let Some(n) = matched {
                 for item in on_match {
                     apply_merge_set_item_node(conn, item, n.id, rec)?;
                 }
                 out_rec.set(alias.to_string(), Value::I64(n.id.0 as i64));
                 out_rec.set(format!("{alias}.__id"), Value::I64(n.id.0 as i64));
+                n.id
             } else {
                 let labels: Vec<String> = if label.is_empty() {
                     vec![]
@@ -2312,6 +2336,13 @@ fn exec_match_merge(
                 }
                 out_rec.set(alias.to_string(), Value::I64(id.0 as i64));
                 out_rec.set(format!("{alias}.__id"), Value::I64(id.0 as i64));
+                id
+            };
+
+            // Bind path variable if present: MERGE p = (a {props})
+            if let Some(ref path_var) = merge_pattern.path_variable {
+                let n = node::get_node(conn, node_id)?;
+                out_rec.set(path_var.clone(), Value::Path(PathValue::single(n)));
             }
 
             result.push(out_rec);
@@ -2422,6 +2453,24 @@ fn exec_match_merge(
                     out_rec.set(format!("{r_alias}.{key}"), val.clone());
                 }
             }
+            // Bind path variable if present: MERGE p = (a)-[:R]->(b)
+            if let Some(ref path_var) = merge_pattern.path_variable {
+                let src_node = node::get_node(conn, src_id)?;
+                let dst_node = node::get_node(conn, dst_id)?;
+                let ep = edge::get_edge_properties(conn, src_id, dst_id, &edge_type)?;
+                out_rec.set(
+                    path_var.clone(),
+                    Value::Path(PathValue {
+                        nodes: vec![src_node, dst_node],
+                        edges: vec![crate::types::Edge {
+                            src: src_id,
+                            dst: dst_id,
+                            label: edge_type.clone(),
+                            properties: ep,
+                        }],
+                    }),
+                );
+            }
             result.push(out_rec);
         } else {
             // One or more matches — produce one row per matching edge.
@@ -2448,6 +2497,25 @@ fn exec_match_merge(
                     for (key, val) in &edge_props {
                         match_rec.set(format!("{r_alias}.{key}"), val.clone());
                     }
+                }
+                // Bind path variable if present.
+                if let Some(ref path_var) = merge_pattern.path_variable {
+                    let src_node = node::get_node(conn, *m_src)?;
+                    let dst_node = node::get_node(conn, *m_dst)?;
+                    let ep =
+                        edge::get_edge_properties_at(conn, *m_src, *m_dst, &edge_type, *m_seq)?;
+                    match_rec.set(
+                        path_var.clone(),
+                        Value::Path(PathValue {
+                            nodes: vec![src_node, dst_node],
+                            edges: vec![crate::types::Edge {
+                                src: *m_src,
+                                dst: *m_dst,
+                                label: edge_type.clone(),
+                                properties: ep,
+                            }],
+                        }),
+                    );
                 }
                 result.push(match_rec);
             }

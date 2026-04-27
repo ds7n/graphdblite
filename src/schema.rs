@@ -57,6 +57,12 @@ pub fn init_schema(conn: &Connection) -> Result<()> {
         [&1u64.to_be_bytes()[..]],
     )?;
 
+    // Initialize global edge sequence counter if not set.
+    conn.execute(
+        "INSERT OR IGNORE INTO metadata (key, value) VALUES ('next_edge_seq', ?1)",
+        [&0u64.to_be_bytes()[..]],
+    )?;
+
     // Read stored schema version.
     let mut stmt =
         conn.prepare_cached("SELECT value FROM metadata WHERE key = 'schema_version'")?;

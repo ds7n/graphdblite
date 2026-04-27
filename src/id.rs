@@ -31,3 +31,40 @@ pub fn next_node_id(conn: &Connection) -> Result<NodeId> {
 
     Ok(NodeId(current))
 }
+
+/// Allocate the next global edge sequence number. Must be called within a
+/// write transaction.
+///
+/// Uses a monotonically increasing counter so edge storage keys are never
+/// recycled, even after deletion and re-creation of an edge between the same
+/// endpoints.
+pub fn next_edge_seq(conn: &Connection) -> Result<u64> {
+    let mut stmt = conn.prepare_cached("SELECT value FROM metadata WHERE key = 'next_edge_seq'")?;
+    let raw: Vec<u8> = match stmt.query_row([], |row| row.get(0)) {
+        Ok(v) => v,
+        Err(_) => {
+            // Counter missing (pre-existing DB) — initialize from 0.
+            conn.execute(
+                "INSERT INTO metadata (key, value) VALUES ('next_edge_seq', ?1)",
+                [&0u64.to_be_bytes()[..]],
+            )?;
+            0u64.to_be_bytes().to_vec()
+        }
+    };
+    let current = u64::from_be_bytes(
+        raw.get(..8)
+            .and_then(|s| s.try_into().ok())
+            .ok_or_else(|| GraphError::Serialization("corrupt edge seq bytes".into()))?,
+    );
+
+    let next = current
+        .checked_add(1)
+        .ok_or_else(|| GraphError::Transaction("edge sequence space exhausted".into()))?;
+
+    conn.execute(
+        "UPDATE metadata SET value = ?1 WHERE key = 'next_edge_seq' AND value = ?2",
+        rusqlite::params![&next.to_be_bytes()[..], &raw],
+    )?;
+
+    Ok(current)
+}

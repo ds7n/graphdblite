@@ -81,13 +81,8 @@ pub fn create_edge(
     insert_into_sorted(&mut in_ids, src.0);
     kv::put(conn, kv::TABLE_ADJ_IN, &in_key, &encode_id_list(&in_ids))?;
 
-    // Find the next sequence number for this (src, dst, label) triple.
-    let prefix = edge_props_prefix(src, dst, label);
-    let existing = kv::scan_prefix(conn, kv::TABLE_EDGE_PROPS, &prefix)?;
-    let next_seq = existing
-        .last()
-        .map(|(k, _)| edge_seq_from_key(k, prefix.len()) + 1)
-        .unwrap_or(0);
+    // Use global monotonic edge sequence so keys are never recycled after deletion.
+    let next_seq = crate::id::next_edge_seq(conn)?;
 
     // Always store an edge_props row so relationship counting works correctly.
     let props_key = edge_props_key(src, dst, label, next_seq);
@@ -152,22 +147,10 @@ pub fn batch_create_edges(
     }
 
     // Always store edge_props rows so relationship counting works correctly.
-    // Track per-(src,dst) sequence counters for parallel edges within the batch.
-    let mut seq_cache: HashMap<(u64, u64), u64> = HashMap::new();
+    // Use global monotonic edge sequence so keys are never recycled.
     for (src, dst, properties) in edges {
-        let seq = seq_cache.entry((src.0, dst.0)).or_insert_with(|| {
-            let prefix = edge_props_prefix(*src, *dst, label);
-            kv::scan_prefix(conn, kv::TABLE_EDGE_PROPS, &prefix)
-                .ok()
-                .and_then(|existing| {
-                    existing
-                        .last()
-                        .map(|(k, _)| edge_seq_from_key(k, prefix.len()) + 1)
-                })
-                .unwrap_or(0)
-        });
-        let props_key = edge_props_key(*src, *dst, label, *seq);
-        *seq += 1;
+        let seq = crate::id::next_edge_seq(conn)?;
+        let props_key = edge_props_key(*src, *dst, label, seq);
         let data =
             rmp_serde::to_vec(properties).map_err(|e| GraphError::Serialization(e.to_string()))?;
         kv::put(conn, kv::TABLE_EDGE_PROPS, &props_key, &data)?;

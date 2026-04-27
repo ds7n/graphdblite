@@ -5,6 +5,8 @@
 //! Blocking operators (Sort, Aggregate) materialize their input then stream
 //! the result.
 
+use std::collections::HashMap;
+
 use rusqlite::Connection;
 
 use crate::cypher::ast::{Expr, ReturnItem};
@@ -252,6 +254,7 @@ pub struct ExpandIter<'a> {
     min_hops: u32,
     max_hops: u32,
     var_length: bool,
+    var_length_prop_filters: HashMap<String, Value>,
     /// Buffer of expanded records from the current input record.
     buffer: std::vec::IntoIter<Record>,
 }
@@ -301,6 +304,7 @@ impl<'a> RecordIter for ExpandIter<'a> {
                     self.direction,
                     self.min_hops,
                     self.max_hops,
+                    &self.var_length_prop_filters,
                 )?;
                 for (dst_id, steps) in paths {
                     if let Some(required) = bound_dst {
@@ -552,8 +556,16 @@ pub fn build_iter<'a>(
             min_hops,
             max_hops,
             var_length,
+            var_length_prop_filters,
         } => {
             let input_iter = build_iter(conn, input)?;
+            let prop_filter_values: HashMap<String, Value> = var_length_prop_filters
+                .iter()
+                .filter_map(|(k, expr)| match expr {
+                    Expr::Literal(lit) => Some((k.clone(), literal_to_value(lit))),
+                    _ => None,
+                })
+                .collect();
             Ok(Box::new(ExpandIter {
                 input: input_iter,
                 conn,
@@ -565,6 +577,7 @@ pub fn build_iter<'a>(
                 min_hops: *min_hops,
                 max_hops: *max_hops,
                 var_length: *var_length,
+                var_length_prop_filters: prop_filter_values,
                 buffer: Vec::new().into_iter(),
             }))
         }

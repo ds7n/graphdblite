@@ -23,6 +23,11 @@ pub struct GraphCounts {
     pub nodes: i64,
     pub relationships: i64,
     pub labels: i64,
+    /// Set of node storage keys — used to compute gross +/-nodes when
+    /// a query both creates and deletes nodes in the same pipeline.
+    pub node_keys: HashSet<Vec<u8>>,
+    /// Set of edge storage keys — used to compute gross +/-relationships.
+    pub edge_keys: HashSet<Vec<u8>>,
     /// Set of (owner_key, prop_name, value_hash) tuples — tracks individual
     /// property VALUES so that `SET n.x = 2` (was 1) registers as +1/-1.
     pub property_fingerprints: HashSet<(String, String, u64)>,
@@ -45,8 +50,7 @@ impl GraphCounts {
                 |r| r.get(0),
             )
             .unwrap_or(0);
-        // Collect property fingerprints — (owner_key, prop_name, value_hash) —
-        // so that value changes register as +/-properties in the delta.
+        // Collect node/edge keys and property fingerprints.
         #[derive(serde::Deserialize)]
         struct NodeBlob {
             #[allow(dead_code)]
@@ -54,11 +58,14 @@ impl GraphCounts {
             properties: HashMap<String, graphdblite::Value>,
         }
         let mut fingerprints = HashSet::new();
+        let mut node_keys = HashSet::new();
+        let mut edge_keys = HashSet::new();
         {
             let mut stmt = conn.prepare("SELECT key, value FROM nodes").unwrap();
             let mut rows = stmt.query([]).unwrap();
             while let Some(row) = rows.next().unwrap() {
                 let key: Vec<u8> = row.get(0).unwrap();
+                node_keys.insert(key.clone());
                 let owner = format!("n:{key:?}");
                 let data: Vec<u8> = row.get(1).unwrap();
                 if let Ok(rec) = rmp_serde::from_slice::<NodeBlob>(&data) {
@@ -73,6 +80,7 @@ impl GraphCounts {
             let mut rows = stmt.query([]).unwrap();
             while let Some(row) = rows.next().unwrap() {
                 let key: Vec<u8> = row.get(0).unwrap();
+                edge_keys.insert(key.clone());
                 let owner = format!("e:{key:?}");
                 let data: Vec<u8> = row.get(1).unwrap();
                 if let Ok(props) =
@@ -88,23 +96,29 @@ impl GraphCounts {
             nodes,
             relationships,
             labels,
+            node_keys,
+            edge_keys,
             property_fingerprints: fingerprints,
         }
     }
 
     /// Compute the diff `other - self` (new - old) as a map of named deltas.
+    ///
+    /// Uses set-based diffing for nodes and relationships so that queries
+    /// that both create and delete in the same pipeline (e.g., DELETE + MERGE)
+    /// correctly report gross additions and removals, not just the net delta.
     pub fn delta(&self, after: &Self) -> HashMap<String, i64> {
         let mut m = HashMap::new();
-        m.insert("+nodes".into(), (after.nodes - self.nodes).max(0));
-        m.insert("-nodes".into(), (self.nodes - after.nodes).max(0));
-        m.insert(
-            "+relationships".into(),
-            (after.relationships - self.relationships).max(0),
-        );
-        m.insert(
-            "-relationships".into(),
-            (self.relationships - after.relationships).max(0),
-        );
+        // Nodes: keys in after but not before = created; keys in before but not after = deleted.
+        let nodes_added = after.node_keys.difference(&self.node_keys).count() as i64;
+        let nodes_removed = self.node_keys.difference(&after.node_keys).count() as i64;
+        m.insert("+nodes".into(), nodes_added);
+        m.insert("-nodes".into(), nodes_removed);
+        // Relationships: same approach with edge keys.
+        let rels_added = after.edge_keys.difference(&self.edge_keys).count() as i64;
+        let rels_removed = self.edge_keys.difference(&after.edge_keys).count() as i64;
+        m.insert("+relationships".into(), rels_added);
+        m.insert("-relationships".into(), rels_removed);
         m.insert("+labels".into(), (after.labels - self.labels).max(0));
         m.insert("-labels".into(), (self.labels - after.labels).max(0));
         // Properties: count fingerprints added/removed (catches value changes).

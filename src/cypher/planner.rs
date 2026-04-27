@@ -2617,6 +2617,11 @@ fn plan_single_pattern(conn: &Connection, pattern: &Pattern) -> crate::types::Re
                     min_hops,
                     max_hops,
                     var_length: rel.var_length.is_some(),
+                    var_length_prop_filters: if rel.var_length.is_some() {
+                        rel.properties.clone()
+                    } else {
+                        HashMap::new()
+                    },
                 });
 
                 // Apply destination node's label filters.
@@ -2647,7 +2652,9 @@ fn plan_single_pattern(conn: &Connection, pattern: &Pattern) -> crate::types::Re
                 }
 
                 // Apply relationship inline property filters.
-                if !rel.properties.is_empty() {
+                // For var-length patterns, these are passed through the Expand
+                // node and applied at each hop inside traverse_paths().
+                if !rel.properties.is_empty() && rel.var_length.is_none() {
                     if let Some(ref r_alias) = effective_rel_alias {
                         let predicate = properties_to_filter(r_alias, &rel.properties);
                         op = Some(LogicalOp::Filter {
@@ -3324,6 +3331,7 @@ fn try_replace_scan(
             min_hops,
             max_hops,
             var_length,
+            var_length_prop_filters,
         } => try_replace_scan(conn, input, alias, prop, lit).map(|new_input| LogicalOp::Expand {
             input: Box::new(new_input),
             src_alias: src_alias.clone(),
@@ -3334,6 +3342,7 @@ fn try_replace_scan(
             min_hops: *min_hops,
             max_hops: *max_hops,
             var_length: *var_length,
+            var_length_prop_filters: var_length_prop_filters.clone(),
         }),
 
         LogicalOp::CrossProduct { left, right } => {

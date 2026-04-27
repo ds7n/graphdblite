@@ -1079,8 +1079,8 @@ fn parse_var_length(pair: pest::iterators::Pair<Rule>) -> crate::types::Result<(
                 match nums.len() {
                     2 => return Ok((nums[0], nums[1])),
                     1 if raw.starts_with("..") => return Ok((1, nums[0])),
-                    1 => return Ok((nums[0], 15)),
-                    0 => return Ok((1, 15)),
+                    1 => return Ok((nums[0], 50)),
+                    0 => return Ok((1, 50)),
                     _ => {}
                 }
             }
@@ -1092,8 +1092,8 @@ fn parse_var_length(pair: pest::iterators::Pair<Rule>) -> crate::types::Result<(
             _ => {}
         }
     }
-    // Bare * with no range — default to 1..15 to prevent unbounded traversal.
-    Ok((1, 15))
+    // Bare * with no range — default to 1..50 to prevent unbounded traversal.
+    Ok((1, 50))
 }
 
 fn parse_property_map(

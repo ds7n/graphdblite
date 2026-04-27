@@ -161,6 +161,7 @@ fn exec(conn: &Connection, plan: &LogicalOp, ctx: &ExecContext) -> Result<Vec<Re
             min_hops,
             max_hops,
             var_length,
+            var_length_prop_filters,
         } => exec_expand(
             conn,
             input,
@@ -172,6 +173,7 @@ fn exec(conn: &Connection, plan: &LogicalOp, ctx: &ExecContext) -> Result<Vec<Re
             *min_hops,
             *max_hops,
             *var_length,
+            var_length_prop_filters,
             ctx,
         ),
 
@@ -381,6 +383,7 @@ fn exec_expand(
     min_hops: u32,
     max_hops: u32,
     var_length: bool,
+    var_length_prop_filters: &HashMap<String, Expr>,
     ctx: &ExecContext,
 ) -> Result<Vec<Record>> {
     let input_records = exec(conn, input, ctx)?;
@@ -412,7 +415,22 @@ fn exec_expand(
 
         if var_length {
             // Variable-length traversal — pass ALL labels at once for mixed-type support.
-            let paths = edge::traverse_paths(conn, src_id, &labels, direction, min_hops, max_hops)?;
+            let prop_filter_values: HashMap<String, Value> = var_length_prop_filters
+                .iter()
+                .filter_map(|(k, expr)| match expr {
+                    Expr::Literal(lit) => Some((k.clone(), literal_to_value(lit))),
+                    _ => None,
+                })
+                .collect();
+            let paths = edge::traverse_paths(
+                conn,
+                src_id,
+                &labels,
+                direction,
+                min_hops,
+                max_hops,
+                &prop_filter_values,
+            )?;
             for (dst_id, steps) in paths {
                 if let Some(required) = bound_dst_id {
                     if dst_id != required {
@@ -2611,6 +2629,7 @@ fn exec_correlated(
             min_hops,
             max_hops,
             var_length,
+            var_length_prop_filters,
         } => {
             let input_records = exec_correlated(conn, input, outer, ctx)?;
             let mut results = Vec::new();
@@ -2641,8 +2660,21 @@ fn exec_correlated(
 
                 if *var_length {
                     // Variable-length traversal — pass ALL labels at once.
+                    let prop_filter_values: HashMap<String, Value> = var_length_prop_filters
+                        .iter()
+                        .filter_map(|(k, expr)| match expr {
+                            Expr::Literal(lit) => Some((k.clone(), literal_to_value(lit))),
+                            _ => None,
+                        })
+                        .collect();
                     let paths = edge::traverse_paths(
-                        conn, src_id, &labels, *direction, *min_hops, *max_hops,
+                        conn,
+                        src_id,
+                        &labels,
+                        *direction,
+                        *min_hops,
+                        *max_hops,
+                        &prop_filter_values,
                     )?;
                     for (dst_id, steps) in paths {
                         if let Some(expected) = bound_dst {

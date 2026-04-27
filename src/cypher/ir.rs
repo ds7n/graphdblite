@@ -39,6 +39,9 @@ pub enum LogicalOp {
         /// True when the pattern uses `[*]` or `[*min..max]` syntax.
         /// Even `[*1..1]` is var-length (rel variable binds to a list).
         var_length: bool,
+        /// For var-length patterns: inline property filters applied at each hop.
+        /// Empty for fixed-length patterns (they use a separate Filter node).
+        var_length_prop_filters: HashMap<String, Expr>,
     },
 
     /// Cross-product of two pipelines (for multi-pattern MATCH).

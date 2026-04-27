@@ -371,6 +371,7 @@ pub fn traverse_paths(
     direction: Direction,
     min_hops: u32,
     max_hops: u32,
+    prop_filters: &HashMap<String, crate::types::Value>,
 ) -> Result<Vec<(NodeId, Vec<PathStep>)>> {
     let mut results: Vec<(NodeId, Vec<PathStep>)> = Vec::new();
 
@@ -415,6 +416,21 @@ pub fn traverse_paths(
                 let edge_key = (edge_src.0, edge_dst.0, label.to_string());
                 if visited_edges.contains(&edge_key) {
                     continue; // Relationship uniqueness.
+                }
+
+                // Apply inline property filters at each hop.
+                if !prop_filters.is_empty() {
+                    let props = get_edge_properties(conn, edge_src, edge_dst, label)?;
+                    let mut matches = true;
+                    for (key, expected) in prop_filters {
+                        if props.get(key) != Some(expected) {
+                            matches = false;
+                            break;
+                        }
+                    }
+                    if !matches {
+                        continue;
+                    }
                 }
 
                 let step = PathStep {

@@ -289,11 +289,10 @@ impl<'a> RecordIter for ExpandIter<'a> {
 
             if self.var_length {
                 // Variable-length traversal — returns full paths with edge details.
-                let _owned_labels: Vec<String>;
+                // Pass empty labels when no specific types are given, so
+                // traverse_paths discovers types at each hop.
                 let labels: Vec<&str> = if self.edge_types.is_empty() {
-                    let all = edge::get_all_edge_labels(self.conn, src_id, self.direction)?;
-                    _owned_labels = all.into_iter().map(|(l, _)| l).collect();
-                    _owned_labels.iter().map(|s| s.as_str()).collect()
+                    vec![]
                 } else {
                     self.edge_types.iter().map(|s| s.as_str()).collect()
                 };

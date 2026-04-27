@@ -1545,6 +1545,18 @@ fn plan_intermediate_match_with_scope(
 ) -> crate::types::Result<LogicalOp> {
     let mut op = input;
 
+    // Check for VariableAlreadyBound: a named path variable (p = ...)
+    // cannot reuse a variable already bound in a prior scope.
+    for pattern in &im.patterns {
+        if let Some(ref path_var) = pattern.path_variable {
+            if upstream_vars.contains(path_var) {
+                return Err(GraphError::syntax(format!(
+                    "VariableAlreadyBound: variable `{path_var}` already defined"
+                )));
+            }
+        }
+    }
+
     if !im.patterns.is_empty() {
         let right = plan_patterns(conn, &im.patterns)?;
         op = LogicalOp::CorrelatedJoin {

@@ -396,6 +396,8 @@ fn exec_expand(
         };
 
         // If no types specified, discover all edge types for this node.
+        // For var-length, pass empty labels so traverse_paths discovers
+        // types at each hop (different nodes may have different edge types).
         let _owned_labels: Vec<String>;
         let labels: Vec<&str> = if edge_types.is_empty() {
             let all = edge::get_all_edge_labels(conn, src_id, direction)?;
@@ -403,6 +405,11 @@ fn exec_expand(
             _owned_labels.iter().map(|s| s.as_str()).collect()
         } else {
             edge_types.iter().map(|s| s.as_str()).collect()
+        };
+        let var_length_labels: Vec<&str> = if edge_types.is_empty() {
+            vec![] // signal traverse_paths to discover per-hop
+        } else {
+            labels.clone()
         };
 
         // If the destination alias is already bound in the record (cyclic
@@ -425,7 +432,7 @@ fn exec_expand(
             let paths = edge::traverse_paths(
                 conn,
                 src_id,
-                &labels,
+                &var_length_labels,
                 direction,
                 min_hops,
                 max_hops,
@@ -2428,8 +2435,10 @@ fn exec_materialize_path(
             if edges.is_empty() {
                 // Zero-length var-length path: collapse to single start node.
                 nodes.truncate(1);
-            } else if edges.len() + 1 > nodes.len() {
-                // Multi-hop: rebuild full node list from edge endpoints.
+            } else {
+                // Rebuild full node list from edge endpoints. This is necessary
+                // because with multiple var-length segments and zero-length matches,
+                // the static node_aliases may contain duplicate intermediate nodes.
                 let mut full_nodes = vec![nodes[0].clone()];
                 for edge in &edges {
                     let next_id = edge.dst;
@@ -2641,6 +2650,8 @@ fn exec_correlated(
                 };
 
                 // If no types specified, discover all edge types for this node.
+                // For var-length, pass empty labels so traverse_paths discovers
+                // types at each hop (different nodes may have different edge types).
                 let _owned_labels: Vec<String>;
                 let labels: Vec<&str> = if edge_types.is_empty() {
                     let all = edge::get_all_edge_labels(conn, src_id, *direction)?;
@@ -2648,6 +2659,11 @@ fn exec_correlated(
                     _owned_labels.iter().map(|s| s.as_str()).collect()
                 } else {
                     edge_types.iter().map(|s| s.as_str()).collect()
+                };
+                let var_length_labels: Vec<&str> = if edge_types.is_empty() {
+                    vec![] // signal traverse_paths to discover per-hop
+                } else {
+                    labels.clone()
                 };
 
                 // If the destination alias is already bound in the outer record
@@ -2670,7 +2686,7 @@ fn exec_correlated(
                     let paths = edge::traverse_paths(
                         conn,
                         src_id,
-                        &labels,
+                        &var_length_labels,
                         *direction,
                         *min_hops,
                         *max_hops,

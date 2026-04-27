@@ -38,25 +38,12 @@ Match4 - Match variable length patterns::[5] Matching variable length pattern wi
 Match4 - Match variable length patterns::[7] Matching variable length patterns including a bound relationship
 Match4 - Match variable length patterns::[8] Matching relationships into a list and matching variable length using the list
 Match6 - Match named paths scenarios::[14] Named path with undirected fixed variable length pattern
-Match6 - Match named paths scenarios::[15] Variable-length named path
-Match6 - Match named paths scenarios::[16] Return a var length path
 Match6 - Match named paths scenarios::[17] Return a named var length path of length zero
-Match6 - Match named paths scenarios::[19] Variable length relationship without lower bound
-Match6 - Match named paths scenarios::[20] Variable length relationship without bounds
 Match6 - Match named paths scenarios::[25] Fail when matching a path variable bound to a value
-Match6 - Match named paths::[15] Variable-length named path
-Match6 - Match named paths::[16] Return a var length path
-Match6 - Match named paths::[17] Return a named var length path of length zero
-Match6 - Match named paths::[19] Variable length relationship without lower bound
-Match6 - Match named paths::[20] Variable length relationship without bounds
 Match6 - Match named paths::[25] Fail when matching a path variable bound to a value
 Match7 - Optional match::[12] Variable length optional relationships
-Match7 - Optional match::[14] Variable length optional relationships with length predicates
 Match8 - Match clause interoperation with other clauses::[2] Counting rows after MATCH, MERGE, OPTIONAL MATCH
 Match8 - Match clause interoperation with other clauses::[3] Matching and disregarding output, then matching again
-Match9 - Match deprecated scenarios::[1] Variable length relationship variables are lists of relationships
-Match9 - Match deprecated scenarios::[9] Optionally matching named paths with variable length patterns
-Match9 - Match deprecated::[9] Optionally matching named paths with variable length patterns
 MatchWhere1 - Filter single variable::[14] Fail when filtering path with property predicate
 MatchWhere2 - Filter multiple variables::[1] Filter nodes with conjunctive two-part property predicate on multi variables with multiple bindings
 MatchWhere2 - Filter multiple variables::[2] Filter node with conjunctive multi-part property predicates on multi variables with multiple bindings
@@ -70,9 +57,6 @@ Merge5 - Merge relationships::[3] Matching two relationships
 Merge5 - Merge relationships::[6] Creating relationship when all matches filtered out
 Merge7 - Merge relationships - on match::[4] Copying properties from node with ON MATCH
 Merge7 - Merge relationships - on match::[5] Copying properties from literal map with ON MATCH
-Path2 - Relationships of a path::[1] Return relationships by fetching them from the path
-Path2 - Relationships of a path::[2] Return relationships by fetching them from the path - starting from the end
-Path3 - Length of a path::[1] Return a var length path of length zero
 Pattern1 - Pattern predicate::[10] Fail on introducing unbounded variables in pattern
 Pattern1 - Pattern predicate::[11] Fail on checking self pattern
 Pattern1 - Pattern predicate::[22] Fail on using pattern in RETURN projection

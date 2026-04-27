@@ -6,10 +6,6 @@ Call1 - Basic procedure calling::[14] In-query call to unknown procedure should 
 Comparison1 - Equality::[14] Direction of traversed relationship is not significant for path equality, simple
 CountingSubgraphMatches1 - Matching subgraph patterns and count the number of matches::[10] Mixing directed and undirected pattern parts with self-relationship, count
 CountingSubgraphMatches1 - Matching subgraph patterns and count the number of matches::[11] Mixing directed and undirected pattern parts with self-relationship, undirected count
-Create3 - Interoperation with other clauses::[3] MATCH-CREATE-WITH-CREATE
-Create3 - Interoperation with other clauses::[7] WITH-CREATE: Nodes are not created when aliases are applied to variable names multiple times
-Create4 - Large Create Query::[2] Many CREATE clauses
-Create5 - Multiple hops create patterns::[5] Create a pattern with multiple hops and varying directions
 Delete5 - Delete clause interoperation with built-in data types::[7] Delete paths from nested map/list
 ExistentialSubquery2 - Full existential subquery::[2] Full existential subquery with aggregation
 Graph4 - Edge relationship type::[6] `type()` failing on invalid arguments

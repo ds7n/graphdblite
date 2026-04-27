@@ -1,4 +1,5 @@
 use std::collections::{HashMap, HashSet};
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 use rusqlite::Connection;
 
@@ -7,6 +8,9 @@ use crate::cypher::ir::*;
 use crate::cypher::record::Record;
 use crate::index;
 use crate::types::{Direction, GraphError, Value};
+
+/// Global counter for unique anonymous variable aliases across all plan_single_pattern calls.
+static ANON_COUNTER: AtomicUsize = AtomicUsize::new(0);
 
 /// Evaluate a SKIP/LIMIT expression to a u64 at plan time.
 ///
@@ -2563,6 +2567,8 @@ fn plan_single_pattern(conn: &Connection, pattern: &Pattern) -> crate::types::Re
     // Track node aliases already introduced so we can add identity filters
     // when a variable reappears (e.g. cyclic pattern `(a)-[:R]->(b)-[:S]->(a)`).
     let mut seen_node_aliases: HashSet<String> = HashSet::new();
+    // Track actual aliases assigned to each element position for MaterializePath.
+    let mut element_aliases: HashMap<usize, String> = HashMap::new();
 
     let mut i = 0;
     while i < pattern.elements.len() {
@@ -2570,14 +2576,15 @@ fn plan_single_pattern(conn: &Connection, pattern: &Pattern) -> crate::types::Re
             PatternElement::Node(node) => {
                 if op.is_none() {
                     // First node — start a scan.
-                    let alias = node
-                        .variable
-                        .clone()
-                        .unwrap_or_else(|| format!("_anon_{i}"));
+                    let alias = node.variable.clone().unwrap_or_else(|| {
+                        let n = ANON_COUNTER.fetch_add(1, Ordering::Relaxed);
+                        format!("_anon_{n}")
+                    });
 
                     let scan = plan_node_scan(conn, node, &alias)?;
                     op = Some(scan);
-                    seen_node_aliases.insert(alias);
+                    seen_node_aliases.insert(alias.clone());
+                    element_aliases.insert(i, alias);
                 }
                 // Subsequent nodes after a relationship are handled in the rel branch.
                 i += 1;
@@ -2594,10 +2601,10 @@ fn plan_single_pattern(conn: &Connection, pattern: &Pattern) -> crate::types::Re
                 };
 
                 let src_alias = get_last_alias(&op);
-                let dst_alias = dst_node
-                    .variable
-                    .clone()
-                    .unwrap_or_else(|| format!("_anon_{}", i + 1));
+                let dst_alias = dst_node.variable.clone().unwrap_or_else(|| {
+                    let n = ANON_COUNTER.fetch_add(1, Ordering::Relaxed);
+                    format!("_anon_{n}")
+                });
 
                 let direction = match rel.direction {
                     RelDirection::Outgoing => Direction::Outgoing,
@@ -2676,7 +2683,11 @@ fn plan_single_pattern(conn: &Connection, pattern: &Pattern) -> crate::types::Re
                     }
                 }
 
-                seen_node_aliases.insert(dst_alias);
+                seen_node_aliases.insert(dst_alias.clone());
+                element_aliases.insert(i + 1, dst_alias);
+                if let Some(ref ra) = effective_rel_alias {
+                    element_aliases.insert(i, ra.clone());
+                }
 
                 i += 2; // skip rel + dst node
             }
@@ -2692,13 +2703,18 @@ fn plan_single_pattern(conn: &Connection, pattern: &Pattern) -> crate::types::Re
         for (idx, elem) in pattern.elements.iter().enumerate() {
             match elem {
                 PatternElement::Node(n) => {
-                    let alias = n.variable.clone().unwrap_or_else(|| format!("_anon_{idx}"));
+                    let alias = element_aliases
+                        .get(&idx)
+                        .cloned()
+                        .or_else(|| n.variable.clone())
+                        .unwrap_or_else(|| format!("_anon_{idx}"));
                     node_aliases.push(alias);
                 }
                 PatternElement::Relationship(r) => {
-                    let alias = r
-                        .variable
-                        .clone()
+                    let alias = element_aliases
+                        .get(&idx)
+                        .cloned()
+                        .or_else(|| r.variable.clone())
                         .unwrap_or_else(|| format!("_path_rel_{idx}"));
                     rel_aliases.push(alias);
                 }

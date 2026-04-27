@@ -789,10 +789,13 @@ fn exec_project(
                                 projected.set(key.clone(), val.clone());
                             } else {
                                 // Bare key: emit if it's a scalar value from
-                                // WITH/UNWIND (no accompanying __id metadata).
-                                let has_id = rec.get(&format!("{key}.__id")).is_some();
-                                if !has_id {
-                                    projected.set(key.clone(), val.clone());
+                                // WITH/UNWIND (no accompanying __id metadata)
+                                // and not already emitted as a compound binding.
+                                if !bound_vars.iter().any(|v| v == key) {
+                                    let has_id = rec.get(&format!("{key}.__id")).is_some();
+                                    if !has_id {
+                                        projected.set(key.clone(), val.clone());
+                                    }
                                 }
                             }
                         }

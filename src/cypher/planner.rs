@@ -1048,13 +1048,21 @@ fn plan_multi_clause(
                 validate_variable_types_with_map(patterns, &mut var_types)?;
                 let match_op = plan_patterns(conn, patterns)?;
                 op = Some(if let Some(input) = op.take() {
-                    // Correlated join: thread prior rows into MATCH.
-                    let mut joined = LogicalOp::CorrelatedJoin {
-                        input: Box::new(input),
-                        right: Box::new(match_op),
+                    // For standalone OPTIONAL MATCH (empty required patterns),
+                    // skip the CorrelatedJoin with EmptyRow and just keep the input.
+                    let mut joined = if patterns.is_empty() {
+                        input
+                    } else {
+                        // Correlated join: thread prior rows into MATCH.
+                        LogicalOp::CorrelatedJoin {
+                            input: Box::new(input),
+                            right: Box::new(match_op),
+                        }
                     };
-                    // Optional matches.
+                    // Optional matches — include scope_vars so variables from
+                    // prior clauses are recognized as bound (not new).
                     let mut bound_vars = collect_pattern_variables(patterns);
+                    bound_vars.extend(scope_vars.iter().cloned());
                     for opt in optional_patterns {
                         let (right, new_aliases, opt_filter) =
                             plan_optional_match(conn, opt, &bound_vars)?;
@@ -2614,8 +2622,9 @@ fn plan_single_pattern(conn: &Connection, pattern: &Pattern) -> crate::types::Re
 
                 let (min_hops, max_hops) = rel.var_length.unwrap_or((1, 1));
 
-                // When building a named path, ensure anonymous relationships get
-                // a synthetic alias so edge data is recorded for MaterializePath.
+                // Always assign a synthetic alias for anonymous relationships so
+                // edge identity is tracked for relationship uniqueness within a
+                // MATCH pattern. Named paths use a path-specific prefix.
                 let effective_rel_alias = if pattern.path_variable.is_some() {
                     Some(
                         rel.variable
@@ -2623,7 +2632,10 @@ fn plan_single_pattern(conn: &Connection, pattern: &Pattern) -> crate::types::Re
                             .unwrap_or_else(|| format!("_path_rel_{i}")),
                     )
                 } else {
-                    rel.variable.clone()
+                    Some(rel.variable.clone().unwrap_or_else(|| {
+                        let n = ANON_COUNTER.fetch_add(1, Ordering::Relaxed);
+                        format!("_anon_rel_{n}")
+                    }))
                 };
 
                 op = Some(LogicalOp::Expand {

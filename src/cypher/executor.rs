@@ -2294,7 +2294,8 @@ fn exec_match_merge(
     let elements = &merge_pattern.elements;
 
     if elements.len() == 1 {
-        // Single node MERGE — delegate to existing logic per record.
+        // Single node MERGE — match-or-create per input record.
+        // MERGE produces one output row per matching node (all matches, not just first).
         for rec in &records {
             let node_pat = match &elements[0] {
                 PatternElement::Node(n) => n,
@@ -2312,18 +2313,11 @@ fn exec_match_merge(
                 }
                 props.insert(key.clone(), val);
             }
-            let matched = find_merge_match_evaluated(conn, label, &props)?;
+            let matches = find_merge_matches_evaluated(conn, label, &props)?;
             let alias = node_pat.variable.as_deref().unwrap_or("_merge");
-            let mut out_rec = rec.clone();
 
-            let node_id = if let Some(n) = matched {
-                for item in on_match {
-                    apply_merge_set_item_node(conn, item, n.id, rec)?;
-                }
-                out_rec.set(alias.to_string(), Value::I64(n.id.0 as i64));
-                out_rec.set(format!("{alias}.__id"), Value::I64(n.id.0 as i64));
-                n.id
-            } else {
+            if matches.is_empty() {
+                // No match — create a new node.
                 let labels: Vec<String> = if label.is_empty() {
                     vec![]
                 } else {
@@ -2334,18 +2328,32 @@ fn exec_match_merge(
                 for item in on_create {
                     apply_merge_set_item_node(conn, item, id, rec)?;
                 }
+                let mut out_rec = rec.clone();
                 out_rec.set(alias.to_string(), Value::I64(id.0 as i64));
                 out_rec.set(format!("{alias}.__id"), Value::I64(id.0 as i64));
-                id
-            };
-
-            // Bind path variable if present: MERGE p = (a {props})
-            if let Some(ref path_var) = merge_pattern.path_variable {
-                let n = node::get_node(conn, node_id)?;
-                out_rec.set(path_var.clone(), Value::Path(PathValue::single(n)));
+                // Bind path variable if present.
+                if let Some(ref path_var) = merge_pattern.path_variable {
+                    let n = node::get_node(conn, id)?;
+                    out_rec.set(path_var.clone(), Value::Path(PathValue::single(n)));
+                }
+                result.push(out_rec);
+            } else {
+                // One or more matches — produce one row per matching node.
+                for n in &matches {
+                    for item in on_match {
+                        apply_merge_set_item_node(conn, item, n.id, rec)?;
+                    }
+                    let mut out_rec = rec.clone();
+                    out_rec.set(alias.to_string(), Value::I64(n.id.0 as i64));
+                    out_rec.set(format!("{alias}.__id"), Value::I64(n.id.0 as i64));
+                    // Bind path variable if present.
+                    if let Some(ref path_var) = merge_pattern.path_variable {
+                        let node = node::get_node(conn, n.id)?;
+                        out_rec.set(path_var.clone(), Value::Path(PathValue::single(node)));
+                    }
+                    result.push(out_rec);
+                }
             }
-
-            result.push(out_rec);
         }
         return Ok(result);
     }
@@ -3055,6 +3063,46 @@ fn exec_correlated(
                                         }
                                     }
                                 };
+                                // Relationship uniqueness: check against other
+                                // relationship bindings in the record.
+                                let (es, ed) = (edge_src.0 as i64, edge_dst.0 as i64);
+                                let edge_key = (es.min(ed), es.max(ed), label, 0u64);
+                                let mut duplicate = false;
+                                for (key, _val) in &new_rec.fields {
+                                    if key.ends_with(".__src") && key != &format!("{r_alias}.__src")
+                                    {
+                                        let other_alias = &key[..key.len() - 6];
+                                        let other_seq = match new_rec
+                                            .get(&format!("{other_alias}.__edge_seq"))
+                                        {
+                                            Some(Value::I64(s)) => *s as u64,
+                                            _ => 0,
+                                        };
+                                        if let (
+                                            Some(Value::I64(os)),
+                                            Some(Value::I64(od)),
+                                            Some(Value::String(ot)),
+                                        ) = (
+                                            new_rec.get(key),
+                                            new_rec.get(&format!("{other_alias}.__dst")),
+                                            new_rec.get(&format!("{other_alias}.__type")),
+                                        ) {
+                                            let other_key = (
+                                                (*os).min(*od),
+                                                (*os).max(*od),
+                                                ot.as_str(),
+                                                other_seq,
+                                            );
+                                            if other_key == edge_key {
+                                                duplicate = true;
+                                                break;
+                                            }
+                                        }
+                                    }
+                                }
+                                if duplicate {
+                                    continue;
+                                }
                                 new_rec.set(r_alias.to_string(), Value::String(label.to_string()));
                                 new_rec
                                     .set(format!("{r_alias}.__src"), Value::I64(edge_src.0 as i64));

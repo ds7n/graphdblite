@@ -88,10 +88,12 @@ fn split_setup_statements(script: &str) -> Vec<String> {
         let current_starts_with_unwind = current_trimmed.starts_with("UNWIND");
         let current_starts_with_match = current_trimmed.starts_with("MATCH");
         let line_starts_with_create = trimmed.starts_with("CREATE");
-        let keep_together = line_starts_with_create
+        let line_starts_with_unwind = trimmed.starts_with("UNWIND");
+        let keep_together = (line_starts_with_create
             && (current_starts_with_create
                 || current_starts_with_unwind
-                || current_starts_with_match);
+                || current_starts_with_match))
+            || (line_starts_with_unwind && current_starts_with_unwind);
         // If the current buffer contains WITH, this is a multi-clause
         // pipeline (CREATE...WITH...UNWIND...CREATE) — don't split.
         let has_with = current.to_ascii_uppercase().contains("\nWITH ")

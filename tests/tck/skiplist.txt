@@ -45,10 +45,6 @@ Merge1 - Merge node::[9] Merge should support updates while merging
 Merge5 - Merge relationships::[10] Merge should bind a path
 Merge5 - Merge relationships::[20] Do not match on deleted entities
 Merge5 - Merge relationships::[21] Do not match on deleted relationships
-Merge5 - Merge relationships::[3] Matching two relationships
-Merge5 - Merge relationships::[6] Creating relationship when all matches filtered out
-Merge7 - Merge relationships - on match::[4] Copying properties from node with ON MATCH
-Merge7 - Merge relationships - on match::[5] Copying properties from literal map with ON MATCH
 Pattern1 - Pattern predicate::[10] Fail on introducing unbounded variables in pattern
 Pattern1 - Pattern predicate::[11] Fail on checking self pattern
 Pattern1 - Pattern predicate::[22] Fail on using pattern in RETURN projection

@@ -81,13 +81,17 @@ fn split_setup_statements(script: &str) -> Vec<String> {
         });
         // Don't split when a CREATE follows another CREATE — the grammar
         // supports multi-clause CREATE natively (e.g. CREATE (a) CREATE (a)-[:R]->(b)).
-        // Also don't split when CREATE follows UNWIND — UNWIND...CREATE is a single statement.
+        // Also don't split when CREATE follows UNWIND or MATCH — those are
+        // single multi-clause statements (UNWIND...CREATE, MATCH...CREATE).
         let current_trimmed = current.trim_start();
         let current_starts_with_create = current_trimmed.starts_with("CREATE");
         let current_starts_with_unwind = current_trimmed.starts_with("UNWIND");
+        let current_starts_with_match = current_trimmed.starts_with("MATCH");
         let line_starts_with_create = trimmed.starts_with("CREATE");
-        let keep_together =
-            line_starts_with_create && (current_starts_with_create || current_starts_with_unwind);
+        let keep_together = line_starts_with_create
+            && (current_starts_with_create
+                || current_starts_with_unwind
+                || current_starts_with_match);
         // If the current buffer contains WITH, this is a multi-clause
         // pipeline (CREATE...WITH...UNWIND...CREATE) — don't split.
         let has_with = current.to_ascii_uppercase().contains("\nWITH ")

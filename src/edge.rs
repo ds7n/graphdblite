@@ -16,13 +16,39 @@ fn adj_key(node_id: NodeId, label: &str) -> Vec<u8> {
     key
 }
 
-/// Build the edge properties key: [src: 8 BE][dst: 8 BE][label: UTF-8].
-fn edge_props_key(src: NodeId, dst: NodeId, label: &str) -> Vec<u8> {
-    let mut key = Vec::with_capacity(16 + label.len());
+/// Build the edge properties key: [src: 8 BE][dst: 8 BE][label: UTF-8][0x00][seq: 8 BE].
+///
+/// The NUL separator distinguishes the label from the sequence number.
+/// Sequence numbers allow multiple parallel edges between the same (src, dst, label).
+fn edge_props_key(src: NodeId, dst: NodeId, label: &str, seq: u64) -> Vec<u8> {
+    let mut key = Vec::with_capacity(16 + label.len() + 1 + 8);
     key.extend_from_slice(&src.to_be_bytes());
     key.extend_from_slice(&dst.to_be_bytes());
     key.extend_from_slice(label.as_bytes());
+    key.push(0x00);
+    key.extend_from_slice(&seq.to_be_bytes());
     key
+}
+
+/// Build the edge properties prefix for scanning all parallel edges:
+/// [src: 8 BE][dst: 8 BE][label: UTF-8][0x00].
+fn edge_props_prefix(src: NodeId, dst: NodeId, label: &str) -> Vec<u8> {
+    let mut key = Vec::with_capacity(16 + label.len() + 1);
+    key.extend_from_slice(&src.to_be_bytes());
+    key.extend_from_slice(&dst.to_be_bytes());
+    key.extend_from_slice(label.as_bytes());
+    key.push(0x00);
+    key
+}
+
+/// Extract the sequence number from an edge_props key.
+fn edge_seq_from_key(key: &[u8], prefix_len: usize) -> u64 {
+    if key.len() >= prefix_len + 8 {
+        let bytes: [u8; 8] = key[prefix_len..prefix_len + 8].try_into().unwrap_or([0; 8]);
+        u64::from_be_bytes(bytes)
+    } else {
+        0
+    }
 }
 
 /// Create an edge from src to dst with the given label and properties.
@@ -55,8 +81,16 @@ pub fn create_edge(
     insert_into_sorted(&mut in_ids, src.0);
     kv::put(conn, kv::TABLE_ADJ_IN, &in_key, &encode_id_list(&in_ids))?;
 
+    // Find the next sequence number for this (src, dst, label) triple.
+    let prefix = edge_props_prefix(src, dst, label);
+    let existing = kv::scan_prefix(conn, kv::TABLE_EDGE_PROPS, &prefix)?;
+    let next_seq = existing
+        .last()
+        .map(|(k, _)| edge_seq_from_key(k, prefix.len()) + 1)
+        .unwrap_or(0);
+
     // Always store an edge_props row so relationship counting works correctly.
-    let props_key = edge_props_key(src, dst, label);
+    let props_key = edge_props_key(src, dst, label, next_seq);
     let data =
         rmp_serde::to_vec(&properties).map_err(|e| GraphError::Serialization(e.to_string()))?;
     kv::put(conn, kv::TABLE_EDGE_PROPS, &props_key, &data)?;
@@ -118,8 +152,22 @@ pub fn batch_create_edges(
     }
 
     // Always store edge_props rows so relationship counting works correctly.
+    // Track per-(src,dst) sequence counters for parallel edges within the batch.
+    let mut seq_cache: HashMap<(u64, u64), u64> = HashMap::new();
     for (src, dst, properties) in edges {
-        let props_key = edge_props_key(*src, *dst, label);
+        let seq = seq_cache.entry((src.0, dst.0)).or_insert_with(|| {
+            let prefix = edge_props_prefix(*src, *dst, label);
+            kv::scan_prefix(conn, kv::TABLE_EDGE_PROPS, &prefix)
+                .ok()
+                .and_then(|existing| {
+                    existing
+                        .last()
+                        .map(|(k, _)| edge_seq_from_key(k, prefix.len()) + 1)
+                })
+                .unwrap_or(0)
+        });
+        let props_key = edge_props_key(*src, *dst, label, *seq);
+        *seq += 1;
         let data =
             rmp_serde::to_vec(properties).map_err(|e| GraphError::Serialization(e.to_string()))?;
         kv::put(conn, kv::TABLE_EDGE_PROPS, &props_key, &data)?;
@@ -156,10 +204,57 @@ pub fn delete_edge(conn: &Connection, src: NodeId, dst: NodeId, label: &str) -> 
         }
     }
 
-    // Delete edge properties.
-    let props_key = edge_props_key(src, dst, label);
+    // Delete all parallel edge properties for this (src, dst, label).
+    let prefix = edge_props_prefix(src, dst, label);
+    let entries = kv::scan_prefix(conn, kv::TABLE_EDGE_PROPS, &prefix)?;
+    for (key, _) in entries {
+        kv::delete(conn, kv::TABLE_EDGE_PROPS, &key)?;
+    }
+
+    Ok(())
+}
+
+/// Delete a single edge identified by (src, dst, label, seq).
+///
+/// If this was the last parallel edge, also removes the adjacency list entries.
+pub fn delete_single_edge(
+    conn: &Connection,
+    src: NodeId,
+    dst: NodeId,
+    label: &str,
+    seq: u64,
+) -> Result<()> {
+    let props_key = edge_props_key(src, dst, label, seq);
     kv::delete(conn, kv::TABLE_EDGE_PROPS, &props_key)?;
 
+    // Check if there are remaining parallel edges.
+    let prefix = edge_props_prefix(src, dst, label);
+    let remaining = kv::scan_prefix(conn, kv::TABLE_EDGE_PROPS, &prefix)?;
+    if remaining.is_empty() {
+        // Last edge — remove from adjacency lists.
+        let out_key = adj_key(src, label);
+        if let Some(data) = kv::get(conn, kv::TABLE_ADJ_OUT, &out_key)? {
+            let mut ids = decode_id_list(&data);
+            if remove_from_sorted(&mut ids, dst.0) {
+                if ids.is_empty() {
+                    kv::delete(conn, kv::TABLE_ADJ_OUT, &out_key)?;
+                } else {
+                    kv::put(conn, kv::TABLE_ADJ_OUT, &out_key, &encode_id_list(&ids))?;
+                }
+            }
+        }
+        let in_key = adj_key(dst, label);
+        if let Some(data) = kv::get(conn, kv::TABLE_ADJ_IN, &in_key)? {
+            let mut ids = decode_id_list(&data);
+            if remove_from_sorted(&mut ids, src.0) {
+                if ids.is_empty() {
+                    kv::delete(conn, kv::TABLE_ADJ_IN, &in_key)?;
+                } else {
+                    kv::put(conn, kv::TABLE_ADJ_IN, &in_key, &encode_id_list(&ids))?;
+                }
+            }
+        }
+    }
     Ok(())
 }
 
@@ -196,14 +291,38 @@ pub fn get_neighbors(
     Ok(result)
 }
 
-/// Get edge properties for a specific edge.
+/// Get edge properties for the first edge between (src, dst, label).
+///
+/// For backward compatibility, returns the first parallel edge's properties.
+/// Use `get_edge_properties_at` for a specific edge by sequence number, or
+/// `get_all_edge_props` to enumerate all parallel edges.
 pub fn get_edge_properties(
     conn: &Connection,
     src: NodeId,
     dst: NodeId,
     label: &str,
 ) -> Result<Properties> {
-    let key = edge_props_key(src, dst, label);
+    let prefix = edge_props_prefix(src, dst, label);
+    let entries = kv::scan_prefix(conn, kv::TABLE_EDGE_PROPS, &prefix)?;
+    match entries.into_iter().next() {
+        Some((_, data)) => {
+            let props: Properties = rmp_serde::from_slice(&data)
+                .map_err(|e| GraphError::Serialization(e.to_string()))?;
+            Ok(props)
+        }
+        None => Ok(Properties::new()),
+    }
+}
+
+/// Get edge properties for a specific parallel edge identified by sequence number.
+pub fn get_edge_properties_at(
+    conn: &Connection,
+    src: NodeId,
+    dst: NodeId,
+    label: &str,
+    seq: u64,
+) -> Result<Properties> {
+    let key = edge_props_key(src, dst, label, seq);
     match kv::get(conn, kv::TABLE_EDGE_PROPS, &key)? {
         Some(data) => {
             let props: Properties = rmp_serde::from_slice(&data)
@@ -214,7 +333,35 @@ pub fn get_edge_properties(
     }
 }
 
-/// Set a single property on an existing edge.
+/// Get all parallel edges between (src, dst, label), returning (seq, Properties) pairs.
+pub fn get_all_edge_props(
+    conn: &Connection,
+    src: NodeId,
+    dst: NodeId,
+    label: &str,
+) -> Result<Vec<(u64, Properties)>> {
+    let prefix = edge_props_prefix(src, dst, label);
+    let entries = kv::scan_prefix(conn, kv::TABLE_EDGE_PROPS, &prefix)?;
+    let mut result = Vec::with_capacity(entries.len());
+    for (key, data) in entries {
+        let seq = edge_seq_from_key(&key, prefix.len());
+        let props: Properties =
+            rmp_serde::from_slice(&data).map_err(|e| GraphError::Serialization(e.to_string()))?;
+        result.push((seq, props));
+    }
+    Ok(result)
+}
+
+/// Count the number of parallel edges between (src, dst, label).
+pub fn count_edges(conn: &Connection, src: NodeId, dst: NodeId, label: &str) -> Result<usize> {
+    let prefix = edge_props_prefix(src, dst, label);
+    let entries = kv::scan_prefix(conn, kv::TABLE_EDGE_PROPS, &prefix)?;
+    Ok(entries.len())
+}
+
+/// Set a single property on the first edge between (src, dst, label).
+///
+/// Use `set_edge_property_at` to target a specific parallel edge by sequence.
 pub fn set_edge_property(
     conn: &Connection,
     src: NodeId,
@@ -223,13 +370,33 @@ pub fn set_edge_property(
     key: &str,
     value: crate::types::Value,
 ) -> Result<()> {
-    let mut props = get_edge_properties(conn, src, dst, label)?;
+    // Find the first edge's sequence number.
+    let prefix = edge_props_prefix(src, dst, label);
+    let entries = kv::scan_prefix(conn, kv::TABLE_EDGE_PROPS, &prefix)?;
+    let seq = entries
+        .first()
+        .map(|(k, _)| edge_seq_from_key(k, prefix.len()))
+        .unwrap_or(0);
+    set_edge_property_at(conn, src, dst, label, seq, key, value)
+}
+
+/// Set a single property on a specific parallel edge identified by sequence number.
+pub fn set_edge_property_at(
+    conn: &Connection,
+    src: NodeId,
+    dst: NodeId,
+    label: &str,
+    seq: u64,
+    key: &str,
+    value: crate::types::Value,
+) -> Result<()> {
+    let mut props = get_edge_properties_at(conn, src, dst, label, seq)?;
     if value == crate::types::Value::Null {
         props.remove(key);
     } else {
         props.insert(key.to_string(), value);
     }
-    let props_key = edge_props_key(src, dst, label);
+    let props_key = edge_props_key(src, dst, label, seq);
     let data = rmp_serde::to_vec(&props).map_err(|e| GraphError::Serialization(e.to_string()))?;
     kv::put(conn, kv::TABLE_EDGE_PROPS, &props_key, &data)?;
     Ok(())

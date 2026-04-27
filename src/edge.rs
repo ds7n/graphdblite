@@ -364,6 +364,9 @@ pub struct PathStep {
 /// `direction`, with length between `min_hops` and `max_hops` inclusive.
 /// Uses DFS with relationship uniqueness (no edge reused within a single path).
 /// Zero-length paths (min_hops=0) include the start node with empty step list.
+///
+/// When `labels` is empty, all edge types are followed at each hop (the types
+/// are discovered dynamically per node, not just from the start node).
 pub fn traverse_paths(
     conn: &Connection,
     start: NodeId,
@@ -396,7 +399,21 @@ pub fn traverse_paths(
             continue;
         }
 
-        for label in labels {
+        // When no specific labels are given, discover all edge types for the
+        // current node so we follow every type at every hop (not just types
+        // present on the start node).
+        let discovered: Vec<String>;
+        let effective_labels: Vec<&str> = if labels.is_empty() {
+            let all = get_all_edge_labels(conn, current, direction)?;
+            discovered = all.into_iter().map(|(l, _)| l).collect();
+            discovered.iter().map(|s| s.as_str()).collect()
+        } else {
+            discovered = Vec::new();
+            let _ = &discovered; // suppress unused warning
+            labels.to_vec()
+        };
+
+        for label in &effective_labels {
             let neighbors = get_neighbors(conn, current, label, direction)?;
             for neighbor in neighbors {
                 // Determine actual edge direction in storage.

@@ -1047,7 +1047,13 @@ fn parse_rel_pattern(pair: pest::iterators::Pair<Rule>) -> crate::types::Result<
                         properties = parse_property_map(detail)?;
                     }
                     Rule::var_length => {
-                        var_length = Some(parse_var_length(detail)?);
+                        let (range, var_props) = parse_var_length(detail)?;
+                        var_length = Some(range);
+                        // Merge property filters from inside var_length
+                        // (e.g. [:TYPE* {key: val}]).
+                        if !var_props.is_empty() {
+                            properties.extend(var_props);
+                        }
                     }
                     _ => {}
                 }
@@ -1064,7 +1070,11 @@ fn parse_rel_pattern(pair: pest::iterators::Pair<Rule>) -> crate::types::Result<
     })
 }
 
-fn parse_var_length(pair: pest::iterators::Pair<Rule>) -> crate::types::Result<(u32, u32)> {
+fn parse_var_length(
+    pair: pest::iterators::Pair<Rule>,
+) -> crate::types::Result<((u32, u32), HashMap<String, Expr>)> {
+    let mut range = None;
+    let mut props = HashMap::new();
     for inner in pair.into_inner() {
         match inner.as_rule() {
             Rule::int_range => {
@@ -1076,24 +1086,25 @@ fn parse_var_length(pair: pest::iterators::Pair<Rule>) -> crate::types::Result<(
                     .filter(|p| p.as_rule() == Rule::integer)
                     .map(|p| p.as_str().parse::<u32>().unwrap())
                     .collect();
-                match nums.len() {
-                    2 => return Ok((nums[0], nums[1])),
-                    1 if raw.starts_with("..") => return Ok((1, nums[0])),
-                    1 => return Ok((nums[0], 50)),
-                    0 => return Ok((1, 50)),
-                    _ => {}
-                }
+                range = Some(match nums.len() {
+                    2 => (nums[0], nums[1]),
+                    1 if raw.starts_with("..") => (1, nums[0]),
+                    1 => (nums[0], 50),
+                    _ => (1, 50),
+                });
             }
             Rule::fixed_length => {
                 let n = inner.as_str().parse::<u32>().unwrap();
-                return Ok((n, n));
+                range = Some((n, n));
             }
-            Rule::property_map => {} // handled by caller
+            Rule::property_map => {
+                props = parse_property_map(inner)?;
+            }
             _ => {}
         }
     }
     // Bare * with no range — default to 1..50 to prevent unbounded traversal.
-    Ok((1, 50))
+    Ok((range.unwrap_or((1, 50)), props))
 }
 
 fn parse_property_map(

@@ -88,7 +88,11 @@ fn split_setup_statements(script: &str) -> Vec<String> {
         let line_starts_with_create = trimmed.starts_with("CREATE");
         let keep_together =
             line_starts_with_create && (current_starts_with_create || current_starts_with_unwind);
-        let should_split = is_keyword_start && !current.is_empty() && !keep_together;
+        // If the current buffer contains WITH, this is a multi-clause
+        // pipeline (CREATE...WITH...UNWIND...CREATE) — don't split.
+        let has_with = current.to_ascii_uppercase().contains("\nWITH ")
+            || current.to_ascii_uppercase().starts_with("WITH ");
+        let should_split = is_keyword_start && !current.is_empty() && !keep_together && !has_with;
         if should_split {
             stmts.push(current.clone());
             current.clear();

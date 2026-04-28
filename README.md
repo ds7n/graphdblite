@@ -85,18 +85,16 @@ DELETE n
 Supports `OPTIONAL MATCH`, `WITH`, `UNWIND`, `ORDER BY`, `LIMIT`, `CASE`,
 `EXISTS {}` subqueries, list comprehensions, and `EXPLAIN`.
 
-**Scalar functions:** `length()`, `nodes()`
-**Aggregations:** `count(*)`, `sum()`, `avg()`, `min()`, `max()`, `collect()`
+**Scalar functions:** `id`, `labels`, `type`, `keys`, `properties`, `length`, `size`, `head`, `last`, `tail`, `range`, `coalesce`, `nodes`, `relationships`, type conversion (`toInteger`, `toFloat`, `toString`, `toBoolean`), math (`abs`, `ceil`, `floor`, `round`, `sqrt`, `log`, `exp`), string (`trim`, `toUpper`, `toLower`, `replace`, `substring`, `split`)
+**Aggregations:** `count`, `sum`, `avg`, `min`, `max`, `collect`, `percentileDisc`, `percentileCont`, `stDev`, `stDevP` — all support `DISTINCT`
+**Temporal:** `date()`, `time()`, `datetime()`, `duration()` constructors with accessor properties
 
 See the full [Cypher Reference](docs/cypher.md) for complete syntax and examples.
 
 ## Architecture
 
 ```
-Cypher Parser (pest) --> Logical IR --> Query Planner --> Executor (Volcano iterator model)
-                              |              |
-                              |         Cost Estimator
-                              |         (cardinality stats)
+Cypher Parser (pest) --> Logical IR --> Query Planner --> Executor (pull-based iterator model)
                               |
                          Graph Storage (adjacency blobs, secondary indexes)
                               |
@@ -105,7 +103,7 @@ Cypher Parser (pest) --> Logical IR --> Query Planner --> Executor (Volcano iter
 
 - **Storage:** SQLite as a B-tree + WAL engine — no SQL JOINs, no relational query planning
 - **Concurrency:** SQLite WAL mode handles multi-process reads/writes
-- **Optimizer:** cost-based planning with cardinality estimation and index selection
+- **Planner:** heuristic-based with index selection for equality lookups
 
 More details: [docs/architecture.md](docs/architecture.md)
 

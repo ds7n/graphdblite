@@ -254,6 +254,7 @@ fn plan_match(conn: &Connection, stmt: &MatchStatement) -> crate::types::Result<
             ));
         }
         check_expr_variables(predicate, &bound_vars)?;
+        validate_expr_types(predicate, &var_types)?;
     }
 
     // Apply WHERE filter with predicate pushdown.
@@ -314,6 +315,10 @@ fn plan_match(conn: &Connection, stmt: &MatchStatement) -> crate::types::Result<
                 // Validate variable-type consistency for consecutive MATCHes
                 // (not separated by WITH, which resets scope).
                 validate_variable_types_with_map(&im.patterns, &mut var_types)?;
+                // Validate expression types in WHERE (e.g. property access on paths).
+                if let Some(ref predicate) = im.where_clause {
+                    validate_expr_types(predicate, &var_types)?;
+                }
                 op = plan_intermediate_match_with_scope(conn, op, im, &scope_vars)?;
                 scope_vars.extend(collect_pattern_variables(&im.patterns));
                 for opt in &im.optional_patterns {
@@ -423,6 +428,10 @@ fn plan_return(conn: &Connection, stmt: &ReturnStatement) -> crate::types::Resul
     let mut op: LogicalOp = LogicalOp::SingleRow;
 
     check_duplicate_columns(&stmt.return_clause.items)?;
+
+    // Standalone RETURN has no variables in scope — reject any variable refs.
+    let empty_scope = HashSet::new();
+    validate_return_variables(&stmt.return_clause.items, &empty_scope)?;
 
     // Check for aggregation in list comprehensions.
     for item in &stmt.return_clause.items {
@@ -1419,9 +1428,9 @@ fn plan_with_scoped(
         // pre-projection aggregate columns (group keys are named by
         // expr_to_column_name, matching the original expression).
         if !with.order_by.is_empty() {
-            if let Some(scope) = input_scope {
-                validate_with_order_by_scope_input(scope, &with.items, &with.order_by)?;
-            }
+            // For aggregate WITH, non-aggregate leaves in ORDER BY must
+            // reference group key variables or projected aliases only.
+            validate_agg_order_by_scope(&with.items, &with.order_by)?;
             // Reject ORDER BY with aggregation not in the projection.
             let mut projected_agg_cols: std::collections::HashSet<String> =
                 std::collections::HashSet::new();
@@ -1849,6 +1858,16 @@ fn validate_expr_types(
             }
             for arg in args {
                 validate_expr_types(arg, var_types)?;
+            }
+        }
+        Expr::Property(var, _) => {
+            if let Some(kind) = var_types.get(var) {
+                if *kind == VarKind::Path {
+                    return Err(GraphError::type_error(
+                        crate::types::QueryPhase::SemanticAnalysis,
+                        "InvalidArgumentType: property access on a path is not allowed".to_string(),
+                    ));
+                }
             }
         }
         Expr::BinaryOp { left, right, .. } => {
@@ -2284,6 +2303,107 @@ fn validate_with_order_by_scope_input(
     }
     for sort_item in order_by {
         validate_expr_in_scope(&sort_item.expr, &scope)?;
+    }
+    Ok(())
+}
+
+/// For aggregate WITH ORDER BY, validate that non-aggregate leaf variable
+/// references are in the group-key/alias scope (not the full input scope).
+fn validate_agg_order_by_scope(
+    with_items: &[ReturnItem],
+    order_by: &[SortItem],
+) -> crate::types::Result<()> {
+    let mut scope = HashSet::new();
+    for item in with_items {
+        if let Some(ref alias) = item.alias {
+            scope.insert(alias.clone());
+        }
+        // Non-aggregate items are group keys — their variables are in scope.
+        if !is_aggregate_fn(&item.expr) {
+            collect_variables_from_expr(&item.expr, &mut scope);
+        }
+    }
+    for sort_item in order_by {
+        validate_non_agg_leaves_in_scope(&sort_item.expr, &scope)?;
+    }
+    Ok(())
+}
+
+/// Collect all variable names referenced in an expression.
+fn collect_variables_from_expr(expr: &Expr, vars: &mut HashSet<String>) {
+    match expr {
+        Expr::Variable(name) => {
+            vars.insert(name.clone());
+        }
+        Expr::Property(var, _) => {
+            vars.insert(var.clone());
+        }
+        Expr::BinaryOp { left, right, .. } => {
+            collect_variables_from_expr(left, vars);
+            collect_variables_from_expr(right, vars);
+        }
+        Expr::FunctionCall { args, .. } => {
+            for arg in args {
+                collect_variables_from_expr(arg, vars);
+            }
+        }
+        Expr::Not(inner) | Expr::IsNull(inner) | Expr::IsNotNull(inner) => {
+            collect_variables_from_expr(inner, vars);
+        }
+        _ => {}
+    }
+}
+
+/// Walk an expression, skipping aggregate function subtrees, and check that
+/// remaining variable references are in the given scope.
+fn validate_non_agg_leaves_in_scope(
+    expr: &Expr,
+    scope: &HashSet<String>,
+) -> crate::types::Result<()> {
+    match expr {
+        Expr::FunctionCall { name, args, .. } => {
+            if matches!(
+                name.to_ascii_lowercase().as_str(),
+                "count"
+                    | "sum"
+                    | "avg"
+                    | "min"
+                    | "max"
+                    | "collect"
+                    | "percentiledisc"
+                    | "percentilecont"
+                    | "stdev"
+                    | "stdevp"
+            ) {
+                // Aggregate subtree — variables inside are fine.
+                return Ok(());
+            }
+            for arg in args {
+                validate_non_agg_leaves_in_scope(arg, scope)?;
+            }
+        }
+        Expr::Variable(name) => {
+            if !scope.contains(name) {
+                return Err(GraphError::syntax(format!(
+                    "UndefinedVariable: variable `{name}` not defined"
+                )));
+            }
+        }
+        Expr::Property(var, _) => {
+            if !scope.contains(var) {
+                return Err(GraphError::syntax(format!(
+                    "UndefinedVariable: variable `{var}` not defined"
+                )));
+            }
+        }
+        Expr::BinaryOp { left, right, .. } => {
+            validate_non_agg_leaves_in_scope(left, scope)?;
+            validate_non_agg_leaves_in_scope(right, scope)?;
+        }
+        Expr::Not(inner) | Expr::IsNull(inner) | Expr::IsNotNull(inner) => {
+            validate_non_agg_leaves_in_scope(inner, scope)?;
+        }
+        _ => {} // Literals, parameters, Star — always valid.
     }
     Ok(())
 }

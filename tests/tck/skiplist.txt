@@ -24,10 +24,6 @@ Match4 - Match variable length patterns::[8] Matching relationships into a list 
 Match6 - Match named paths scenarios::[14] Named path with undirected fixed variable length pattern
 MatchWhere2 - Filter multiple variables::[1] Filter nodes with conjunctive two-part property predicate on multi variables with multiple bindings
 MatchWhere2 - Filter multiple variables::[2] Filter node with conjunctive multi-part property predicates on multi variables with multiple bindings
-Quantifier1 - None quantifier::[15] Fail none quantifier on type mismatch between list elements and predicate
-Quantifier2 - Single quantifier::[16] Fail single quantifier on type mismatch between list elements and predicate
-Quantifier3 - Any quantifier::[15] Fail any quantifier on type mismatch between list elements and predicate
-Quantifier4 - All quantifier::[15] Fail all quantifier on type mismatch between list elements and predicate
 Return2 - Return single expression (correctly projecting an expression)::[15] Fail when returning properties of deleted nodes
 Return2 - Return single expression (correctly projecting an expression)::[17] Fail when returning properties of deleted relationships
 Return6 - Implicit grouping with aggregates::[15] Using `rand()` in aggregations

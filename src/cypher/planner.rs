@@ -521,6 +521,12 @@ fn plan_return(conn: &Connection, stmt: &ReturnStatement) -> crate::types::Resul
     let empty_scope = HashSet::new();
     validate_return_variables(&stmt.return_clause.items, &empty_scope)?;
 
+    // Validate function argument types (quantifier type checks, etc.).
+    let var_types_empty = HashMap::new();
+    for item in &stmt.return_clause.items {
+        validate_expr_types(&item.expr, &var_types_empty)?;
+    }
+
     // Check for aggregation in list comprehensions.
     for item in &stmt.return_clause.items {
         validate_no_aggregation_in_list_comp(&item.expr)?;
@@ -1971,9 +1977,78 @@ fn validate_expr_types(
         Expr::Not(inner) | Expr::IsNull(inner) | Expr::IsNotNull(inner) => {
             validate_expr_types(inner, var_types)?;
         }
+        Expr::Quantifier {
+            list_expr,
+            variable,
+            predicate,
+            ..
+        } => {
+            if let Expr::List(items) = list_expr.as_ref() {
+                if !items.is_empty() {
+                    let all_strings = items.iter().all(|e| {
+                        matches!(
+                            e,
+                            Expr::Literal(crate::cypher::ast::LiteralValue::String(_))
+                        )
+                    });
+                    let all_booleans = items.iter().all(|e| {
+                        matches!(e, Expr::Literal(crate::cypher::ast::LiteralValue::Bool(_)))
+                    });
+                    if all_strings || all_booleans {
+                        if predicate_uses_arithmetic_on(predicate, variable) {
+                            let elem_type = if all_strings { "String" } else { "Boolean" };
+                            return Err(GraphError::type_error(
+                                crate::types::QueryPhase::SemanticAnalysis,
+                                format!("InvalidArgumentType: {elem_type} is not a valid argument type for arithmetic operations"),
+                            ));
+                        }
+                    }
+                }
+            }
+            validate_expr_types(list_expr, var_types)?;
+        }
         _ => {}
     }
     Ok(())
+}
+
+/// Check if an expression uses arithmetic operators on a specific variable.
+fn predicate_uses_arithmetic_on(expr: &Expr, var: &str) -> bool {
+    match expr {
+        Expr::BinaryOp { left, op, right } => {
+            let is_arith = matches!(
+                op,
+                BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Div | BinOp::Mod | BinOp::Pow
+            );
+            if is_arith && (expr_references_var(left, var) || expr_references_var(right, var)) {
+                return true;
+            }
+            predicate_uses_arithmetic_on(left, var) || predicate_uses_arithmetic_on(right, var)
+        }
+        Expr::Not(inner) | Expr::IsNull(inner) | Expr::IsNotNull(inner) => {
+            predicate_uses_arithmetic_on(inner, var)
+        }
+        Expr::FunctionCall { args, .. } => {
+            args.iter().any(|a| predicate_uses_arithmetic_on(a, var))
+        }
+        _ => false,
+    }
+}
+
+/// Check if an expression directly references a variable by name.
+fn expr_references_var(expr: &Expr, var: &str) -> bool {
+    match expr {
+        Expr::Variable(v) => v == var,
+        Expr::Property(v, _) => v == var,
+        Expr::BinaryOp { left, right, .. } => {
+            expr_references_var(left, var) || expr_references_var(right, var)
+        }
+        Expr::Not(inner) | Expr::IsNull(inner) | Expr::IsNotNull(inner) => {
+            expr_references_var(inner, var)
+        }
+        Expr::FunctionCall { args, .. } => args.iter().any(|a| expr_references_var(a, var)),
+        _ => false,
+    }
 }
 
 /// Check that every variable reference in an expression is present in `scope`.

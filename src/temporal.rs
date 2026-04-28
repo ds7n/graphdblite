@@ -1659,7 +1659,8 @@ impl CypherDuration {
         let total_months = months_f.trunc() as i64;
         let frac_months = months_f - months_f.trunc();
 
-        let days_f = weeks * 7.0 + days + frac_months * 30.0;
+        // Neo4j uses average days per month: 365.2425 / 12 = 30.436875
+        let days_f = weeks * 7.0 + days + frac_months * 30.436875;
         let total_days = days_f.trunc() as i64;
         let frac_days = days_f - days_f.trunc();
 

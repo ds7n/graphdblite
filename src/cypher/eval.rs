@@ -1823,17 +1823,9 @@ fn eval_binop(left: &Value, op: BinOp, right: &Value) -> crate::types::Result<Va
             }
         }
         BinOp::Div => {
-            // Duration / Number.
-            if let (Value::Duration(d), Value::I64(n)) = (left, right) {
-                if *n == 0 {
-                    return Ok(Value::Null);
-                }
-                return Ok(Value::Duration(crate::temporal::CypherDuration {
-                    months: d.months / n,
-                    days: d.days / n,
-                    seconds: d.seconds / n,
-                    nanos: d.nanos / n,
-                }));
+            // Duration / Number — flatten to total nanos, divide, decompose.
+            if let Some(result) = eval_duration_div(left, right) {
+                return result;
             }
             // Division by zero → Null (Cypher semantics).
             match (left, right) {
@@ -2376,12 +2368,9 @@ fn eval_duration_mul(left: &Value, right: &Value) -> Option<crate::types::Result
     let (dur, n) = match (left, right) {
         (Value::Duration(d), Value::I64(n)) | (Value::I64(n), Value::Duration(d)) => (d, *n),
         (Value::Duration(d), Value::F64(n)) | (Value::F64(n), Value::Duration(d)) => {
-            return Some(Ok(Value::Duration(CypherDuration {
-                months: (d.months as f64 * n) as i64,
-                days: (d.days as f64 * n) as i64,
-                seconds: (d.seconds as f64 * n) as i64,
-                nanos: (d.nanos as f64 * n) as i64,
-            })));
+            let total = duration_to_total_nanos(d);
+            let result = (total as f64 * n).round() as i128;
+            return Some(Ok(Value::Duration(total_nanos_to_duration(result))));
         }
         _ => return None,
     };
@@ -2391,6 +2380,91 @@ fn eval_duration_mul(left: &Value, right: &Value) -> Option<crate::types::Result
         seconds: dur.seconds * n,
         nanos: dur.nanos * n,
     })))
+}
+
+/// Average seconds per month used for duration arithmetic (365.2425 * 86400 / 12).
+const AVG_SECONDS_PER_MONTH: i64 = 2_629_746;
+
+/// Flatten a duration to total nanoseconds using average month length.
+fn duration_to_total_nanos(d: &crate::temporal::CypherDuration) -> i128 {
+    let nanos_per_sec: i128 = 1_000_000_000;
+    let nanos_per_day: i128 = 86_400 * nanos_per_sec;
+    let nanos_per_month: i128 = AVG_SECONDS_PER_MONTH as i128 * nanos_per_sec;
+    d.months as i128 * nanos_per_month
+        + d.days as i128 * nanos_per_day
+        + d.seconds as i128 * nanos_per_sec
+        + d.nanos as i128
+}
+
+/// Decompose total nanoseconds back into a CypherDuration.
+fn total_nanos_to_duration(total: i128) -> crate::temporal::CypherDuration {
+    let nanos_per_sec: i128 = 1_000_000_000;
+    let nanos_per_day: i128 = 86_400 * nanos_per_sec;
+    let nanos_per_month: i128 = AVG_SECONDS_PER_MONTH as i128 * nanos_per_sec;
+
+    let months = total / nanos_per_month;
+    let remainder = total % nanos_per_month;
+    let days = remainder / nanos_per_day;
+    let remainder = remainder % nanos_per_day;
+    let seconds = remainder / nanos_per_sec;
+    let nanos = remainder % nanos_per_sec;
+
+    crate::temporal::CypherDuration {
+        months: months as i64,
+        days: days as i64,
+        seconds: seconds as i64,
+        nanos: nanos as i64,
+    }
+}
+
+/// Duration / Number — flatten to total nanos, divide, decompose back.
+/// Returns None if the operands are not Duration / Number.
+fn eval_duration_div(left: &Value, right: &Value) -> Option<crate::types::Result<Value>> {
+    use crate::temporal::CypherDuration;
+
+    match (left, right) {
+        (Value::Duration(d), Value::I64(n)) => {
+            if *n == 0 {
+                return Some(Ok(Value::Null));
+            }
+            let total = duration_to_total_nanos(d);
+            let divided = total / *n as i128;
+            Some(Ok(Value::Duration(total_nanos_to_duration(divided))))
+        }
+        (Value::Duration(d), Value::F64(n)) => {
+            if *n == 0.0 {
+                return Some(Ok(Value::Null));
+            }
+            // Component-wise division with fractional remainder cascade.
+            let nanos_per_sec: f64 = 1_000_000_000.0;
+            let nanos_per_day: f64 = 86_400.0 * nanos_per_sec;
+            let nanos_per_month: f64 = AVG_SECONDS_PER_MONTH as f64 * nanos_per_sec;
+
+            // Months: divide, cascade fractional remainder to days.
+            let months_f = d.months as f64 / n;
+            let months_i = months_f.trunc() as i64;
+            let month_remainder_nanos = (months_f - months_f.trunc()) * nanos_per_month;
+
+            // Days: divide, adding cascaded month remainder, cascade fractional remainder to sub-day.
+            let days_f = d.days as f64 / n + month_remainder_nanos / nanos_per_day;
+            let days_i = days_f.trunc() as i64;
+            let day_remainder_nanos = (days_f - days_f.trunc()) * nanos_per_day;
+
+            // Sub-day: seconds + nanos divided, plus cascaded day remainder.
+            let sub_nanos_f =
+                (d.seconds as f64 * nanos_per_sec + d.nanos as f64) / n + day_remainder_nanos;
+            let seconds_i = (sub_nanos_f / nanos_per_sec).trunc() as i64;
+            let nanos_i = (sub_nanos_f % nanos_per_sec).round() as i64;
+
+            Some(Ok(Value::Duration(CypherDuration {
+                months: months_i,
+                days: days_i,
+                seconds: seconds_i,
+                nanos: nanos_i,
+            })))
+        }
+        _ => None,
+    }
 }
 
 /// Extract a temporal component accessor (e.g., `d.year`, `t.hour`).

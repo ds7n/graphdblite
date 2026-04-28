@@ -1071,7 +1071,7 @@ fn compute_aggregate(agg: &AggregateExpr, records: &[Record], conn: &Connection)
                     min = Some(match min {
                         None => val,
                         Some(ref current) => {
-                            if value_less_than(&val, current) {
+                            if compare_values_for_sort(&val, current) == std::cmp::Ordering::Less {
                                 val
                             } else {
                                 current.clone()
@@ -1090,7 +1090,7 @@ fn compute_aggregate(agg: &AggregateExpr, records: &[Record], conn: &Connection)
                     max = Some(match max {
                         None => val,
                         Some(ref current) => {
-                            if value_less_than(current, &val) {
+                            if compare_values_for_sort(current, &val) == std::cmp::Ordering::Less {
                                 val
                             } else {
                                 current.clone()

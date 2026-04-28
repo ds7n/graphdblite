@@ -8,7 +8,6 @@ CountingSubgraphMatches1 - Matching subgraph patterns and count the number of ma
 CountingSubgraphMatches1 - Matching subgraph patterns and count the number of matches::[11] Mixing directed and undirected pattern parts with self-relationship, undirected count
 Delete5 - Delete clause interoperation with built-in data types::[7] Delete paths from nested map/list
 ExistentialSubquery2 - Full existential subquery::[2] Full existential subquery with aggregation
-Graph4 - Edge relationship type::[6] `type()` failing on invalid arguments
 Graph6 - Static property access::[4] Statically access a property of a node resulting from an expression
 Graph6 - Static property access::[8] Statically access a property of a relationship resulting from an expression
 List11 - Create a list from a range::[3] Create an empty list if range direction and step direction are inconsistent

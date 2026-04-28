@@ -689,8 +689,6 @@ fn eval_function_call(
             let arg = eval_single_arg(args, record, conn)?;
             match arg {
                 Value::Edge(e) => Ok(Value::String(e.label)),
-                // A relationship variable in flat records is stored as String(type_name).
-                Value::String(_) => Ok(arg),
                 Value::Null => Ok(Value::Null),
                 other => Err(invalid_argument_type("type()", &other)),
             }

@@ -1177,7 +1177,8 @@ impl Serialize for CypherDateTime {
     fn serialize<S: Serializer>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error> {
         let d = self.0.date();
         let t = self.0.time();
-        let mut s = serializer.serialize_struct("CypherDateTime", 8)?;
+        let field_count = if self.2.is_some() { 9 } else { 8 };
+        let mut s = serializer.serialize_struct("CypherDateTime", field_count)?;
         s.serialize_field("year", &d.year())?;
         s.serialize_field("month", &d.month())?;
         s.serialize_field("day", &d.day())?;
@@ -1186,6 +1187,9 @@ impl Serialize for CypherDateTime {
         s.serialize_field("second", &t.second())?;
         s.serialize_field("nanosecond", &t.nanosecond())?;
         s.serialize_field("offset_seconds", &self.1.local_minus_utc())?;
+        if let Some(ref tz) = self.2 {
+            s.serialize_field("tz_name", tz)?;
+        }
         s.end()
     }
 }
@@ -1204,6 +1208,8 @@ impl<'de> Deserialize<'de> for CypherDateTime {
             Nanosecond,
             #[serde(rename = "offset_seconds")]
             OffsetSeconds,
+            #[serde(rename = "tz_name")]
+            TzName,
         }
 
         struct V;
@@ -1240,6 +1246,7 @@ impl<'de> Deserialize<'de> for CypherDateTime {
                 let o: i32 = seq
                     .next_element()?
                     .ok_or_else(|| de::Error::invalid_length(7, &self))?;
+                let tz_name: Option<String> = seq.next_element().ok().flatten();
                 let date = NaiveDate::from_ymd_opt(year, month, day)
                     .ok_or_else(|| de::Error::custom("invalid date"))?;
                 let time = NaiveTime::from_hms_nano_opt(h, m, s, n)
@@ -1247,7 +1254,7 @@ impl<'de> Deserialize<'de> for CypherDateTime {
                 let offset =
                     FixedOffset::east_opt(o).ok_or_else(|| de::Error::custom("invalid offset"))?;
                 let dt = NaiveDateTime::new(date, time);
-                Ok(CypherDateTime(dt, offset, None))
+                Ok(CypherDateTime(dt, offset, tz_name))
             }
             fn visit_map<A: MapAccess<'de>>(
                 self,
@@ -1256,6 +1263,7 @@ impl<'de> Deserialize<'de> for CypherDateTime {
                 let (mut year, mut month, mut day) = (None, None, None);
                 let (mut hour, mut minute, mut second, mut nano, mut off) =
                     (None, None, None, None, None);
+                let mut tz_name: Option<String> = None;
                 while let Some(key) = map.next_key()? {
                     match key {
                         Field::Year => year = Some(map.next_value()?),
@@ -1266,6 +1274,7 @@ impl<'de> Deserialize<'de> for CypherDateTime {
                         Field::Second => second = Some(map.next_value()?),
                         Field::Nanosecond => nano = Some(map.next_value()?),
                         Field::OffsetSeconds => off = Some(map.next_value()?),
+                        Field::TzName => tz_name = Some(map.next_value()?),
                     }
                 }
                 let y: i32 = year.ok_or_else(|| de::Error::missing_field("year"))?;
@@ -1282,7 +1291,7 @@ impl<'de> Deserialize<'de> for CypherDateTime {
                     .ok_or_else(|| de::Error::custom("invalid time"))?;
                 let offset =
                     FixedOffset::east_opt(o).ok_or_else(|| de::Error::custom("invalid offset"))?;
-                Ok(CypherDateTime(NaiveDateTime::new(d, t), offset, None))
+                Ok(CypherDateTime(NaiveDateTime::new(d, t), offset, tz_name))
             }
         }
         deserializer.deserialize_any(V)

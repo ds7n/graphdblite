@@ -128,7 +128,7 @@ All bindings expose: `open`, `open_memory`, `begin_read`, `begin_write`, `query`
 
 ### TCK conformance
 - Full openCypher TCK vendored (220 feature files, 3663 scenarios)
-- **98.0% pass rate** (3637/3710), 76 skiplisted — as of 2026-04-28
+- **98.1% pass rate** (3687/3760), 61 skiplisted — as of 2026-04-28
 - Regenerate stats: `cargo test --test tck 2>&1 > /tmp/tck_output.txt && uv run tests/tck/analyze.py /tmp/tck_output.txt`
 - Regenerate blocker analysis: `uv run tests/tck/analyze_blockers.py`
 
@@ -152,15 +152,15 @@ All bindings expose: `open`, `open_memory`, `begin_read`, `begin_write`, `query`
 ### Scale
 Designed for datasets in the **low millions of nodes** with moderate edge density. 10M nodes is achievable for indexed point-lookups; full label scans at that scale will be slow. 100M+ nodes would require rearchitecting the scan layer (streaming from SQLite instead of materializing), replacing linear-scan dedup with `HashSet`, and making adjacency lists appendable without full rewrite.
 
-### TCK gaps (76 skiplisted scenarios)
+### TCK gaps (61 skiplisted scenarios)
 The remaining TCK failures span:
-- Error validation for additional error categories (17 impact)
 - Temporal type edge cases — duration arithmetic, DST, large durations (10 scenarios)
 - Quantifier functions — none/single/any/all on nodes/rels (12 scenarios)
 - Aggregation edge cases — rand(), complex expressions, mixed types (5 scenarios)
 - List comprehension (5 scenarios)
 - Expression-selected targets for SET (`SET (n).prop = val`)
 - Variable-length edge cases — bound rels, rel-list-as-pattern, undirected fixed-length
+- Runtime type() validation for non-relationship values
 
 Regenerate blocker analysis: `uv run tests/tck/analyze_blockers.py`
 

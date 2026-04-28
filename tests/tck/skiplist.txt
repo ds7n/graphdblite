@@ -25,17 +25,9 @@ Match6 - Match named paths scenarios::[14] Named path with undirected fixed vari
 MatchWhere2 - Filter multiple variables::[1] Filter nodes with conjunctive two-part property predicate on multi variables with multiple bindings
 MatchWhere2 - Filter multiple variables::[2] Filter node with conjunctive multi-part property predicates on multi variables with multiple bindings
 Quantifier1 - None quantifier::[15] Fail none quantifier on type mismatch between list elements and predicate
-Quantifier1 - None quantifier::[8] None quantifier on list containing nodes
-Quantifier1 - None quantifier::[9] None quantifier on list containing relationships
 Quantifier2 - Single quantifier::[16] Fail single quantifier on type mismatch between list elements and predicate
-Quantifier2 - Single quantifier::[8] Single quantifier on list containing nodes
-Quantifier2 - Single quantifier::[9] Single quantifier on list containing relationships
 Quantifier3 - Any quantifier::[15] Fail any quantifier on type mismatch between list elements and predicate
-Quantifier3 - Any quantifier::[8] Any quantifier on list containing nodes
-Quantifier3 - Any quantifier::[9] Any quantifier on list containing relationships
 Quantifier4 - All quantifier::[15] Fail all quantifier on type mismatch between list elements and predicate
-Quantifier4 - All quantifier::[8] All quantifier on list containing nodes
-Quantifier4 - All quantifier::[9] All quantifier on list containing relationships
 Return2 - Return single expression (correctly projecting an expression)::[15] Fail when returning properties of deleted nodes
 Return2 - Return single expression (correctly projecting an expression)::[17] Fail when returning properties of deleted relationships
 Return6 - Implicit grouping with aggregates::[15] Using `rand()` in aggregations

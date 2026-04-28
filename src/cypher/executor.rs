@@ -3637,18 +3637,6 @@ pub(crate) fn literal_to_value(lit: &LiteralValue) -> Value {
     }
 }
 
-fn value_less_than(a: &Value, b: &Value) -> bool {
-    match (a, b) {
-        (Value::I64(a), Value::I64(b)) => a < b,
-        (Value::F64(a), Value::F64(b)) => a < b,
-        (Value::I64(a), Value::F64(b)) => (*a as f64) < *b,
-        (Value::F64(a), Value::I64(b)) => *a < (*b as f64),
-        (Value::String(a), Value::String(b)) => a < b,
-        (Value::List(_), Value::List(_)) => false, // lists are not orderable
-        _ => false,
-    }
-}
-
 /// Cypher type ordering rank for cross-type comparisons.
 /// Order: Map < Node < Relationship < Path < List < String < Bool < Number < Null
 fn type_rank(v: &Value) -> u8 {

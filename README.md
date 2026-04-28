@@ -149,7 +149,7 @@ Expressions: list comprehensions, pattern comprehensions, `CASE`, `EXISTS {}` su
 
 Functions: 50+ scalar, string, math, aggregation, and temporal functions. See the full [Cypher Reference](docs/cypher.md).
 
-**openCypher TCK conformance: 98%** (3687/3760 scenarios passing).
+**openCypher TCK conformance: 98%** (3692/3765 scenarios passing).
 
 ## Architecture
 

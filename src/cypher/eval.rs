@@ -57,6 +57,23 @@ pub fn eval_expr(expr: &Expr, record: &Record, conn: &Connection) -> crate::type
             if let Some(Value::Map(map)) = record.get(var) {
                 return Ok(map.get(prop).cloned().unwrap_or(Value::Null));
             }
+            // Node property access: when variable is bound to a Value::Node directly
+            // (e.g. from quantifier iterating over nodes(p) list).
+            if let Some(Value::Node(node)) = record.get(var) {
+                if prop == "labels" {
+                    return Ok(Value::List(
+                        node.labels
+                            .iter()
+                            .map(|l| Value::String(l.clone()))
+                            .collect(),
+                    ));
+                }
+                return Ok(node.properties.get(prop).cloned().unwrap_or(Value::Null));
+            }
+            // Edge property access: when variable is bound to a Value::Edge directly.
+            if let Some(Value::Edge(edge)) = record.get(var) {
+                return Ok(edge.properties.get(prop).cloned().unwrap_or(Value::Null));
+            }
             // Temporal component accessor: d.year, d.month, etc.
             if let Some(val) = record.get(var) {
                 if let Some(result) = temporal_accessor(val, prop) {

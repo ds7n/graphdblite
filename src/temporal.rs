@@ -1617,15 +1617,79 @@ impl CypherDuration {
         let mut seconds: i64 = 0;
         let mut nanos: i64 = 0;
 
-        // Parse date part: nY nM nD
+        // Parse date part: nY nM nD (or YYYY-MM-DD date format)
         if !date_part.is_empty() {
-            parse_duration_date_part(date_part, &mut months, &mut days)?;
+            if date_part.contains('-') && !date_part.bytes().any(|b| b.is_ascii_alphabetic()) {
+                // Date-format duration: P2012-02-02T14:37:21.545
+                let parts: Vec<&str> = date_part.split('-').collect();
+                if parts.len() == 3 {
+                    let y: i64 = parts[0].parse().map_err(|e: std::num::ParseIntError| {
+                        GraphError::Serialization(e.to_string())
+                    })?;
+                    let m: i64 = parts[1].parse().map_err(|e: std::num::ParseIntError| {
+                        GraphError::Serialization(e.to_string())
+                    })?;
+                    let d: i64 = parts[2].parse().map_err(|e: std::num::ParseIntError| {
+                        GraphError::Serialization(e.to_string())
+                    })?;
+                    months += y * 12 + m;
+                    days += d;
+                } else {
+                    return Err(GraphError::Serialization(format!(
+                        "invalid date-format duration: {date_part}"
+                    )));
+                }
+            } else {
+                parse_duration_date_part(
+                    date_part,
+                    &mut months,
+                    &mut days,
+                    &mut seconds,
+                    &mut nanos,
+                )?;
+            }
         }
 
-        // Parse time part: nH nM nS
+        // Parse time part: nH nM nS (or hh:mm:ss colon format)
         if let Some(tp) = time_part {
             if !tp.is_empty() {
-                parse_duration_time_part(tp, &mut seconds, &mut nanos)?;
+                if tp.contains(':') {
+                    // Colon-format time: hh:mm:ss[.fff]
+                    let parts: Vec<&str> = tp.split(':').collect();
+                    if parts.len() >= 2 {
+                        let h: i64 = parts[0].parse().map_err(|e: std::num::ParseIntError| {
+                            GraphError::Serialization(e.to_string())
+                        })?;
+                        let m: i64 = parts[1].parse().map_err(|e: std::num::ParseIntError| {
+                            GraphError::Serialization(e.to_string())
+                        })?;
+                        seconds += h * 3600 + m * 60;
+                        if parts.len() == 3 {
+                            let s_str = parts[2];
+                            if let Some(dot_pos) = s_str.find('.') {
+                                let int_part = &s_str[..dot_pos];
+                                let frac_part = &s_str[dot_pos + 1..];
+                                let int_val: i64 = if int_part.is_empty() {
+                                    0
+                                } else {
+                                    int_part.parse().map_err(|e: std::num::ParseIntError| {
+                                        GraphError::Serialization(e.to_string())
+                                    })?
+                                };
+                                seconds += int_val;
+                                nanos += parse_frac_nanos(frac_part)? as i64;
+                            } else {
+                                let s_val: i64 =
+                                    s_str.parse().map_err(|e: std::num::ParseIntError| {
+                                        GraphError::Serialization(e.to_string())
+                                    })?;
+                                seconds += s_val;
+                            }
+                        }
+                    }
+                } else {
+                    parse_duration_time_part(tp, &mut seconds, &mut nanos)?;
+                }
             }
         }
 
@@ -1694,8 +1758,37 @@ impl CypherDuration {
     }
 }
 
+/// Cascade fractional months into days/seconds/nanos.
+fn cascade_frac_months(frac: f64, days: &mut i64, seconds: &mut i64, nanos: &mut i64) {
+    if frac == 0.0 {
+        return;
+    }
+    let days_f = frac * 30.436875;
+    let int_days = days_f.trunc() as i64;
+    *days += int_days;
+    let frac_days = days_f - days_f.trunc();
+    cascade_frac_days(frac_days, seconds, nanos);
+}
+
+/// Cascade fractional days into seconds/nanos.
+fn cascade_frac_days(frac: f64, seconds: &mut i64, nanos: &mut i64) {
+    if frac == 0.0 {
+        return;
+    }
+    let total_nanos_f = frac * 86400.0 * 1_000_000_000.0;
+    let total_nanos_i = total_nanos_f.round() as i64;
+    *seconds += total_nanos_i / 1_000_000_000;
+    *nanos += total_nanos_i % 1_000_000_000;
+}
+
 /// Parse the date portion of a duration string (before T).
-fn parse_duration_date_part(s: &str, months: &mut i64, days: &mut i64) -> Result<()> {
+fn parse_duration_date_part(
+    s: &str,
+    months: &mut i64,
+    days: &mut i64,
+    seconds: &mut i64,
+    nanos: &mut i64,
+) -> Result<()> {
     let mut num_start = 0;
     let bytes = s.as_bytes();
     let mut i = 0;
@@ -1710,14 +1803,34 @@ fn parse_duration_date_part(s: &str, months: &mut i64, days: &mut i64) -> Result
             continue;
         }
         let num_str = &s[num_start..i];
-        let n: i64 = num_str
+        let n: f64 = num_str
             .parse()
-            .map_err(|e: std::num::ParseIntError| GraphError::Serialization(e.to_string()))?;
+            .map_err(|e: std::num::ParseFloatError| GraphError::Serialization(e.to_string()))?;
+        let int_part = n.trunc() as i64;
+        let frac = n - n.trunc();
         match b {
-            b'Y' | b'y' => *months += n * 12,
-            b'M' | b'm' => *months += n,
-            b'W' | b'w' => *days += n * 7,
-            b'D' | b'd' => *days += n,
+            b'Y' | b'y' => {
+                // Integer years → months, fractional years → fractional months
+                *months += int_part * 12;
+                let frac_months = frac * 12.0;
+                let int_frac_months = frac_months.trunc() as i64;
+                *months += int_frac_months;
+                cascade_frac_months(frac_months - frac_months.trunc(), days, seconds, nanos);
+            }
+            b'M' | b'm' => {
+                *months += int_part;
+                cascade_frac_months(frac, days, seconds, nanos);
+            }
+            b'W' | b'w' => {
+                let days_f = n * 7.0;
+                let int_days = days_f.trunc() as i64;
+                *days += int_days;
+                cascade_frac_days(days_f - days_f.trunc(), seconds, nanos);
+            }
+            b'D' | b'd' => {
+                *days += int_part;
+                cascade_frac_days(frac, seconds, nanos);
+            }
             _ => {
                 return Err(GraphError::Serialization(format!(
                     "unexpected char '{b}' in duration date part"
@@ -1752,16 +1865,30 @@ fn parse_duration_time_part(s: &str, seconds: &mut i64, nanos: &mut i64) -> Resu
         let num_str = &s[num_start..i];
         match b {
             b'H' | b'h' => {
-                let n: i64 = num_str.parse().map_err(|e: std::num::ParseIntError| {
+                let n: f64 = num_str.parse().map_err(|e: std::num::ParseFloatError| {
                     GraphError::Serialization(e.to_string())
                 })?;
-                *seconds += n * 3600;
+                let int_part = n.trunc() as i64;
+                let frac = n - n.trunc();
+                *seconds += int_part * 3600;
+                if frac != 0.0 {
+                    let frac_nanos = (frac * 3_600_000_000_000.0).round() as i64;
+                    *seconds += frac_nanos / 1_000_000_000;
+                    *nanos += frac_nanos % 1_000_000_000;
+                }
             }
             b'M' | b'm' => {
-                let n: i64 = num_str.parse().map_err(|e: std::num::ParseIntError| {
+                let n: f64 = num_str.parse().map_err(|e: std::num::ParseFloatError| {
                     GraphError::Serialization(e.to_string())
                 })?;
-                *seconds += n * 60;
+                let int_part = n.trunc() as i64;
+                let frac = n - n.trunc();
+                *seconds += int_part * 60;
+                if frac != 0.0 {
+                    let frac_nanos = (frac * 60_000_000_000.0).round() as i64;
+                    *seconds += frac_nanos / 1_000_000_000;
+                    *nanos += frac_nanos % 1_000_000_000;
+                }
             }
             b'S' | b's' => {
                 // May be fractional

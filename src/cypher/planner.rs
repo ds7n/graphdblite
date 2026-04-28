@@ -3532,7 +3532,8 @@ fn split_aggregates(items: &[ReturnItem]) -> crate::types::Result<(Vec<Expr>, Ve
                     if contains_nondeterministic_fn(arg) {
                         return Err(GraphError::type_error(
                             crate::types::QueryPhase::SemanticAnalysis,
-                            "NonConstantExpression: non-deterministic function inside aggregate".to_string(),
+                            "NonConstantExpression: non-deterministic function inside aggregate"
+                                .to_string(),
                         ));
                     }
                 }

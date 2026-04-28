@@ -1606,6 +1606,7 @@ fn exec_set_property(
                 rec.get(&edge_type_key),
             ) {
                 let val = eval_expr(&assignment.value, rec, conn)?;
+                validate_property_value(&val)?;
                 let edge_seq_key = format!("{var}.__edge_seq");
                 if let Some(Value::I64(seq)) = rec.get(&edge_seq_key) {
                     edge::set_edge_property_at(
@@ -1638,6 +1639,7 @@ fn exec_set_property(
                 let node_id = NodeId(*id as u64);
                 let old = node::get_node(conn, node_id)?;
                 let val = eval_expr(&assignment.value, rec, conn)?;
+                validate_property_value(&val)?;
                 node::set_node_property(conn, node_id, &assignment.property, val.clone())?;
                 let mut new_props = old.properties.clone();
                 if val == Value::Null {
@@ -1663,6 +1665,25 @@ fn exec_set_property(
         }
     }
     Ok(records)
+}
+
+/// Validate that a value is storable as a property (no nested maps/nodes/edges).
+fn validate_property_value(val: &Value) -> Result<()> {
+    match val {
+        Value::Map(_) | Value::Node(_) | Value::Edge(_) | Value::Path(_) => {
+            return Err(GraphError::type_error(
+                crate::types::QueryPhase::Runtime,
+                "InvalidPropertyType: maps, nodes, relationships, and paths cannot be stored as properties".to_string(),
+            ));
+        }
+        Value::List(items) => {
+            for item in items {
+                validate_property_value(item)?;
+            }
+        }
+        _ => {} // Scalars and Null are fine.
+    }
+    Ok(())
 }
 
 fn exec_set_label(

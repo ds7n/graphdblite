@@ -160,6 +160,13 @@ pub fn eval_expr(expr: &Expr, record: &Record, conn: &Connection) -> crate::type
                     crate::types::QueryPhase::Runtime,
                     "InvalidArgumentType: list index must be an integer".to_string(),
                 )),
+                // Indexing a map with a non-string.
+                (Value::Map(_), _) | (Value::Node(_), _) | (Value::Edge(_), _) => {
+                    Err(GraphError::type_error(
+                        crate::types::QueryPhase::Runtime,
+                        "MapElementAccessByNonString: map index must be a string".to_string(),
+                    ))
+                }
                 _ => Ok(Value::Null),
             }
         }
@@ -1660,9 +1667,9 @@ fn eval_exists_subquery(
     conn: &Connection,
 ) -> crate::types::Result<Value> {
     use crate::cypher::executor::exec_correlated_exists;
-    use crate::cypher::planner::plan;
+    use crate::cypher::planner::plan_subquery;
 
-    let base_plan = plan(conn, stmt)?;
+    let base_plan = plan_subquery(conn, stmt)?;
 
     // Execute the subquery as a correlated subquery, pushing the outer
     // record's bindings down so nested expressions can see them.

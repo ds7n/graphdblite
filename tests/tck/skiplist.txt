@@ -1,5 +1,3 @@
-Aggregation2 - Min and Max::[12] `min()` over mixed values
-Aggregation2 - Min and Max::[9] `max()` over list values
 Call1 - Basic procedure calling::[13] Standalone call to unknown procedure should fail
 Call1 - Basic procedure calling::[14] In-query call to unknown procedure should fail
 Comparison1 - Equality::[14] Direction of traversed relationship is not significant for path equality, simple
@@ -10,9 +8,6 @@ ExistentialSubquery2 - Full existential subquery::[2] Full existential subquery 
 Graph6 - Static property access::[4] Statically access a property of a node resulting from an expression
 Graph6 - Static property access::[8] Statically access a property of a relationship resulting from an expression
 List11 - Create a list from a range::[3] Create an empty list if range direction and step direction are inconsistent
-List12 - List Comprehension::[3] Size of list comprehension
-List12 - List Comprehension::[4] Returning a list comprehension
-List12 - List Comprehension::[5] Using a list comprehension in a WITH
 Map1 - Static value access::[3] Statically access a field of a map resulting from an expression
 Match4 - Match variable length patterns scenarios::[7] Matching variable length patterns including a bound relationship
 Match4 - Match variable length patterns scenarios::[8] Matching relationships into a list and matching variable length using the list
@@ -23,7 +18,6 @@ MatchWhere2 - Filter multiple variables::[1] Filter nodes with conjunctive two-p
 MatchWhere2 - Filter multiple variables::[2] Filter node with conjunctive multi-part property predicates on multi variables with multiple bindings
 Return2 - Return single expression (correctly projecting an expression)::[15] Fail when returning properties of deleted nodes
 Return2 - Return single expression (correctly projecting an expression)::[17] Fail when returning properties of deleted relationships
-Return6 - Implicit grouping with aggregates::[15] Using `rand()` in aggregations
 Return6 - Implicit grouping with aggregates::[16] Aggregation on complex expressions
 Set1 - Set a Property::[3] Set a property by selecting the node using a simple expression
 Set1 - Set a Property::[4] Set a property by selecting the relationship using a simple expression

@@ -3527,6 +3527,15 @@ fn split_aggregates(items: &[ReturnItem]) -> crate::types::Result<(Vec<Expr>, Ve
                         ));
                     }
                 }
+                // Reject non-deterministic functions inside aggregates.
+                for arg in args {
+                    if contains_nondeterministic_fn(arg) {
+                        return Err(GraphError::type_error(
+                            crate::types::QueryPhase::SemanticAnalysis,
+                            "NonConstantExpression: non-deterministic function inside aggregate".to_string(),
+                        ));
+                    }
+                }
                 let input = args.first().cloned().unwrap_or(Expr::Star);
                 let extra_arg = args.get(1).cloned();
                 aggregates.push(AggregateExpr {
@@ -3566,6 +3575,25 @@ fn split_aggregates(items: &[ReturnItem]) -> crate::types::Result<(Vec<Expr>, Ve
     }
 
     Ok((group_keys, aggregates))
+}
+
+/// Check if an expression contains a non-deterministic function call (e.g. rand()).
+fn contains_nondeterministic_fn(expr: &Expr) -> bool {
+    match expr {
+        Expr::FunctionCall { name, args, .. } => {
+            if name.to_ascii_lowercase() == "rand" {
+                return true;
+            }
+            args.iter().any(contains_nondeterministic_fn)
+        }
+        Expr::BinaryOp { left, right, .. } => {
+            contains_nondeterministic_fn(left) || contains_nondeterministic_fn(right)
+        }
+        Expr::Not(inner) | Expr::IsNull(inner) | Expr::IsNotNull(inner) => {
+            contains_nondeterministic_fn(inner)
+        }
+        _ => false,
+    }
 }
 
 /// Collect non-aggregate, non-constant leaf expressions from a mixed expression.

@@ -21,7 +21,6 @@ Return2 - Return single expression (correctly projecting an expression)::[17] Fa
 Return6 - Implicit grouping with aggregates::[16] Aggregation on complex expressions
 Set1 - Set a Property::[3] Set a property by selecting the node using a simple expression
 Set1 - Set a Property::[4] Set a property by selecting the relationship using a simple expression
-Temporal1 - Create Temporal Values from a Map::[12] Should construct duration
 Temporal10 - Compute Durations Between two Temporal Values::[10] Should handle large durations in seconds
 Temporal10 - Compute Durations Between two Temporal Values::[8] Should handle durations at daylight saving time day
 Temporal10 - Compute Durations Between two Temporal Values::[9] Should handle large durations

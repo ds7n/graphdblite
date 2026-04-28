@@ -2,14 +2,8 @@
 
 ## Installation
 
-### Prebuilt wheels (no Rust required)
-
-Download the wheel for your platform from the
-[latest dev build](https://github.com/ds7n/graphdblite/releases/tag/dev-latest)
-and install directly:
-
 ```bash
-pip install graphdblite-0.1.0-cp312-cp312-manylinux_2_17_x86_64.manylinux2014_x86_64.whl
+pip install graphdblite
 ```
 
 ### From source
@@ -20,7 +14,7 @@ Requires a Rust toolchain ([rustup.rs](https://rustup.rs)).
 # Install directly from GitHub
 pip install git+https://github.com/ds7n/graphdblite.git
 
-# Or clone and install locally
+# Or clone and build locally
 git clone https://github.com/ds7n/graphdblite.git
 cd graphdblite
 pip install .

@@ -117,19 +117,28 @@ pub enum Value {
     F64(f64),
     String(String),
     List(Vec<Value>),
-    Path(Vec<NodeId>),
+    Node(Node),
+    Edge(Edge),
+    Path(PathValue),
+    Map(BTreeMap<String, Value>),
+    Date(CypherDate),
+    LocalTime(CypherLocalTime),
+    Time(CypherTime),
+    LocalDateTime(CypherLocalDateTime),
+    DateTime(CypherDateTime),
+    Duration(CypherDuration),
 }
 ```
 
-### Node / Edge
+### Node / Edge / Path
 
 ```rust
 pub struct NodeId(pub u64);
 
 pub struct Node {
     pub id: NodeId,
-    pub label: String,
-    pub properties: Properties,  // HashMap<String, Value>
+    pub labels: Vec<String>,        // multi-label support
+    pub properties: Properties,     // HashMap<String, Value>
 }
 
 pub struct Edge {
@@ -137,6 +146,11 @@ pub struct Edge {
     pub dst: NodeId,
     pub label: String,
     pub properties: Properties,
+}
+
+pub struct PathValue {
+    pub nodes: Vec<Node>,
+    pub edges: Vec<Edge>,
 }
 
 pub enum Direction {

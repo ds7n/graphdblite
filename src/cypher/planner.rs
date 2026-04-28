@@ -3440,6 +3440,7 @@ fn is_aggregate_fn(expr: &Expr) -> bool {
         Expr::Not(inner) | Expr::IsNull(inner) | Expr::IsNotNull(inner) => is_aggregate_fn(inner),
         Expr::MapLiteral(pairs) => pairs.iter().any(|(_, v)| is_aggregate_fn(v)),
         Expr::List(items) => items.iter().any(is_aggregate_fn),
+        Expr::ListComprehension { list_expr, .. } => is_aggregate_fn(list_expr),
         _ => false,
     }
 }
@@ -3486,6 +3487,9 @@ fn collect_aggregate_calls<'a>(expr: &'a Expr, out: &mut Vec<&'a Expr>) {
             for item in items {
                 collect_aggregate_calls(item, out);
             }
+        }
+        Expr::ListComprehension { list_expr, .. } => {
+            collect_aggregate_calls(list_expr, out);
         }
         _ => {}
     }
@@ -3595,6 +3599,9 @@ fn collect_non_aggregate_leaves<'a>(expr: &'a Expr, leaves: &mut Vec<&'a Expr>) 
                 collect_non_aggregate_leaves(item, leaves);
             }
         }
+        Expr::ListComprehension { list_expr, .. } => {
+            collect_non_aggregate_leaves(list_expr, leaves);
+        }
         _ => {
             // Variable reference, property access, etc. — needs grouping.
             leaves.push(expr);
@@ -3662,6 +3669,9 @@ fn extract_nested_aggregates(expr: &Expr, aggregates: &mut Vec<AggregateExpr>) {
             for item in items {
                 extract_nested_aggregates(item, aggregates);
             }
+        }
+        Expr::ListComprehension { list_expr, .. } => {
+            extract_nested_aggregates(list_expr, aggregates);
         }
         _ => {}
     }

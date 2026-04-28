@@ -175,8 +175,22 @@ fn apply_return_projection(
 
 /// Compile a Cypher AST Statement into a LogicalOp plan.
 pub fn plan(conn: &Connection, stmt: &Statement) -> crate::types::Result<LogicalOp> {
+    plan_inner(conn, stmt, false)
+}
+
+/// Plan a statement that may be inside a subquery (EXISTS).
+/// Subquery context disables certain validations that require full scope.
+pub fn plan_subquery(conn: &Connection, stmt: &Statement) -> crate::types::Result<LogicalOp> {
+    plan_inner(conn, stmt, true)
+}
+
+fn plan_inner(
+    conn: &Connection,
+    stmt: &Statement,
+    subquery: bool,
+) -> crate::types::Result<LogicalOp> {
     match stmt {
-        Statement::Match(m) => plan_match(conn, m),
+        Statement::Match(m) => plan_match(conn, m, subquery),
         Statement::Create(c) => plan_create(conn, c),
         Statement::MatchCreate(mc) => plan_match_create(conn, mc),
         Statement::Delete(d) => plan_delete(conn, d),
@@ -187,7 +201,7 @@ pub fn plan(conn: &Connection, stmt: &Statement) -> crate::types::Result<Logical
         Statement::Unwind(u) => plan_unwind(conn, u),
         Statement::Return(r) => plan_return(conn, r),
         Statement::MultiClause(mc) => plan_multi_clause(conn, mc),
-        Statement::Explain(inner) => plan(conn, inner),
+        Statement::Explain(inner) => plan_inner(conn, inner, subquery),
         Statement::Union { statements, all } => {
             // Validate that all branches have the same column names.
             let columns: Vec<Vec<String>> =
@@ -202,8 +216,10 @@ pub fn plan(conn: &Connection, stmt: &Statement) -> crate::types::Result<Logical
                     }
                 }
             }
-            let inputs: crate::types::Result<Vec<LogicalOp>> =
-                statements.iter().map(|s| plan(conn, s)).collect();
+            let inputs: crate::types::Result<Vec<LogicalOp>> = statements
+                .iter()
+                .map(|s| plan_inner(conn, s, subquery))
+                .collect();
             Ok(LogicalOp::Union {
                 inputs: inputs?,
                 all: *all,
@@ -212,7 +228,11 @@ pub fn plan(conn: &Connection, stmt: &Statement) -> crate::types::Result<Logical
     }
 }
 
-fn plan_match(conn: &Connection, stmt: &MatchStatement) -> crate::types::Result<LogicalOp> {
+fn plan_match(
+    conn: &Connection,
+    stmt: &MatchStatement,
+    subquery: bool,
+) -> crate::types::Result<LogicalOp> {
     // Validate variable-type consistency across patterns before planning.
     let mut var_types = validate_variable_types(&stmt.patterns)?;
 
@@ -253,8 +273,25 @@ fn plan_match(conn: &Connection, stmt: &MatchStatement) -> crate::types::Result<
                 "InvalidAggregation: aggregation functions are not allowed in WHERE".to_string(),
             ));
         }
+        // Reject using a node/relationship variable as a boolean predicate.
+        if let Expr::Variable(var) = predicate {
+            if let Some(kind) = var_types.get(var) {
+                if *kind == VarKind::Node || *kind == VarKind::Relationship {
+                    return Err(GraphError::type_error(
+                        crate::types::QueryPhase::SemanticAnalysis,
+                        "InvalidArgumentType: a single node pattern is not a valid predicate"
+                            .to_string(),
+                    ));
+                }
+            }
+        }
         check_expr_variables(predicate, &bound_vars)?;
         validate_expr_types(predicate, &var_types)?;
+        // Only validate pattern predicate vars for top-level queries.
+        // Subqueries (EXISTS) can reference outer scope variables.
+        if !subquery {
+            validate_pattern_predicate_vars(predicate, &bound_vars)?;
+        }
     }
 
     // Apply WHERE filter with predicate pushdown.
@@ -281,25 +318,39 @@ fn plan_match(conn: &Connection, stmt: &MatchStatement) -> crate::types::Result<
 
     // Track scope variables for validation.
     let mut scope_vars = bound_vars.clone();
+    // Track WITH-bound variable value kinds for VariableTypeConflict detection.
+    let mut with_value_kinds: HashMap<String, WithValueKind> = HashMap::new();
 
     // Apply intermediate clauses (WITH/UNWIND/MATCH).
     for clause in &stmt.intermediate_clauses {
         match clause {
             IntermediateClause::With(with) => {
+                // Reject pattern predicates in WITH items.
+                for item in &with.items {
+                    reject_pattern_predicates(&item.expr)?;
+                }
                 op = plan_with_scoped(conn, op, with, Some(&scope_vars))?;
                 // WITH resets scope to only the projected aliases.
                 // Also reset variable type tracking — WITH starts a new scope
                 // where variables can be reused with different types.
                 scope_vars.clear();
                 var_types.clear();
+                with_value_kinds.clear();
                 for item in &with.items {
                     if let Expr::Star = &item.expr {
                         // WITH * keeps all prior variables in scope.
                         scope_vars = bound_vars.clone();
-                    } else if let Some(ref alias) = item.alias {
-                        scope_vars.insert(alias.clone());
-                    } else if let Expr::Variable(var) = &item.expr {
-                        scope_vars.insert(var.clone());
+                    } else {
+                        let var_name = if let Some(ref alias) = item.alias {
+                            scope_vars.insert(alias.clone());
+                            alias.clone()
+                        } else if let Expr::Variable(var) = &item.expr {
+                            scope_vars.insert(var.clone());
+                            var.clone()
+                        } else {
+                            continue;
+                        };
+                        with_value_kinds.insert(var_name, infer_with_value_kind(&item.expr));
                     }
                 }
             }
@@ -312,6 +363,38 @@ fn plan_match(conn: &Connection, stmt: &MatchStatement) -> crate::types::Result<
                 scope_vars.insert(unwind.alias.clone());
             }
             IntermediateClause::Match(im) => {
+                // Check VariableTypeConflict: WITH-bound scalars used as node/rel.
+                for pat in &im.patterns {
+                    for elem in &pat.elements {
+                        match elem {
+                            PatternElement::Node(n) => {
+                                if let Some(ref var) = n.variable {
+                                    if let Some(&kind) = with_value_kinds.get(var) {
+                                        if kind == WithValueKind::Scalar {
+                                            return Err(GraphError::syntax(format!(
+                                                "VariableTypeConflict: variable `{var}` already defined as a scalar value"
+                                            )));
+                                        }
+                                    }
+                                }
+                            }
+                            PatternElement::Relationship(r) => {
+                                // Skip var-length rels — they accept list types.
+                                if r.var_length.is_none() {
+                                    if let Some(ref var) = r.variable {
+                                        if let Some(&kind) = with_value_kinds.get(var) {
+                                            if kind == WithValueKind::Scalar {
+                                                return Err(GraphError::syntax(format!(
+                                                    "VariableTypeConflict: variable `{var}` already defined as a scalar value"
+                                                )));
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
                 // Validate variable-type consistency for consecutive MATCHes
                 // (not separated by WITH, which resets scope).
                 validate_variable_types_with_map(&im.patterns, &mut var_types)?;
@@ -330,6 +413,11 @@ fn plan_match(conn: &Connection, stmt: &MatchStatement) -> crate::types::Result<
 
     // Validate that RETURN items only reference variables in scope.
     validate_return_variables(&stmt.return_clause.items, &scope_vars)?;
+
+    // Reject pattern predicates in RETURN (only valid in WHERE).
+    for item in &stmt.return_clause.items {
+        reject_pattern_predicates(&item.expr)?;
+    }
 
     // Check for aggregation in list comprehensions.
     for item in &stmt.return_clause.items {
@@ -1844,6 +1932,12 @@ fn validate_expr_types(
                                     .to_string(),
                             ));
                         }
+                        "size" if *kind == VarKind::Path => {
+                            return Err(GraphError::type_error(
+                                crate::types::QueryPhase::SemanticAnalysis,
+                                "InvalidArgumentType: size() requires a string or list".to_string(),
+                            ));
+                        }
                         "toboolean" | "tointeger" | "tofloat" | "tostring"
                             if *kind == VarKind::Node || *kind == VarKind::Relationship =>
                         {
@@ -1965,6 +2059,117 @@ fn check_expr_variables(expr: &Expr, scope: &HashSet<String>) -> crate::types::R
                 return Err(GraphError::syntax(format!("UndefinedVariable: {var}")));
             }
         }
+    }
+    Ok(())
+}
+
+/// Validate pattern predicate variables in WHERE clauses.
+/// All named variables in a PatternPredicate must be in scope.
+/// Does NOT recurse into ExistsSubquery (those have their own scope).
+fn validate_pattern_predicate_vars(
+    expr: &Expr,
+    scope: &HashSet<String>,
+) -> crate::types::Result<()> {
+    match expr {
+        Expr::PatternPredicate(pattern) => {
+            // Self-pattern check: single bound node is not a valid predicate.
+            if pattern.elements.len() == 1 {
+                if let PatternElement::Node(n) = &pattern.elements[0] {
+                    if n.variable.as_ref().is_some_and(|v| scope.contains(v)) {
+                        return Err(GraphError::type_error(
+                            crate::types::QueryPhase::SemanticAnalysis,
+                            "InvalidArgumentType: a single node pattern is not a valid predicate"
+                                .to_string(),
+                        ));
+                    }
+                }
+            }
+            // All named variables must already be in scope.
+            for elem in &pattern.elements {
+                match elem {
+                    PatternElement::Node(n) => {
+                        if let Some(ref var) = n.variable {
+                            if !scope.contains(var) {
+                                return Err(GraphError::syntax(format!(
+                                    "UndefinedVariable: {var}"
+                                )));
+                            }
+                        }
+                    }
+                    PatternElement::Relationship(r) => {
+                        if let Some(ref var) = r.variable {
+                            if !scope.contains(var) {
+                                return Err(GraphError::syntax(format!(
+                                    "UndefinedVariable: {var}"
+                                )));
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        // Recurse into sub-expressions, but NOT into ExistsSubquery (own scope).
+        Expr::BinaryOp { left, right, .. } => {
+            validate_pattern_predicate_vars(left, scope)?;
+            validate_pattern_predicate_vars(right, scope)?;
+        }
+        Expr::Not(inner) | Expr::IsNull(inner) | Expr::IsNotNull(inner) => {
+            validate_pattern_predicate_vars(inner, scope)?;
+        }
+        _ => {}
+    }
+    Ok(())
+}
+
+/// Reject pattern predicate expressions in non-WHERE contexts (RETURN, WITH, SET).
+fn reject_pattern_predicates(expr: &Expr) -> crate::types::Result<()> {
+    match expr {
+        Expr::PatternPredicate(_) => {
+            return Err(GraphError::syntax(
+                "UnexpectedSyntax: pattern expressions are not allowed here".to_string(),
+            ));
+        }
+        Expr::FunctionCall { args, .. } => {
+            for arg in args {
+                reject_pattern_predicates(arg)?;
+            }
+        }
+        Expr::BinaryOp { left, right, .. } => {
+            reject_pattern_predicates(left)?;
+            reject_pattern_predicates(right)?;
+        }
+        Expr::Not(inner) | Expr::IsNull(inner) | Expr::IsNotNull(inner) => {
+            reject_pattern_predicates(inner)?;
+        }
+        Expr::List(items) => {
+            for item in items {
+                reject_pattern_predicates(item)?;
+            }
+        }
+        Expr::Index { expr, index } => {
+            reject_pattern_predicates(expr)?;
+            reject_pattern_predicates(index)?;
+        }
+        Expr::DotAccess { expr, .. } => {
+            reject_pattern_predicates(expr)?;
+        }
+        Expr::Case {
+            operand,
+            alternatives,
+            default,
+        } => {
+            if let Some(o) = operand {
+                reject_pattern_predicates(o)?;
+            }
+            for (cond, result) in alternatives {
+                reject_pattern_predicates(cond)?;
+                reject_pattern_predicates(result)?;
+            }
+            if let Some(d) = default {
+                reject_pattern_predicates(d)?;
+            }
+        }
+        _ => {}
     }
     Ok(())
 }
@@ -2121,6 +2326,7 @@ fn validate_set_variables(items: &[SetItem], scope: &HashSet<String>) -> crate::
                     )));
                 }
                 check_expr_variables(&a.value, scope)?;
+                reject_pattern_predicates(&a.value)?;
             }
             SetItem::Label { variable, .. } => {
                 if !scope.contains(variable) {
@@ -2504,17 +2710,19 @@ enum WithValueKind {
 }
 
 /// Infer the kind of value a WITH/RETURN expression produces.
+/// Only returns Scalar for expressions that definitely cannot be structural
+/// (nodes, relationships, paths). Conservative: unknown → Node (passes through).
 fn infer_with_value_kind(expr: &Expr) -> WithValueKind {
     match expr {
+        // Definitely scalar: literals, property access, arithmetic, map literals.
         Expr::Literal(_) => WithValueKind::Scalar,
-        Expr::List(_) => WithValueKind::Scalar,
         Expr::MapLiteral(_) => WithValueKind::Scalar,
         Expr::Property(_, _) => WithValueKind::Scalar,
         Expr::BinaryOp { .. } => WithValueKind::Scalar,
-        Expr::FunctionCall { .. } => WithValueKind::Scalar,
-        Expr::Index { .. } => WithValueKind::Scalar,
-        Expr::Slice { .. } => WithValueKind::Scalar,
-        _ => WithValueKind::Node, // Variables pass through — could be node/rel/path
+        // A list is always a list value, not a node/relationship.
+        Expr::List(_) => WithValueKind::Scalar,
+        // Function calls, index, slice, variables could return structural types.
+        _ => WithValueKind::Node, // Pass through — could be node/rel/path
     }
 }
 

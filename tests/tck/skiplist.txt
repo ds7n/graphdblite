@@ -17,13 +17,7 @@ List12 - List Comprehension::[2] Collect and filter using a list comprehension
 List12 - List Comprehension::[3] Size of list comprehension
 List12 - List Comprehension::[4] Returning a list comprehension
 List12 - List Comprehension::[5] Using a list comprehension in a WITH
-List6 - List size::[5] Fail for `size()` on paths
-List6 - List size::[6] Fail for `size()` on pattern predicates
 Map1 - Static value access::[3] Statically access a field of a map resulting from an expression
-Map2 - Dynamic Value Access::[7] Fail at runtime when trying to index into a map with a non-string
-Match1 - Match nodes::[11] Fail when matching a node variable bound to a value
-Match2 - Match relationships::[13] Fail when matching a relationship variable bound to a value
-Match3 - Match fixed length patterns::[30] Fail when using a list or nodes as a node
 Match4 - Match variable length patterns scenarios::[7] Matching variable length patterns including a bound relationship
 Match4 - Match variable length patterns scenarios::[8] Matching relationships into a list and matching variable length using the list
 Match4 - Match variable length patterns::[7] Matching variable length patterns including a bound relationship
@@ -31,11 +25,6 @@ Match4 - Match variable length patterns::[8] Matching relationships into a list 
 Match6 - Match named paths scenarios::[14] Named path with undirected fixed variable length pattern
 MatchWhere2 - Filter multiple variables::[1] Filter nodes with conjunctive two-part property predicate on multi variables with multiple bindings
 MatchWhere2 - Filter multiple variables::[2] Filter node with conjunctive multi-part property predicates on multi variables with multiple bindings
-Pattern1 - Pattern predicate::[10] Fail on introducing unbounded variables in pattern
-Pattern1 - Pattern predicate::[11] Fail on checking self pattern
-Pattern1 - Pattern predicate::[22] Fail on using pattern in RETURN projection
-Pattern1 - Pattern predicate::[23] Fail on using pattern in WITH projection
-Pattern1 - Pattern predicate::[24] Fail on using pattern in right-hand side of SET
 Quantifier1 - None quantifier::[15] Fail none quantifier on type mismatch between list elements and predicate
 Quantifier1 - None quantifier::[8] None quantifier on list containing nodes
 Quantifier1 - None quantifier::[9] None quantifier on list containing relationships
@@ -53,7 +42,6 @@ Return2 - Return single expression (correctly projecting an expression)::[17] Fa
 Return6 - Implicit grouping with aggregates::[15] Using `rand()` in aggregations
 Return6 - Implicit grouping with aggregates::[16] Aggregation on complex expressions
 Return6 - Implicit grouping with aggregates::[8] Handle aggregation on functions
-Set1 - Set a Property::[10] Failing when setting a list of maps as a property
 Set1 - Set a Property::[3] Set a property by selecting the node using a simple expression
 Set1 - Set a Property::[4] Set a property by selecting the relationship using a simple expression
 Temporal1 - Create Temporal Values from a Map::[12] Should construct duration

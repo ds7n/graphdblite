@@ -1,6 +1,5 @@
 Aggregation2 - Min and Max::[12] `min()` over mixed values
 Aggregation2 - Min and Max::[9] `max()` over list values
-Aggregation6 - Percentiles::[5] `percentileDisc()` failing in more involved query
 Call1 - Basic procedure calling::[13] Standalone call to unknown procedure should fail
 Call1 - Basic procedure calling::[14] In-query call to unknown procedure should fail
 Comparison1 - Equality::[14] Direction of traversed relationship is not significant for path equality, simple
@@ -11,8 +10,6 @@ ExistentialSubquery2 - Full existential subquery::[2] Full existential subquery 
 Graph6 - Static property access::[4] Statically access a property of a node resulting from an expression
 Graph6 - Static property access::[8] Statically access a property of a relationship resulting from an expression
 List11 - Create a list from a range::[3] Create an empty list if range direction and step direction are inconsistent
-List12 - List Comprehension::[1] Collect and extract using a list comprehension
-List12 - List Comprehension::[2] Collect and filter using a list comprehension
 List12 - List Comprehension::[3] Size of list comprehension
 List12 - List Comprehension::[4] Returning a list comprehension
 List12 - List Comprehension::[5] Using a list comprehension in a WITH
@@ -28,7 +25,6 @@ Return2 - Return single expression (correctly projecting an expression)::[15] Fa
 Return2 - Return single expression (correctly projecting an expression)::[17] Fail when returning properties of deleted relationships
 Return6 - Implicit grouping with aggregates::[15] Using `rand()` in aggregations
 Return6 - Implicit grouping with aggregates::[16] Aggregation on complex expressions
-Return6 - Implicit grouping with aggregates::[8] Handle aggregation on functions
 Set1 - Set a Property::[3] Set a property by selecting the node using a simple expression
 Set1 - Set a Property::[4] Set a property by selecting the relationship using a simple expression
 Temporal1 - Create Temporal Values from a Map::[12] Should construct duration

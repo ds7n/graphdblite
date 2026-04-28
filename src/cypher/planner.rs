@@ -1994,14 +1994,14 @@ fn validate_expr_types(
                     let all_booleans = items.iter().all(|e| {
                         matches!(e, Expr::Literal(crate::cypher::ast::LiteralValue::Bool(_)))
                     });
-                    if all_strings || all_booleans {
-                        if predicate_uses_arithmetic_on(predicate, variable) {
-                            let elem_type = if all_strings { "String" } else { "Boolean" };
-                            return Err(GraphError::type_error(
-                                crate::types::QueryPhase::SemanticAnalysis,
-                                format!("InvalidArgumentType: {elem_type} is not a valid argument type for arithmetic operations"),
-                            ));
-                        }
+                    if (all_strings || all_booleans)
+                        && predicate_uses_arithmetic_on(predicate, variable)
+                    {
+                        let elem_type = if all_strings { "String" } else { "Boolean" };
+                        return Err(GraphError::type_error(
+                            crate::types::QueryPhase::SemanticAnalysis,
+                            format!("InvalidArgumentType: {elem_type} is not a valid argument type for arithmetic operations"),
+                        ));
                     }
                 }
             }
@@ -3582,7 +3582,7 @@ fn split_aggregates(items: &[ReturnItem]) -> crate::types::Result<(Vec<Expr>, Ve
 fn contains_nondeterministic_fn(expr: &Expr) -> bool {
     match expr {
         Expr::FunctionCall { name, args, .. } => {
-            if name.to_ascii_lowercase() == "rand" {
+            if name.eq_ignore_ascii_case("rand") {
                 return true;
             }
             args.iter().any(contains_nondeterministic_fn)

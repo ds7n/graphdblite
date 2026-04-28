@@ -15,7 +15,7 @@ The database is a single SQLite file. Rather than mapping graph structures into 
 | `nodes` | `[node_id: 8B BE]` | MessagePack-serialized `NodeRecord` (labels + properties). Also has a `label` TEXT column for indexed label scans. |
 | `adj_out` | `[src_id][label][dst_id]` | Varint-encoded adjacency list |
 | `adj_in` | `[dst_id][label][src_id]` | Varint-encoded adjacency list (reverse index) |
-| `edge_props` | `[src_id][dst_id][label]` | MessagePack-serialized edge properties |
+| `edge_props` | `[src_id][dst_id][label][0x00][seq]` | MessagePack-serialized edge properties. Sequence byte supports multiple parallel edges per `(src, dst, type)` triple. |
 
 A `metadata` table tracks schema version and the node ID counter. Secondary indexes are dynamically created per `(label, property)` pair as separate tables.
 
@@ -128,14 +128,13 @@ All bindings expose: `open`, `open_memory`, `begin_read`, `begin_write`, `query`
 
 ### TCK conformance
 - Full openCypher TCK vendored (220 feature files, 3663 scenarios)
-- **95.7% pass rate** (3505/3663), 158 skiplisted — as of 2026-04-25
+- **98.0% pass rate** (3637/3710), 76 skiplisted — as of 2026-04-28
 - Regenerate stats: `cargo test --test tck 2>&1 > /tmp/tck_output.txt && uv run tests/tck/analyze.py /tmp/tck_output.txt`
 - Regenerate blocker analysis: `uv run tests/tck/analyze_blockers.py`
 
 ## Known Limitations
 
 ### Storage model
-- **Single edge per (src, dst, label) triple** — the edge_props key is `[src][dst][label]` with no edge ID, so a second `CREATE` with the same triple silently overwrites the first. No multi-edges with the same type between the same node pair.
 - **Monolithic adjacency BLOBs** — each `(node, label)` pair stores all neighbors in one delta-varint BLOB. The entire list is decoded on every lookup, and write amplification is O(degree) per edge insert. Hub nodes (>100K edges of one type) will degrade.
 - **No schema constraints** — no uniqueness, existence, or property type constraints.
 - **No full-text search** — no SQLite FTS integration.
@@ -153,16 +152,15 @@ All bindings expose: `open`, `open_memory`, `begin_read`, `begin_write`, `query`
 ### Scale
 Designed for datasets in the **low millions of nodes** with moderate edge density. 10M nodes is achievable for indexed point-lookups; full label scans at that scale will be slow. 100M+ nodes would require rearchitecting the scan layer (streaming from SQLite instead of materializing), replacing linear-scan dedup with `HashSet`, and making adjacency lists appendable without full rewrite.
 
-### TCK gaps (158 skiplisted scenarios)
-The remaining TCK failures span several specific sub-features:
-- Path binding in MERGE/CREATE (`p = (a)-[:R]->(b)`)
-- Multi-hop CREATE patterns with complex direction chains
-- Deleted entity access detection after DELETE
+### TCK gaps (76 skiplisted scenarios)
+The remaining TCK failures span:
+- Error validation for additional error categories (17 impact)
+- Temporal type edge cases — duration arithmetic, DST, large durations (10 scenarios)
+- Quantifier functions — none/single/any/all on nodes/rels (12 scenarios)
+- Aggregation edge cases — rand(), complex expressions, mixed types (5 scenarios)
+- List comprehension (5 scenarios)
 - Expression-selected targets for SET (`SET (n).prop = val`)
-- Variable-length relationship edge cases
-- Self-relationship and cyclic pattern matching
-- Error validation for additional error categories
-- Temporal type edge cases
+- Variable-length edge cases — bound rels, rel-list-as-pattern, undirected fixed-length
 
 Regenerate blocker analysis: `uv run tests/tck/analyze_blockers.py`
 

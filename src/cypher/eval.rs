@@ -2471,11 +2471,13 @@ fn temporal_accessor(val: &Value, prop: &str) -> Option<Value> {
                     ));
                 }
                 "epochSeconds" => {
-                    let epoch = dt.0.and_utc().timestamp();
+                    let utc_ndt = dt.0 - chrono::Duration::seconds(dt.1.local_minus_utc() as i64);
+                    let epoch = utc_ndt.and_utc().timestamp();
                     return Some(Value::I64(epoch));
                 }
                 "epochMillis" => {
-                    let epoch = dt.0.and_utc().timestamp_millis();
+                    let utc_ndt = dt.0 - chrono::Duration::seconds(dt.1.local_minus_utc() as i64);
+                    let epoch = utc_ndt.and_utc().timestamp_millis();
                     return Some(Value::I64(epoch));
                 }
                 _ => {}

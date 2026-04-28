@@ -24,7 +24,6 @@ Set1 - Set a Property::[4] Set a property by selecting the relationship using a 
 Temporal10 - Compute Durations Between two Temporal Values::[10] Should handle large durations in seconds
 Temporal10 - Compute Durations Between two Temporal Values::[8] Should handle durations at daylight saving time day
 Temporal10 - Compute Durations Between two Temporal Values::[9] Should handle large durations
-Temporal5 - Access Components of Temporal Values::[6] Should provide accessors for date time
 Temporal8 - Compute Arithmetic Operations on Temporal Values::[2] Should add or subtract duration to or from local time
 Temporal8 - Compute Arithmetic Operations on Temporal Values::[3] Should add or subtract duration to or from time
 Temporal8 - Compute Arithmetic Operations on Temporal Values::[4] Should add or subtract duration to or from local date time

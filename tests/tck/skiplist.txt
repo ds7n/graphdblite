@@ -1,14 +1,4 @@
-Call1 - Basic procedure calling::[13] Standalone call to unknown procedure should fail
-Call1 - Basic procedure calling::[14] In-query call to unknown procedure should fail
-Comparison1 - Equality::[14] Direction of traversed relationship is not significant for path equality, simple
-CountingSubgraphMatches1 - Matching subgraph patterns and count the number of matches::[10] Mixing directed and undirected pattern parts with self-relationship, count
-CountingSubgraphMatches1 - Matching subgraph patterns and count the number of matches::[11] Mixing directed and undirected pattern parts with self-relationship, undirected count
 Delete5 - Delete clause interoperation with built-in data types::[7] Delete paths from nested map/list
-ExistentialSubquery2 - Full existential subquery::[2] Full existential subquery with aggregation
-Graph6 - Static property access::[4] Statically access a property of a node resulting from an expression
-Graph6 - Static property access::[8] Statically access a property of a relationship resulting from an expression
-List11 - Create a list from a range::[3] Create an empty list if range direction and step direction are inconsistent
-Map1 - Static value access::[3] Statically access a field of a map resulting from an expression
 Match4 - Match variable length patterns scenarios::[7] Matching variable length patterns including a bound relationship
 Match4 - Match variable length patterns scenarios::[8] Matching relationships into a list and matching variable length using the list
 Match4 - Match variable length patterns::[7] Matching variable length patterns including a bound relationship
@@ -16,14 +6,8 @@ Match4 - Match variable length patterns::[8] Matching relationships into a list 
 Match6 - Match named paths scenarios::[14] Named path with undirected fixed variable length pattern
 MatchWhere2 - Filter multiple variables::[1] Filter nodes with conjunctive two-part property predicate on multi variables with multiple bindings
 MatchWhere2 - Filter multiple variables::[2] Filter node with conjunctive multi-part property predicates on multi variables with multiple bindings
-Return2 - Return single expression (correctly projecting an expression)::[15] Fail when returning properties of deleted nodes
-Return2 - Return single expression (correctly projecting an expression)::[17] Fail when returning properties of deleted relationships
-Return6 - Implicit grouping with aggregates::[16] Aggregation on complex expressions
-Set1 - Set a Property::[3] Set a property by selecting the node using a simple expression
-Set1 - Set a Property::[4] Set a property by selecting the relationship using a simple expression
 # Temporal10[9,10]: chrono NaiveDate year range limited to ~±262,143; ±999999999 not representable
 Temporal10 - Compute Durations Between two Temporal Values::[9] Should handle large durations
 Temporal10 - Compute Durations Between two Temporal Values::[10] Should handle large durations in seconds
-Unwind1::[12] Unwind does not remove variables from scope
 WithWhere2 - Filter multiple variables::[1] Filter nodes with conjunctive two-part property predicate on multi variables with multiple bindings
 WithWhere2 - Filter multiple variables::[2] Filter node with conjunctive multi-part property predicates on multi variables with multiple bindings

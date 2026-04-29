@@ -275,6 +275,7 @@ impl<'a> RecordIter for ExpandIter<'a> {
 
             let src_id = match rec.get(&self.src_alias) {
                 Some(Value::I64(id)) => NodeId(*id as u64),
+                Some(Value::Node(n)) => n.id,
                 _ => continue,
             };
 
@@ -282,6 +283,7 @@ impl<'a> RecordIter for ExpandIter<'a> {
             // only keep expansions matching the bound node.
             let bound_dst = rec.get(&self.dst_alias).and_then(|v| match v {
                 Value::I64(id) => Some(NodeId(*id as u64)),
+                Value::Node(n) => Some(n.id),
                 _ => None,
             });
 

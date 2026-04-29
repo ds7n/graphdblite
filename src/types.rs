@@ -430,6 +430,9 @@ pub enum QueryError {
 
     #[error("constraint violation at {phase}: {message}")]
     ConstraintViolation { phase: QueryPhase, message: String },
+
+    #[error("procedure error at {phase}: {message}")]
+    ProcedureError { phase: QueryPhase, message: String },
 }
 
 impl QueryError {
@@ -442,7 +445,8 @@ impl QueryError {
             | QueryError::EntityNotFound { phase, .. }
             | QueryError::ArgumentError { phase, .. }
             | QueryError::ArithmeticError { phase, .. }
-            | QueryError::ConstraintViolation { phase, .. } => *phase,
+            | QueryError::ConstraintViolation { phase, .. }
+            | QueryError::ProcedureError { phase, .. } => *phase,
         }
     }
 
@@ -456,6 +460,7 @@ impl QueryError {
             QueryError::ArgumentError { .. } => "ArgumentError",
             QueryError::ArithmeticError { .. } => "ArithmeticError",
             QueryError::ConstraintViolation { .. } => "ConstraintViolation",
+            QueryError::ProcedureError { .. } => "ProcedureError",
         }
     }
 }

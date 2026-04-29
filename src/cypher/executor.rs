@@ -390,8 +390,8 @@ fn exec_expand(
     let mut results = Vec::new();
 
     for rec in &input_records {
-        let src_id = match rec.get(src_alias) {
-            Some(Value::I64(id)) => NodeId(*id as u64),
+        let src_id = match rec.get(src_alias).and_then(value_to_node_id) {
+            Some(id) => id,
             _ => continue,
         };
 
@@ -415,10 +415,7 @@ fn exec_expand(
         // If the destination alias is already bound in the record (cyclic
         // pattern like `(a)-[:R]->(b)-[:S]->(a)`), we must only keep
         // expansions where the destination equals the bound node.
-        let bound_dst_id = rec.get(dst_alias).and_then(|v| match v {
-            Value::I64(id) => Some(NodeId(*id as u64)),
-            _ => None,
-        });
+        let bound_dst_id = rec.get(dst_alias).and_then(value_to_node_id);
 
         if var_length {
             // Variable-length traversal — pass ALL labels at once for mixed-type support.
@@ -850,6 +847,21 @@ fn exec_project(
                         .clone()
                         .unwrap_or_else(|| expr_to_column_name(&item.expr));
                     let expr_col = expr_to_column_name(&item.expr);
+                    // Check for deleted entity access before any cache lookup.
+                    // Property access on a deleted entity must raise an error
+                    // even if the value is still in the record.
+                    if let Expr::Property(var, prop) = &item.expr {
+                        if rec.get(&format!("{var}.__deleted")) == Some(&Value::Bool(true)) {
+                            return Err(GraphError::Query(
+                                crate::types::QueryError::EntityNotFound {
+                                    phase: crate::types::QueryPhase::Runtime,
+                                    message: format!(
+                                        "DeletedEntityAccess: cannot access property `{prop}` on deleted entity `{var}`"
+                                    ),
+                                },
+                            ));
+                        }
+                    }
                     // Check if the col_name collides with a MATCH variable binding
                     // (which stores raw node IDs). MATCH variables always have
                     // accompanying `var.__id` metadata; aggregate results don't.
@@ -2791,6 +2803,16 @@ fn exec_left_outer_join(
 
 /// Execute a plan with correlated bindings from an outer record.
 ///
+/// Extract a node ID from a record value — handles both `Value::I64` (flat
+/// binding from MATCH) and `Value::Node` (compound binding from WITH/RETURN).
+fn value_to_node_id(val: &Value) -> Option<NodeId> {
+    match val {
+        Value::I64(id) => Some(NodeId(*id as u64)),
+        Value::Node(n) => Some(n.id),
+        _ => None,
+    }
+}
+
 /// When a `Scan` alias is already bound in the outer record, returns just
 /// that single node instead of scanning all nodes with that label. This
 /// turns O(N*M) uncorrelated joins into O(N) correlated lookups.
@@ -2803,8 +2825,8 @@ fn exec_correlated(
     match plan {
         LogicalOp::Scan { label, alias } => {
             // If the alias is already bound in the outer record, return just that node.
-            if let Some(Value::I64(id)) = outer.get(alias) {
-                let node = node::get_node(conn, NodeId(*id as u64))?;
+            if let Some(node_id) = outer.get(alias).and_then(value_to_node_id) {
+                let node = node::get_node(conn, node_id)?;
                 // Verify label matches if the scan has a label filter.
                 if !label.is_empty() && !node.labels.contains(label) {
                     return Ok(vec![]);
@@ -2825,8 +2847,8 @@ fn exec_correlated(
             value,
             remaining_filters,
         } => {
-            if let Some(Value::I64(id)) = outer.get(alias) {
-                let node = node::get_node(conn, NodeId(*id as u64))?;
+            if let Some(node_id) = outer.get(alias).and_then(value_to_node_id) {
+                let node = node::get_node(conn, node_id)?;
                 if !label.is_empty() && !node.labels.contains(label) {
                     return Ok(vec![]);
                 }
@@ -2871,8 +2893,8 @@ fn exec_correlated(
             let mut results = Vec::new();
 
             for rec in &input_records {
-                let src_id = match rec.get(src_alias) {
-                    Some(Value::I64(id)) => NodeId(*id as u64),
+                let src_id = match rec.get(src_alias).and_then(value_to_node_id) {
+                    Some(id) => id,
                     _ => continue,
                 };
 
@@ -2896,10 +2918,7 @@ fn exec_correlated(
                 // If the destination alias is already bound in the outer record
                 // (e.g. OPTIONAL MATCH (caller)-[:CALLS]->(fn) where fn comes
                 // from the required MATCH), filter to only the matching ID.
-                let bound_dst = outer.get(dst_alias).and_then(|v| match v {
-                    Value::I64(id) => Some(NodeId(*id as u64)),
-                    _ => None,
-                });
+                let bound_dst = outer.get(dst_alias).and_then(value_to_node_id);
 
                 if *var_length {
                     // Variable-length traversal — pass ALL labels at once.
@@ -3233,7 +3252,6 @@ fn exec_correlated(
                             }
                         }
                         _ => {
-                            let val = crate::cypher::eval::eval_expr(&item.expr, rec, conn)?;
                             let col = item
                                 .alias
                                 .clone()
@@ -3245,6 +3263,16 @@ fn exec_correlated(
                                     }
                                 })
                                 .unwrap_or_else(|| format!("{:?}", item.expr));
+                            // Try alias-based lookup first (aggregate results
+                            // are stored under alias by exec_aggregate).
+                            let expr_col = expr_to_column_name(&item.expr);
+                            let val = if let Some(existing) = rec.get(&expr_col) {
+                                existing.clone()
+                            } else if let Some(existing) = rec.get(&col) {
+                                existing.clone()
+                            } else {
+                                crate::cypher::eval::eval_expr(&item.expr, rec, conn)?
+                            };
                             projected.set(col, val);
                             // Carry forward internal metadata for bound variables.
                             if let Expr::Variable(v) = &item.expr {
@@ -3510,12 +3538,12 @@ fn exec_shortest_path(
     let mut results = Vec::new();
 
     for rec in &records {
-        let src_id = match rec.get(src_alias) {
-            Some(Value::I64(id)) => NodeId(*id as u64),
+        let src_id = match rec.get(src_alias).and_then(value_to_node_id) {
+            Some(id) => id,
             _ => continue,
         };
-        let dst_id = match rec.get(dst_alias) {
-            Some(Value::I64(id)) => NodeId(*id as u64),
+        let dst_id = match rec.get(dst_alias).and_then(value_to_node_id) {
+            Some(id) => id,
             _ => continue,
         };
 
@@ -3809,8 +3837,8 @@ pub fn execute_first_match(
         } => {
             let input_records = exec(conn, input, &ExecContext::default())?;
             for rec in &input_records {
-                let src_id = match rec.get(src_alias) {
-                    Some(Value::I64(id)) => NodeId(*id as u64),
+                let src_id = match rec.get(src_alias).and_then(value_to_node_id) {
+                    Some(id) => id,
                     _ => continue,
                 };
                 // Discover edge labels when edge_types is empty (match any type).

@@ -201,6 +201,12 @@ fn plan_inner(
         Statement::Unwind(u) => plan_unwind(conn, u),
         Statement::Return(r) => plan_return(conn, r),
         Statement::MultiClause(mc) => plan_multi_clause(conn, mc),
+        Statement::Call { procedure_name } => Err(GraphError::Query(
+            crate::types::QueryError::ProcedureError {
+                phase: crate::types::QueryPhase::SemanticAnalysis,
+                message: format!("ProcedureNotFound: unknown procedure `{procedure_name}`"),
+            },
+        )),
         Statement::Explain(inner) => plan_inner(conn, inner, subquery),
         Statement::Union { statements, all } => {
             // Validate that all branches have the same column names.
@@ -3441,6 +3447,7 @@ fn is_aggregate_fn(expr: &Expr) -> bool {
         Expr::MapLiteral(pairs) => pairs.iter().any(|(_, v)| is_aggregate_fn(v)),
         Expr::List(items) => items.iter().any(is_aggregate_fn),
         Expr::ListComprehension { list_expr, .. } => is_aggregate_fn(list_expr),
+        Expr::Quantifier { list_expr, .. } => is_aggregate_fn(list_expr),
         _ => false,
     }
 }
@@ -3490,6 +3497,14 @@ fn collect_aggregate_calls<'a>(expr: &'a Expr, out: &mut Vec<&'a Expr>) {
         }
         Expr::ListComprehension { list_expr, .. } => {
             collect_aggregate_calls(list_expr, out);
+        }
+        Expr::Quantifier {
+            list_expr,
+            predicate,
+            ..
+        } => {
+            collect_aggregate_calls(list_expr, out);
+            collect_aggregate_calls(predicate, out);
         }
         _ => {}
     }
@@ -3631,6 +3646,9 @@ fn collect_non_aggregate_leaves<'a>(expr: &'a Expr, leaves: &mut Vec<&'a Expr>) 
         Expr::ListComprehension { list_expr, .. } => {
             collect_non_aggregate_leaves(list_expr, leaves);
         }
+        Expr::Quantifier { list_expr, .. } => {
+            collect_non_aggregate_leaves(list_expr, leaves);
+        }
         _ => {
             // Variable reference, property access, etc. — needs grouping.
             leaves.push(expr);
@@ -3700,6 +3718,9 @@ fn extract_nested_aggregates(expr: &Expr, aggregates: &mut Vec<AggregateExpr>) {
             }
         }
         Expr::ListComprehension { list_expr, .. } => {
+            extract_nested_aggregates(list_expr, aggregates);
+        }
+        Expr::Quantifier { list_expr, .. } => {
             extract_nested_aggregates(list_expr, aggregates);
         }
         _ => {}

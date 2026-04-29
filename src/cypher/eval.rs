@@ -483,7 +483,7 @@ fn eval_function_call(
         // Also try lookup with original_text — the aggregate operator stores
         // results under the original parsed text which may differ from the
         // reconstructed column name (e.g. extra parens in expressions).
-        if let Some(ref orig) = original_text {
+        if let Some(orig) = original_text {
             if let Some(val) = record.get(orig) {
                 return Ok(val.clone());
             }

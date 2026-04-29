@@ -157,10 +157,10 @@ The remaining TCK failures span:
 - Large durations requiring ±999999999 year dates (2 scenarios — chrono limitation)
 - Expression property access on computed values (3 scenarios)
 - Complex multi-match aggregation (Return6[16])
-- Expression-selected targets for SET (`SET (n).prop = val`)
 - Variable-length edge cases — bound rels, rel-list-as-pattern, undirected fixed-length
-- Deleted entity errors, path equality, conjunctive multi-var filters
-- CALL procedures (not implemented)
+- Conjunctive multi-var filters across comma-separated patterns
+- Delete paths from nested map/list (needs two-phase delete)
+- CALL procedures (parsed, always returns ProcedureNotFound — no procedure registry)
 
 Regenerate blocker analysis: `uv run tests/tck/analyze_blockers.py`
 

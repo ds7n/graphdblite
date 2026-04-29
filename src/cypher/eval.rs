@@ -2254,12 +2254,28 @@ fn eval_temporal_add(left: &Value, right: &Value) -> Option<crate::types::Result
     use chrono::{Months, NaiveDateTime};
 
     match (left, right) {
-        (Value::Duration(a), Value::Duration(b)) => Some(Ok(Value::Duration(CypherDuration {
-            months: a.months + b.months,
-            days: a.days + b.days,
-            seconds: a.seconds + b.seconds,
-            nanos: a.nanos + b.nanos,
-        }))),
+        (Value::Duration(a), Value::Duration(b)) => {
+            let mut nanos = a.nanos + b.nanos;
+            let mut seconds = a.seconds + b.seconds;
+            // Normalize: carry nanos overflow into seconds.
+            if nanos >= 1_000_000_000 || nanos <= -1_000_000_000 {
+                seconds += nanos / 1_000_000_000;
+                nanos %= 1_000_000_000;
+            }
+            if seconds > 0 && nanos < 0 {
+                seconds -= 1;
+                nanos += 1_000_000_000;
+            } else if seconds < 0 && nanos > 0 {
+                seconds += 1;
+                nanos -= 1_000_000_000;
+            }
+            Some(Ok(Value::Duration(CypherDuration {
+                months: a.months + b.months,
+                days: a.days + b.days,
+                seconds,
+                nanos,
+            })))
+        }
         (Value::Date(d), Value::Duration(dur)) | (Value::Duration(dur), Value::Date(d)) => {
             let mut date = d.0;
             if dur.months != 0 {
@@ -2341,12 +2357,27 @@ fn eval_temporal_sub(left: &Value, right: &Value) -> Option<crate::types::Result
     use crate::temporal::CypherDuration;
 
     match (left, right) {
-        (Value::Duration(a), Value::Duration(b)) => Some(Ok(Value::Duration(CypherDuration {
-            months: a.months - b.months,
-            days: a.days - b.days,
-            seconds: a.seconds - b.seconds,
-            nanos: a.nanos - b.nanos,
-        }))),
+        (Value::Duration(a), Value::Duration(b)) => {
+            let mut nanos = a.nanos - b.nanos;
+            let mut seconds = a.seconds - b.seconds;
+            if nanos >= 1_000_000_000 || nanos <= -1_000_000_000 {
+                seconds += nanos / 1_000_000_000;
+                nanos %= 1_000_000_000;
+            }
+            if seconds > 0 && nanos < 0 {
+                seconds -= 1;
+                nanos += 1_000_000_000;
+            } else if seconds < 0 && nanos > 0 {
+                seconds += 1;
+                nanos -= 1_000_000_000;
+            }
+            Some(Ok(Value::Duration(CypherDuration {
+                months: a.months - b.months,
+                days: a.days - b.days,
+                seconds,
+                nanos,
+            })))
+        }
         (_, Value::Duration(dur)) => {
             // Temporal - Duration → negate duration and add.
             let neg = CypherDuration {

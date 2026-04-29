@@ -138,6 +138,17 @@ fn parse_single_stmt(pair: pest::iterators::Pair<Rule>) -> crate::types::Result<
         Rule::unwind_stmt => parse_unwind(pair).map(Statement::Unwind),
         Rule::with_stmt => parse_with_stmt(pair).map(Statement::Match),
         Rule::return_stmt => parse_return_stmt(pair).map(Statement::Return),
+        Rule::call_stmt => {
+            // Extract procedure name from the CALL statement.
+            let proc_name = pair
+                .into_inner()
+                .find(|p| p.as_rule() == Rule::procedure_name)
+                .map(|p| p.as_str().to_string())
+                .unwrap_or_default();
+            Ok(Statement::Call {
+                procedure_name: proc_name,
+            })
+        }
         _ => Err(GraphError::Serialization(format!(
             "unexpected rule: {:?}",
             pair.as_rule()
@@ -745,15 +756,34 @@ fn parse_set_item_list(pair: pest::iterators::Pair<Rule>) -> crate::types::Resul
                 Rule::assignment => {
                     let mut children = inner.into_inner();
                     let prop_access = children.next().unwrap();
-                    let mut prop_parts = prop_access.into_inner();
-                    let variable = prop_parts.next().unwrap().as_str().to_string();
-                    let property = prop_parts.next().unwrap().as_str().to_string();
                     let value = parse_expr(children.next().unwrap())?;
-                    items.push(SetItem::Property(Assignment {
-                        variable,
-                        property,
-                        value,
-                    }));
+                    if prop_access.as_rule() == Rule::expr_property_access {
+                        // (expr).property = value — resolve expr to get variable
+                        let mut prop_parts = prop_access.into_inner();
+                        let expr = parse_expr(prop_parts.next().unwrap())?;
+                        let property = prop_parts.next().unwrap().as_str().to_string();
+                        // Extract variable name from the expression
+                        if let Expr::Variable(var) = expr {
+                            items.push(SetItem::Property(Assignment {
+                                variable: var,
+                                property,
+                                value,
+                            }));
+                        } else {
+                            return Err(GraphError::syntax(
+                                "SET target expression must be a variable".to_string(),
+                            ));
+                        }
+                    } else {
+                        let mut prop_parts = prop_access.into_inner();
+                        let variable = prop_parts.next().unwrap().as_str().to_string();
+                        let property = prop_parts.next().unwrap().as_str().to_string();
+                        items.push(SetItem::Property(Assignment {
+                            variable,
+                            property,
+                            value,
+                        }));
+                    }
                 }
                 _ => {
                     return Err(GraphError::Serialization(format!(
@@ -3129,6 +3159,7 @@ pub fn resolve_params(
                 all: *all,
             })
         }
+        Statement::Call { .. } => Ok(stmt.clone()),
     }
 }
 

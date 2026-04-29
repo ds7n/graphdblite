@@ -373,7 +373,12 @@ pub fn eval_expr(expr: &Expr, record: &Record, conn: &Connection) -> crate::type
             }
             Ok(Value::Map(map))
         }
-        Expr::FunctionCall { name, args, .. } => eval_function_call(name, args, record, conn),
+        Expr::FunctionCall {
+            name,
+            args,
+            original_text,
+            ..
+        } => eval_function_call(name, args, original_text.as_deref(), record, conn),
     }
 }
 
@@ -427,6 +432,7 @@ fn format_float(f: f64) -> String {
 fn eval_function_call(
     name: &str,
     args: &[Expr],
+    original_text: Option<&str>,
     record: &Record,
     conn: &Connection,
 ) -> crate::types::Result<Value> {
@@ -473,6 +479,14 @@ fn eval_function_call(
         });
         if let Some(val) = record.get(&col) {
             return Ok(val.clone());
+        }
+        // Also try lookup with original_text — the aggregate operator stores
+        // results under the original parsed text which may differ from the
+        // reconstructed column name (e.g. extra parens in expressions).
+        if let Some(ref orig) = original_text {
+            if let Some(val) = record.get(orig) {
+                return Ok(val.clone());
+            }
         }
     }
 
@@ -1111,15 +1125,17 @@ fn eval_function_call(
                     };
                     let mut result = Vec::new();
                     let mut i = s;
-                    if step > 0 {
-                        while i <= e {
-                            result.push(Value::I64(i));
-                            i += step;
-                        }
-                    } else {
-                        while i >= e {
-                            result.push(Value::I64(i));
-                            i += step;
+                    if (step > 0 && s <= e) || (step < 0 && s >= e) {
+                        if step > 0 {
+                            while i <= e {
+                                result.push(Value::I64(i));
+                                i += step;
+                            }
+                        } else {
+                            while i >= e {
+                                result.push(Value::I64(i));
+                                i += step;
+                            }
                         }
                     }
                     Ok(Value::List(result))
@@ -1988,8 +2004,23 @@ fn values_equal(a: &Value, b: &Value) -> Value {
         (Value::LocalDateTime(a), Value::LocalDateTime(b)) => Value::Bool(a == b),
         (Value::DateTime(a), Value::DateTime(b)) => Value::Bool(a == b),
         (Value::Duration(a), Value::Duration(b)) => Value::Bool(a == b),
+        (Value::Path(a), Value::Path(b)) => paths_equal(a, b),
         _ => Value::Bool(false),
     }
+}
+
+/// Path equality: same sequence of node IDs and edge identities (src, dst, type, seq).
+fn paths_equal(a: &crate::types::PathValue, b: &crate::types::PathValue) -> Value {
+    if a.nodes.len() != b.nodes.len() || a.edges.len() != b.edges.len() {
+        return Value::Bool(false);
+    }
+    let nodes_eq = a.nodes.iter().zip(&b.nodes).all(|(n1, n2)| n1.id == n2.id);
+    let edges_eq = a
+        .edges
+        .iter()
+        .zip(&b.edges)
+        .all(|(e1, e2)| e1.src == e2.src && e1.dst == e2.dst && e1.label == e2.label);
+    Value::Bool(nodes_eq && edges_eq)
 }
 
 /// Three-valued list equality: propagates null if any element comparison yields null.
@@ -2186,7 +2217,16 @@ pub fn expr_to_column_name(expr: &Expr) -> String {
             )
         }
         Expr::DotAccess { expr, key } => {
-            format!("{}.{}", expr_to_column_name(expr), key)
+            let base = expr_to_column_name(expr);
+            let needs_parens = !matches!(
+                expr.as_ref(),
+                Expr::Variable(_) | Expr::DotAccess { .. } | Expr::Property(..)
+            );
+            if needs_parens {
+                format!("({base}).{key}")
+            } else {
+                format!("{base}.{key}")
+            }
         }
         Expr::Slice { expr, start, end } => {
             let s = start

@@ -23,6 +23,10 @@ pub enum Statement {
         /// true = UNION ALL (keep duplicates), false = UNION (deduplicate).
         all: bool,
     },
+    /// CALL procedure (always errors with ProcedureNotFound — no procedure registry).
+    Call {
+        procedure_name: String,
+    },
 }
 
 /// A clause in a multi-clause statement.

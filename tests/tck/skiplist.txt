@@ -22,7 +22,6 @@ Return6 - Implicit grouping with aggregates::[16] Aggregation on complex express
 Set1 - Set a Property::[3] Set a property by selecting the node using a simple expression
 Set1 - Set a Property::[4] Set a property by selecting the relationship using a simple expression
 Temporal10 - Compute Durations Between two Temporal Values::[10] Should handle large durations in seconds
-Temporal10 - Compute Durations Between two Temporal Values::[8] Should handle durations at daylight saving time day
 Temporal10 - Compute Durations Between two Temporal Values::[9] Should handle large durations
 Unwind1::[12] Unwind does not remove variables from scope
 WithWhere2 - Filter multiple variables::[1] Filter nodes with conjunctive two-part property predicate on multi variables with multiple bindings

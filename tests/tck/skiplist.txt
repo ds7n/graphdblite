@@ -24,12 +24,6 @@ Set1 - Set a Property::[4] Set a property by selecting the relationship using a 
 Temporal10 - Compute Durations Between two Temporal Values::[10] Should handle large durations in seconds
 Temporal10 - Compute Durations Between two Temporal Values::[8] Should handle durations at daylight saving time day
 Temporal10 - Compute Durations Between two Temporal Values::[9] Should handle large durations
-Temporal8 - Compute Arithmetic Operations on Temporal Values::[2] Should add or subtract duration to or from local time
-Temporal8 - Compute Arithmetic Operations on Temporal Values::[3] Should add or subtract duration to or from time
-Temporal8 - Compute Arithmetic Operations on Temporal Values::[4] Should add or subtract duration to or from local date time
-Temporal8 - Compute Arithmetic Operations on Temporal Values::[5] Should add or subtract duration to or from date time
-Temporal8 - Compute Arithmetic Operations on Temporal Values::[6] Should add or subtract durations
-Temporal8 - Compute Arithmetic Operations on Temporal Values::[7] Should multiply or divide durations by numbers
 Unwind1::[12] Unwind does not remove variables from scope
 WithWhere2 - Filter multiple variables::[1] Filter nodes with conjunctive two-part property predicate on multi variables with multiple bindings
 WithWhere2 - Filter multiple variables::[2] Filter node with conjunctive multi-part property predicates on multi variables with multiple bindings

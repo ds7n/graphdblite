@@ -21,8 +21,9 @@ Return2 - Return single expression (correctly projecting an expression)::[17] Fa
 Return6 - Implicit grouping with aggregates::[16] Aggregation on complex expressions
 Set1 - Set a Property::[3] Set a property by selecting the node using a simple expression
 Set1 - Set a Property::[4] Set a property by selecting the relationship using a simple expression
-Temporal10 - Compute Durations Between two Temporal Values::[10] Should handle large durations in seconds
+# Temporal10[9,10]: chrono NaiveDate year range limited to ~±262,143; ±999999999 not representable
 Temporal10 - Compute Durations Between two Temporal Values::[9] Should handle large durations
+Temporal10 - Compute Durations Between two Temporal Values::[10] Should handle large durations in seconds
 Unwind1::[12] Unwind does not remove variables from scope
 WithWhere2 - Filter multiple variables::[1] Filter nodes with conjunctive two-part property predicate on multi variables with multiple bindings
 WithWhere2 - Filter multiple variables::[2] Filter node with conjunctive multi-part property predicates on multi variables with multiple bindings

@@ -128,7 +128,7 @@ All bindings expose: `open`, `open_memory`, `begin_read`, `begin_write`, `query`
 
 ### TCK conformance
 - Full openCypher TCK vendored (220 feature files, 3842 scenarios)
-- **98.1% pass rate** (3789/3862), 8 skiplisted — as of 2026-04-29
+- **98.1% pass rate** (3791/3864), 6 skiplisted — as of 2026-04-29
 - Regenerate stats: `cargo test --test tck 2>&1 > /tmp/tck_output.txt && uv run tests/tck/analyze.py /tmp/tck_output.txt`
 - Regenerate blocker analysis: `uv run tests/tck/analyze_blockers.py`
 
@@ -152,11 +152,10 @@ All bindings expose: `open`, `open_memory`, `begin_read`, `begin_write`, `query`
 ### Scale
 Designed for datasets in the **low millions of nodes** with moderate edge density. 10M nodes is achievable for indexed point-lookups; full label scans at that scale will be slow. 100M+ nodes would require rearchitecting the scan layer (streaming from SQLite instead of materializing), replacing linear-scan dedup with `HashSet`, and making adjacency lists appendable without full rewrite.
 
-### TCK gaps (8 skiplisted scenarios)
+### TCK gaps (6 skiplisted scenarios)
 The remaining TCK failures span:
 - Large durations requiring ±999999999 year dates (2 scenarios — chrono limitation)
-- Variable-length edge cases — bound rels, rel-list-as-pattern, undirected fixed-length (5 entries)
-- Delete paths from nested map/list (needs two-phase delete)
+- Variable-length edge cases — bound rels, rel-list-as-pattern (4 skiplist entries, 2 scenarios)
 - CALL procedures (parsed, always returns ProcedureNotFound — no procedure registry)
 
 Regenerate blocker analysis: `uv run tests/tck/analyze_blockers.py`

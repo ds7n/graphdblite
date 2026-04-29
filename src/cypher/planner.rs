@@ -1166,6 +1166,7 @@ fn plan_multi_clause(
                         LogicalOp::CorrelatedJoin {
                             input: Box::new(input),
                             right: Box::new(match_op),
+                            same_match: false,
                         }
                     };
                     // Optional matches — include scope_vars so variables from
@@ -1683,6 +1684,7 @@ fn plan_intermediate_match_with_scope(
         op = LogicalOp::CorrelatedJoin {
             input: Box::new(op),
             right: Box::new(right),
+            same_match: false,
         };
     }
 
@@ -1771,11 +1773,13 @@ pub fn plan_patterns(conn: &Connection, patterns: &[Pattern]) -> crate::types::R
                     LogicalOp::CorrelatedJoin {
                         input: Box::new(left),
                         right: Box::new(right),
+                        same_match: true,
                     }
                 } else {
                     LogicalOp::CrossProduct {
                         left: Box::new(left),
                         right: Box::new(right),
+                        same_match: true,
                     }
                 }
             }
@@ -1865,6 +1869,7 @@ fn plan_shortest_path_pattern(
         LogicalOp::CrossProduct {
             left: Box::new(src_scan),
             right: Box::new(dst_scan),
+            same_match: false,
         }
     };
 
@@ -3848,17 +3853,23 @@ fn try_replace_scan(
             var_length_prop_filters: var_length_prop_filters.clone(),
         }),
 
-        LogicalOp::CrossProduct { left, right } => {
+        LogicalOp::CrossProduct {
+            left,
+            right,
+            same_match,
+        } => {
             if let Some(new_left) = try_replace_scan(conn, left, alias, prop, lit) {
                 Some(LogicalOp::CrossProduct {
                     left: Box::new(new_left),
                     right: right.clone(),
+                    same_match: *same_match,
                 })
             } else {
                 try_replace_scan(conn, right, alias, prop, lit).map(|new_right| {
                     LogicalOp::CrossProduct {
                         left: left.clone(),
                         right: Box::new(new_right),
+                        same_match: *same_match,
                     }
                 })
             }

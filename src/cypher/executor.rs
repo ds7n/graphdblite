@@ -103,7 +103,7 @@ fn is_read_only(plan: &LogicalOp) -> bool {
 
         LogicalOp::Expand { input, .. } => is_read_only(input),
 
-        LogicalOp::CrossProduct { left, right }
+        LogicalOp::CrossProduct { left, right, .. }
         | LogicalOp::CorrelatedJoin {
             input: left, right, ..
         }
@@ -177,7 +177,11 @@ fn exec(conn: &Connection, plan: &LogicalOp, ctx: &ExecContext) -> Result<Vec<Re
             ctx,
         ),
 
-        LogicalOp::CrossProduct { left, right } => exec_cross_product(conn, left, right, ctx),
+        LogicalOp::CrossProduct {
+            left,
+            right,
+            same_match,
+        } => exec_cross_product(conn, left, right, *same_match, ctx),
 
         LogicalOp::Filter { input, predicate } => exec_filter(conn, input, predicate, ctx),
 
@@ -268,7 +272,11 @@ fn exec(conn: &Connection, plan: &LogicalOp, ctx: &ExecContext) -> Result<Vec<Re
             rel_aliases,
         } => exec_materialize_path(conn, input, path_alias, node_aliases, rel_aliases, ctx),
 
-        LogicalOp::CorrelatedJoin { input, right } => exec_correlated_join(conn, input, right, ctx),
+        LogicalOp::CorrelatedJoin {
+            input,
+            right,
+            same_match,
+        } => exec_correlated_join(conn, input, right, *same_match, ctx),
 
         LogicalOp::LeftOuterJoin {
             input,
@@ -616,6 +624,7 @@ fn exec_cross_product(
     conn: &Connection,
     left: &LogicalOp,
     right: &LogicalOp,
+    same_match: bool,
     ctx: &ExecContext,
 ) -> Result<Vec<Record>> {
     // Materialize only the left side. Re-execute the right side per left
@@ -630,6 +639,11 @@ fn exec_cross_product(
             for (key, val) in &r.fields {
                 combined.set(key.clone(), val.clone());
             }
+            // Cross-pattern relationship uniqueness (only within the same
+            // MATCH clause — separate MATCHes have independent scopes).
+            if same_match && has_duplicate_relationships(&combined) {
+                continue;
+            }
             results.push(combined);
             if ctx.max_result_rows > 0 && results.len() > ctx.max_result_rows {
                 return Err(GraphError::constraint(format!(
@@ -640,6 +654,33 @@ fn exec_cross_product(
         }
     }
     Ok(results)
+}
+
+/// Check if a record contains two relationship bindings that refer to the
+/// same underlying edge (same normalized src/dst/type/seq).
+fn has_duplicate_relationships(rec: &Record) -> bool {
+    let mut seen: Vec<(i64, i64, String, u64)> = Vec::new();
+    for (key, _) in &rec.fields {
+        if key.ends_with(".__src") {
+            let alias = &key[..key.len() - 6];
+            let seq = match rec.get(&format!("{alias}.__edge_seq")) {
+                Some(Value::I64(s)) => *s as u64,
+                _ => 0,
+            };
+            if let (Some(Value::I64(s)), Some(Value::I64(d)), Some(Value::String(t))) = (
+                rec.get(key),
+                rec.get(&format!("{alias}.__dst")),
+                rec.get(&format!("{alias}.__type")),
+            ) {
+                let edge_key = ((*s).min(*d), (*s).max(*d), t.clone(), seq);
+                if seen.contains(&edge_key) {
+                    return true;
+                }
+                seen.push(edge_key);
+            }
+        }
+    }
+    false
 }
 
 fn exec_filter(
@@ -2713,6 +2754,7 @@ fn exec_correlated_join(
     conn: &Connection,
     input: &LogicalOp,
     right: &LogicalOp,
+    same_match: bool,
     ctx: &ExecContext,
 ) -> Result<Vec<Record>> {
     let left_records = exec(conn, input, ctx)?;
@@ -2727,6 +2769,11 @@ fn exec_correlated_join(
                 if !combined.fields.contains_key(key) {
                     combined.set(key.clone(), val.clone());
                 }
+            }
+            // Cross-pattern relationship uniqueness (only within the same
+            // MATCH clause — separate MATCHes have independent scopes).
+            if same_match && has_duplicate_relationships(&combined) {
+                continue;
             }
             results.push(combined);
         }
@@ -2915,10 +2962,14 @@ fn exec_correlated(
                     labels.clone()
                 };
 
-                // If the destination alias is already bound in the outer record
-                // (e.g. OPTIONAL MATCH (caller)-[:CALLS]->(fn) where fn comes
-                // from the required MATCH), filter to only the matching ID.
-                let bound_dst = outer.get(dst_alias).and_then(value_to_node_id);
+                // If the destination alias is already bound — either in the outer
+                // record (from the left side of a CorrelatedJoin) or in the
+                // current record (from an earlier expand in this chain) —
+                // filter to only the matching ID.
+                let bound_dst = outer
+                    .get(dst_alias)
+                    .and_then(value_to_node_id)
+                    .or_else(|| rec.get(dst_alias).and_then(value_to_node_id));
 
                 if *var_length {
                     // Variable-length traversal — pass ALL labels at once.
@@ -3189,7 +3240,11 @@ fn exec_correlated(
             Ok(results)
         }
 
-        LogicalOp::CrossProduct { left, right } => {
+        LogicalOp::CrossProduct {
+            left,
+            right,
+            same_match,
+        } => {
             let left_records = exec_correlated(conn, left, outer, ctx)?;
             let mut results = Vec::new();
             for l in &left_records {
@@ -3204,13 +3259,20 @@ fn exec_correlated(
                     for (key, val) in &r.fields {
                         combined.set(key.clone(), val.clone());
                     }
+                    if *same_match && has_duplicate_relationships(&combined) {
+                        continue;
+                    }
                     results.push(combined);
                 }
             }
             Ok(results)
         }
 
-        LogicalOp::CorrelatedJoin { input, right } => {
+        LogicalOp::CorrelatedJoin {
+            input,
+            right,
+            same_match,
+        } => {
             let left_records = exec_correlated(conn, input, outer, ctx)?;
             let mut results = Vec::new();
             for l in &left_records {
@@ -3226,6 +3288,9 @@ fn exec_correlated(
                         if !combined.fields.contains_key(key) {
                             combined.set(key.clone(), val.clone());
                         }
+                    }
+                    if *same_match && has_duplicate_relationships(&combined) {
+                        continue;
                     }
                     results.push(combined);
                 }

@@ -48,6 +48,9 @@ pub enum LogicalOp {
     CrossProduct {
         left: Box<LogicalOp>,
         right: Box<LogicalOp>,
+        /// True when both sides come from comma-separated patterns within a
+        /// single MATCH clause — relationship uniqueness applies across them.
+        same_match: bool,
     },
 
     /// Filter records by a predicate.
@@ -181,6 +184,9 @@ pub enum LogicalOp {
     CorrelatedJoin {
         input: Box<LogicalOp>,
         right: Box<LogicalOp>,
+        /// True when both sides come from comma-separated patterns within a
+        /// single MATCH clause — relationship uniqueness applies across them.
+        same_match: bool,
     },
 
     /// Left outer join: for each input record, attempt right side; emit NULLs if no match.

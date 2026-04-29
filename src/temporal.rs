@@ -1992,15 +1992,61 @@ fn is_offset_aware(val: &Value) -> bool {
     matches!(val, Value::Time(_) | Value::DateTime(_))
 }
 
-/// Compute the effective offset to apply for a value, considering whether
-/// the other side is also offset-aware. Offsets are only applied when BOTH
-/// sides are offset-aware; otherwise local times are compared directly.
-fn effective_offset(val: &Value, other: &Value) -> i64 {
-    if is_offset_aware(val) && is_offset_aware(other) {
-        extract_offset_secs(val) as i64
+/// Extract the named timezone string from a DateTime value.
+fn extract_tz_name(val: &Value) -> Option<&str> {
+    if let Value::DateTime(dt) = val {
+        dt.2.as_deref()
     } else {
-        0
+        None
     }
+}
+
+/// Resolve the UTC offset for a local date/time interpreted in a named timezone.
+/// Uses `earliest()` to pick the pre-transition offset for ambiguous times.
+fn resolve_offset_in_tz(date: NaiveDate, time: NaiveTime, tz_name: &str) -> i64 {
+    if let Ok(tz) = tz_name.parse::<chrono_tz::Tz>() {
+        let ndt = NaiveDateTime::new(date, time);
+        if let Some(aware) = tz.from_local_datetime(&ndt).earliest() {
+            return aware.offset().fix().local_minus_utc() as i64;
+        }
+    }
+    0
+}
+
+/// Compute the effective UTC offset for `val` when paired with `other`.
+///
+/// When both sides are offset-aware, use actual offsets. When one side has a
+/// named timezone and the other is a local type, resolve the local side's
+/// offset in the named timezone (DST-aware). For time-only local values, the
+/// date from the other side is used for DST resolution.
+fn effective_offset_dst(val: &Value, other: &Value) -> i64 {
+    // Both offset-aware: standard path.
+    if is_offset_aware(val) && is_offset_aware(other) {
+        return extract_offset_secs(val) as i64;
+    }
+
+    // If val is offset-aware (DateTime with tz name), return its actual offset.
+    if is_offset_aware(val) {
+        // Check if the other side is a local type and we have a named tz.
+        if extract_tz_name(val).is_some() && !is_offset_aware(other) {
+            return extract_offset_secs(val) as i64;
+        }
+        return 0;
+    }
+
+    // val is a local type — check if other has a named timezone.
+    if let Some(tz_name) = extract_tz_name(other) {
+        if !is_offset_aware(val) {
+            // Resolve val's local date/time in the other side's timezone.
+            let date = extract_date(val)
+                .or_else(|| extract_date(other))
+                .unwrap_or(NaiveDate::from_ymd_opt(1970, 1, 1).unwrap());
+            let time = extract_time(val).unwrap_or(NaiveTime::from_hms_opt(0, 0, 0).unwrap());
+            return resolve_offset_in_tz(date, time, tz_name);
+        }
+    }
+
+    0
 }
 
 /// Number of days in a given month of a given year.
@@ -2063,9 +2109,9 @@ pub fn duration_between(lhs: &Value, rhs: &Value) -> CypherDuration {
     if either_time_only && !both_have_dates {
         // Pure time comparison — take the time from whichever has it.
         let lhs_nanos =
-            t1.map(time_to_nanos).unwrap_or(0) - effective_offset(lhs, rhs) * 1_000_000_000;
+            t1.map(time_to_nanos).unwrap_or(0) - effective_offset_dst(lhs, rhs) * 1_000_000_000;
         let rhs_nanos =
-            t2.map(time_to_nanos).unwrap_or(0) - effective_offset(rhs, lhs) * 1_000_000_000;
+            t2.map(time_to_nanos).unwrap_or(0) - effective_offset_dst(rhs, lhs) * 1_000_000_000;
         let diff_nanos = rhs_nanos - lhs_nanos;
         let total_secs = diff_nanos.div_euclid(1_000_000_000);
         let rem_nanos = diff_nanos.rem_euclid(1_000_000_000);
@@ -2096,9 +2142,9 @@ pub fn duration_between(lhs: &Value, rhs: &Value) -> CypherDuration {
         // Time-of-day difference (in nanos), adjusted for UTC offsets only when
         // both sides are offset-aware.
         let t1_nanos =
-            t1.map(time_to_nanos).unwrap_or(0) - effective_offset(lhs, rhs) * 1_000_000_000;
+            t1.map(time_to_nanos).unwrap_or(0) - effective_offset_dst(lhs, rhs) * 1_000_000_000;
         let t2_nanos =
-            t2.map(time_to_nanos).unwrap_or(0) - effective_offset(rhs, lhs) * 1_000_000_000;
+            t2.map(time_to_nanos).unwrap_or(0) - effective_offset_dst(rhs, lhs) * 1_000_000_000;
         let mut time_diff_nanos = t2_nanos - t1_nanos;
 
         // Normalize: if day_diff and time_diff have opposite signs, borrow a day.
@@ -2162,9 +2208,9 @@ pub fn duration_in_months(lhs: &Value, rhs: &Value) -> CypherDuration {
     if d1_advanced == date2 {
         // Same date after advancing — check time.
         let t1_nanos = extract_time(lhs).map(time_to_nanos).unwrap_or(0)
-            - effective_offset(lhs, rhs) * 1_000_000_000;
+            - effective_offset_dst(lhs, rhs) * 1_000_000_000;
         let t2_nanos = extract_time(rhs).map(time_to_nanos).unwrap_or(0)
-            - effective_offset(rhs, lhs) * 1_000_000_000;
+            - effective_offset_dst(rhs, lhs) * 1_000_000_000;
         if months > 0 && t2_nanos < t1_nanos {
             months -= 1;
         } else if months < 0 && t2_nanos > t1_nanos {
@@ -2201,9 +2247,9 @@ pub fn duration_in_days(lhs: &Value, rhs: &Value) -> CypherDuration {
         // Compute total elapsed nanoseconds including time components.
         let day_nanos = date2.signed_duration_since(date1).num_days() * 86_400_000_000_000i64;
         let t1_nanos = extract_time(lhs).map(time_to_nanos).unwrap_or(0)
-            - effective_offset(lhs, rhs) * 1_000_000_000;
+            - effective_offset_dst(lhs, rhs) * 1_000_000_000;
         let t2_nanos = extract_time(rhs).map(time_to_nanos).unwrap_or(0)
-            - effective_offset(rhs, lhs) * 1_000_000_000;
+            - effective_offset_dst(rhs, lhs) * 1_000_000_000;
         let total_nanos = day_nanos + (t2_nanos - t1_nanos);
 
         // Truncate toward zero to get whole days.
@@ -2235,9 +2281,9 @@ pub fn duration_in_seconds(lhs: &Value, rhs: &Value) -> CypherDuration {
     let either_time_only = is_time_only(lhs) || is_time_only(rhs);
 
     let t1_nanos = extract_time(lhs).map(time_to_nanos).unwrap_or(0)
-        - effective_offset(lhs, rhs) * 1_000_000_000;
+        - effective_offset_dst(lhs, rhs) * 1_000_000_000;
     let t2_nanos = extract_time(rhs).map(time_to_nanos).unwrap_or(0)
-        - effective_offset(rhs, lhs) * 1_000_000_000;
+        - effective_offset_dst(rhs, lhs) * 1_000_000_000;
 
     let time_diff = t2_nanos - t1_nanos;
 

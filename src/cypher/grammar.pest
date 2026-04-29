@@ -373,7 +373,8 @@ slice_full = { expr ~ ".." ~ expr }
 slice_from = { expr ~ ".." }
 slice_to = { ".." ~ expr }
 
-parameter = { "$" ~ ident }
+parameter = { "$" ~ param_name }
+param_name = @{ (ASCII_ALPHA | "_") ~ (ASCII_ALPHANUMERIC | "_")* | ASCII_DIGIT+ }
 
 pattern_comprehension = { "[" ~ (ident ~ "=")? ~ pattern ~ (^"WHERE" ~ bool_expr)? ~ "|" ~ expr ~ "]" }
 

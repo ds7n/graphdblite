@@ -50,7 +50,7 @@ fn estimate_rows(conn: &Connection, plan: &LogicalOp) -> f64 {
 
         LogicalOp::Expand { input, .. } => estimate_rows(conn, input) * DEFAULT_EXPAND_FAN_OUT,
 
-        LogicalOp::CrossProduct { left, right }
+        LogicalOp::CrossProduct { left, right, .. }
         | LogicalOp::CorrelatedJoin {
             input: left, right, ..
         } => estimate_rows(conn, left) * estimate_rows(conn, right),
@@ -269,7 +269,7 @@ fn format_plan_tree(conn: &Connection, plan: &LogicalOp, depth: usize, lines: &m
         | LogicalOp::MaterializePath { input, .. } => {
             format_plan_tree(conn, input, depth + 1, lines);
         }
-        LogicalOp::CrossProduct { left, right }
+        LogicalOp::CrossProduct { left, right, .. }
         | LogicalOp::CorrelatedJoin {
             input: left, right, ..
         }

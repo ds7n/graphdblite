@@ -342,11 +342,12 @@ impl<'a> RecordIter for ExpandIter<'a> {
                         let edge_list: Vec<Value> = steps
                             .iter()
                             .map(|step| {
-                                let props = edge::get_edge_properties(
+                                let props = edge::get_edge_properties_at(
                                     self.conn,
                                     step.edge_src,
                                     step.edge_dst,
                                     &step.edge_label,
+                                    step.edge_seq,
                                 )
                                 .unwrap_or_default();
                                 Value::Edge(crate::types::Edge {

@@ -504,6 +504,8 @@ pub struct PathStep {
     pub edge_dst: NodeId,
     /// The edge type/label.
     pub edge_label: String,
+    /// The parallel edge sequence number.
+    pub edge_seq: u64,
     /// The node reached by this step.
     pub dst: NodeId,
 }
@@ -538,7 +540,8 @@ pub fn traverse_paths(
     }
 
     // DFS stack: (current_node, path_so_far, visited_edges)
-    type EdgeKey = (u64, u64, String);
+    // Edge key includes seq to distinguish parallel edges.
+    type EdgeKey = (u64, u64, String, u64);
     type DfsFrame = (NodeId, Vec<PathStep>, std::collections::HashSet<EdgeKey>);
     let mut stack: Vec<DfsFrame> = Vec::new();
     stack.push((start, Vec::new(), std::collections::HashSet::new()));
@@ -566,59 +569,92 @@ pub fn traverse_paths(
         for label in &effective_labels {
             let neighbors = get_neighbors(conn, current, label, direction)?;
             for neighbor in neighbors {
-                // Determine actual edge direction in storage.
-                let (edge_src, edge_dst) = match direction {
-                    Direction::Incoming => (neighbor, current),
-                    Direction::Outgoing => (current, neighbor),
+                // Enumerate all parallel edges between current and neighbor,
+                // considering storage direction.
+                let mut directed_edges: Vec<(NodeId, NodeId, u64, Properties)> = Vec::new();
+                match direction {
+                    Direction::Outgoing => {
+                        let all = get_all_edge_props(conn, current, neighbor, label)?;
+                        for (seq, props) in all {
+                            directed_edges.push((current, neighbor, seq, props));
+                        }
+                    }
+                    Direction::Incoming => {
+                        let all = get_all_edge_props(conn, neighbor, current, label)?;
+                        for (seq, props) in all {
+                            directed_edges.push((neighbor, current, seq, props));
+                        }
+                    }
                     Direction::Both => {
-                        // Check which direction the edge actually exists.
-                        if edge_exists(conn, current, neighbor, label)? {
-                            (current, neighbor)
-                        } else {
-                            (neighbor, current)
+                        let fwd = get_all_edge_props(conn, current, neighbor, label)?;
+                        for (seq, props) in fwd {
+                            directed_edges.push((current, neighbor, seq, props));
+                        }
+                        if current != neighbor {
+                            let rev = get_all_edge_props(conn, neighbor, current, label)?;
+                            for (seq, props) in rev {
+                                directed_edges.push((neighbor, current, seq, props));
+                            }
                         }
                     }
-                };
-
-                let edge_key = (edge_src.0, edge_dst.0, label.to_string());
-                if visited_edges.contains(&edge_key) {
-                    continue; // Relationship uniqueness.
+                }
+                // Fallback: edge exists in adjacency but has no props row.
+                if directed_edges.is_empty() {
+                    let (es, ed) = match direction {
+                        Direction::Incoming => (neighbor, current),
+                        Direction::Outgoing => (current, neighbor),
+                        Direction::Both => {
+                            if edge_exists(conn, current, neighbor, label)? {
+                                (current, neighbor)
+                            } else {
+                                (neighbor, current)
+                            }
+                        }
+                    };
+                    directed_edges.push((es, ed, 0, Properties::new()));
                 }
 
-                // Apply inline property filters at each hop.
-                if !prop_filters.is_empty() {
-                    let props = get_edge_properties(conn, edge_src, edge_dst, label)?;
-                    let mut matches = true;
-                    for (key, expected) in prop_filters {
-                        if props.get(key) != Some(expected) {
-                            matches = false;
-                            break;
+                for (edge_src, edge_dst, seq, props) in directed_edges {
+                    let edge_key = (edge_src.0, edge_dst.0, label.to_string(), seq);
+                    if visited_edges.contains(&edge_key) {
+                        continue; // Relationship uniqueness.
+                    }
+
+                    // Apply inline property filters using already-fetched props.
+                    if !prop_filters.is_empty() {
+                        let mut matches = true;
+                        for (key, expected) in prop_filters {
+                            if props.get(key) != Some(expected) {
+                                matches = false;
+                                break;
+                            }
+                        }
+                        if !matches {
+                            continue;
                         }
                     }
-                    if !matches {
-                        continue;
+
+                    let step = PathStep {
+                        edge_src,
+                        edge_dst,
+                        edge_label: label.to_string(),
+                        edge_seq: seq,
+                        dst: neighbor,
+                    };
+
+                    let mut new_path = path.clone();
+                    new_path.push(step);
+                    let new_depth = new_path.len() as u32;
+
+                    if new_depth >= min_hops {
+                        results.push((neighbor, new_path.clone()));
                     }
-                }
 
-                let step = PathStep {
-                    edge_src,
-                    edge_dst,
-                    edge_label: label.to_string(),
-                    dst: neighbor,
-                };
-
-                let mut new_path = path.clone();
-                new_path.push(step);
-                let new_depth = new_path.len() as u32;
-
-                if new_depth >= min_hops {
-                    results.push((neighbor, new_path.clone()));
-                }
-
-                if new_depth < max_hops {
-                    let mut new_visited = visited_edges.clone();
-                    new_visited.insert(edge_key);
-                    stack.push((neighbor, new_path, new_visited));
+                    if new_depth < max_hops {
+                        let mut new_visited = visited_edges.clone();
+                        new_visited.insert(edge_key);
+                        stack.push((neighbor, new_path, new_visited));
+                    }
                 }
             }
         }

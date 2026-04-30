@@ -216,14 +216,25 @@ impl fmt::Display for Value {
                     }
                     write!(f, ")")?;
                 }
-                for (edge, node) in p.edges.iter().zip(p.nodes.iter().skip(1)) {
-                    write!(f, "-[:{}", edge.label)?;
+                for (i, (edge, node)) in p.edges.iter().zip(p.nodes.iter().skip(1)).enumerate() {
+                    // Determine if edge goes forward (src=prev node) or backward.
+                    let prev_node = &p.nodes[i];
+                    let forward = prev_node.id == edge.src;
+                    if forward {
+                        write!(f, "-[:{}", edge.label)?;
+                    } else {
+                        write!(f, "<-[:{}", edge.label)?;
+                    }
                     if !edge.properties.is_empty() {
                         write!(f, " {{")?;
                         fmt_properties(&edge.properties, f)?;
                         write!(f, "}}")?;
                     }
-                    write!(f, "]->(")?;
+                    if forward {
+                        write!(f, "]->(")?;
+                    } else {
+                        write!(f, "]-(")?;
+                    }
                     for lbl in &node.labels {
                         write!(f, ":{lbl}")?;
                     }

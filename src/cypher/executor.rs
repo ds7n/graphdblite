@@ -475,11 +475,12 @@ fn exec_expand(
                     let edge_list: Vec<Value> = steps
                         .iter()
                         .map(|step| {
-                            let props = edge::get_edge_properties(
+                            let props = edge::get_edge_properties_at(
                                 conn,
                                 step.edge_src,
                                 step.edge_dst,
                                 &step.edge_label,
+                                step.edge_seq,
                             )
                             .unwrap_or_default();
                             Value::Edge(crate::types::Edge {
@@ -1529,25 +1530,54 @@ fn exec_delete(
     ctx: &ExecContext,
 ) -> Result<Vec<Record>> {
     let mut records = exec(conn, input, ctx)?;
+
+    // Two-phase delete: collect all entities first, then delete edges, then nodes.
+    // This prevents DeleteConnectedNode errors when multiple paths share nodes.
+    let mut edges_to_delete: Vec<(NodeId, NodeId, String, Option<u64>)> = Vec::new();
+    let mut nodes_to_delete: Vec<NodeId> = Vec::new();
+
     for rec in &mut records {
         for expr in exprs {
-            // For simple variable references, use the compound-binding-aware path.
             if let Expr::Variable(var) = expr {
-                delete_var_entity(conn, rec, var, detach)?;
+                collect_var_entities(rec, var, &mut edges_to_delete, &mut nodes_to_delete);
+                rec.set(format!("{var}.__deleted"), Value::Bool(true));
             } else {
-                // Evaluate the expression to get the entity value.
                 let val = eval_expr(expr, rec, conn)?;
-                delete_value_entity(conn, &val, detach)?;
+                collect_value_entities(&val, &mut edges_to_delete, &mut nodes_to_delete);
             }
         }
     }
+
+    // Phase 1: delete all edges.
+    for (src, dst, label, seq) in &edges_to_delete {
+        if let Some(s) = seq {
+            let _ = edge::delete_single_edge(conn, *src, *dst, label, *s);
+        } else {
+            let _ = edge::delete_edge(conn, *src, *dst, label);
+        }
+    }
+
+    // Phase 2: delete all nodes (edges already removed).
+    for node_id in &nodes_to_delete {
+        if !detach && node::node_has_edges(conn, *node_id)? {
+            return Err(GraphError::constraint(format!(
+                "DeleteConnectedNode: cannot delete node {} because it still has relationships. Use DETACH DELETE.",
+                node_id
+            )));
+        }
+        let _ = node::delete_node(conn, *node_id);
+    }
+
     Ok(records)
 }
 
-/// Delete an entity bound to a variable name, handling compound bindings
-/// (node/edge metadata in the record) and marking deleted for downstream checks.
-fn delete_var_entity(conn: &Connection, rec: &mut Record, var: &str, detach: bool) -> Result<()> {
-    // Check if this is a relationship variable (has edge identity metadata).
+/// Collect entities from a variable binding for two-phase delete.
+fn collect_var_entities(
+    rec: &Record,
+    var: &str,
+    edges: &mut Vec<(NodeId, NodeId, String, Option<u64>)>,
+    nodes: &mut Vec<NodeId>,
+) {
     let edge_src_key = format!("{var}.__src");
     let edge_dst_key = format!("{var}.__dst");
     let edge_type_key = format!("{var}.__type");
@@ -1556,87 +1586,51 @@ fn delete_var_entity(conn: &Connection, rec: &mut Record, var: &str, detach: boo
         rec.get(&edge_dst_key),
         rec.get(&edge_type_key),
     ) {
-        // If a specific edge sequence is known, delete only that parallel edge.
-        // Otherwise delete all edges between (src, dst, label).
         let edge_seq_key = format!("{var}.__edge_seq");
-        if let Some(Value::I64(seq)) = rec.get(&edge_seq_key) {
-            let _ = edge::delete_single_edge(
-                conn,
-                NodeId(*src as u64),
-                NodeId(*dst as u64),
-                label,
-                *seq as u64,
-            );
+        let seq = if let Some(Value::I64(s)) = rec.get(&edge_seq_key) {
+            Some(*s as u64)
         } else {
-            let _ = edge::delete_edge(conn, NodeId(*src as u64), NodeId(*dst as u64), label);
-        }
-        rec.set(format!("{var}.__deleted"), Value::Bool(true));
+            None
+        };
+        edges.push((NodeId(*src as u64), NodeId(*dst as u64), label.clone(), seq));
     } else if let Some(Value::I64(id)) = rec.get(var) {
-        let node_id = NodeId(*id as u64);
-        if !detach && node::node_has_edges(conn, node_id)? {
-            return Err(GraphError::constraint(format!(
-                "DeleteConnectedNode: cannot delete node {} because it still has relationships. Use DETACH DELETE.",
-                node_id
-            )));
-        }
-        let _ = node::delete_node(conn, node_id);
-        rec.set(format!("{var}.__deleted"), Value::Bool(true));
+        nodes.push(NodeId(*id as u64));
     } else if let Some(val) = rec.get(var).cloned() {
-        // Variable holds a materialized Node/Edge/Path value.
-        delete_value_entity(conn, &val, detach)?;
+        collect_value_entities(&val, edges, nodes);
     }
-    // Skip if value is Null (from OPTIONAL MATCH with no match).
-    Ok(())
 }
 
-/// Delete an entity from a Value (Node, Edge, Path, or I64 node ID).
-fn delete_value_entity(conn: &Connection, val: &Value, detach: bool) -> Result<()> {
+/// Collect entities from a Value for two-phase delete.
+fn collect_value_entities(
+    val: &Value,
+    edges: &mut Vec<(NodeId, NodeId, String, Option<u64>)>,
+    nodes: &mut Vec<NodeId>,
+) {
     match val {
         Value::Node(n) => {
-            let node_id = n.id;
-            if !detach && node::node_has_edges(conn, node_id)? {
-                return Err(GraphError::constraint(format!(
-                    "DeleteConnectedNode: cannot delete node {} because it still has relationships. Use DETACH DELETE.",
-                    node_id
-                )));
-            }
-            let _ = node::delete_node(conn, node_id);
+            nodes.push(n.id);
         }
         Value::Edge(e) => {
-            let _ = edge::delete_edge(conn, e.src, e.dst, &e.label);
+            edges.push((e.src, e.dst, e.label.clone(), None));
         }
         Value::Path(p) => {
-            // Delete all edges first, then all nodes.
             for e in &p.edges {
-                let _ = edge::delete_edge(conn, e.src, e.dst, &e.label);
+                edges.push((e.src, e.dst, e.label.clone(), None));
             }
             for n in &p.nodes {
-                if detach {
-                    let _ = node::delete_node(conn, n.id);
-                } else if node::node_has_edges(conn, n.id)? {
-                    return Err(GraphError::constraint(format!(
-                        "DeleteConnectedNode: cannot delete node {} because it still has relationships. Use DETACH DELETE.",
-                        n.id
-                    )));
-                } else {
-                    let _ = node::delete_node(conn, n.id);
-                }
+                nodes.push(n.id);
             }
         }
         Value::I64(id) => {
-            let node_id = NodeId(*id as u64);
-            if !detach && node::node_has_edges(conn, node_id)? {
-                return Err(GraphError::constraint(format!(
-                    "DeleteConnectedNode: cannot delete node {} because it still has relationships. Use DETACH DELETE.",
-                    node_id
-                )));
-            }
-            let _ = node::delete_node(conn, node_id);
+            nodes.push(NodeId(*id as u64));
         }
-        Value::Null => {} // OPTIONAL MATCH no-match
+        Value::List(items) => {
+            for item in items {
+                collect_value_entities(item, edges, nodes);
+            }
+        }
         _ => {}
     }
-    Ok(())
 }
 
 fn exec_set_property(
@@ -2721,7 +2715,15 @@ fn exec_materialize_path(
                 // the static node_aliases may contain duplicate intermediate nodes.
                 let mut full_nodes = vec![nodes[0].clone()];
                 for edge in &edges {
-                    let next_id = edge.dst;
+                    // Determine next node: for undirected traversals, the
+                    // edge may be stored in either direction. Pick the
+                    // endpoint that differs from the previous node.
+                    let prev_id = full_nodes.last().unwrap().id;
+                    let next_id = if prev_id == edge.src {
+                        edge.dst
+                    } else {
+                        edge.src
+                    };
                     let n = node::get_node(conn, next_id)?;
                     full_nodes.push(n);
                 }
@@ -3020,11 +3022,12 @@ fn exec_correlated(
                             let edge_list: Vec<Value> = steps
                                 .iter()
                                 .map(|step| {
-                                    let props = edge::get_edge_properties(
+                                    let props = edge::get_edge_properties_at(
                                         conn,
                                         step.edge_src,
                                         step.edge_dst,
                                         &step.edge_label,
+                                        step.edge_seq,
                                     )
                                     .unwrap_or_default();
                                     Value::Edge(crate::types::Edge {

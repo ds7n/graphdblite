@@ -11,7 +11,9 @@ use rusqlite::Connection;
 
 use crate::cypher::ast::{Expr, ReturnItem};
 use crate::cypher::eval::{eval_expr, eval_predicate, expr_to_column_name};
-use crate::cypher::executor::{is_user_visible_field, literal_to_value, node_to_record};
+use crate::cypher::executor::{
+    fetch_and_populate, is_user_visible_field, literal_to_value, node_to_record,
+};
 use crate::cypher::ir::*;
 use crate::cypher::record::Record;
 use crate::types::{Direction, NodeId, Result, Value};
@@ -306,6 +308,7 @@ impl<'a> RecordIter for ExpandIter<'a> {
                     self.min_hops,
                     self.max_hops,
                     &self.var_length_prop_filters,
+                    None,
                 )?;
                 for (dst_id, steps) in paths {
                     if let Some(required) = bound_dst {
@@ -313,30 +316,8 @@ impl<'a> RecordIter for ExpandIter<'a> {
                             continue;
                         }
                     }
-                    let dst_node = node::get_node(self.conn, dst_id)?;
                     let mut new_rec = rec.clone();
-                    new_rec.set(self.dst_alias.clone(), Value::I64(dst_id.0 as i64));
-                    for (key, val) in &dst_node.properties {
-                        new_rec.set(format!("{}.{key}", self.dst_alias), val.clone());
-                    }
-                    new_rec.set(
-                        format!("{}.__label", self.dst_alias),
-                        Value::String(dst_node.labels.join(":")),
-                    );
-                    new_rec.set(
-                        format!("{}.__labels", self.dst_alias),
-                        Value::List(
-                            dst_node
-                                .labels
-                                .iter()
-                                .map(|l| Value::String(l.clone()))
-                                .collect(),
-                        ),
-                    );
-                    new_rec.set(
-                        format!("{}.__id", self.dst_alias),
-                        Value::I64(dst_id.0 as i64),
-                    );
+                    fetch_and_populate(self.conn, &mut new_rec, dst_id, &self.dst_alias)?;
                     // Bind relationship variable as a list of edges.
                     if let Some(ref r_alias) = self.rel_alias {
                         let edge_list: Vec<Value> = steps
@@ -373,30 +354,8 @@ impl<'a> RecordIter for ExpandIter<'a> {
                             continue;
                         }
                     }
-                    let dst_node = node::get_node(self.conn, dst_id)?;
                     let mut new_rec = rec.clone();
-                    new_rec.set(self.dst_alias.clone(), Value::I64(dst_id.0 as i64));
-                    for (key, val) in &dst_node.properties {
-                        new_rec.set(format!("{}.{key}", self.dst_alias), val.clone());
-                    }
-                    new_rec.set(
-                        format!("{}.__label", self.dst_alias),
-                        Value::String(dst_node.labels.join(":")),
-                    );
-                    new_rec.set(
-                        format!("{}.__labels", self.dst_alias),
-                        Value::List(
-                            dst_node
-                                .labels
-                                .iter()
-                                .map(|l| Value::String(l.clone()))
-                                .collect(),
-                        ),
-                    );
-                    new_rec.set(
-                        format!("{}.__id", self.dst_alias),
-                        Value::I64(dst_id.0 as i64),
-                    );
+                    fetch_and_populate(self.conn, &mut new_rec, dst_id, &self.dst_alias)?;
                     if let Some(ref r_alias) = self.rel_alias {
                         let (edge_src, edge_dst) = match self.direction {
                             Direction::Incoming => (dst_id, src_id),
@@ -559,6 +518,7 @@ pub fn build_iter<'a>(
             max_hops,
             var_length,
             var_length_prop_filters,
+            result_cap: _,
         } => {
             let input_iter = build_iter(conn, input)?;
             let prop_filter_values: HashMap<String, Value> = var_length_prop_filters

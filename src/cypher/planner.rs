@@ -3470,6 +3470,7 @@ fn plan_single_pattern(conn: &Connection, pattern: &Pattern) -> crate::types::Re
                     } else {
                         HashMap::new()
                     },
+                    result_cap: None,
                 });
 
                 // Apply destination node's label filters.
@@ -4243,6 +4244,7 @@ fn try_replace_scan(
             max_hops,
             var_length,
             var_length_prop_filters,
+            result_cap,
         } => try_replace_scan(conn, input, alias, prop, lit).map(|new_input| LogicalOp::Expand {
             input: Box::new(new_input),
             src_alias: src_alias.clone(),
@@ -4254,6 +4256,7 @@ fn try_replace_scan(
             max_hops: *max_hops,
             var_length: *var_length,
             var_length_prop_filters: var_length_prop_filters.clone(),
+            result_cap: *result_cap,
         }),
 
         LogicalOp::CrossProduct {
@@ -4319,3 +4322,4 @@ fn statement_return_columns(stmt: &Statement) -> Vec<String> {
         _ => vec![],
     }
 }
+

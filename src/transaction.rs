@@ -70,7 +70,7 @@ macro_rules! impl_read_ops {
                 min_hops: u32,
                 max_hops: u32,
             ) -> Result<Vec<NodeId>> {
-                edge::traverse(&self.tx, start, label, direction, min_hops, max_hops)
+                edge::traverse(&self.tx, start, label, direction, min_hops, max_hops, None)
             }
 
             /// Variable-length path traversal (BFS) with depth tracking.
@@ -84,7 +84,9 @@ macro_rules! impl_read_ops {
                 min_hops: u32,
                 max_hops: u32,
             ) -> Result<Vec<(NodeId, u32)>> {
-                edge::traverse_with_depth(&self.tx, start, label, direction, min_hops, max_hops)
+                edge::traverse_with_depth(
+                    &self.tx, start, label, direction, min_hops, max_hops, None,
+                )
             }
 
             /// Execute a Cypher query string and return result records.

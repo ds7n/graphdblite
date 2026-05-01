@@ -172,6 +172,7 @@ impl WriteTransaction {
         let plan = planner::plan(conn, &stmt).map_err(to_napi_err)?;
         let ctx = executor::ExecContext {
             max_result_rows: db.max_result_rows,
+            ..Default::default()
         };
         let records = executor::execute_with_ctx(conn, &plan, &ctx).map_err(to_napi_err)?;
         records_to_napi(&env, &records)
@@ -230,6 +231,7 @@ impl ReadTransaction {
         let plan = planner::plan(conn, &stmt).map_err(to_napi_err)?;
         let ctx = executor::ExecContext {
             max_result_rows: db.max_result_rows,
+            ..Default::default()
         };
         let records = executor::execute_with_ctx(conn, &plan, &ctx).map_err(to_napi_err)?;
         records_to_napi(&env, &records)

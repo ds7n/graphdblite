@@ -3239,7 +3239,7 @@ fn exec_correlated(
                         // only — exec_correlated may not track edge_seq for
                         // fixed-length segments, and for cross-segment checks
                         // any edge between the same endpoints counts as the same.
-                        let prior_edges: Vec<(i64, i64, String)> = collect_flat_edge_ids(&rec)
+                        let prior_edges: Vec<(i64, i64, String)> = collect_flat_edge_ids(rec)
                             .into_iter()
                             .map(|(s, d, t, _seq)| (s, d, t))
                             .collect();
@@ -3963,11 +3963,9 @@ fn find_merge_match_multi_label(
     let primary = labels.first().copied().unwrap_or("");
     let candidates = find_merge_matches_by_label_and_props(conn, primary, properties)?;
     // Require the node to carry every label in the pattern.
-    Ok(candidates.into_iter().find(|n| {
-        labels
-            .iter()
-            .all(|req| n.labels.iter().any(|l| l == req))
-    }))
+    Ok(candidates
+        .into_iter()
+        .find(|n| labels.iter().all(|req| n.labels.iter().any(|l| l == req))))
 }
 
 /// Collect all nodes matching a single label + property values (no multi-label filter).

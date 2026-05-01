@@ -310,6 +310,7 @@ pub unsafe extern "C" fn graphdb_tx_query(
         let plan = planner::plan(conn, &stmt)?;
         let ctx = executor::ExecContext {
             max_result_rows: handle.db.max_result_rows,
+            ..Default::default()
         };
         executor::execute_with_ctx(conn, &plan, &ctx)
     })();

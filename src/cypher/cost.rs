@@ -107,6 +107,8 @@ fn estimate_rows(conn: &Connection, plan: &LogicalOp) -> f64 {
             }
         }
 
+        LogicalOp::Call { .. } => 1.0,
+
         // Write operations — not relevant for cost estimation.
         LogicalOp::CreateNode { .. }
         | LogicalOp::CreateEdge { .. }
@@ -243,6 +245,7 @@ fn format_plan_tree(conn: &Connection, plan: &LogicalOp, depth: usize, lines: &m
             let kind = if *all { "UNION ALL" } else { "UNION" };
             format!("{kind} ({} branches)", inputs.len())
         }
+        LogicalOp::Call { procedure_name, .. } => format!("Call {procedure_name}"),
     };
 
     lines.push(format!("{indent}{desc} (est. {rows:.0} rows)"));

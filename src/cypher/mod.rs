@@ -6,4 +6,5 @@ pub mod ir;
 pub mod iter;
 pub mod parser;
 pub mod planner;
+pub mod procedure;
 pub mod record;

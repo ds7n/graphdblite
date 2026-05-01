@@ -138,17 +138,7 @@ fn parse_single_stmt(pair: pest::iterators::Pair<Rule>) -> crate::types::Result<
         Rule::unwind_stmt => parse_unwind(pair).map(Statement::Unwind),
         Rule::with_stmt => parse_with_stmt(pair).map(Statement::Match),
         Rule::return_stmt => parse_return_stmt(pair).map(Statement::Return),
-        Rule::call_stmt => {
-            // Extract procedure name from the CALL statement.
-            let proc_name = pair
-                .into_inner()
-                .find(|p| p.as_rule() == Rule::procedure_name)
-                .map(|p| p.as_str().to_string())
-                .unwrap_or_default();
-            Ok(Statement::Call {
-                procedure_name: proc_name,
-            })
-        }
+        Rule::call_stmt => parse_call(pair),
         _ => Err(GraphError::Serialization(format!(
             "unexpected rule: {:?}",
             pair.as_rule()
@@ -175,8 +165,155 @@ fn parse_explain(pair: pest::iterators::Pair<Rule>) -> crate::types::Result<Stat
     Ok(Statement::Explain(Box::new(stmt)))
 }
 
+fn parse_call(pair: pest::iterators::Pair<Rule>) -> crate::types::Result<Statement> {
+    let mut procedure_name = String::new();
+    let mut args = Vec::new();
+    let mut has_parens = false;
+    let mut yield_items: Option<Vec<(String, Option<String>)>> = None;
+    let mut yield_star = false;
+    let mut return_clause = None;
+    let mut order_by = Vec::new();
+    let mut skip = None;
+    let mut limit = None;
+
+    // Check raw text for parentheses to distinguish explicit vs implicit args.
+    let raw = pair.as_str();
+    if let Some(proc_end) = raw.find('(') {
+        let yield_pos = raw.to_ascii_uppercase().find("YIELD");
+        if yield_pos.is_none() || proc_end < yield_pos.unwrap() {
+            has_parens = true;
+        }
+    }
+
+    for inner in pair.into_inner() {
+        match inner.as_rule() {
+            Rule::procedure_name => {
+                procedure_name = inner.as_str().to_string();
+            }
+            Rule::expr => {
+                args.push(parse_expr(inner)?);
+            }
+            Rule::yield_clause => {
+                for yc in inner.into_inner() {
+                    match yc.as_rule() {
+                        Rule::yield_star => {
+                            yield_star = true;
+                        }
+                        Rule::yield_items => {
+                            let mut items = Vec::new();
+                            for yi in yc.into_inner() {
+                                if yi.as_rule() == Rule::yield_item {
+                                    let mut idents = yi.into_inner();
+                                    let col = idents
+                                        .next()
+                                        .expect("yield_item must have ident")
+                                        .as_str()
+                                        .to_string();
+                                    let alias = idents.next().map(|a| a.as_str().to_string());
+                                    items.push((col, alias));
+                                }
+                            }
+                            yield_items = Some(items);
+                        }
+                        _ => {}
+                    }
+                }
+            }
+            Rule::return_clause => {
+                return_clause = Some(parse_return(inner)?);
+            }
+            Rule::order_by_clause => {
+                order_by = parse_order_by(inner)?;
+            }
+            Rule::skip_clause => {
+                skip = Some(Box::new(parse_skip(inner)?));
+            }
+            Rule::limit_clause => {
+                limit = Some(Box::new(parse_limit(inner)?));
+            }
+            _ => {}
+        }
+    }
+
+    Ok(Statement::Call {
+        procedure_name,
+        args,
+        implicit_args: !has_parens,
+        yield_items,
+        yield_star,
+        return_clause,
+        order_by,
+        skip,
+        limit,
+    })
+}
+
 /// Parsed output of a MATCH clause: required patterns, optional pattern groups, and WHERE filter.
 type MatchParts = (Vec<Pattern>, Vec<OptionalMatch>, Option<Expr>);
+
+/// Parse a CALL clause within a multi-clause statement.
+fn parse_multi_call_clause(pair: pest::iterators::Pair<Rule>) -> crate::types::Result<Clause> {
+    let mut procedure_name = String::new();
+    let mut args = Vec::new();
+    let mut has_parens = false;
+    let mut yield_items: Option<Vec<(String, Option<String>)>> = None;
+    let mut yield_star = false;
+
+    // Check raw text for parentheses to distinguish explicit vs implicit args.
+    let raw = pair.as_str();
+    if let Some(proc_end) = raw.find('(') {
+        let yield_pos = raw.to_ascii_uppercase().find("YIELD");
+        if yield_pos.is_none() || proc_end < yield_pos.unwrap() {
+            has_parens = true;
+        }
+    }
+
+    for inner in pair.into_inner() {
+        match inner.as_rule() {
+            Rule::procedure_name => {
+                procedure_name = inner.as_str().to_string();
+            }
+            Rule::expr => {
+                args.push(parse_expr(inner)?);
+            }
+            Rule::yield_clause => {
+                for yc in inner.into_inner() {
+                    match yc.as_rule() {
+                        Rule::yield_star => {
+                            yield_star = true;
+                        }
+                        Rule::yield_items => {
+                            let mut items = Vec::new();
+                            for yi in yc.into_inner() {
+                                if yi.as_rule() == Rule::yield_item {
+                                    let mut idents = yi.into_inner();
+                                    let col = idents
+                                        .next()
+                                        .expect("yield_item must have ident")
+                                        .as_str()
+                                        .to_string();
+                                    let alias = idents.next().map(|a| a.as_str().to_string());
+                                    items.push((col, alias));
+                                }
+                            }
+                            yield_items = Some(items);
+                        }
+                        _ => {}
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+
+    Ok(Clause::Call {
+        procedure_name,
+        args,
+        implicit_args: !has_parens,
+        yield_items,
+        yield_star,
+    })
+}
 
 /// Extract patterns, optional patterns, and WHERE from a `match_part` rule.
 fn parse_match_part(pair: pest::iterators::Pair<Rule>) -> crate::types::Result<MatchParts> {
@@ -453,6 +590,10 @@ fn parse_multi_clause(
                     }
                 }
                 clauses.push(Clause::Delete { exprs, detach });
+            }
+            Rule::multi_call_clause => {
+                let call_clause = parse_multi_call_clause(inner)?;
+                clauses.push(call_clause);
             }
             Rule::return_clause => return_clause = Some(parse_return(inner)?),
             Rule::order_by_clause => order_by = parse_order_by(inner)?,
@@ -1047,7 +1188,7 @@ fn parse_rel_pattern(pair: pest::iterators::Pair<Rule>) -> crate::types::Result<
     let direction = match inner.as_rule() {
         Rule::rel_right | Rule::rel_right_bare => RelDirection::Outgoing,
         Rule::rel_left | Rule::rel_left_bare => RelDirection::Incoming,
-        Rule::rel_undirected | Rule::rel_undirected_bare | Rule::rel_both_bare => {
+        Rule::rel_undirected | Rule::rel_undirected_bare | Rule::rel_both | Rule::rel_both_bare => {
             RelDirection::Undirected
         }
         _ => unreachable!(),
@@ -3159,7 +3300,45 @@ pub fn resolve_params(
                 all: *all,
             })
         }
-        Statement::Call { .. } => Ok(stmt.clone()),
+        Statement::Call {
+            procedure_name,
+            args,
+            implicit_args,
+            yield_items,
+            yield_star,
+            return_clause,
+            order_by,
+            skip,
+            limit,
+        } => {
+            let resolved_args: crate::types::Result<Vec<_>> =
+                args.iter().map(|a| resolve_expr(a, params)).collect();
+            Ok(Statement::Call {
+                procedure_name: procedure_name.clone(),
+                args: resolved_args?,
+                implicit_args: *implicit_args,
+                yield_items: yield_items.clone(),
+                yield_star: *yield_star,
+                return_clause: return_clause
+                    .as_ref()
+                    .map(|rc| {
+                        Ok::<_, GraphError>(ReturnClause {
+                            items: resolve_return_items(&rc.items, params)?,
+                            distinct: rc.distinct,
+                        })
+                    })
+                    .transpose()?,
+                order_by: resolve_sort_items(order_by, params)?,
+                skip: skip
+                    .as_ref()
+                    .map(|e| resolve_expr(e, params).map(Box::new))
+                    .transpose()?,
+                limit: limit
+                    .as_ref()
+                    .map(|e| resolve_expr(e, params).map(Box::new))
+                    .transpose()?,
+            })
+        }
     }
 }
 
@@ -3226,6 +3405,23 @@ fn resolve_clause(
         Clause::Remove { items } => Ok(Clause::Remove {
             items: items.clone(),
         }),
+        Clause::Call {
+            procedure_name,
+            args,
+            implicit_args,
+            yield_items,
+            yield_star,
+        } => {
+            let resolved_args: crate::types::Result<Vec<_>> =
+                args.iter().map(|a| resolve_expr(a, params)).collect();
+            Ok(Clause::Call {
+                procedure_name: procedure_name.clone(),
+                args: resolved_args?,
+                implicit_args: *implicit_args,
+                yield_items: yield_items.clone(),
+                yield_star: *yield_star,
+            })
+        }
         Clause::Delete { exprs, detach } => Ok(Clause::Delete {
             exprs: exprs
                 .iter()

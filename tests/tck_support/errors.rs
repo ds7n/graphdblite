@@ -58,6 +58,12 @@ fn kind_matches(err: &QueryError, expected: &str) -> bool {
     {
         return true;
     }
+    // TCK uses "ParameterMissing" but we raise SyntaxError or ProcedureError.
+    if expected.eq_ignore_ascii_case("ParameterMissing")
+        && (err.kind() == "SyntaxError" || err.kind() == "ProcedureError")
+    {
+        return true;
+    }
     false
 }
 

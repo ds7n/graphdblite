@@ -184,6 +184,328 @@ pub fn plan_subquery(conn: &Connection, stmt: &Statement) -> crate::types::Resul
     plan_inner(conn, stmt, true)
 }
 
+/// Plan a statement with a procedure registry for CALL validation.
+pub fn plan_with_procedures(
+    conn: &Connection,
+    stmt: &Statement,
+    procedures: &crate::cypher::procedure::ProcedureRegistry,
+    params: Option<&std::collections::HashMap<String, Value>>,
+) -> crate::types::Result<LogicalOp> {
+    match stmt {
+        Statement::Call {
+            procedure_name,
+            args,
+            implicit_args,
+            yield_items,
+            yield_star,
+            return_clause,
+            order_by,
+            skip,
+            limit,
+        } => plan_call(
+            conn,
+            procedure_name,
+            args,
+            *implicit_args,
+            yield_items.as_deref(),
+            *yield_star,
+            return_clause.as_ref(),
+            order_by,
+            skip.as_deref(),
+            limit.as_deref(),
+            procedures,
+            params,
+        ),
+        Statement::Explain(inner) => plan_with_procedures(conn, inner, procedures, params),
+        _ => plan(conn, stmt),
+    }
+}
+
+/// Plan a CALL procedure statement with validation.
+fn plan_call(
+    conn: &Connection,
+    procedure_name: &str,
+    args: &[Expr],
+    implicit_args: bool,
+    yield_items: Option<&[(String, Option<String>)]>,
+    yield_star: bool,
+    return_clause: Option<&ReturnClause>,
+    order_by: &[SortItem],
+    skip: Option<&Expr>,
+    limit: Option<&Expr>,
+    procedures: &crate::cypher::procedure::ProcedureRegistry,
+    params: Option<&std::collections::HashMap<String, Value>>,
+) -> crate::types::Result<LogicalOp> {
+    // 1. ProcedureNotFound — look up procedure in registry.
+    let proc_def = procedures.get(procedure_name).ok_or_else(|| {
+        GraphError::Query(crate::types::QueryError::ProcedureError {
+            phase: crate::types::QueryPhase::SemanticAnalysis,
+            message: format!("ProcedureNotFound: unknown procedure `{procedure_name}`"),
+        })
+    })?;
+
+    // Determine if this is an in-query CALL (has RETURN or YIELD with RETURN).
+    let is_in_query = return_clause.is_some();
+
+    // 8. UnexpectedSyntax — YIELD * in an in-query context.
+    if yield_star && is_in_query {
+        return Err(GraphError::syntax(
+            "UnexpectedSyntax: YIELD * is not allowed in an in-query CALL",
+        ));
+    }
+
+    // 3. InvalidArgumentPassingMode — implicit args with YIELD (in-query form).
+    if implicit_args && (yield_items.is_some() || yield_star) {
+        return Err(GraphError::syntax(
+            "InvalidArgumentPassingMode: implicit argument passing is not allowed with YIELD",
+        ));
+    }
+
+    // 7. MissingParameter — implicit args, missing required parameter.
+    // With implicit args, the arguments come from parameters with the same name
+    // as the procedure inputs.
+    let resolved_args: Vec<Expr>;
+    if implicit_args && !proc_def.inputs.is_empty() {
+        // Build args from parameters by matching input parameter names.
+        let empty_params = std::collections::HashMap::new();
+        let param_map = params.unwrap_or(&empty_params);
+        let mut built_args = Vec::new();
+        for input_param in &proc_def.inputs {
+            if let Some(val) = param_map.get(&input_param.name) {
+                built_args.push(value_to_literal_expr(val));
+            } else {
+                return Err(GraphError::syntax(
+                    "MissingParameter: implicit argument passing requires all procedure parameters to be provided",
+                ));
+            }
+        }
+        resolved_args = built_args;
+    } else {
+        resolved_args = args.to_vec();
+    }
+    let args = &resolved_args[..];
+
+    if !implicit_args {
+        // 2. InvalidNumberOfArguments — wrong arg count.
+        if args.len() != proc_def.inputs.len() {
+            return Err(GraphError::syntax(format!(
+                "InvalidNumberOfArguments: expected {} argument(s) but got {}",
+                proc_def.inputs.len(),
+                args.len()
+            )));
+        }
+
+        // 6. InvalidAggregation — aggregate function in CALL argument.
+        for arg in args {
+            if is_aggregate_fn(arg) {
+                return Err(GraphError::syntax(
+                    "InvalidAggregation: aggregation functions are not allowed in CALL arguments",
+                ));
+            }
+        }
+
+        // 4. InvalidArgumentType — wrong literal type for parameter.
+        for (arg, param) in args.iter().zip(&proc_def.inputs) {
+            if let Some(err) = check_arg_type(arg, &param.type_name) {
+                return Err(GraphError::syntax(err));
+            }
+        }
+    }
+
+    // Resolve yield items.
+    let resolved_yields: Vec<(String, Option<String>)> = if yield_star {
+        // YIELD * — emit all output columns.
+        proc_def
+            .outputs
+            .iter()
+            .map(|p| (p.name.clone(), None))
+            .collect()
+    } else if let Some(items) = yield_items {
+        // 5. VariableAlreadyBound — duplicate yield aliases.
+        let mut bound_names: HashSet<String> = HashSet::new();
+        for (col, alias) in items {
+            let bind_name = alias.as_deref().unwrap_or(col);
+            if !bound_names.insert(bind_name.to_string()) {
+                return Err(GraphError::syntax(format!(
+                    "VariableAlreadyBound: variable `{bind_name}` already declared",
+                )));
+            }
+        }
+        items.to_vec()
+    } else if is_in_query {
+        // In-query CALL without YIELD — outputs are NOT in scope.
+        Vec::new()
+    } else {
+        // Standalone CALL without YIELD — emit all output columns.
+        proc_def
+            .outputs
+            .iter()
+            .map(|p| (p.name.clone(), None))
+            .collect()
+    };
+
+    let mut plan = LogicalOp::Call {
+        input: Box::new(LogicalOp::SingleRow),
+        procedure_name: procedure_name.to_string(),
+        args: args.to_vec(),
+        yield_items: resolved_yields.clone(),
+        yield_star,
+    };
+
+    // If there's a RETURN clause, add projection.
+    if let Some(ret) = return_clause {
+        // Check that RETURN references are valid — they must be yielded columns.
+        let yielded_names: HashSet<String> = resolved_yields
+            .iter()
+            .map(|(col, alias)| alias.as_ref().unwrap_or(col).clone())
+            .collect();
+
+        // Handle RETURN * — expand to all yielded columns.
+        let return_items = if ret.items.len() == 1
+            && matches!(ret.items[0].expr, Expr::Variable(ref v) if v == "*")
+        {
+            resolved_yields
+                .iter()
+                .map(|(col, alias)| ReturnItem {
+                    expr: Expr::Variable(alias.as_ref().unwrap_or(col).clone()),
+                    alias: None,
+                })
+                .collect()
+        } else {
+            // Validate that RETURN variables are in scope.
+            for item in &ret.items {
+                check_return_vars_in_scope(&item.expr, &yielded_names)?;
+            }
+            ret.items.clone()
+        };
+
+        plan = LogicalOp::Project {
+            input: Box::new(plan),
+            items: return_items,
+            emit_compound: true,
+        };
+
+        if ret.distinct {
+            plan = LogicalOp::Distinct {
+                input: Box::new(plan),
+            };
+        }
+
+        // Add ORDER BY, SKIP, LIMIT if present.
+        if !order_by.is_empty() {
+            plan = LogicalOp::Sort {
+                input: Box::new(plan),
+                items: order_by.to_vec(),
+            };
+        }
+        if let Some(s) = skip {
+            plan = LogicalOp::Skip {
+                input: Box::new(plan),
+                count: eval_skip_limit(s, conn)?,
+            };
+        }
+        if let Some(l) = limit {
+            plan = LogicalOp::Limit {
+                input: Box::new(plan),
+                count: eval_skip_limit(l, conn)?,
+            };
+        }
+    }
+
+    Ok(plan)
+}
+
+/// Convert a runtime Value to a literal Expr for implicit argument injection.
+fn value_to_literal_expr(val: &Value) -> Expr {
+    match val {
+        Value::I64(n) => Expr::Literal(LiteralValue::I64(*n)),
+        Value::F64(f) => Expr::Literal(LiteralValue::F64(*f)),
+        Value::String(s) => Expr::Literal(LiteralValue::String(s.clone())),
+        Value::Bool(b) => Expr::Literal(LiteralValue::Bool(*b)),
+        Value::Null => Expr::Literal(LiteralValue::Null),
+        _ => Expr::Literal(LiteralValue::Null), // Fallback for complex types
+    }
+}
+
+/// Check that a literal argument is type-compatible with a procedure parameter.
+/// Returns Some(error_message) if incompatible, None if OK.
+fn check_arg_type(arg: &Expr, type_name: &str) -> Option<String> {
+    // Strip trailing `?` for nullable types.
+    let base_type = type_name.trim_end_matches('?').to_ascii_uppercase();
+
+    match arg {
+        Expr::Literal(LiteralValue::Null) => None, // null is compatible with any type
+        Expr::Literal(LiteralValue::I64(_)) => match base_type.as_str() {
+            "INTEGER" | "NUMBER" | "FLOAT" | "ANY" => None,
+            _ => Some(format!(
+                "InvalidArgumentType: expected {type_name} but got INTEGER"
+            )),
+        },
+        Expr::Literal(LiteralValue::F64(_)) => match base_type.as_str() {
+            "FLOAT" | "NUMBER" | "ANY" => None,
+            _ => Some(format!(
+                "InvalidArgumentType: expected {type_name} but got FLOAT"
+            )),
+        },
+        Expr::Literal(LiteralValue::String(_)) => match base_type.as_str() {
+            "STRING" | "ANY" => None,
+            _ => Some(format!(
+                "InvalidArgumentType: expected {type_name} but got STRING"
+            )),
+        },
+        Expr::Literal(LiteralValue::Bool(_)) => match base_type.as_str() {
+            "BOOLEAN" | "ANY" => None,
+            _ => Some(format!(
+                "InvalidArgumentType: expected {type_name} but got BOOLEAN"
+            )),
+        },
+        // Non-literal expressions (variables, function calls) — can't type-check at compile time.
+        _ => None,
+    }
+}
+
+/// Check that all variables in a RETURN expression are in the yielded scope.
+fn check_return_vars_in_scope(expr: &Expr, scope: &HashSet<String>) -> crate::types::Result<()> {
+    match expr {
+        Expr::Variable(name) => {
+            if !scope.contains(name) {
+                return Err(GraphError::syntax(format!(
+                    "UndefinedVariable: variable `{name}` not defined",
+                )));
+            }
+            Ok(())
+        }
+        Expr::Property(var, _) => {
+            if !scope.contains(var) {
+                return Err(GraphError::syntax(format!(
+                    "UndefinedVariable: variable `{var}` not defined",
+                )));
+            }
+            Ok(())
+        }
+        Expr::BinaryOp { left, right, .. } => {
+            check_return_vars_in_scope(left, scope)?;
+            check_return_vars_in_scope(right, scope)
+        }
+        Expr::Not(inner) | Expr::IsNull(inner) | Expr::IsNotNull(inner) => {
+            check_return_vars_in_scope(inner, scope)
+        }
+        Expr::FunctionCall { args, .. } => {
+            for arg in args {
+                check_return_vars_in_scope(arg, scope)?;
+            }
+            Ok(())
+        }
+        Expr::List(items) => {
+            for item in items {
+                check_return_vars_in_scope(item, scope)?;
+            }
+            Ok(())
+        }
+        _ => Ok(()),
+    }
+}
+
 fn plan_inner(
     conn: &Connection,
     stmt: &Statement,
@@ -201,7 +523,7 @@ fn plan_inner(
         Statement::Unwind(u) => plan_unwind(conn, u),
         Statement::Return(r) => plan_return(conn, r),
         Statement::MultiClause(mc) => plan_multi_clause(conn, mc),
-        Statement::Call { procedure_name } => Err(GraphError::Query(
+        Statement::Call { procedure_name, .. } => Err(GraphError::Query(
             crate::types::QueryError::ProcedureError {
                 phase: crate::types::QueryPhase::SemanticAnalysis,
                 message: format!("ProcedureNotFound: unknown procedure `{procedure_name}`"),
@@ -1413,6 +1735,75 @@ fn plan_multi_clause(
                 op = Some(LogicalOp::Remove {
                     input: Box::new(input),
                     items: items.clone(),
+                });
+            }
+            Clause::Call {
+                procedure_name,
+                args,
+                implicit_args,
+                yield_items,
+                yield_star,
+            } => {
+                // In multi-clause context, CALL acts as a pipeline operator.
+                // It takes input from prior clauses (or SingleRow if first).
+                let input = op.take().unwrap_or(LogicalOp::SingleRow);
+
+                // Resolve yield items: for now, just pass them through.
+                // Full validation happens at runtime via ExecContext procedures.
+                let resolved_yields: Vec<(String, Option<String>)> = if *yield_star {
+                    // YIELD * — will be resolved at runtime.
+                    Vec::new()
+                } else if let Some(items) = yield_items {
+                    // Check for duplicate yield aliases.
+                    let mut bound_names: HashSet<String> = HashSet::new();
+                    for (col, alias) in items {
+                        let bind_name = alias.as_deref().unwrap_or(col.as_str());
+                        // VariableAlreadyBound: yield alias conflicts with prior scope.
+                        if scope_vars.contains(bind_name) {
+                            return Err(GraphError::syntax(format!(
+                                "VariableAlreadyBound: variable `{bind_name}` already declared",
+                            )));
+                        }
+                        if !bound_names.insert(bind_name.to_string()) {
+                            return Err(GraphError::syntax(format!(
+                                "VariableAlreadyBound: variable `{bind_name}` already declared",
+                            )));
+                        }
+                    }
+                    items.clone()
+                } else {
+                    // No YIELD — outputs not in scope for downstream.
+                    Vec::new()
+                };
+
+                // InvalidArgumentPassingMode: implicit args with YIELD in multi-clause.
+                if *implicit_args && (yield_items.is_some() || *yield_star) {
+                    return Err(GraphError::syntax(
+                        "InvalidArgumentPassingMode: implicit argument passing is not allowed with YIELD",
+                    ));
+                }
+
+                // InvalidAggregation: aggregate function in CALL argument.
+                for arg in args {
+                    if is_aggregate_fn(arg) {
+                        return Err(GraphError::syntax(
+                            "InvalidAggregation: aggregation functions are not allowed in CALL arguments",
+                        ));
+                    }
+                }
+
+                // Add yielded columns to scope.
+                for (col, alias) in &resolved_yields {
+                    let bind_name = alias.as_ref().unwrap_or(col);
+                    scope_vars.insert(bind_name.clone());
+                }
+
+                op = Some(LogicalOp::Call {
+                    input: Box::new(input),
+                    procedure_name: procedure_name.clone(),
+                    args: args.clone(),
+                    yield_items: resolved_yields,
+                    yield_star: *yield_star,
                 });
             }
             Clause::Delete { exprs, detach } => {
@@ -2878,6 +3269,14 @@ fn validate_variable_types_with_map(
     patterns: &[Pattern],
     types: &mut std::collections::HashMap<String, VarKind>,
 ) -> crate::types::Result<()> {
+    // Snapshot relationship vars already in the map from prior MATCHes.
+    // These are "bound" rels that may legally appear in this MATCH.
+    let prior_rels: HashSet<String> = types
+        .iter()
+        .filter(|(_, &k)| k == VarKind::Relationship)
+        .map(|(n, _)| n.clone())
+        .collect();
+
     for pattern in patterns {
         // Path variable binding: `r = (...)-[...]->(...)`
         if let Some(ref path_var) = pattern.path_variable {
@@ -2930,9 +3329,13 @@ fn validate_variable_types_with_map(
                             }
                             // Relationship variables cannot be reused in the
                             // same MATCH clause (unlike node variables).
-                            return Err(GraphError::syntax(format!(
-                                "VariableAlreadyBound: cannot use relationship variable '{var}' more than once in a pattern"
-                            )));
+                            // However, a rel bound in a *prior* MATCH is legal
+                            // (bound relationship reference in a cross-MATCH pattern).
+                            if !prior_rels.contains(var) {
+                                return Err(GraphError::syntax(format!(
+                                    "VariableAlreadyBound: cannot use relationship variable '{var}' more than once in a pattern"
+                                )));
+                            }
                         } else {
                             types.insert(var.clone(), VarKind::Relationship);
                         }

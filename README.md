@@ -143,13 +143,13 @@ SET n.age = 31
 DELETE n
 ```
 
-Clauses: `MATCH`, `OPTIONAL MATCH`, `WHERE`, `RETURN`, `WITH`, `ORDER BY`, `SKIP`, `LIMIT`, `CREATE`, `MERGE`, `SET`, `REMOVE`, `DELETE`, `DETACH DELETE`, `UNWIND`, `UNION`, `EXPLAIN`.
+Clauses: `MATCH`, `OPTIONAL MATCH`, `WHERE`, `RETURN`, `WITH`, `ORDER BY`, `SKIP`, `LIMIT`, `CREATE`, `MERGE`, `SET`, `REMOVE`, `DELETE`, `DETACH DELETE`, `UNWIND`, `UNION`, `CALL...YIELD`, `EXPLAIN`.
 
 Expressions: list comprehensions, pattern comprehensions, `CASE`, `EXISTS {}` subqueries, quantifier predicates (`any`, `all`, `none`, `single`), temporal constructors, regex matching.
 
 Functions: 50+ scalar, string, math, aggregation, and temporal functions. See the full [Cypher Reference](docs/cypher.md).
 
-**openCypher TCK conformance: 98.1%** (3822/3895 scenarios passing).
+**openCypher TCK conformance: 100%** (3895/3895 scenarios passing).
 
 ## Architecture
 

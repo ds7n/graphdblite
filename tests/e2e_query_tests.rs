@@ -3548,3 +3548,30 @@ fn test_pattern_comprehension_nested_in_list_comprehension() {
         }
     }
 }
+
+#[test]
+fn large_duration_between() {
+    // Analogous to TCK Temporal10[9] but within chrono's year range.
+    let mut db = Database::open_memory().unwrap();
+    let tx = db.begin_read().unwrap();
+    let rows = tx
+        .query("RETURN duration.between(date('0001-01-01'), date('9999-12-31')) AS duration")
+        .unwrap();
+    assert_eq!(rows.len(), 1);
+    let dur = rows[0].get("duration").unwrap();
+    assert_eq!(format!("{dur}"), "P9998Y11M30D");
+}
+
+#[test]
+fn large_duration_in_seconds() {
+    // Analogous to TCK Temporal10[10] but within chrono's year range
+    // (original uses ±999999999 years; chrono caps at ~±262,143).
+    let mut db = Database::open_memory().unwrap();
+    let tx = db.begin_read().unwrap();
+    let rows = tx
+        .query("RETURN duration.inSeconds(localdatetime('1000-01-01T00:00:00'), localdatetime('1200-12-31T23:59:59')) AS duration")
+        .unwrap();
+    assert_eq!(rows.len(), 1);
+    let dur = rows[0].get("duration").unwrap();
+    assert_eq!(format!("{dur}"), "PT1761935H59M59S");
+}

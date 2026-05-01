@@ -11,6 +11,7 @@ pub mod temporal;
 mod transaction;
 pub mod types;
 
+pub use cypher::procedure::ProcedureRegistry;
 pub use cypher::record::Record;
 pub use db::{Config, Database, SyncMode};
 pub use transaction::{ReadTransaction, WriteTransaction};

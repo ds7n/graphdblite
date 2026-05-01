@@ -11,11 +11,15 @@ use crate::index;
 use crate::node;
 use crate::types::{Direction, GraphError, NodeId, PathValue, Properties, Result, Value};
 
+use crate::cypher::procedure::ProcedureRegistry;
+
 /// Execution context carrying runtime limits.
 #[derive(Default)]
 pub struct ExecContext {
     /// Maximum rows any operator may produce. 0 = unlimited.
     pub max_result_rows: usize,
+    /// Test procedure registry for CALL statements.
+    pub procedures: ProcedureRegistry,
 }
 
 /// Check that a result set hasn't exceeded the row cap.
@@ -99,7 +103,8 @@ fn is_read_only(plan: &LogicalOp) -> bool {
         | LogicalOp::Unwind { input, .. }
         | LogicalOp::Aggregate { input, .. }
         | LogicalOp::ShortestPath { input, .. }
-        | LogicalOp::MaterializePath { input, .. } => is_read_only(input),
+        | LogicalOp::MaterializePath { input, .. }
+        | LogicalOp::Call { input, .. } => is_read_only(input),
 
         LogicalOp::Expand { input, .. } => is_read_only(input),
 
@@ -311,6 +316,22 @@ fn exec(conn: &Connection, plan: &LogicalOp, ctx: &ExecContext) -> Result<Vec<Re
             *direction,
             *max_hops,
             *all_paths,
+            ctx,
+        ),
+
+        LogicalOp::Call {
+            input,
+            procedure_name,
+            args,
+            yield_items,
+            yield_star,
+        } => exec_call(
+            conn,
+            input,
+            procedure_name,
+            args,
+            yield_items,
+            *yield_star,
             ctx,
         ),
 
@@ -655,6 +676,30 @@ fn exec_cross_product(
         }
     }
     Ok(results)
+}
+
+/// Collect edge identities from flat relationship bindings in a record
+/// (`alias.__src`, `alias.__dst`, `alias.__type`). Returns a vec of
+/// `(min(src,dst), max(src,dst), type, seq)` tuples.
+fn collect_flat_edge_ids(rec: &Record) -> Vec<(i64, i64, String, u64)> {
+    let mut edges = Vec::new();
+    for (key, _) in &rec.fields {
+        if key.ends_with(".__src") {
+            let alias = &key[..key.len() - 6];
+            let seq = match rec.get(&format!("{alias}.__edge_seq")) {
+                Some(Value::I64(s)) => *s as u64,
+                _ => 0,
+            };
+            if let (Some(Value::I64(s)), Some(Value::I64(d)), Some(Value::String(t))) = (
+                rec.get(key),
+                rec.get(&format!("{alias}.__dst")),
+                rec.get(&format!("{alias}.__type")),
+            ) {
+                edges.push(((*s).min(*d), (*s).max(*d), t.clone(), seq));
+            }
+        }
+    }
+    edges
 }
 
 /// Check if a record contains two relationship bindings that refer to the
@@ -2150,7 +2195,7 @@ fn exec_merge_node(
         _ => unreachable!("MERGE pattern validated at plan time"),
     };
 
-    let label = node_pat.labels.first().map(|s| s.as_str()).unwrap_or("");
+    let all_labels: Vec<&str> = node_pat.labels.iter().map(|s| s.as_str()).collect();
     let alias = node_pat.variable.as_deref().unwrap_or("_merge");
 
     // Pre-evaluate properties.
@@ -2167,7 +2212,8 @@ fn exec_merge_node(
         props.insert(key.clone(), val);
     }
 
-    let matched = find_merge_match_evaluated(conn, label, &props)?;
+    // Find a node that has ALL required labels and matching properties.
+    let matched = find_merge_match_multi_label(conn, &all_labels, &props)?;
 
     let node_id = match matched {
         Some(n) => {
@@ -2178,13 +2224,12 @@ fn exec_merge_node(
             n.id
         }
         None => {
-            let labels: Vec<String> = if label.is_empty() {
-                vec![]
-            } else {
-                vec![label.to_string()]
-            };
+            let labels: Vec<String> = all_labels.iter().map(|s| s.to_string()).collect();
             let id = node::create_node(conn, &labels, props.clone())?;
-            index::update_indexes_for_node(conn, id, label, None, &props)?;
+            // Update indexes for every label.
+            for lbl in &all_labels {
+                index::update_indexes_for_node(conn, id, lbl, None, &props)?;
+            }
 
             let rec = Record::new();
             for item in on_create {
@@ -2601,6 +2646,99 @@ fn exec_match_merge(
     Ok(result)
 }
 
+/// Execute a CALL procedure: evaluate arguments, filter matching rows, yield columns.
+fn exec_call(
+    conn: &Connection,
+    input: &LogicalOp,
+    procedure_name: &str,
+    args: &[Expr],
+    yield_items: &[(String, Option<String>)],
+    _yield_star: bool,
+    ctx: &ExecContext,
+) -> Result<Vec<Record>> {
+    let records = exec(conn, input, ctx)?;
+
+    let proc_def = ctx.procedures.get(procedure_name).ok_or_else(|| {
+        GraphError::Query(crate::types::QueryError::ProcedureError {
+            phase: crate::types::QueryPhase::Runtime,
+            message: format!("ProcedureNotFound: unknown procedure `{procedure_name}`"),
+        })
+    })?;
+
+    let mut results = Vec::new();
+
+    for rec in &records {
+        // Evaluate argument expressions.
+        let mut eval_args = Vec::new();
+        for arg in args {
+            eval_args.push(eval_expr(arg, rec, conn)?);
+        }
+
+        // Filter procedure data rows by matching input values.
+        let matching_rows: Vec<_> = if proc_def.inputs.is_empty() || eval_args.is_empty() {
+            proc_def.rows.iter().collect()
+        } else {
+            proc_def
+                .rows
+                .iter()
+                .filter(|row| {
+                    proc_def
+                        .inputs
+                        .iter()
+                        .zip(&eval_args)
+                        .all(|(param, arg_val)| match row.get(&param.name) {
+                            Some(row_val) => values_match(row_val, arg_val),
+                            None => true,
+                        })
+                })
+                .collect()
+        };
+
+        if yield_items.is_empty() {
+            // No columns to yield. For standalone CALL, this produces an empty result.
+            // For in-query CALL (multi-clause), the rows pass through unchanged.
+            // In multi-clause context, the input records carry bindings from prior clauses.
+            // We check if the input record has any bindings: if yes, it's in-query context.
+            if !rec.fields.is_empty() {
+                results.push(rec.clone());
+            }
+            // Otherwise, standalone CALL with no outputs → produce no rows.
+        } else if matching_rows.is_empty() {
+            // Procedure has outputs but no matching rows — produce no rows.
+        } else {
+            for data_row in &matching_rows {
+                let mut new_rec = rec.clone();
+                for (col, alias) in yield_items {
+                    let bind_name = alias.as_ref().unwrap_or(col);
+                    if let Some(val) = data_row.get(col) {
+                        new_rec.set(bind_name.clone(), val.clone());
+                    } else {
+                        new_rec.set(bind_name.clone(), Value::Null);
+                    }
+                }
+                results.push(new_rec);
+            }
+        }
+    }
+
+    check_row_limit(&results, ctx)?;
+    Ok(results)
+}
+
+/// Compare two values for procedure row filtering, with numeric coercion.
+fn values_match(row_val: &Value, arg_val: &Value) -> bool {
+    match (row_val, arg_val) {
+        (Value::I64(a), Value::I64(b)) => a == b,
+        (Value::F64(a), Value::F64(b)) => a == b,
+        (Value::I64(a), Value::F64(b)) => (*a as f64) == *b,
+        (Value::F64(a), Value::I64(b)) => *a == (*b as f64),
+        (Value::String(a), Value::String(b)) => a == b,
+        (Value::Bool(a), Value::Bool(b)) => a == b,
+        (Value::Null, Value::Null) => true,
+        _ => row_val == arg_val,
+    }
+}
+
 fn exec_unwind(
     conn: &Connection,
     input: &LogicalOp,
@@ -2974,73 +3112,201 @@ fn exec_correlated(
                     .or_else(|| rec.get(dst_alias).and_then(value_to_node_id));
 
                 if *var_length {
-                    // Variable-length traversal — pass ALL labels at once.
-                    let prop_filter_values: HashMap<String, Value> = var_length_prop_filters
-                        .iter()
-                        .filter_map(|(k, expr)| match expr {
-                            Expr::Literal(lit) => Some((k.clone(), literal_to_value(lit))),
-                            _ => None,
-                        })
-                        .collect();
-                    let paths = edge::traverse_paths(
-                        conn,
-                        src_id,
-                        &var_length_labels,
-                        *direction,
-                        *min_hops,
-                        *max_hops,
-                        &prop_filter_values,
-                    )?;
-                    for (dst_id, steps) in paths {
-                        if let Some(expected) = bound_dst {
-                            if dst_id != expected {
-                                continue;
-                            }
-                        }
-                        let dst_node = node::get_node(conn, dst_id)?;
-                        let mut new_rec = rec.clone();
-                        new_rec.set(dst_alias.to_string(), Value::I64(dst_id.0 as i64));
-                        for (key, val) in &dst_node.properties {
-                            new_rec.set(format!("{dst_alias}.{key}"), val.clone());
-                        }
-                        new_rec.set(
-                            format!("{dst_alias}.__label"),
-                            Value::String(dst_node.labels.join(":")),
-                        );
-                        new_rec.set(
-                            format!("{dst_alias}.__labels"),
-                            Value::List(
-                                dst_node
-                                    .labels
-                                    .iter()
-                                    .map(|l| Value::String(l.clone()))
-                                    .collect(),
-                            ),
-                        );
-                        new_rec.set(format!("{dst_alias}.__id"), Value::I64(dst_id.0 as i64));
-                        if let Some(r_alias) = rel_alias {
-                            let edge_list: Vec<Value> = steps
+                    // Check if the rel alias is already bound to a list of
+                    // edges (e.g. `WITH [r1, r2] AS rs ... MATCH ()-[rs*]->()`).
+                    // If so, use those specific edges as the path.
+                    let bound_edge_list = rel_alias.as_ref().and_then(|ra| {
+                        let val = outer.get(ra).or_else(|| rec.get(ra))?;
+                        if let Value::List(items) = val {
+                            let edges: Vec<&crate::types::Edge> = items
                                 .iter()
-                                .map(|step| {
-                                    let props = edge::get_edge_properties_at(
-                                        conn,
-                                        step.edge_src,
-                                        step.edge_dst,
-                                        &step.edge_label,
-                                        step.edge_seq,
-                                    )
-                                    .unwrap_or_default();
-                                    Value::Edge(crate::types::Edge {
-                                        src: step.edge_src,
-                                        dst: step.edge_dst,
-                                        label: step.edge_label.clone(),
-                                        properties: props,
-                                    })
+                                .filter_map(|v| match v {
+                                    Value::Edge(e) => Some(e),
+                                    _ => None,
                                 })
                                 .collect();
-                            new_rec.set(r_alias.to_string(), Value::List(edge_list));
+                            if edges.len() == items.len() && !edges.is_empty() {
+                                Some(edges)
+                            } else {
+                                None
+                            }
+                        } else {
+                            None
                         }
-                        results.push(new_rec);
+                    });
+
+                    if let Some(bound_edges) = bound_edge_list {
+                        // Walk the pre-bound edge chain and verify it forms a
+                        // valid path starting from src_id.
+                        let mut current = src_id;
+                        let mut valid = true;
+                        for edge in &bound_edges {
+                            let next = match direction {
+                                Direction::Outgoing => {
+                                    if edge.src == current {
+                                        Some(edge.dst)
+                                    } else {
+                                        None
+                                    }
+                                }
+                                Direction::Incoming => {
+                                    if edge.dst == current {
+                                        Some(edge.src)
+                                    } else {
+                                        None
+                                    }
+                                }
+                                Direction::Both => {
+                                    if edge.src == current {
+                                        Some(edge.dst)
+                                    } else if edge.dst == current {
+                                        Some(edge.src)
+                                    } else {
+                                        None
+                                    }
+                                }
+                            };
+                            match next {
+                                Some(n) => current = n,
+                                None => {
+                                    valid = false;
+                                    break;
+                                }
+                            }
+                        }
+                        if valid {
+                            let dst_id = current;
+                            if bound_dst.is_none() || bound_dst == Some(dst_id) {
+                                let dst_node = node::get_node(conn, dst_id)?;
+                                let mut new_rec = rec.clone();
+                                new_rec.set(dst_alias.to_string(), Value::I64(dst_id.0 as i64));
+                                for (key, val) in &dst_node.properties {
+                                    new_rec.set(format!("{dst_alias}.{key}"), val.clone());
+                                }
+                                new_rec.set(
+                                    format!("{dst_alias}.__label"),
+                                    Value::String(dst_node.labels.join(":")),
+                                );
+                                new_rec.set(
+                                    format!("{dst_alias}.__labels"),
+                                    Value::List(
+                                        dst_node
+                                            .labels
+                                            .iter()
+                                            .map(|l| Value::String(l.clone()))
+                                            .collect(),
+                                    ),
+                                );
+                                new_rec
+                                    .set(format!("{dst_alias}.__id"), Value::I64(dst_id.0 as i64));
+                                if let Some(r_alias) = rel_alias {
+                                    new_rec.set(
+                                        r_alias.to_string(),
+                                        Value::List(
+                                            bound_edges
+                                                .iter()
+                                                .map(|e| Value::Edge((*e).clone()))
+                                                .collect(),
+                                        ),
+                                    );
+                                }
+                                results.push(new_rec);
+                            }
+                        }
+                    } else {
+                        // Variable-length traversal — pass ALL labels at once.
+                        let prop_filter_values: HashMap<String, Value> = var_length_prop_filters
+                            .iter()
+                            .filter_map(|(k, expr)| match expr {
+                                Expr::Literal(lit) => Some((k.clone(), literal_to_value(lit))),
+                                _ => None,
+                            })
+                            .collect();
+                        let paths = edge::traverse_paths(
+                            conn,
+                            src_id,
+                            &var_length_labels,
+                            *direction,
+                            *min_hops,
+                            *max_hops,
+                            &prop_filter_values,
+                        )?;
+                        // Collect edges already bound by prior Expand steps in
+                        // this pattern chain so we can enforce cross-segment
+                        // relationship uniqueness (e.g. the fixed-length edge
+                        // in `()-[:R]->()<-[:R*3]->()` must not be reused by
+                        // the var-length traversal). Compare on (src, dst, type)
+                        // only — exec_correlated may not track edge_seq for
+                        // fixed-length segments, and for cross-segment checks
+                        // any edge between the same endpoints counts as the same.
+                        let prior_edges: Vec<(i64, i64, String)> = collect_flat_edge_ids(&rec)
+                            .into_iter()
+                            .map(|(s, d, t, _seq)| (s, d, t))
+                            .collect();
+                        for (dst_id, steps) in paths {
+                            if let Some(expected) = bound_dst {
+                                if dst_id != expected {
+                                    continue;
+                                }
+                            }
+                            // Skip paths that reuse an edge from a prior
+                            // segment in the same pattern.
+                            if !prior_edges.is_empty() {
+                                let has_overlap = steps.iter().any(|step| {
+                                    let s = step.edge_src.0 as i64;
+                                    let d = step.edge_dst.0 as i64;
+                                    let key = (s.min(d), s.max(d), step.edge_label.clone());
+                                    prior_edges.contains(&key)
+                                });
+                                if has_overlap {
+                                    continue;
+                                }
+                            }
+                            let dst_node = node::get_node(conn, dst_id)?;
+                            let mut new_rec = rec.clone();
+                            new_rec.set(dst_alias.to_string(), Value::I64(dst_id.0 as i64));
+                            for (key, val) in &dst_node.properties {
+                                new_rec.set(format!("{dst_alias}.{key}"), val.clone());
+                            }
+                            new_rec.set(
+                                format!("{dst_alias}.__label"),
+                                Value::String(dst_node.labels.join(":")),
+                            );
+                            new_rec.set(
+                                format!("{dst_alias}.__labels"),
+                                Value::List(
+                                    dst_node
+                                        .labels
+                                        .iter()
+                                        .map(|l| Value::String(l.clone()))
+                                        .collect(),
+                                ),
+                            );
+                            new_rec.set(format!("{dst_alias}.__id"), Value::I64(dst_id.0 as i64));
+                            if let Some(r_alias) = rel_alias {
+                                let edge_list: Vec<Value> = steps
+                                    .iter()
+                                    .map(|step| {
+                                        let props = edge::get_edge_properties_at(
+                                            conn,
+                                            step.edge_src,
+                                            step.edge_dst,
+                                            &step.edge_label,
+                                            step.edge_seq,
+                                        )
+                                        .unwrap_or_default();
+                                        Value::Edge(crate::types::Edge {
+                                            src: step.edge_src,
+                                            dst: step.edge_dst,
+                                            label: step.edge_label.clone(),
+                                            properties: props,
+                                        })
+                                    })
+                                    .collect();
+                                new_rec.set(r_alias.to_string(), Value::List(edge_list));
+                            }
+                            results.push(new_rec);
+                        }
                     }
                 } else {
                     // If the relationship alias is already bound (forwarded through WITH),
@@ -3058,20 +3324,36 @@ fn exec_correlated(
                             Value::String(s) => Some(s.clone()),
                             _ => None,
                         })?;
-                        Some((src, dst, rtype))
+                        let seq = outer
+                            .get(&format!("{ra}.__edge_seq"))
+                            .and_then(|v| match v {
+                                Value::I64(s) => Some(*s as u64),
+                                _ => None,
+                            })
+                            .unwrap_or(0);
+                        Some((src, dst, rtype, seq))
                     });
 
                     // If the relationship is already bound, skip the scan and use
                     // the bound edge directly.
-                    if let Some((rel_src, rel_dst, ref rel_type)) = bound_rel {
+                    if let Some((rel_src, rel_dst, ref rel_type, rel_seq)) = bound_rel {
                         // Check that the bound relationship type matches the pattern constraint.
                         if !edge_types.is_empty() && !edge_types.iter().any(|t| t == rel_type) {
                             continue;
                         }
-                        // Check that this source node matches the edge's source.
+                        // Check that this source node is an endpoint of the bound edge.
                         let (expected_src, expected_dst) = match direction {
                             Direction::Incoming => (rel_dst, rel_src),
-                            _ => (rel_src, rel_dst),
+                            Direction::Outgoing => (rel_src, rel_dst),
+                            Direction::Both => {
+                                if src_id == rel_src {
+                                    (rel_src, rel_dst)
+                                } else if src_id == rel_dst {
+                                    (rel_dst, rel_src)
+                                } else {
+                                    continue;
+                                }
+                            }
                         };
                         if src_id != expected_src {
                             continue;
@@ -3104,6 +3386,8 @@ fn exec_correlated(
                             new_rec.set(format!("{r_alias}.__dst"), Value::I64(rel_dst.0 as i64));
                             new_rec
                                 .set(format!("{r_alias}.__type"), Value::String(rel_type.clone()));
+                            new_rec
+                                .set(format!("{r_alias}.__edge_seq"), Value::I64(rel_seq as i64));
                         }
                         results.push(new_rec);
                         continue;
@@ -3430,6 +3714,27 @@ fn exec_correlated(
                     }
                 }
 
+                // Relationship uniqueness within the path: skip records where
+                // the same edge appears more than once across segments (e.g.
+                // a var-length segment reusing the bound relationship's edge).
+                if !has_null && edges.len() > 1 {
+                    let mut edge_ids: Vec<(i64, i64, String, u64)> = Vec::new();
+                    let mut dup = false;
+                    for e in &edges {
+                        let s = e.src.0 as i64;
+                        let d = e.dst.0 as i64;
+                        let key = (s.min(d), s.max(d), e.label.clone(), 0u64);
+                        if edge_ids.contains(&key) {
+                            dup = true;
+                            break;
+                        }
+                        edge_ids.push(key);
+                    }
+                    if dup {
+                        continue;
+                    }
+                }
+
                 // Var-length path node reconstruction.
                 let has_var_length_rel = rel_aliases
                     .iter()
@@ -3645,6 +3950,65 @@ fn exec_shortest_path(
     }
 
     Ok(results)
+}
+
+/// Find a node that has ALL of `labels` and matches `properties`.
+///
+/// Uses the first label for index/scan and then filters by remaining labels.
+fn find_merge_match_multi_label(
+    conn: &Connection,
+    labels: &[&str],
+    properties: &Properties,
+) -> Result<Option<crate::types::Node>> {
+    let primary = labels.first().copied().unwrap_or("");
+    let candidates = find_merge_matches_by_label_and_props(conn, primary, properties)?;
+    // Require the node to carry every label in the pattern.
+    Ok(candidates.into_iter().find(|n| {
+        labels
+            .iter()
+            .all(|req| n.labels.iter().any(|l| l == req))
+    }))
+}
+
+/// Collect all nodes matching a single label + property values (no multi-label filter).
+///
+/// When `label` is empty, performs a full node scan (handles label-less `MERGE (a)`).
+fn find_merge_matches_by_label_and_props(
+    conn: &Connection,
+    label: &str,
+    properties: &Properties,
+) -> Result<Vec<crate::types::Node>> {
+    // Try indexed lookup on the primary label (skipped when label is empty).
+    let indexes = index::list_indexes_for_label(conn, label)?;
+    let indexed_props: Vec<&str> = indexes.iter().map(|(_, p)| p.as_str()).collect();
+
+    for (key, value) in properties {
+        if indexed_props.contains(&key.as_str()) {
+            let ids = index::index_lookup(conn, label, key, value)?;
+            let mut matches = Vec::new();
+            for id in ids {
+                let n = node::get_node(conn, id)?;
+                let all_match = properties
+                    .iter()
+                    .all(|(k, expected)| n.properties.get(k) == Some(expected));
+                if all_match {
+                    matches.push(n);
+                }
+            }
+            return Ok(matches);
+        }
+    }
+
+    // Fall back to label scan.
+    let existing = node::find_nodes_by_label(conn, label)?;
+    Ok(existing
+        .into_iter()
+        .filter(|n| {
+            properties
+                .iter()
+                .all(|(key, expected)| n.properties.get(key) == Some(expected))
+        })
+        .collect())
 }
 
 /// Find a node matching label + pre-evaluated property values.

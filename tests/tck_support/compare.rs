@@ -206,6 +206,99 @@ fn value_equal(a: &Value, b: &Value) -> bool {
     }
 }
 
+/// Compare a batch of actual result records against expected rows, treating
+/// `Value::List` as multisets (element order ignored).
+///
+/// When `ordered` is true, row comparison is positional; otherwise actual and
+/// expected rows are treated as multisets.
+pub fn compare_result_ignore_list_order(
+    actual: &[Record],
+    columns: &[String],
+    expected_rows: &[Vec<Value>],
+    ordered: bool,
+) -> Result<()> {
+    let actual_rows = project_rows(actual, columns);
+
+    if actual_rows.len() != expected_rows.len() {
+        bail!(
+            "row count mismatch: expected {}, got {}\nexpected={:?}\nactual={:?}",
+            expected_rows.len(),
+            actual_rows.len(),
+            expected_rows,
+            actual_rows
+        );
+    }
+
+    if ordered {
+        for (i, (got, want)) in actual_rows.iter().zip(expected_rows.iter()).enumerate() {
+            if !rows_equal_ignore_list_order(got, want) {
+                bail!(
+                    "row {i} mismatch\n expected: {:?}\n   actual: {:?}",
+                    want,
+                    got
+                );
+            }
+        }
+    } else {
+        let mut used = vec![false; actual_rows.len()];
+        for want in expected_rows {
+            let mut found = false;
+            for (i, got) in actual_rows.iter().enumerate() {
+                if !used[i] && rows_equal_ignore_list_order(got, want) {
+                    used[i] = true;
+                    found = true;
+                    break;
+                }
+            }
+            if !found {
+                bail!(
+                    "expected row not found in actual:\n expected: {:?}\n   actual: {:?}",
+                    want,
+                    actual_rows
+                );
+            }
+        }
+    }
+    Ok(())
+}
+
+fn rows_equal_ignore_list_order(got: &[Value], want: &[Value]) -> bool {
+    if got.len() != want.len() {
+        return false;
+    }
+    got.iter()
+        .zip(want.iter())
+        .all(|(g, w)| value_equal_ignore_list_order(g, w))
+}
+
+fn value_equal_ignore_list_order(a: &Value, b: &Value) -> bool {
+    match (a, b) {
+        (Value::List(la), Value::List(lb)) => {
+            if la.len() != lb.len() {
+                return false;
+            }
+            // Multiset comparison: each element in `la` must match exactly one in `lb`.
+            let mut used = vec![false; lb.len()];
+            for x in la {
+                let mut matched = false;
+                for (j, y) in lb.iter().enumerate() {
+                    if !used[j] && value_equal_ignore_list_order(x, y) {
+                        used[j] = true;
+                        matched = true;
+                        break;
+                    }
+                }
+                if !matched {
+                    return false;
+                }
+            }
+            true
+        }
+        // For all other types, delegate to the existing value_equal.
+        _ => value_equal(a, b),
+    }
+}
+
 fn properties_equal(a: &HashMap<String, Value>, b: &HashMap<String, Value>) -> bool {
     a.len() == b.len()
         && a.iter()

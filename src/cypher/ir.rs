@@ -207,6 +207,18 @@ pub enum LogicalOp {
         alias: String,
     },
 
+    /// Execute a registered procedure.
+    Call {
+        input: Box<LogicalOp>,
+        procedure_name: String,
+        /// Evaluated argument expressions.
+        args: Vec<Expr>,
+        /// Output columns to yield: (procedure_output_col, optional_alias).
+        yield_items: Vec<(String, Option<String>)>,
+        /// True when YIELD * — emit all output columns.
+        yield_star: bool,
+    },
+
     /// Find shortest path(s) between two bound nodes.
     ShortestPath {
         input: Box<LogicalOp>,

@@ -11,6 +11,7 @@
 use std::collections::HashMap;
 
 use cucumber::{gherkin::Step, given, then, when};
+use graphdblite::cypher::procedure::{ProcParam, ProcedureDef};
 use graphdblite::{Database, Value};
 
 use super::compare;
@@ -89,11 +90,16 @@ fn split_setup_statements(script: &str) -> Vec<String> {
         let current_starts_with_match = current_trimmed.starts_with("MATCH");
         let line_starts_with_create = trimmed.starts_with("CREATE");
         let line_starts_with_unwind = trimmed.starts_with("UNWIND");
+        let line_starts_with_delete = trimmed.starts_with("DELETE");
+        let line_starts_with_set = trimmed.starts_with("SET");
         let keep_together = (line_starts_with_create
             && (current_starts_with_create
                 || current_starts_with_unwind
                 || current_starts_with_match))
-            || (line_starts_with_unwind && current_starts_with_unwind);
+            || (line_starts_with_unwind && current_starts_with_unwind)
+            // MATCH...DELETE and MATCH...SET are single multi-clause statements.
+            || ((line_starts_with_delete || line_starts_with_set)
+                && current_starts_with_match);
         // If the current buffer contains WITH, this is a multi-clause
         // pipeline (CREATE...WITH...UNWIND...CREATE) — don't split.
         let has_with = current.to_ascii_uppercase().contains("\nWITH ")
@@ -126,6 +132,37 @@ fn given_parameters(world: &mut World, step: &Step) {
             }
         }
     }
+}
+
+#[given(regex = r"^there exists a procedure (.+):$")]
+fn given_procedure(world: &mut World, step: &Step, sig: String) {
+    let (name, inputs, outputs) = parse_procedure_signature(&sig);
+
+    // Parse the data table (if present) into rows.
+    let mut rows = Vec::new();
+    if let Some(table) = &step.table {
+        if table.rows.len() > 1 {
+            let headers: Vec<String> = table.rows[0].iter().map(|c| c.trim().to_string()).collect();
+            for data_row in &table.rows[1..] {
+                let mut row = std::collections::HashMap::new();
+                for (i, cell) in data_row.iter().enumerate() {
+                    if i < headers.len() {
+                        let value = compare::parse_expected(cell.trim())
+                            .unwrap_or_else(|e| panic!("bad procedure data {cell}: {e}"));
+                        row.insert(headers[i].clone(), value);
+                    }
+                }
+                rows.push(row);
+            }
+        }
+    }
+
+    world.procedures.register(ProcedureDef {
+        name,
+        inputs,
+        outputs,
+        rows,
+    });
 }
 
 // ─── When ────────────────────────────────────────────────────────────────
@@ -161,7 +198,11 @@ fn when_executing_query(world: &mut World, step: &Step) {
 
     if is_write {
         let tx = db.begin_write().expect("begin_write");
-        match tx.query_with_params(query, params.as_ref()) {
+        match if world.procedures.is_empty() {
+            tx.query_with_params(query, params.as_ref())
+        } else {
+            tx.query_with_procedures(query, params.as_ref(), &world.procedures)
+        } {
             Ok(records) => {
                 world.last_result = Some(records);
                 world.last_error = None;
@@ -175,7 +216,11 @@ fn when_executing_query(world: &mut World, step: &Step) {
         }
     } else {
         let tx = db.begin_read().expect("begin_read");
-        match tx.query_with_params(query, params.as_ref()) {
+        match if world.procedures.is_empty() {
+            tx.query_with_params(query, params.as_ref())
+        } else {
+            tx.query_with_procedures(query, params.as_ref(), &world.procedures)
+        } {
             Ok(records) => {
                 world.last_result = Some(records);
                 world.last_error = None;
@@ -237,6 +282,30 @@ fn then_result_in_order(world: &mut World, step: &Step) {
     let table = step.table.as_ref().expect("expected a result table");
     let (columns, expected_rows) = parse_result_table(table);
     compare::compare_result(results, &columns, &expected_rows, true)
+        .expect("result comparison failed");
+}
+
+#[then("the result should be (ignoring element order for lists):")]
+fn then_result_any_order_ignore_list_order(world: &mut World, step: &Step) {
+    let results = world
+        .last_result
+        .as_ref()
+        .expect("expected results but query returned an error");
+    let table = step.table.as_ref().expect("expected a result table");
+    let (columns, expected_rows) = parse_result_table(table);
+    compare::compare_result_ignore_list_order(results, &columns, &expected_rows, false)
+        .expect("result comparison failed");
+}
+
+#[then("the result should be, in order (ignoring element order for lists):")]
+fn then_result_in_order_ignore_list_order(world: &mut World, step: &Step) {
+    let results = world
+        .last_result
+        .as_ref()
+        .expect("expected results but query returned an error");
+    let table = step.table.as_ref().expect("expected a result table");
+    let (columns, expected_rows) = parse_result_table(table);
+    compare::compare_result_ignore_list_order(results, &columns, &expected_rows, true)
         .expect("result comparison failed");
 }
 
@@ -319,4 +388,57 @@ fn parse_result_table(table: &cucumber::gherkin::Table) -> (Vec<String>, Vec<Vec
         .collect();
 
     (columns, expected_rows)
+}
+
+/// Parse a procedure signature from a TCK step string.
+///
+/// Format: `proc.name(in1 :: TYPE?, in2 :: TYPE?) :: (out1 :: TYPE?, out2 :: TYPE?)`
+fn parse_procedure_signature(sig: &str) -> (String, Vec<ProcParam>, Vec<ProcParam>) {
+    // Split on `) :: (` to separate input params from output params,
+    // since individual params also contain ` :: `.
+    let (left, right) = if let Some(pos) = sig.find(") :: (") {
+        (&sig[..pos + 1], sig[pos + 4..].trim()) // +1 to include `)`, +4 to skip ` :: `
+    } else {
+        (sig.trim_end(), "()")
+    };
+    let left = left.trim();
+
+    let (name, inputs) = if let Some(paren_pos) = left.find('(') {
+        let name = left[..paren_pos].trim().to_string();
+        let close = left.rfind(')').unwrap_or(left.len());
+        let params_str = &left[paren_pos + 1..close];
+        (name, parse_params(params_str))
+    } else {
+        (left.to_string(), Vec::new())
+    };
+
+    let outputs = if let Some(start) = right.find('(') {
+        let end = right.rfind(')').unwrap_or(right.len());
+        parse_params(&right[start + 1..end])
+    } else {
+        Vec::new()
+    };
+
+    (name, inputs, outputs)
+}
+
+fn parse_params(s: &str) -> Vec<ProcParam> {
+    let trimmed = s.trim();
+    if trimmed.is_empty() {
+        return Vec::new();
+    }
+    trimmed
+        .split(',')
+        .map(|p| {
+            let parts: Vec<&str> = p.trim().splitn(2, "::").collect();
+            ProcParam {
+                name: parts[0].trim().to_string(),
+                type_name: if parts.len() > 1 {
+                    parts[1].trim().to_string()
+                } else {
+                    "ANY?".to_string()
+                },
+            }
+        })
+        .collect()
 }

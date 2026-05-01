@@ -128,8 +128,7 @@ All bindings expose: `open`, `open_memory`, `begin_read`, `begin_write`, `query`
 
 ### TCK conformance
 - Full openCypher TCK vendored (220 feature files, 3895 scenarios)
-- **98.1% pass rate** (3822/3895), 2 skiplisted — as of 2026-04-30
-- Regenerate stats: `cargo test --test tck 2>&1 > /tmp/tck_output.txt && uv run tests/tck/analyze.py /tmp/tck_output.txt`
+- **100% pass rate** (3895/3895), 2 skiplisted — as of 2026-05-01
 - Regenerate blocker analysis: `uv run tests/tck/analyze_blockers.py`
 
 ## Known Limitations

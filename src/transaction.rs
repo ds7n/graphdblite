@@ -108,6 +108,29 @@ macro_rules! impl_read_ops {
                 }
                 let ctx = ExecContext {
                     max_result_rows: self.max_result_rows,
+                    ..Default::default()
+                };
+                executor::execute_with_ctx(&self.tx, &plan, &ctx)
+            }
+
+            /// Execute a Cypher query with optional parameters and procedure registry.
+            pub fn query_with_procedures(
+                &self,
+                cypher: &str,
+                params: Option<&std::collections::HashMap<String, Value>>,
+                procedures: &crate::cypher::procedure::ProcedureRegistry,
+            ) -> Result<Vec<Record>> {
+                let mut stmt = parser::parse(cypher)?;
+                if let Some(p) = params {
+                    stmt = parser::resolve_params(&stmt, p)?;
+                }
+                let plan = planner::plan_with_procedures(&self.tx, &stmt, procedures, params)?;
+                if matches!(stmt, Statement::Explain(_)) {
+                    return Ok(cost::format_explain(&self.tx, &plan));
+                }
+                let ctx = ExecContext {
+                    max_result_rows: self.max_result_rows,
+                    procedures: procedures.clone(),
                 };
                 executor::execute_with_ctx(&self.tx, &plan, &ctx)
             }

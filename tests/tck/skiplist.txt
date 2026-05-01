@@ -1,7 +1,3 @@
-Match4 - Match variable length patterns scenarios::[7] Matching variable length patterns including a bound relationship
-Match4 - Match variable length patterns scenarios::[8] Matching relationships into a list and matching variable length using the list
-Match4 - Match variable length patterns::[7] Matching variable length patterns including a bound relationship
-Match4 - Match variable length patterns::[8] Matching relationships into a list and matching variable length using the list
 # Temporal10[9,10]: chrono NaiveDate year range limited to ~±262,143; ±999999999 not representable
 Temporal10 - Compute Durations Between two Temporal Values::[9] Should handle large durations
 Temporal10 - Compute Durations Between two Temporal Values::[10] Should handle large durations in seconds

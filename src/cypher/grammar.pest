@@ -47,11 +47,27 @@ multi_clause_stmt = {
     (multi_delete_clause | multi_set_clause | multi_remove_clause) ~
     multi_clause_any+ ~
     (return_clause ~ order_by_clause? ~ skip_clause? ~ limit_clause?)?)
+    |
+    // Pattern E: CALL followed by at least one more clause (CALL...WITH, CALL...CALL, etc.)
+    (multi_call_clause ~
+    multi_clause_non_write_or_call+ ~
+    (return_clause ~ order_by_clause? ~ skip_clause? ~ limit_clause?)?)
+    |
+    // Pattern F: Non-write clause(s) followed by CALL (MATCH...CALL...RETURN)
+    (multi_clause_non_write+ ~
+    multi_call_clause ~
+    multi_clause_non_write_or_call* ~
+    (return_clause ~ order_by_clause? ~ skip_clause? ~ limit_clause?)?)
 }
 
 // Non-write clause (MATCH, WITH, UNWIND) — used for leading clauses.
 multi_clause_non_write = _{
     with_clause | multi_match_clause | multi_unwind_clause
+}
+
+// Non-write clause including CALL — used in Pattern E.
+multi_clause_non_write_or_call = _{
+    with_clause | multi_match_clause | multi_unwind_clause | multi_call_clause
 }
 
 // Any clause type — used for trailing clauses after the first CREATE/MERGE.
@@ -63,13 +79,15 @@ multi_clause_any = _{
     multi_unwind_clause |
     multi_set_clause |
     multi_remove_clause |
-    multi_delete_clause
+    multi_delete_clause |
+    multi_call_clause
 }
 
 multi_match_clause = { (^"MATCH" ~ pattern_list ~ where_clause? ~ optional_match_clause*) | optional_match_clause+ }
 multi_create_clause = { ^"CREATE" ~ create_pattern_list }
 multi_merge_clause = { ^"MERGE" ~ pattern_item ~ (on_create_clause ~ on_match_clause? | on_match_clause ~ on_create_clause?)? }
 multi_unwind_clause = { ^"UNWIND" ~ expr ~ ^"AS" ~ ident }
+multi_call_clause = { ^"CALL" ~ procedure_name ~ ("(" ~ (expr ~ ("," ~ expr)*)? ~ ")")? ~ yield_clause? }
 multi_set_clause = { ^"SET" ~ assignment_list }
 multi_remove_clause = { ^"REMOVE" ~ remove_item_list }
 multi_delete_clause = { detach_keyword? ~ ^"DELETE" ~ delete_expr_list }
@@ -88,10 +106,24 @@ return_stmt = {
 
 call_stmt = {
     ^"CALL" ~ procedure_name ~ ("(" ~ (expr ~ ("," ~ expr)*)? ~ ")")? ~
-    (^"YIELD" ~ ident ~ ("," ~ ident)*)? ~
+    yield_clause? ~
     (return_clause ~ order_by_clause? ~ skip_clause? ~ limit_clause?)?
 }
 procedure_name = @{ ident ~ ("." ~ ident)+ }
+
+yield_clause = {
+    ^"YIELD" ~ (yield_star | yield_items)
+}
+
+yield_star = { "*" }
+
+yield_items = {
+    yield_item ~ ("," ~ yield_item)*
+}
+
+yield_item = {
+    ident ~ (^"AS" ~ ident)?
+}
 
 // === Standalone WITH...RETURN ===
 
@@ -250,7 +282,8 @@ pattern = { node_pattern ~ (rel_pattern ~ node_pattern)* }
 node_pattern = { "(" ~ ident? ~ label_spec? ~ property_map? ~ ")" }
 label_spec = { (":" ~ symbolic_name)+ }
 
-rel_pattern = { rel_right | rel_left | rel_undirected | rel_right_bare | rel_both_bare | rel_left_bare | rel_undirected_bare }
+rel_pattern = { rel_both | rel_right | rel_left | rel_undirected | rel_right_bare | rel_both_bare | rel_left_bare | rel_undirected_bare }
+rel_both = { "<-[" ~ rel_detail ~ "]->" }
 rel_right = { "-[" ~ rel_detail ~ "]->" }
 rel_left = { "<-[" ~ rel_detail ~ "]-" }
 rel_undirected = { "-[" ~ rel_detail ~ "]-" }

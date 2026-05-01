@@ -23,9 +23,26 @@ pub enum Statement {
         /// true = UNION ALL (keep duplicates), false = UNION (deduplicate).
         all: bool,
     },
-    /// CALL procedure (always errors with ProcedureNotFound — no procedure registry).
+    /// CALL procedure statement.
     Call {
         procedure_name: String,
+        /// Explicit arguments: `CALL proc(expr1, expr2)`. Empty if no parens (implicit args).
+        args: Vec<Expr>,
+        /// True when called without parentheses: `CALL proc` (implicit argument passing).
+        implicit_args: bool,
+        /// YIELD items: `YIELD col1 AS alias1, col2`. None = no YIELD clause.
+        /// Each entry is (output_column, optional_alias).
+        yield_items: Option<Vec<(String, Option<String>)>>,
+        /// True when YIELD * is used instead of named columns.
+        yield_star: bool,
+        /// Optional RETURN clause for in-query CALL: `CALL proc() YIELD x RETURN x`.
+        return_clause: Option<ReturnClause>,
+        /// ORDER BY for the RETURN clause.
+        order_by: Vec<SortItem>,
+        /// SKIP expression.
+        skip: Option<Box<Expr>>,
+        /// LIMIT expression.
+        limit: Option<Box<Expr>>,
     },
 }
 
@@ -52,6 +69,13 @@ pub enum Clause {
     },
     Remove {
         items: Vec<RemoveItem>,
+    },
+    Call {
+        procedure_name: String,
+        args: Vec<Expr>,
+        implicit_args: bool,
+        yield_items: Option<Vec<(String, Option<String>)>>,
+        yield_star: bool,
     },
     Delete {
         exprs: Vec<Expr>,

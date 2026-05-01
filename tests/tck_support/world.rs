@@ -6,7 +6,7 @@ use std::collections::{HashMap, HashSet};
 use std::hash::{Hash, Hasher};
 
 use cucumber::World as CucumberWorld;
-use graphdblite::{Database, GraphError, Record, Value};
+use graphdblite::{Database, GraphError, ProcedureRegistry, Record, Value};
 use rusqlite::Connection;
 
 /// Hash a Value for property fingerprinting (used in side-effect diffing).
@@ -152,6 +152,8 @@ pub struct World {
     /// Graph counts snapshot captured *before* the query executes, used to
     /// compute side-effect deltas post-execution.
     pub pre_counts: GraphCounts,
+    /// Procedure registry for CALL tests — populated by `there exists a procedure` steps.
+    pub procedures: ProcedureRegistry,
 }
 
 impl std::fmt::Debug for World {

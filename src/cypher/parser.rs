@@ -165,10 +165,42 @@ fn parse_explain(pair: pest::iterators::Pair<Rule>) -> crate::types::Result<Stat
     Ok(Statement::Explain(Box::new(stmt)))
 }
 
+/// Parse YIELD clause items from a yield_clause rule pair.
+fn parse_yield_clause(
+    pair: pest::iterators::Pair<Rule>,
+) -> (Option<Vec<(String, Option<String>)>>, bool) {
+    let mut yield_items = None;
+    let mut yield_star = false;
+    for yc in pair.into_inner() {
+        match yc.as_rule() {
+            Rule::yield_star => {
+                yield_star = true;
+            }
+            Rule::yield_items => {
+                let mut items = Vec::new();
+                for yi in yc.into_inner() {
+                    if yi.as_rule() == Rule::yield_item {
+                        let mut idents = yi.into_inner();
+                        let col = idents
+                            .next()
+                            .expect("yield_item must have ident")
+                            .as_str()
+                            .to_string();
+                        let alias = idents.next().map(|a| a.as_str().to_string());
+                        items.push((col, alias));
+                    }
+                }
+                yield_items = Some(items);
+            }
+            _ => {}
+        }
+    }
+    (yield_items, yield_star)
+}
+
 fn parse_call(pair: pest::iterators::Pair<Rule>) -> crate::types::Result<Statement> {
     let mut procedure_name = String::new();
     let mut args = Vec::new();
-    let mut has_parens = false;
     let mut yield_items: Option<Vec<(String, Option<String>)>> = None;
     let mut yield_star = false;
     let mut return_clause = None;
@@ -178,12 +210,14 @@ fn parse_call(pair: pest::iterators::Pair<Rule>) -> crate::types::Result<Stateme
 
     // Check raw text for parentheses to distinguish explicit vs implicit args.
     let raw = pair.as_str();
-    if let Some(proc_end) = raw.find('(') {
-        let yield_pos = raw.to_ascii_uppercase().find("YIELD");
-        if yield_pos.is_none() || proc_end < yield_pos.unwrap() {
-            has_parens = true;
+    let has_parens = {
+        if let Some(proc_end) = raw.find('(') {
+            let yield_pos = raw.to_ascii_uppercase().find("YIELD");
+            yield_pos.is_none() || proc_end < yield_pos.unwrap()
+        } else {
+            false
         }
-    }
+    };
 
     for inner in pair.into_inner() {
         match inner.as_rule() {
@@ -194,30 +228,9 @@ fn parse_call(pair: pest::iterators::Pair<Rule>) -> crate::types::Result<Stateme
                 args.push(parse_expr(inner)?);
             }
             Rule::yield_clause => {
-                for yc in inner.into_inner() {
-                    match yc.as_rule() {
-                        Rule::yield_star => {
-                            yield_star = true;
-                        }
-                        Rule::yield_items => {
-                            let mut items = Vec::new();
-                            for yi in yc.into_inner() {
-                                if yi.as_rule() == Rule::yield_item {
-                                    let mut idents = yi.into_inner();
-                                    let col = idents
-                                        .next()
-                                        .expect("yield_item must have ident")
-                                        .as_str()
-                                        .to_string();
-                                    let alias = idents.next().map(|a| a.as_str().to_string());
-                                    items.push((col, alias));
-                                }
-                            }
-                            yield_items = Some(items);
-                        }
-                        _ => {}
-                    }
-                }
+                let (items, star) = parse_yield_clause(inner);
+                yield_items = items;
+                yield_star = star;
             }
             Rule::return_clause => {
                 return_clause = Some(parse_return(inner)?);
@@ -255,18 +268,19 @@ type MatchParts = (Vec<Pattern>, Vec<OptionalMatch>, Option<Expr>);
 fn parse_multi_call_clause(pair: pest::iterators::Pair<Rule>) -> crate::types::Result<Clause> {
     let mut procedure_name = String::new();
     let mut args = Vec::new();
-    let mut has_parens = false;
     let mut yield_items: Option<Vec<(String, Option<String>)>> = None;
     let mut yield_star = false;
 
     // Check raw text for parentheses to distinguish explicit vs implicit args.
     let raw = pair.as_str();
-    if let Some(proc_end) = raw.find('(') {
-        let yield_pos = raw.to_ascii_uppercase().find("YIELD");
-        if yield_pos.is_none() || proc_end < yield_pos.unwrap() {
-            has_parens = true;
+    let has_parens = {
+        if let Some(proc_end) = raw.find('(') {
+            let yield_pos = raw.to_ascii_uppercase().find("YIELD");
+            yield_pos.is_none() || proc_end < yield_pos.unwrap()
+        } else {
+            false
         }
-    }
+    };
 
     for inner in pair.into_inner() {
         match inner.as_rule() {
@@ -277,30 +291,9 @@ fn parse_multi_call_clause(pair: pest::iterators::Pair<Rule>) -> crate::types::R
                 args.push(parse_expr(inner)?);
             }
             Rule::yield_clause => {
-                for yc in inner.into_inner() {
-                    match yc.as_rule() {
-                        Rule::yield_star => {
-                            yield_star = true;
-                        }
-                        Rule::yield_items => {
-                            let mut items = Vec::new();
-                            for yi in yc.into_inner() {
-                                if yi.as_rule() == Rule::yield_item {
-                                    let mut idents = yi.into_inner();
-                                    let col = idents
-                                        .next()
-                                        .expect("yield_item must have ident")
-                                        .as_str()
-                                        .to_string();
-                                    let alias = idents.next().map(|a| a.as_str().to_string());
-                                    items.push((col, alias));
-                                }
-                            }
-                            yield_items = Some(items);
-                        }
-                        _ => {}
-                    }
-                }
+                let (items, star) = parse_yield_clause(inner);
+                yield_items = items;
+                yield_star = star;
             }
             _ => {}
         }

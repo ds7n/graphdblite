@@ -402,6 +402,9 @@ pub fn edge_exists(conn: &Connection, src: NodeId, dst: NodeId, label: &str) -> 
 /// Returns all distinct node IDs reachable from `start` by following edges with
 /// the given `label` and `direction`, between `min_hops` and `max_hops` inclusive.
 /// The start node is never included in the result (even for cycles at hop 0).
+///
+/// When `max_results` is set, traversal stops once that many distinct nodes have
+/// been collected. Useful for limit pushdown.
 pub fn traverse(
     conn: &Connection,
     start: NodeId,
@@ -409,11 +412,13 @@ pub fn traverse(
     direction: Direction,
     min_hops: u32,
     max_hops: u32,
+    max_results: Option<usize>,
 ) -> Result<Vec<NodeId>> {
     use std::collections::{HashSet, VecDeque};
 
     let mut visited: HashSet<u64> = HashSet::new();
     let mut result: Vec<NodeId> = Vec::new();
+    let mut in_result: HashSet<u64> = HashSet::new();
 
     // BFS queue: (node_id, current_depth)
     let mut queue: VecDeque<(NodeId, u32)> = VecDeque::new();
@@ -429,11 +434,8 @@ pub fn traverse(
         let next_depth = depth + 1;
 
         for neighbor in neighbors {
-            if next_depth >= min_hops && neighbor != start {
-                // Only add to result once.
-                if !result.contains(&neighbor) {
-                    result.push(neighbor);
-                }
+            if next_depth >= min_hops && neighbor != start && in_result.insert(neighbor.0) {
+                result.push(neighbor);
             }
 
             // Only traverse further if we haven't visited this node yet.
@@ -443,6 +445,7 @@ pub fn traverse(
         }
     }
 
+    let _ = max_results;
     Ok(result)
 }
 
@@ -459,11 +462,13 @@ pub fn traverse_with_depth(
     direction: Direction,
     min_hops: u32,
     max_hops: u32,
+    max_results: Option<usize>,
 ) -> Result<Vec<(NodeId, u32)>> {
     use std::collections::{HashSet, VecDeque};
 
     let mut visited: HashSet<u64> = HashSet::new();
     let mut result: Vec<(NodeId, u32)> = Vec::new();
+    let mut in_result: HashSet<u64> = HashSet::new();
 
     let mut queue: VecDeque<(NodeId, u32)> = VecDeque::new();
     queue.push_back((start, 0));
@@ -478,10 +483,7 @@ pub fn traverse_with_depth(
         let next_depth = depth + 1;
 
         for neighbor in neighbors {
-            if next_depth >= min_hops
-                && neighbor != start
-                && !result.iter().any(|(id, _)| *id == neighbor)
-            {
+            if next_depth >= min_hops && neighbor != start && in_result.insert(neighbor.0) {
                 result.push((neighbor, next_depth));
             }
 
@@ -491,6 +493,7 @@ pub fn traverse_with_depth(
         }
     }
 
+    let _ = max_results;
     Ok(result)
 }
 
@@ -514,11 +517,26 @@ pub struct PathStep {
 ///
 /// Returns all paths from `start` following edges with the given `label`(s) and
 /// `direction`, with length between `min_hops` and `max_hops` inclusive.
-/// Uses DFS with relationship uniqueness (no edge reused within a single path).
-/// Zero-length paths (min_hops=0) include the start node with empty step list.
 ///
-/// When `labels` is empty, all edge types are followed at each hop (the types
-/// are discovered dynamically per node, not just from the start node).
+/// # Algorithm
+/// Uses iterative DFS (explicit stack) with **relationship uniqueness** — each
+/// edge may appear at most once per path, but different paths may share edges.
+/// This matches Cypher's `uniqueness = RELATIONSHIP_PATH` semantics.
+///
+/// Each stack frame carries: current node, path so far, and a set of visited
+/// edge hashes. Parallel edges (same src/dst/label, different seq) are treated
+/// as distinct edges. The visited set uses u64 hashes of `(src, dst, label, seq)`
+/// to avoid string allocations in the inner loop.
+///
+/// # Edge discovery
+/// When `labels` is empty, all edge types are followed at each hop (discovered
+/// dynamically per node via `get_all_edge_labels`, not just from the start node).
+///
+/// # Property filters
+/// `prop_filters` are applied at each hop inside the DFS — edges that don't
+/// match are pruned immediately rather than filtering results after traversal.
+///
+/// Zero-length paths (min_hops=0) include the start node with empty step list.
 pub fn traverse_paths(
     conn: &Connection,
     start: NodeId,
@@ -527,6 +545,7 @@ pub fn traverse_paths(
     min_hops: u32,
     max_hops: u32,
     prop_filters: &HashMap<String, crate::types::Value>,
+    max_results: Option<usize>,
 ) -> Result<Vec<(NodeId, Vec<PathStep>)>> {
     let mut results: Vec<(NodeId, Vec<PathStep>)> = Vec::new();
 
@@ -540,9 +559,17 @@ pub fn traverse_paths(
     }
 
     // DFS stack: (current_node, path_so_far, visited_edges)
-    // Edge key includes seq to distinguish parallel edges.
-    type EdgeKey = (u64, u64, String, u64);
-    type DfsFrame = (NodeId, Vec<PathStep>, std::collections::HashSet<EdgeKey>);
+    // Edge key uses a hash of (src, dst, label, seq) to avoid string allocation.
+    use std::hash::{Hash, Hasher};
+    fn edge_hash(src: u64, dst: u64, label: &str, seq: u64) -> u64 {
+        let mut h = std::hash::DefaultHasher::new();
+        src.hash(&mut h);
+        dst.hash(&mut h);
+        label.hash(&mut h);
+        seq.hash(&mut h);
+        h.finish()
+    }
+    type DfsFrame = (NodeId, Vec<PathStep>, std::collections::HashSet<u64>);
     let mut stack: Vec<DfsFrame> = Vec::new();
     stack.push((start, Vec::new(), std::collections::HashSet::new()));
 
@@ -615,7 +642,7 @@ pub fn traverse_paths(
                 }
 
                 for (edge_src, edge_dst, seq, props) in directed_edges {
-                    let edge_key = (edge_src.0, edge_dst.0, label.to_string(), seq);
+                    let edge_key = edge_hash(edge_src.0, edge_dst.0, label, seq);
                     if visited_edges.contains(&edge_key) {
                         continue; // Relationship uniqueness.
                     }
@@ -642,15 +669,28 @@ pub fn traverse_paths(
                         dst: neighbor,
                     };
 
-                    let mut new_path = path.clone();
-                    new_path.push(step);
-                    let new_depth = new_path.len() as u32;
+                    let new_depth = path.len() as u32 + 1;
+                    let want_result = new_depth >= min_hops;
+                    let want_continue = new_depth < max_hops;
 
-                    if new_depth >= min_hops {
+                    if want_result && want_continue {
+                        // Need path for both result and stack — clone once for
+                        // result, build extended path for stack.
+                        let mut new_path = path.clone();
+                        new_path.push(step);
                         results.push((neighbor, new_path.clone()));
-                    }
-
-                    if new_depth < max_hops {
+                        let mut new_visited = visited_edges.clone();
+                        new_visited.insert(edge_key);
+                        stack.push((neighbor, new_path, new_visited));
+                    } else if want_result {
+                        // Terminal depth — no need for stack copy.
+                        let mut new_path = path.clone();
+                        new_path.push(step);
+                        results.push((neighbor, new_path));
+                    } else if want_continue {
+                        // Below min_hops — only push to stack.
+                        let mut new_path = path.clone();
+                        new_path.push(step);
                         let mut new_visited = visited_edges.clone();
                         new_visited.insert(edge_key);
                         stack.push((neighbor, new_path, new_visited));
@@ -660,6 +700,7 @@ pub fn traverse_paths(
         }
     }
 
+    let _ = max_results;
     Ok(results)
 }
 

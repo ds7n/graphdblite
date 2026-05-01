@@ -42,6 +42,11 @@ pub enum LogicalOp {
         /// For var-length patterns: inline property filters applied at each hop.
         /// Empty for fixed-length patterns (they use a separate Filter node).
         var_length_prop_filters: HashMap<String, Expr>,
+        /// Optional cap on total output rows. Set by the planner's limit-pushdown
+        /// pass when this Expand directly drives a Limit (only `Limit -> [Project]* ->
+        /// Expand{var_length}` chains qualify). The executor stops enumeration once
+        /// this many rows have been produced across all input records.
+        result_cap: Option<u64>,
     },
 
     /// Cross-product of two pipelines (for multi-pattern MATCH).
@@ -236,6 +241,45 @@ pub enum LogicalOp {
 
     /// Produce a single empty record (used as starting input for scans).
     EmptyRow,
+}
+
+impl LogicalOp {
+    /// Short human-readable name for tracing/debugging.
+    pub fn op_name(&self) -> &'static str {
+        match self {
+            Self::SingleRow => "SingleRow",
+            Self::Scan { .. } => "Scan",
+            Self::IndexLookup { .. } => "IndexLookup",
+            Self::Expand { .. } => "Expand",
+            Self::CrossProduct { .. } => "CrossProduct",
+            Self::Filter { .. } => "Filter",
+            Self::Project { .. } => "Project",
+            Self::Aggregate { .. } => "Aggregate",
+            Self::Sort { .. } => "Sort",
+            Self::Distinct { .. } => "Distinct",
+            Self::Skip { .. } => "Skip",
+            Self::Limit { .. } => "Limit",
+            Self::CreateNode { .. } => "CreateNode",
+            Self::CreateEdge { .. } => "CreateEdge",
+            Self::CreateSequence { .. } => "CreateSequence",
+            Self::MatchCreate { .. } => "MatchCreate",
+            Self::Delete { .. } => "Delete",
+            Self::SetProperty { .. } => "SetProperty",
+            Self::SetLabel { .. } => "SetLabel",
+            Self::SetProperties { .. } => "SetProperties",
+            Self::Remove { .. } => "Remove",
+            Self::Merge { .. } => "Merge",
+            Self::MatchMerge { .. } => "MatchMerge",
+            Self::MaterializePath { .. } => "MaterializePath",
+            Self::CorrelatedJoin { .. } => "CorrelatedJoin",
+            Self::LeftOuterJoin { .. } => "LeftOuterJoin",
+            Self::Unwind { .. } => "Unwind",
+            Self::Call { .. } => "Call",
+            Self::ShortestPath { .. } => "ShortestPath",
+            Self::Union { .. } => "Union",
+            Self::EmptyRow => "EmptyRow",
+        }
+    }
 }
 
 /// An aggregate expression within an Aggregate operator.

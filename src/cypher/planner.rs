@@ -222,6 +222,7 @@ pub fn plan_with_procedures(
 }
 
 /// Plan a CALL procedure statement with validation.
+#[allow(clippy::too_many_arguments)]
 fn plan_call(
     conn: &Connection,
     procedure_name: &str,
@@ -264,8 +265,7 @@ fn plan_call(
     // 7. MissingParameter — implicit args, missing required parameter.
     // With implicit args, the arguments come from parameters with the same name
     // as the procedure inputs.
-    let resolved_args: Vec<Expr>;
-    if implicit_args && !proc_def.inputs.is_empty() {
+    let resolved_args: Vec<Expr> = if implicit_args && !proc_def.inputs.is_empty() {
         // Build args from parameters by matching input parameter names.
         let empty_params = std::collections::HashMap::new();
         let param_map = params.unwrap_or(&empty_params);
@@ -279,10 +279,10 @@ fn plan_call(
                 ));
             }
         }
-        resolved_args = built_args;
+        built_args
     } else {
-        resolved_args = args.to_vec();
-    }
+        args.to_vec()
+    };
     let args = &resolved_args[..];
 
     if !implicit_args {

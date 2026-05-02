@@ -9,7 +9,7 @@ use std::collections::HashMap;
 
 use rusqlite::Connection;
 
-use crate::cypher::ast::{Expr, ReturnItem};
+use crate::cypher::ast::{Expr, ExprKind, ReturnItem};
 use crate::cypher::eval::{eval_expr, eval_predicate, expr_to_column_name};
 use crate::cypher::executor::{
     fetch_and_populate, is_user_visible_field, literal_to_value, node_to_record,
@@ -163,8 +163,8 @@ impl<'a> RecordIter for ProjectIter<'a> {
 
         let mut projected = Record::new();
         for item in &self.items {
-            match &item.expr {
-                Expr::Star => {
+            match &item.expr.kind {
+                ExprKind::Star => {
                     if self.emit_compound {
                         let bound_vars = crate::cypher::executor::compound_binding_vars(&rec);
                         for var in &bound_vars {
@@ -192,7 +192,7 @@ impl<'a> RecordIter for ProjectIter<'a> {
                         }
                     }
                 }
-                Expr::Variable(var) => {
+                ExprKind::Variable(var) => {
                     let col_name = item.alias.clone().unwrap_or_else(|| var.clone());
                     if self.emit_compound {
                         if let Some(compound) =
@@ -523,8 +523,8 @@ pub fn build_iter<'a>(
             let input_iter = build_iter(conn, input)?;
             let prop_filter_values: HashMap<String, Value> = var_length_prop_filters
                 .iter()
-                .filter_map(|(k, expr)| match expr {
-                    Expr::Literal(lit) => Some((k.clone(), literal_to_value(lit))),
+                .filter_map(|(k, expr)| match &expr.kind {
+                    ExprKind::Literal(lit) => Some((k.clone(), literal_to_value(lit))),
                     _ => None,
                 })
                 .collect();

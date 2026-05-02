@@ -425,6 +425,23 @@ pub struct Span {
     pub col: u32,
 }
 
+impl Span {
+    /// A placeholder span for AST nodes synthesized by the planner (no source location).
+    pub const fn synthetic() -> Self {
+        Self {
+            start: 0,
+            end: 0,
+            line: 0,
+            col: 0,
+        }
+    }
+
+    /// True if this span has no source location (was synthesized).
+    pub fn is_synthetic(&self) -> bool {
+        self.line == 0 && self.col == 0 && self.start == 0 && self.end == 0
+    }
+}
+
 impl fmt::Display for Span {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "line {}:{}", self.line, self.col)
@@ -704,8 +721,12 @@ impl QueryError {
         self
     }
 
-    /// Replace the span on this error.
+    /// Replace the span on this error. Synthetic spans (planner-rewritten nodes)
+    /// are ignored so error messages don't display "line 0:0".
     pub fn with_span(mut self, new_span: Span) -> Self {
+        if new_span.is_synthetic() {
+            return self;
+        }
         let (_, _, _, _, span_field) = query_error_fields!(&mut self);
         *span_field = Some(new_span);
         self
@@ -1114,6 +1135,18 @@ impl GraphError {
             *c = code;
         }
         self
+    }
+
+    /// Attach a source-text span to a query error. No-op for non-Query variants
+    /// or for synthetic spans (planner-rewritten nodes).
+    pub fn with_span(self, span: Span) -> Self {
+        if span.is_synthetic() {
+            return self;
+        }
+        match self {
+            GraphError::Query(q) => GraphError::Query(q.with_span(span)),
+            other => other,
+        }
     }
 
     /// Wrap an internal serialization failure with a context tag.

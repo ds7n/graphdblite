@@ -3,7 +3,7 @@ use std::collections::HashMap;
 use rusqlite::Connection;
 use tracing::{debug, instrument};
 
-use crate::cypher::ast::{Expr, LiteralValue, PatternElement, SetItem};
+use crate::cypher::ast::{Expr, ExprKind, LiteralValue, PatternElement, SetItem};
 use crate::cypher::eval::{eval_expr, eval_predicate, expr_to_column_name};
 use crate::cypher::ir::*;
 use crate::cypher::record::Record;
@@ -466,8 +466,8 @@ fn exec_expand(
             // Variable-length traversal — pass ALL labels at once for mixed-type support.
             let prop_filter_values: HashMap<String, Value> = var_length_prop_filters
                 .iter()
-                .filter_map(|(k, expr)| match expr {
-                    Expr::Literal(lit) => Some((k.clone(), literal_to_value(lit))),
+                .filter_map(|(k, expr)| match &expr.kind {
+                    ExprKind::Literal(lit) => Some((k.clone(), literal_to_value(lit))),
                     _ => None,
                 })
                 .collect();
@@ -830,8 +830,8 @@ fn exec_project(
     for rec in &records {
         let mut projected = Record::new();
         for item in items {
-            match &item.expr {
-                Expr::Star => {
+            match &item.expr.kind {
+                ExprKind::Star => {
                     if emit_compound {
                         // Final RETURN * — emit one compound column per bound
                         // variable (plus any non-binding user-visible scalars).
@@ -874,7 +874,7 @@ fn exec_project(
                         }
                     }
                 }
-                Expr::Variable(var) => {
+                ExprKind::Variable(var) => {
                     let col_name = item.alias.clone().unwrap_or_else(|| var.clone());
                     if emit_compound {
                         if let Some(compound) = build_compound_binding(rec, var) {
@@ -919,7 +919,7 @@ fn exec_project(
                     // Check for deleted entity access before any cache lookup.
                     // Property access on a deleted entity must raise an error
                     // even if the value is still in the record.
-                    if let Expr::Property(var, prop) = &item.expr {
+                    if let ExprKind::Property(var, prop) = &item.expr.kind {
                         if rec.get(&format!("{var}.__deleted")) == Some(&Value::Bool(true)) {
                             return Err(GraphError::Query(
                                 crate::types::QueryError::EntityNotFound {
@@ -959,8 +959,8 @@ fn exec_project(
                             // function, trust the cached value; otherwise
                             // evaluate to avoid shadowing bugs.
                             let is_agg = matches!(
-                                &item.expr,
-                                Expr::FunctionCall { name, .. }
+                                &item.expr.kind,
+                                ExprKind::FunctionCall { name, .. }
                                     if matches!(name.to_ascii_lowercase().as_str(),
                                         "count" | "sum" | "avg" | "min" | "max" | "collect"
                                         | "percentiledisc" | "percentilecont" | "stdev" | "stdevp")
@@ -1046,7 +1046,7 @@ fn exec_aggregate(
             // propagate its flattened property keys (e.g. `n.name`, `n.__id`) from
             // a representative record so that downstream clauses like
             // `RETURN n.name` continue to work after WITH/aggregation.
-            if let Expr::Variable(var) = key_expr {
+            if let ExprKind::Variable(var) = &key_expr.kind {
                 let prefix = format!("{var}.");
                 if let Some(first) = group_records.first() {
                     for (key, val) in &first.fields {
@@ -1071,7 +1071,7 @@ fn exec_aggregate(
 fn compute_aggregate(agg: &AggregateExpr, records: &[Record], conn: &Connection) -> Result<Value> {
     // When DISTINCT is set, deduplicate input values (skip nulls).
     let deduped_records: Vec<Record>;
-    let effective_records = if agg.distinct && !matches!(agg.input, Expr::Star) {
+    let effective_records = if agg.distinct && !matches!(agg.input.kind, ExprKind::Star) {
         let mut seen: Vec<Value> = Vec::new();
         let mut kept = Vec::new();
         for rec in records {
@@ -1092,7 +1092,7 @@ fn compute_aggregate(agg: &AggregateExpr, records: &[Record], conn: &Connection)
 
     match agg.function {
         AggregateFunction::Count => {
-            if matches!(agg.input, Expr::Star) {
+            if matches!(agg.input.kind, ExprKind::Star) {
                 Ok(Value::I64(effective_records.len() as i64))
             } else {
                 let count = effective_records
@@ -1570,7 +1570,7 @@ fn exec_delete(
 
     for rec in &mut records {
         for expr in exprs {
-            if let Expr::Variable(var) = expr {
+            if let ExprKind::Variable(var) = &expr.kind {
                 collect_var_entities(rec, var, &mut edges_to_delete, &mut nodes_to_delete);
                 rec.set(format!("{var}.__deleted"), Value::Bool(true));
             } else {
@@ -2916,13 +2916,13 @@ pub(super) fn exec_aggregate_over_records(
         let mut result = Record::new();
         // Set group key columns.
         for (i, k) in group_keys.iter().enumerate() {
-            let col = match k {
-                Expr::Variable(v) => v.clone(),
+            let col = match &k.kind {
+                ExprKind::Variable(v) => v.clone(),
                 _ => format!("{k:?}"),
             };
             result.set(col.clone(), key_vals[i].clone());
             // Carry forward internal metadata for group keys.
-            if let Expr::Variable(v) = k {
+            if let ExprKind::Variable(v) = &k.kind {
                 if let Some(first) = group_recs.first() {
                     for (fk, fv) in &first.fields {
                         if fk.starts_with(&format!("{v}.")) {
@@ -3497,12 +3497,13 @@ fn agg_col_name(agg: &AggregateExpr) -> String {
         } else {
             agg.original_name.clone()
         };
-        let expr = crate::cypher::ast::Expr::FunctionCall {
-            name,
-            args: vec![agg.input.clone()],
-            distinct: agg.distinct,
-            original_text: None,
-        };
+        let expr =
+            crate::cypher::ast::Expr::synthetic(crate::cypher::ast::ExprKind::FunctionCall {
+                name,
+                args: vec![agg.input.clone()],
+                distinct: agg.distinct,
+                original_text: None,
+            });
         expr_to_column_name(&expr)
     })
 }

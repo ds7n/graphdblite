@@ -18,8 +18,8 @@ static ANON_COUNTER: AtomicUsize = AtomicUsize::new(0);
 /// calls like `toInteger(rand()*9)`. Parameters are already resolved to
 /// literals before planning.
 fn eval_skip_limit(expr: &Expr, conn: &Connection) -> crate::types::Result<u64> {
-    match expr {
-        Expr::Literal(LiteralValue::I64(n)) => {
+    match &expr.kind {
+        ExprKind::Literal(LiteralValue::I64(n)) => {
             if *n < 0 {
                 return Err(
                     GraphError::syntax("SKIP/LIMIT must be a non-negative integer")
@@ -28,7 +28,7 @@ fn eval_skip_limit(expr: &Expr, conn: &Connection) -> crate::types::Result<u64> 
             }
             Ok(*n as u64)
         }
-        Expr::Literal(LiteralValue::F64(_)) => Err(GraphError::type_error(
+        ExprKind::Literal(LiteralValue::F64(_)) => Err(GraphError::type_error(
             crate::types::QueryPhase::Runtime,
             "SKIP/LIMIT does not accept a floating point value",
         )
@@ -73,8 +73,8 @@ fn eval_skip_limit(expr: &Expr, conn: &Connection) -> crate::types::Result<u64> 
 /// RETURN aliases (e.g. `ORDER BY x` where `RETURN foo.num AS x`) must be
 /// rewritten to use the original expression (`foo.num`).
 fn resolve_sort_aliases(expr: &Expr, items: &[ReturnItem]) -> Expr {
-    match expr {
-        Expr::Variable(name) => {
+    match &expr.kind {
+        ExprKind::Variable(name) => {
             for item in items {
                 if item.alias.as_deref() == Some(name) {
                     return item.expr.clone();
@@ -82,18 +82,20 @@ fn resolve_sort_aliases(expr: &Expr, items: &[ReturnItem]) -> Expr {
             }
             expr.clone()
         }
-        Expr::BinaryOp { left, op, right } => Expr::BinaryOp {
+        ExprKind::BinaryOp { left, op, right } => Expr::synthetic(ExprKind::BinaryOp {
             left: Box::new(resolve_sort_aliases(left, items)),
             op: *op,
             right: Box::new(resolve_sort_aliases(right, items)),
-        },
-        Expr::Not(inner) => Expr::Not(Box::new(resolve_sort_aliases(inner, items))),
-        Expr::FunctionCall {
+        }),
+        ExprKind::Not(inner) => {
+            Expr::synthetic(ExprKind::Not(Box::new(resolve_sort_aliases(inner, items))))
+        }
+        ExprKind::FunctionCall {
             name,
             args,
             distinct,
             original_text,
-        } => Expr::FunctionCall {
+        } => Expr::synthetic(ExprKind::FunctionCall {
             name: name.clone(),
             args: args
                 .iter()
@@ -101,7 +103,7 @@ fn resolve_sort_aliases(expr: &Expr, items: &[ReturnItem]) -> Expr {
                 .collect(),
             distinct: *distinct,
             original_text: original_text.clone(),
-        },
+        }),
         _ => expr.clone(),
     }
 }
@@ -470,12 +472,14 @@ fn plan_call(
 
         // Handle RETURN * — expand to all yielded columns.
         let return_items = if ret.items.len() == 1
-            && matches!(ret.items[0].expr, Expr::Variable(ref v) if v == "*")
+            && matches!(ret.items[0].expr.kind, ExprKind::Variable(ref v) if v == "*")
         {
             resolved_yields
                 .iter()
                 .map(|(col, alias)| ReturnItem {
-                    expr: Expr::Variable(alias.as_ref().unwrap_or(col).clone()),
+                    expr: Expr::synthetic(ExprKind::Variable(
+                        alias.as_ref().unwrap_or(col).clone(),
+                    )),
                     alias: None,
                 })
                 .collect()
@@ -526,12 +530,12 @@ fn plan_call(
 /// Convert a runtime Value to a literal Expr for implicit argument injection.
 fn value_to_literal_expr(val: &Value) -> Expr {
     match val {
-        Value::I64(n) => Expr::Literal(LiteralValue::I64(*n)),
-        Value::F64(f) => Expr::Literal(LiteralValue::F64(*f)),
-        Value::String(s) => Expr::Literal(LiteralValue::String(s.clone())),
-        Value::Bool(b) => Expr::Literal(LiteralValue::Bool(*b)),
-        Value::Null => Expr::Literal(LiteralValue::Null),
-        _ => Expr::Literal(LiteralValue::Null), // Fallback for complex types
+        Value::I64(n) => Expr::synthetic(ExprKind::Literal(LiteralValue::I64(*n))),
+        Value::F64(f) => Expr::synthetic(ExprKind::Literal(LiteralValue::F64(*f))),
+        Value::String(s) => Expr::synthetic(ExprKind::Literal(LiteralValue::String(s.clone()))),
+        Value::Bool(b) => Expr::synthetic(ExprKind::Literal(LiteralValue::Bool(*b))),
+        Value::Null => Expr::synthetic(ExprKind::Literal(LiteralValue::Null)),
+        _ => Expr::synthetic(ExprKind::Literal(LiteralValue::Null)), // Fallback for complex types
     }
 }
 
@@ -541,27 +545,27 @@ fn check_arg_type(arg: &Expr, type_name: &str) -> Option<String> {
     // Strip trailing `?` for nullable types.
     let base_type = type_name.trim_end_matches('?').to_ascii_uppercase();
 
-    match arg {
-        Expr::Literal(LiteralValue::Null) => None, // null is compatible with any type
-        Expr::Literal(LiteralValue::I64(_)) => match base_type.as_str() {
+    match &arg.kind {
+        ExprKind::Literal(LiteralValue::Null) => None, // null is compatible with any type
+        ExprKind::Literal(LiteralValue::I64(_)) => match base_type.as_str() {
             "INTEGER" | "NUMBER" | "FLOAT" | "ANY" => None,
             _ => Some(format!(
                 "InvalidArgumentType: expected {type_name} but got INTEGER"
             )),
         },
-        Expr::Literal(LiteralValue::F64(_)) => match base_type.as_str() {
+        ExprKind::Literal(LiteralValue::F64(_)) => match base_type.as_str() {
             "FLOAT" | "NUMBER" | "ANY" => None,
             _ => Some(format!(
                 "InvalidArgumentType: expected {type_name} but got FLOAT"
             )),
         },
-        Expr::Literal(LiteralValue::String(_)) => match base_type.as_str() {
+        ExprKind::Literal(LiteralValue::String(_)) => match base_type.as_str() {
             "STRING" | "ANY" => None,
             _ => Some(format!(
                 "InvalidArgumentType: expected {type_name} but got STRING"
             )),
         },
-        Expr::Literal(LiteralValue::Bool(_)) => match base_type.as_str() {
+        ExprKind::Literal(LiteralValue::Bool(_)) => match base_type.as_str() {
             "BOOLEAN" | "ANY" => None,
             _ => Some(format!(
                 "InvalidArgumentType: expected {type_name} but got BOOLEAN"
@@ -574,8 +578,8 @@ fn check_arg_type(arg: &Expr, type_name: &str) -> Option<String> {
 
 /// Check that all variables in a RETURN expression are in the yielded scope.
 fn check_return_vars_in_scope(expr: &Expr, scope: &HashSet<String>) -> crate::types::Result<()> {
-    match expr {
-        Expr::Variable(name) => {
+    match &expr.kind {
+        ExprKind::Variable(name) => {
             if !scope.contains(name) {
                 return Err(
                     GraphError::syntax(format!("variable `{name}` not defined",))
@@ -584,27 +588,27 @@ fn check_return_vars_in_scope(expr: &Expr, scope: &HashSet<String>) -> crate::ty
             }
             Ok(())
         }
-        Expr::Property(var, _) => {
+        ExprKind::Property(var, _) => {
             if !scope.contains(var) {
                 return Err(GraphError::syntax(format!("variable `{var}` not defined",))
                     .with_code(ErrorCode::UndefinedVariable));
             }
             Ok(())
         }
-        Expr::BinaryOp { left, right, .. } => {
+        ExprKind::BinaryOp { left, right, .. } => {
             check_return_vars_in_scope(left, scope)?;
             check_return_vars_in_scope(right, scope)
         }
-        Expr::Not(inner) | Expr::IsNull(inner) | Expr::IsNotNull(inner) => {
+        ExprKind::Not(inner) | ExprKind::IsNull(inner) | ExprKind::IsNotNull(inner) => {
             check_return_vars_in_scope(inner, scope)
         }
-        Expr::FunctionCall { args, .. } => {
+        ExprKind::FunctionCall { args, .. } => {
             for arg in args {
                 check_return_vars_in_scope(arg, scope)?;
             }
             Ok(())
         }
-        Expr::List(items) => {
+        ExprKind::List(items) => {
             for item in items {
                 check_return_vars_in_scope(item, scope)?;
             }
@@ -716,7 +720,7 @@ fn plan_match(
             .with_code(ErrorCode::InvalidAggregation));
         }
         // Reject using a node/relationship variable as a boolean predicate.
-        if let Expr::Variable(var) = predicate {
+        if let ExprKind::Variable(var) = &predicate.kind {
             if let Some(kind) = var_types.get(var) {
                 if *kind == VarKind::Node || *kind == VarKind::Relationship {
                     return Err(GraphError::type_error(
@@ -779,14 +783,14 @@ fn plan_match(
                 var_types.clear();
                 with_value_kinds.clear();
                 for item in &with.items {
-                    if let Expr::Star = &item.expr {
+                    if let ExprKind::Star = &item.expr.kind {
                         // WITH * keeps all prior variables in scope.
                         scope_vars = bound_vars.clone();
                     } else {
                         let var_name = if let Some(ref alias) = item.alias {
                             scope_vars.insert(alias.clone());
                             alias.clone()
-                        } else if let Expr::Variable(var) = &item.expr {
+                        } else if let ExprKind::Variable(var) = &item.expr.kind {
                             scope_vars.insert(var.clone());
                             var.clone()
                         } else {
@@ -1292,7 +1296,7 @@ fn plan_unwind(conn: &Connection, stmt: &UnwindStatement) -> crate::types::Resul
                         for item in &with.items {
                             if let Some(ref alias) = item.alias {
                                 scope_vars.insert(alias.clone());
-                            } else if let Expr::Variable(var) = &item.expr {
+                            } else if let ExprKind::Variable(var) = &item.expr.kind {
                                 scope_vars.insert(var.clone());
                             }
                         }
@@ -1393,7 +1397,7 @@ fn plan_unwind(conn: &Connection, stmt: &UnwindStatement) -> crate::types::Resul
                         for item in &with.items {
                             if let Some(ref alias) = item.alias {
                                 scope_vars2.insert(alias.clone());
-                            } else if let Expr::Variable(var) = &item.expr {
+                            } else if let ExprKind::Variable(var) = &item.expr.kind {
                                 scope_vars2.insert(var.clone());
                             }
                         }
@@ -1785,17 +1789,17 @@ fn plan_multi_clause(
                 scope_vars.clear();
                 with_value_kinds.clear();
                 for item in &with.items {
-                    if let Expr::Star = &item.expr {
+                    if let ExprKind::Star = &item.expr.kind {
                         scope_vars = old_scope.clone();
                         // WITH * passes through existing kinds.
                     } else {
                         let var_name = if let Some(ref alias) = item.alias {
                             scope_vars.insert(alias.clone());
                             alias.clone()
-                        } else if let Expr::Variable(var) = &item.expr {
+                        } else if let ExprKind::Variable(var) = &item.expr.kind {
                             scope_vars.insert(var.clone());
                             var.clone()
-                        } else if let Expr::Property(var, prop) = &item.expr {
+                        } else if let ExprKind::Property(var, prop) = &item.expr.kind {
                             let col = format!("{var}.{prop}");
                             scope_vars.insert(col.clone());
                             col
@@ -1966,28 +1970,34 @@ fn plan_multi_clause(
 /// expressions. This allows WITH WHERE to filter before projection while
 /// correctly resolving aliases like `WITH n.age AS age WHERE age > 25`.
 fn substitute_aliases(expr: &Expr, aliases: &std::collections::HashMap<String, Expr>) -> Expr {
-    match expr {
-        Expr::Variable(name) => {
+    match &expr.kind {
+        ExprKind::Variable(name) => {
             if let Some(original) = aliases.get(name) {
                 original.clone()
             } else {
                 expr.clone()
             }
         }
-        Expr::BinaryOp { left, op, right } => Expr::BinaryOp {
+        ExprKind::BinaryOp { left, op, right } => Expr::synthetic(ExprKind::BinaryOp {
             left: Box::new(substitute_aliases(left, aliases)),
             op: *op,
             right: Box::new(substitute_aliases(right, aliases)),
-        },
-        Expr::Not(inner) => Expr::Not(Box::new(substitute_aliases(inner, aliases))),
-        Expr::IsNull(inner) => Expr::IsNull(Box::new(substitute_aliases(inner, aliases))),
-        Expr::IsNotNull(inner) => Expr::IsNotNull(Box::new(substitute_aliases(inner, aliases))),
-        Expr::FunctionCall {
+        }),
+        ExprKind::Not(inner) => {
+            Expr::synthetic(ExprKind::Not(Box::new(substitute_aliases(inner, aliases))))
+        }
+        ExprKind::IsNull(inner) => Expr::synthetic(ExprKind::IsNull(Box::new(substitute_aliases(
+            inner, aliases,
+        )))),
+        ExprKind::IsNotNull(inner) => Expr::synthetic(ExprKind::IsNotNull(Box::new(
+            substitute_aliases(inner, aliases),
+        ))),
+        ExprKind::FunctionCall {
             name,
             args,
             distinct,
             original_text,
-        } => Expr::FunctionCall {
+        } => Expr::synthetic(ExprKind::FunctionCall {
             name: name.clone(),
             args: args
                 .iter()
@@ -1995,7 +2005,7 @@ fn substitute_aliases(expr: &Expr, aliases: &std::collections::HashMap<String, E
                 .collect(),
             distinct: *distinct,
             original_text: original_text.clone(),
-        },
+        }),
         _ => expr.clone(),
     }
 }
@@ -2022,8 +2032,8 @@ fn plan_with_scoped(
     for item in &with.items {
         if item.alias.is_none()
             && !matches!(
-                item.expr,
-                Expr::Variable(_) | Expr::Star | Expr::Property(_, _)
+                item.expr.kind,
+                ExprKind::Variable(_) | ExprKind::Star | ExprKind::Property(_, _)
             )
         {
             return Err(GraphError::syntax(
@@ -2412,7 +2422,7 @@ fn validate_return_variables(
     scope_vars: &HashSet<String>,
 ) -> crate::types::Result<()> {
     for item in items {
-        if matches!(item.expr, Expr::Star) {
+        if matches!(item.expr.kind, ExprKind::Star) {
             // RETURN * with no variables in scope.
             if scope_vars.is_empty() {
                 return Err(GraphError::syntax(
@@ -2430,7 +2440,7 @@ fn validate_return_variables(
 fn check_duplicate_columns(items: &[ReturnItem]) -> crate::types::Result<()> {
     let mut seen: HashSet<String> = HashSet::new();
     for item in items {
-        if matches!(item.expr, Expr::Star) {
+        if matches!(item.expr.kind, ExprKind::Star) {
             continue;
         }
         let col = item
@@ -2451,10 +2461,14 @@ fn validate_expr_types(
     expr: &Expr,
     var_types: &HashMap<String, VarKind>,
 ) -> crate::types::Result<()> {
-    match expr {
-        Expr::FunctionCall { name, args, .. } => {
+    match &expr.kind {
+        ExprKind::FunctionCall { name, args, .. } => {
             let name_lower = name.to_ascii_lowercase();
-            if let Some(Expr::Variable(var)) = args.first() {
+            if let Some(Expr {
+                kind: ExprKind::Variable(var),
+                ..
+            }) = args.first()
+            {
                 if let Some(kind) = var_types.get(var) {
                     match name_lower.as_str() {
                         "type" if *kind == VarKind::Node => {
@@ -2495,7 +2509,7 @@ fn validate_expr_types(
                 validate_expr_types(arg, var_types)?;
             }
         }
-        Expr::Property(var, _) => {
+        ExprKind::Property(var, _) => {
             if let Some(kind) = var_types.get(var) {
                 if *kind == VarKind::Path {
                     return Err(GraphError::type_error(
@@ -2506,29 +2520,32 @@ fn validate_expr_types(
                 }
             }
         }
-        Expr::BinaryOp { left, right, .. } => {
+        ExprKind::BinaryOp { left, right, .. } => {
             validate_expr_types(left, var_types)?;
             validate_expr_types(right, var_types)?;
         }
-        Expr::Not(inner) | Expr::IsNull(inner) | Expr::IsNotNull(inner) => {
+        ExprKind::Not(inner) | ExprKind::IsNull(inner) | ExprKind::IsNotNull(inner) => {
             validate_expr_types(inner, var_types)?;
         }
-        Expr::Quantifier {
+        ExprKind::Quantifier {
             list_expr,
             variable,
             predicate,
             ..
         } => {
-            if let Expr::List(items) = list_expr.as_ref() {
+            if let ExprKind::List(items) = &list_expr.as_ref().kind {
                 if !items.is_empty() {
                     let all_strings = items.iter().all(|e| {
                         matches!(
-                            e,
-                            Expr::Literal(crate::cypher::ast::LiteralValue::String(_))
+                            e.kind,
+                            ExprKind::Literal(crate::cypher::ast::LiteralValue::String(_))
                         )
                     });
                     let all_booleans = items.iter().all(|e| {
-                        matches!(e, Expr::Literal(crate::cypher::ast::LiteralValue::Bool(_)))
+                        matches!(
+                            e.kind,
+                            ExprKind::Literal(crate::cypher::ast::LiteralValue::Bool(_))
+                        )
                     });
                     if (all_strings || all_booleans)
                         && predicate_uses_arithmetic_on(predicate, variable)
@@ -2550,8 +2567,8 @@ fn validate_expr_types(
 
 /// Check if an expression uses arithmetic operators on a specific variable.
 fn predicate_uses_arithmetic_on(expr: &Expr, var: &str) -> bool {
-    match expr {
-        Expr::BinaryOp { left, op, right } => {
+    match &expr.kind {
+        ExprKind::BinaryOp { left, op, right } => {
             let is_arith = matches!(
                 op,
                 BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Div | BinOp::Mod | BinOp::Pow
@@ -2561,10 +2578,10 @@ fn predicate_uses_arithmetic_on(expr: &Expr, var: &str) -> bool {
             }
             predicate_uses_arithmetic_on(left, var) || predicate_uses_arithmetic_on(right, var)
         }
-        Expr::Not(inner) | Expr::IsNull(inner) | Expr::IsNotNull(inner) => {
+        ExprKind::Not(inner) | ExprKind::IsNull(inner) | ExprKind::IsNotNull(inner) => {
             predicate_uses_arithmetic_on(inner, var)
         }
-        Expr::FunctionCall { args, .. } => {
+        ExprKind::FunctionCall { args, .. } => {
             args.iter().any(|a| predicate_uses_arithmetic_on(a, var))
         }
         _ => false,
@@ -2573,50 +2590,50 @@ fn predicate_uses_arithmetic_on(expr: &Expr, var: &str) -> bool {
 
 /// Check if an expression directly references a variable by name.
 fn expr_references_var(expr: &Expr, var: &str) -> bool {
-    match expr {
-        Expr::Variable(v) => v == var,
-        Expr::Property(v, _) => v == var,
-        Expr::BinaryOp { left, right, .. } => {
+    match &expr.kind {
+        ExprKind::Variable(v) => v == var,
+        ExprKind::Property(v, _) => v == var,
+        ExprKind::BinaryOp { left, right, .. } => {
             expr_references_var(left, var) || expr_references_var(right, var)
         }
-        Expr::Not(inner) | Expr::IsNull(inner) | Expr::IsNotNull(inner) => {
+        ExprKind::Not(inner) | ExprKind::IsNull(inner) | ExprKind::IsNotNull(inner) => {
             expr_references_var(inner, var)
         }
-        Expr::FunctionCall { args, .. } => args.iter().any(|a| expr_references_var(a, var)),
+        ExprKind::FunctionCall { args, .. } => args.iter().any(|a| expr_references_var(a, var)),
         _ => false,
     }
 }
 
 /// Check that every variable reference in an expression is present in `scope`.
 fn check_expr_variables(expr: &Expr, scope: &HashSet<String>) -> crate::types::Result<()> {
-    match expr {
-        Expr::Variable(var) => {
+    match &expr.kind {
+        ExprKind::Variable(var) => {
             if !scope.contains(var) {
-                return Err(
-                    GraphError::syntax(var.to_string()).with_code(ErrorCode::UndefinedVariable)
-                );
+                return Err(GraphError::syntax(var.to_string())
+                    .with_code(ErrorCode::UndefinedVariable)
+                    .with_span(expr.span));
             }
         }
-        Expr::Property(var, _) => {
+        ExprKind::Property(var, _) => {
             if !scope.contains(var) {
-                return Err(
-                    GraphError::syntax(var.to_string()).with_code(ErrorCode::UndefinedVariable)
-                );
+                return Err(GraphError::syntax(var.to_string())
+                    .with_code(ErrorCode::UndefinedVariable)
+                    .with_span(expr.span));
             }
         }
-        Expr::BinaryOp { left, right, .. } => {
+        ExprKind::BinaryOp { left, right, .. } => {
             check_expr_variables(left, scope)?;
             check_expr_variables(right, scope)?;
         }
-        Expr::Not(inner) | Expr::IsNull(inner) | Expr::IsNotNull(inner) => {
+        ExprKind::Not(inner) | ExprKind::IsNull(inner) | ExprKind::IsNotNull(inner) => {
             check_expr_variables(inner, scope)?;
         }
-        Expr::FunctionCall { args, .. } => {
+        ExprKind::FunctionCall { args, .. } => {
             for arg in args {
                 check_expr_variables(arg, scope)?;
             }
         }
-        Expr::Case {
+        ExprKind::Case {
             operand,
             alternatives,
             default,
@@ -2632,21 +2649,21 @@ fn check_expr_variables(expr: &Expr, scope: &HashSet<String>) -> crate::types::R
                 check_expr_variables(d, scope)?;
             }
         }
-        Expr::List(items) => {
+        ExprKind::List(items) => {
             for item in items {
                 check_expr_variables(item, scope)?;
             }
         }
-        Expr::MapLiteral(pairs) => {
+        ExprKind::MapLiteral(pairs) => {
             for (_, v) in pairs {
                 check_expr_variables(v, scope)?;
             }
         }
-        Expr::Index { expr, index } => {
+        ExprKind::Index { expr, index } => {
             check_expr_variables(expr, scope)?;
             check_expr_variables(index, scope)?;
         }
-        Expr::Slice { expr, start, end } => {
+        ExprKind::Slice { expr, start, end } => {
             check_expr_variables(expr, scope)?;
             if let Some(s) = start {
                 check_expr_variables(s, scope)?;
@@ -2655,21 +2672,21 @@ fn check_expr_variables(expr: &Expr, scope: &HashSet<String>) -> crate::types::R
                 check_expr_variables(e, scope)?;
             }
         }
-        Expr::Literal(_) | Expr::Parameter(_) | Expr::Star => {}
-        Expr::ListComprehension { list_expr, .. } => {
+        ExprKind::Literal(_) | ExprKind::Parameter(_) | ExprKind::Star => {}
+        ExprKind::ListComprehension { list_expr, .. } => {
             check_expr_variables(list_expr, scope)?;
         }
-        Expr::Quantifier { list_expr, .. } => {
+        ExprKind::Quantifier { list_expr, .. } => {
             check_expr_variables(list_expr, scope)?;
         }
-        Expr::Exists { .. }
-        | Expr::ExistsSubquery(_)
-        | Expr::PatternPredicate(_)
-        | Expr::PatternComprehension { .. } => {}
-        Expr::DotAccess { expr, .. } => {
+        ExprKind::Exists { .. }
+        | ExprKind::ExistsSubquery(_)
+        | ExprKind::PatternPredicate(_)
+        | ExprKind::PatternComprehension { .. } => {}
+        ExprKind::DotAccess { expr, .. } => {
             check_expr_variables(expr, scope)?;
         }
-        Expr::HasLabel(var, _) => {
+        ExprKind::HasLabel(var, _) => {
             if !scope.contains(var) {
                 return Err(
                     GraphError::syntax(var.to_string()).with_code(ErrorCode::UndefinedVariable)
@@ -2687,8 +2704,8 @@ fn validate_pattern_predicate_vars(
     expr: &Expr,
     scope: &HashSet<String>,
 ) -> crate::types::Result<()> {
-    match expr {
-        Expr::PatternPredicate(pattern) => {
+    match &expr.kind {
+        ExprKind::PatternPredicate(pattern) => {
             // Self-pattern check: single bound node is not a valid predicate.
             if pattern.elements.len() == 1 {
                 if let PatternElement::Node(n) = &pattern.elements[0] {
@@ -2724,11 +2741,11 @@ fn validate_pattern_predicate_vars(
             }
         }
         // Recurse into sub-expressions, but NOT into ExistsSubquery (own scope).
-        Expr::BinaryOp { left, right, .. } => {
+        ExprKind::BinaryOp { left, right, .. } => {
             validate_pattern_predicate_vars(left, scope)?;
             validate_pattern_predicate_vars(right, scope)?;
         }
-        Expr::Not(inner) | Expr::IsNull(inner) | Expr::IsNotNull(inner) => {
+        ExprKind::Not(inner) | ExprKind::IsNull(inner) | ExprKind::IsNotNull(inner) => {
             validate_pattern_predicate_vars(inner, scope)?;
         }
         _ => {}
@@ -2738,38 +2755,38 @@ fn validate_pattern_predicate_vars(
 
 /// Reject pattern predicate expressions in non-WHERE contexts (RETURN, WITH, SET).
 fn reject_pattern_predicates(expr: &Expr) -> crate::types::Result<()> {
-    match expr {
-        Expr::PatternPredicate(_) => {
+    match &expr.kind {
+        ExprKind::PatternPredicate(_) => {
             return Err(
                 GraphError::syntax("pattern expressions are not allowed here".to_string())
                     .with_code(ErrorCode::UnexpectedSyntax),
             );
         }
-        Expr::FunctionCall { args, .. } => {
+        ExprKind::FunctionCall { args, .. } => {
             for arg in args {
                 reject_pattern_predicates(arg)?;
             }
         }
-        Expr::BinaryOp { left, right, .. } => {
+        ExprKind::BinaryOp { left, right, .. } => {
             reject_pattern_predicates(left)?;
             reject_pattern_predicates(right)?;
         }
-        Expr::Not(inner) | Expr::IsNull(inner) | Expr::IsNotNull(inner) => {
+        ExprKind::Not(inner) | ExprKind::IsNull(inner) | ExprKind::IsNotNull(inner) => {
             reject_pattern_predicates(inner)?;
         }
-        Expr::List(items) => {
+        ExprKind::List(items) => {
             for item in items {
                 reject_pattern_predicates(item)?;
             }
         }
-        Expr::Index { expr, index } => {
+        ExprKind::Index { expr, index } => {
             reject_pattern_predicates(expr)?;
             reject_pattern_predicates(index)?;
         }
-        Expr::DotAccess { expr, .. } => {
+        ExprKind::DotAccess { expr, .. } => {
             reject_pattern_predicates(expr)?;
         }
-        Expr::Case {
+        ExprKind::Case {
             operand,
             alternatives,
             default,
@@ -2970,10 +2987,10 @@ fn validate_delete_exprs(
     exprs: &[crate::cypher::ast::Expr],
     scope: &HashSet<String>,
 ) -> crate::types::Result<()> {
-    use crate::cypher::ast::Expr;
+    use crate::cypher::ast::ExprKind;
     for expr in exprs {
-        match expr {
-            Expr::Variable(var) => {
+        match &expr.kind {
+            ExprKind::Variable(var) => {
                 if !scope.contains(var) {
                     return Err(
                         GraphError::syntax(var.to_string()).with_code(ErrorCode::UndefinedVariable)
@@ -2981,21 +2998,21 @@ fn validate_delete_exprs(
                 }
             }
             // HasLabel expression (e.g. `n:Person`) is not a valid DELETE target.
-            Expr::HasLabel(..) => {
+            ExprKind::HasLabel(..) => {
                 return Err(
                     GraphError::syntax("cannot delete a label predicate expression")
                         .with_code(ErrorCode::InvalidDelete),
                 );
             }
             // Literal expressions are not valid DELETE targets.
-            Expr::Literal(_) => {
+            ExprKind::Literal(_) => {
                 return Err(
                     GraphError::syntax("DELETE requires a node, relationship, or path")
                         .with_code(ErrorCode::InvalidArgumentType),
                 );
             }
             // Binary/arithmetic expressions are not valid DELETE targets.
-            Expr::BinaryOp { .. } => {
+            ExprKind::BinaryOp { .. } => {
                 return Err(
                     GraphError::syntax("DELETE requires a node, relationship, or path")
                         .with_code(ErrorCode::InvalidArgumentType),
@@ -3018,11 +3035,11 @@ fn validate_delete_exprs(
 
 /// Extract the root variable name from an expression tree.
 fn extract_root_variable(expr: &crate::cypher::ast::Expr) -> Option<String> {
-    use crate::cypher::ast::Expr;
-    match expr {
-        Expr::Variable(v) => Some(v.clone()),
-        Expr::Property(v, _) => Some(v.clone()),
-        Expr::Index { expr: base, .. } => extract_root_variable(base),
+    use crate::cypher::ast::ExprKind;
+    match &expr.kind {
+        ExprKind::Variable(v) => Some(v.clone()),
+        ExprKind::Property(v, _) => Some(v.clone()),
+        ExprKind::Index { expr: base, .. } => extract_root_variable(base),
         _ => None,
     }
 }
@@ -3094,7 +3111,7 @@ fn validate_distinct_order_by(
         }
         projected.insert(crate::cypher::eval::expr_to_column_name(&item.expr));
         // Track bare variable names so ORDER BY can access their properties.
-        if let Expr::Variable(var) = &item.expr {
+        if let ExprKind::Variable(var) = &item.expr.kind {
             returned_vars.insert(var.clone());
         }
     }
@@ -3104,7 +3121,7 @@ fn validate_distinct_order_by(
             continue;
         }
         // Allow property access on returned variables (e.g. ORDER BY a.name when RETURN DISTINCT a).
-        if let Expr::Property(var, _) = &sort_item.expr {
+        if let ExprKind::Property(var, _) = &sort_item.expr.kind {
             if returned_vars.contains(var) {
                 continue;
             }
@@ -3132,7 +3149,7 @@ fn validate_with_order_by_scope_input(
         if let Some(ref alias) = item.alias {
             scope.insert(alias.clone());
         }
-        if matches!(item.expr, Expr::Star) {
+        if matches!(item.expr.kind, ExprKind::Star) {
             return Ok(()); // WITH * — skip validation.
         }
     }
@@ -3166,23 +3183,23 @@ fn validate_agg_order_by_scope(
 
 /// Collect all variable names referenced in an expression.
 fn collect_variables_from_expr(expr: &Expr, vars: &mut HashSet<String>) {
-    match expr {
-        Expr::Variable(name) => {
+    match &expr.kind {
+        ExprKind::Variable(name) => {
             vars.insert(name.clone());
         }
-        Expr::Property(var, _) => {
+        ExprKind::Property(var, _) => {
             vars.insert(var.clone());
         }
-        Expr::BinaryOp { left, right, .. } => {
+        ExprKind::BinaryOp { left, right, .. } => {
             collect_variables_from_expr(left, vars);
             collect_variables_from_expr(right, vars);
         }
-        Expr::FunctionCall { args, .. } => {
+        ExprKind::FunctionCall { args, .. } => {
             for arg in args {
                 collect_variables_from_expr(arg, vars);
             }
         }
-        Expr::Not(inner) | Expr::IsNull(inner) | Expr::IsNotNull(inner) => {
+        ExprKind::Not(inner) | ExprKind::IsNull(inner) | ExprKind::IsNotNull(inner) => {
             collect_variables_from_expr(inner, vars);
         }
         _ => {}
@@ -3195,8 +3212,8 @@ fn validate_non_agg_leaves_in_scope(
     expr: &Expr,
     scope: &HashSet<String>,
 ) -> crate::types::Result<()> {
-    match expr {
-        Expr::FunctionCall { name, args, .. } => {
+    match &expr.kind {
+        ExprKind::FunctionCall { name, args, .. } => {
             if matches!(
                 name.to_ascii_lowercase().as_str(),
                 "count"
@@ -3217,23 +3234,25 @@ fn validate_non_agg_leaves_in_scope(
                 validate_non_agg_leaves_in_scope(arg, scope)?;
             }
         }
-        Expr::Variable(name) => {
+        ExprKind::Variable(name) => {
             if !scope.contains(name) {
                 return Err(GraphError::syntax(format!("variable `{name}` not defined"))
-                    .with_code(ErrorCode::UndefinedVariable));
+                    .with_code(ErrorCode::UndefinedVariable)
+                    .with_span(expr.span));
             }
         }
-        Expr::Property(var, _) => {
+        ExprKind::Property(var, _) => {
             if !scope.contains(var) {
                 return Err(GraphError::syntax(format!("variable `{var}` not defined"))
-                    .with_code(ErrorCode::UndefinedVariable));
+                    .with_code(ErrorCode::UndefinedVariable)
+                    .with_span(expr.span));
             }
         }
-        Expr::BinaryOp { left, right, .. } => {
+        ExprKind::BinaryOp { left, right, .. } => {
             validate_non_agg_leaves_in_scope(left, scope)?;
             validate_non_agg_leaves_in_scope(right, scope)?;
         }
-        Expr::Not(inner) | Expr::IsNull(inner) | Expr::IsNotNull(inner) => {
+        ExprKind::Not(inner) | ExprKind::IsNull(inner) | ExprKind::IsNotNull(inner) => {
             validate_non_agg_leaves_in_scope(inner, scope)?;
         }
         _ => {} // Literals, parameters, Star — always valid.
@@ -3243,32 +3262,34 @@ fn validate_non_agg_leaves_in_scope(
 
 /// Check that all variable references in an expression are in the given scope.
 fn validate_expr_in_scope(expr: &Expr, scope: &HashSet<String>) -> crate::types::Result<()> {
-    match expr {
-        Expr::Variable(name) => {
+    match &expr.kind {
+        ExprKind::Variable(name) => {
             if !scope.contains(name) {
                 return Err(GraphError::syntax(format!("variable `{name}` not defined"))
-                    .with_code(ErrorCode::UndefinedVariable));
+                    .with_code(ErrorCode::UndefinedVariable)
+                    .with_span(expr.span));
             }
         }
-        Expr::Property(var, _) => {
+        ExprKind::Property(var, _) => {
             if !scope.contains(var) {
                 return Err(GraphError::syntax(format!("variable `{var}` not defined"))
-                    .with_code(ErrorCode::UndefinedVariable));
+                    .with_code(ErrorCode::UndefinedVariable)
+                    .with_span(expr.span));
             }
         }
-        Expr::BinaryOp { left, right, .. } => {
+        ExprKind::BinaryOp { left, right, .. } => {
             validate_expr_in_scope(left, scope)?;
             validate_expr_in_scope(right, scope)?;
         }
-        Expr::FunctionCall { args, .. } => {
+        ExprKind::FunctionCall { args, .. } => {
             for arg in args {
                 validate_expr_in_scope(arg, scope)?;
             }
         }
-        Expr::Not(inner) | Expr::IsNull(inner) | Expr::IsNotNull(inner) => {
+        ExprKind::Not(inner) | ExprKind::IsNull(inner) | ExprKind::IsNotNull(inner) => {
             validate_expr_in_scope(inner, scope)?;
         }
-        Expr::List(items) => {
+        ExprKind::List(items) => {
             for item in items {
                 validate_expr_in_scope(item, scope)?;
             }
@@ -3280,8 +3301,8 @@ fn validate_expr_in_scope(expr: &Expr, scope: &HashSet<String>) -> crate::types:
 
 /// Check for aggregation functions in a list comprehension mapping expression.
 fn validate_no_aggregation_in_list_comp(expr: &Expr) -> crate::types::Result<()> {
-    match expr {
-        Expr::ListComprehension {
+    match &expr.kind {
+        ExprKind::ListComprehension {
             map_expr,
             filter,
             list_expr,
@@ -3301,19 +3322,19 @@ fn validate_no_aggregation_in_list_comp(expr: &Expr) -> crate::types::Result<()>
             }
             validate_no_aggregation_in_list_comp(list_expr)?;
         }
-        Expr::FunctionCall { args, .. } => {
+        ExprKind::FunctionCall { args, .. } => {
             for arg in args {
                 validate_no_aggregation_in_list_comp(arg)?;
             }
         }
-        Expr::BinaryOp { left, right, .. } => {
+        ExprKind::BinaryOp { left, right, .. } => {
             validate_no_aggregation_in_list_comp(left)?;
             validate_no_aggregation_in_list_comp(right)?;
         }
-        Expr::Not(inner) | Expr::IsNull(inner) | Expr::IsNotNull(inner) => {
+        ExprKind::Not(inner) | ExprKind::IsNull(inner) | ExprKind::IsNotNull(inner) => {
             validate_no_aggregation_in_list_comp(inner)?;
         }
-        Expr::List(items) => {
+        ExprKind::List(items) => {
             for item in items {
                 validate_no_aggregation_in_list_comp(item)?;
             }
@@ -3336,14 +3357,14 @@ enum WithValueKind {
 /// Only returns Scalar for expressions that definitely cannot be structural
 /// (nodes, relationships, paths). Conservative: unknown → Node (passes through).
 fn infer_with_value_kind(expr: &Expr) -> WithValueKind {
-    match expr {
+    match &expr.kind {
         // Definitely scalar: literals, property access, arithmetic, map literals.
-        Expr::Literal(_) => WithValueKind::Scalar,
-        Expr::MapLiteral(_) => WithValueKind::Scalar,
-        Expr::Property(_, _) => WithValueKind::Scalar,
-        Expr::BinaryOp { .. } => WithValueKind::Scalar,
+        ExprKind::Literal(_) => WithValueKind::Scalar,
+        ExprKind::MapLiteral(_) => WithValueKind::Scalar,
+        ExprKind::Property(_, _) => WithValueKind::Scalar,
+        ExprKind::BinaryOp { .. } => WithValueKind::Scalar,
         // A list is always a list value, not a node/relationship.
-        Expr::List(_) => WithValueKind::Scalar,
+        ExprKind::List(_) => WithValueKind::Scalar,
         // Function calls, index, slice, variables could return structural types.
         _ => WithValueKind::Node, // Pass through — could be node/rel/path
     }
@@ -3634,14 +3655,16 @@ fn plan_single_pattern(conn: &Connection, pattern: &Pattern) -> crate::types::Re
                 // Apply destination node's label filters.
                 for dst_label in &dst_node.labels {
                     if !dst_label.is_empty() {
-                        let predicate = Expr::BinaryOp {
-                            left: Box::new(Expr::Literal(LiteralValue::String(dst_label.clone()))),
+                        let predicate = Expr::synthetic(ExprKind::BinaryOp {
+                            left: Box::new(Expr::synthetic(ExprKind::Literal(
+                                LiteralValue::String(dst_label.clone()),
+                            ))),
                             op: BinOp::In,
-                            right: Box::new(Expr::Property(
+                            right: Box::new(Expr::synthetic(ExprKind::Property(
                                 dst_alias.clone(),
                                 "__labels".to_string(),
-                            )),
-                        };
+                            ))),
+                        });
                         op = Some(LogicalOp::Filter {
                             input: Box::new(op.unwrap()),
                             predicate,
@@ -3738,7 +3761,7 @@ fn plan_node_scan(
             .properties
             .iter()
             .filter(|(key, val)| {
-                indexed_props.contains(&key.as_str()) && matches!(val, Expr::Literal(_))
+                indexed_props.contains(&key.as_str()) && matches!(val.kind, ExprKind::Literal(_))
             })
             .collect();
 
@@ -3746,12 +3769,12 @@ fn plan_node_scan(
         // alphabetically for determinism.
         if candidates.len() > 1 {
             candidates.sort_by(|(key_a, expr_a), (key_b, expr_b)| {
-                let val_a = match expr_a {
-                    Expr::Literal(l) => crate::cypher::executor::literal_to_value(l),
+                let val_a = match &expr_a.kind {
+                    ExprKind::Literal(l) => crate::cypher::executor::literal_to_value(l),
                     _ => unreachable!(),
                 };
-                let val_b = match expr_b {
-                    Expr::Literal(l) => crate::cypher::executor::literal_to_value(l),
+                let val_b = match &expr_b.kind {
+                    ExprKind::Literal(l) => crate::cypher::executor::literal_to_value(l),
                     _ => unreachable!(),
                 };
                 let count_a =
@@ -3765,8 +3788,8 @@ fn plan_node_scan(
         let indexed_match = candidates.into_iter().next();
 
         if let Some((prop, expr)) = indexed_match {
-            let lit = match expr {
-                Expr::Literal(l) => l.clone(),
+            let lit = match &expr.kind {
+                ExprKind::Literal(l) => l.clone(),
                 _ => unreachable!(),
             };
 
@@ -3802,11 +3825,16 @@ fn plan_node_scan(
 
     // Add filters for additional labels (multi-label nodes).
     for extra_label in node.labels.iter().skip(1) {
-        let predicate = Expr::BinaryOp {
-            left: Box::new(Expr::Literal(LiteralValue::String(extra_label.clone()))),
+        let predicate = Expr::synthetic(ExprKind::BinaryOp {
+            left: Box::new(Expr::synthetic(ExprKind::Literal(LiteralValue::String(
+                extra_label.clone(),
+            )))),
             op: BinOp::In,
-            right: Box::new(Expr::Property(alias.to_string(), "__labels".to_string())),
-        };
+            right: Box::new(Expr::synthetic(ExprKind::Property(
+                alias.to_string(),
+                "__labels".to_string(),
+            ))),
+        });
         scan = LogicalOp::Filter {
             input: Box::new(scan),
             predicate,
@@ -3954,10 +3982,15 @@ fn properties_to_filter(
 ) -> Expr {
     let mut exprs: Vec<Expr> = properties
         .iter()
-        .map(|(key, value)| Expr::BinaryOp {
-            left: Box::new(Expr::Property(variable.to_string(), key.clone())),
-            op: BinOp::Eq,
-            right: Box::new(value.clone()),
+        .map(|(key, value)| {
+            Expr::synthetic(ExprKind::BinaryOp {
+                left: Box::new(Expr::synthetic(ExprKind::Property(
+                    variable.to_string(),
+                    key.clone(),
+                ))),
+                op: BinOp::Eq,
+                right: Box::new(value.clone()),
+            })
         })
         .collect();
 
@@ -3968,11 +4001,11 @@ fn properties_to_filter(
     // Chain with AND.
     let mut result = exprs.remove(0);
     for expr in exprs {
-        result = Expr::BinaryOp {
+        result = Expr::synthetic(ExprKind::BinaryOp {
             left: Box::new(result),
             op: BinOp::And,
             right: Box::new(expr),
-        };
+        });
     }
     result
 }
@@ -3990,8 +4023,8 @@ fn get_last_alias(op: &Option<LogicalOp>) -> String {
 
 /// Returns true if the expression is an aggregate function call (count, sum, avg, etc.).
 fn is_aggregate_fn(expr: &Expr) -> bool {
-    match expr {
-        Expr::FunctionCall { name, args, .. } => {
+    match &expr.kind {
+        ExprKind::FunctionCall { name, args, .. } => {
             if matches!(
                 name.to_ascii_lowercase().as_str(),
                 "count"
@@ -4012,12 +4045,14 @@ fn is_aggregate_fn(expr: &Expr) -> bool {
             }
         }
         // Recursively check sub-expressions (e.g. `count(a) > 0`).
-        Expr::BinaryOp { left, right, .. } => is_aggregate_fn(left) || is_aggregate_fn(right),
-        Expr::Not(inner) | Expr::IsNull(inner) | Expr::IsNotNull(inner) => is_aggregate_fn(inner),
-        Expr::MapLiteral(pairs) => pairs.iter().any(|(_, v)| is_aggregate_fn(v)),
-        Expr::List(items) => items.iter().any(is_aggregate_fn),
-        Expr::ListComprehension { list_expr, .. } => is_aggregate_fn(list_expr),
-        Expr::Quantifier { list_expr, .. } => is_aggregate_fn(list_expr),
+        ExprKind::BinaryOp { left, right, .. } => is_aggregate_fn(left) || is_aggregate_fn(right),
+        ExprKind::Not(inner) | ExprKind::IsNull(inner) | ExprKind::IsNotNull(inner) => {
+            is_aggregate_fn(inner)
+        }
+        ExprKind::MapLiteral(pairs) => pairs.iter().any(|(_, v)| is_aggregate_fn(v)),
+        ExprKind::List(items) => items.iter().any(is_aggregate_fn),
+        ExprKind::ListComprehension { list_expr, .. } => is_aggregate_fn(list_expr),
+        ExprKind::Quantifier { list_expr, .. } => is_aggregate_fn(list_expr),
         _ => false,
     }
 }
@@ -4025,8 +4060,8 @@ fn is_aggregate_fn(expr: &Expr) -> bool {
 /// Collect all aggregate function call sub-expressions from an expression tree.
 /// Stops recursing into aggregate function arguments (aggregates don't nest).
 fn collect_aggregate_calls<'a>(expr: &'a Expr, out: &mut Vec<&'a Expr>) {
-    match expr {
-        Expr::FunctionCall { name, .. }
+    match &expr.kind {
+        ExprKind::FunctionCall { name, .. }
             if matches!(
                 name.to_ascii_lowercase().as_str(),
                 "count"
@@ -4043,32 +4078,32 @@ fn collect_aggregate_calls<'a>(expr: &'a Expr, out: &mut Vec<&'a Expr>) {
         {
             out.push(expr);
         }
-        Expr::FunctionCall { args, .. } => {
+        ExprKind::FunctionCall { args, .. } => {
             for arg in args {
                 collect_aggregate_calls(arg, out);
             }
         }
-        Expr::BinaryOp { left, right, .. } => {
+        ExprKind::BinaryOp { left, right, .. } => {
             collect_aggregate_calls(left, out);
             collect_aggregate_calls(right, out);
         }
-        Expr::Not(inner) | Expr::IsNull(inner) | Expr::IsNotNull(inner) => {
+        ExprKind::Not(inner) | ExprKind::IsNull(inner) | ExprKind::IsNotNull(inner) => {
             collect_aggregate_calls(inner, out);
         }
-        Expr::MapLiteral(pairs) => {
+        ExprKind::MapLiteral(pairs) => {
             for (_, v) in pairs {
                 collect_aggregate_calls(v, out);
             }
         }
-        Expr::List(items) => {
+        ExprKind::List(items) => {
             for item in items {
                 collect_aggregate_calls(item, out);
             }
         }
-        Expr::ListComprehension { list_expr, .. } => {
+        ExprKind::ListComprehension { list_expr, .. } => {
             collect_aggregate_calls(list_expr, out);
         }
-        Expr::Quantifier {
+        ExprKind::Quantifier {
             list_expr,
             predicate,
             ..
@@ -4083,8 +4118,8 @@ fn collect_aggregate_calls<'a>(expr: &'a Expr, out: &mut Vec<&'a Expr>) {
 /// Check if an expression is a "pure" aggregate — a direct aggregate function call,
 /// not a mix like `x + count(y)`.
 fn is_pure_aggregate(expr: &Expr) -> bool {
-    match expr {
-        Expr::FunctionCall { name, .. } => parse_agg_name(name).is_some(),
+    match &expr.kind {
+        ExprKind::FunctionCall { name, .. } => parse_agg_name(name).is_some(),
         _ => false,
     }
 }
@@ -4096,12 +4131,12 @@ fn split_aggregates(items: &[ReturnItem]) -> crate::types::Result<(Vec<Expr>, Ve
     let mut mixed_items: Vec<&Expr> = Vec::new();
 
     for item in items {
-        if let Expr::FunctionCall {
+        if let ExprKind::FunctionCall {
             name,
             args,
             distinct,
             original_text,
-        } = &item.expr
+        } = &item.expr.kind
         {
             if let Some(function) = parse_agg_name(name) {
                 // Reject aggregate-in-aggregate: count(count(*))
@@ -4122,7 +4157,10 @@ fn split_aggregates(items: &[ReturnItem]) -> crate::types::Result<(Vec<Expr>, Ve
                         .with_code(ErrorCode::NonConstantExpression));
                     }
                 }
-                let input = args.first().cloned().unwrap_or(Expr::Star);
+                let input = args
+                    .first()
+                    .cloned()
+                    .unwrap_or(Expr::synthetic(ExprKind::Star));
                 let extra_arg = args.get(1).cloned();
                 aggregates.push(AggregateExpr {
                     function,
@@ -4166,17 +4204,17 @@ fn split_aggregates(items: &[ReturnItem]) -> crate::types::Result<(Vec<Expr>, Ve
 
 /// Check if an expression contains a non-deterministic function call (e.g. rand()).
 fn contains_nondeterministic_fn(expr: &Expr) -> bool {
-    match expr {
-        Expr::FunctionCall { name, args, .. } => {
+    match &expr.kind {
+        ExprKind::FunctionCall { name, args, .. } => {
             if name.eq_ignore_ascii_case("rand") {
                 return true;
             }
             args.iter().any(contains_nondeterministic_fn)
         }
-        Expr::BinaryOp { left, right, .. } => {
+        ExprKind::BinaryOp { left, right, .. } => {
             contains_nondeterministic_fn(left) || contains_nondeterministic_fn(right)
         }
-        Expr::Not(inner) | Expr::IsNull(inner) | Expr::IsNotNull(inner) => {
+        ExprKind::Not(inner) | ExprKind::IsNull(inner) | ExprKind::IsNotNull(inner) => {
             contains_nondeterministic_fn(inner)
         }
         _ => false,
@@ -4185,39 +4223,39 @@ fn contains_nondeterministic_fn(expr: &Expr) -> bool {
 
 /// Collect non-aggregate, non-constant leaf expressions from a mixed expression.
 fn collect_non_aggregate_leaves<'a>(expr: &'a Expr, leaves: &mut Vec<&'a Expr>) {
-    match expr {
-        Expr::FunctionCall { name, .. } if parse_agg_name(name).is_some() => {
+    match &expr.kind {
+        ExprKind::FunctionCall { name, .. } if parse_agg_name(name).is_some() => {
             // Aggregate function — skip entirely (its args are aggregated)
         }
-        Expr::BinaryOp { left, right, .. } => {
+        ExprKind::BinaryOp { left, right, .. } => {
             collect_non_aggregate_leaves(left, leaves);
             collect_non_aggregate_leaves(right, leaves);
         }
-        Expr::Not(inner) | Expr::IsNull(inner) | Expr::IsNotNull(inner) => {
+        ExprKind::Not(inner) | ExprKind::IsNull(inner) | ExprKind::IsNotNull(inner) => {
             collect_non_aggregate_leaves(inner, leaves);
         }
         // Constants don't need grouping.
-        Expr::Literal(_) | Expr::Star => {}
+        ExprKind::Literal(_) | ExprKind::Star => {}
         // Non-aggregate functions are fine if their args are constants/grouped.
-        Expr::FunctionCall { args, .. } => {
+        ExprKind::FunctionCall { args, .. } => {
             for arg in args {
                 collect_non_aggregate_leaves(arg, leaves);
             }
         }
-        Expr::MapLiteral(pairs) => {
+        ExprKind::MapLiteral(pairs) => {
             for (_, v) in pairs {
                 collect_non_aggregate_leaves(v, leaves);
             }
         }
-        Expr::List(items) => {
+        ExprKind::List(items) => {
             for item in items {
                 collect_non_aggregate_leaves(item, leaves);
             }
         }
-        Expr::ListComprehension { list_expr, .. } => {
+        ExprKind::ListComprehension { list_expr, .. } => {
             collect_non_aggregate_leaves(list_expr, leaves);
         }
-        Expr::Quantifier { list_expr, .. } => {
+        ExprKind::Quantifier { list_expr, .. } => {
             collect_non_aggregate_leaves(list_expr, leaves);
         }
         _ => {
@@ -4246,15 +4284,18 @@ fn parse_agg_name(name: &str) -> Option<AggregateFunction> {
 
 /// Walk an expression tree and extract aggregate function calls into the list.
 fn extract_nested_aggregates(expr: &Expr, aggregates: &mut Vec<AggregateExpr>) {
-    match expr {
-        Expr::FunctionCall {
+    match &expr.kind {
+        ExprKind::FunctionCall {
             name,
             args,
             distinct,
             original_text,
         } => {
             if let Some(function) = parse_agg_name(name) {
-                let input = args.first().cloned().unwrap_or(Expr::Star);
+                let input = args
+                    .first()
+                    .cloned()
+                    .unwrap_or(Expr::synthetic(ExprKind::Star));
                 let extra_arg = args.get(1).cloned();
                 aggregates.push(AggregateExpr {
                     function,
@@ -4271,27 +4312,27 @@ fn extract_nested_aggregates(expr: &Expr, aggregates: &mut Vec<AggregateExpr>) {
                 extract_nested_aggregates(arg, aggregates);
             }
         }
-        Expr::BinaryOp { left, right, .. } => {
+        ExprKind::BinaryOp { left, right, .. } => {
             extract_nested_aggregates(left, aggregates);
             extract_nested_aggregates(right, aggregates);
         }
-        Expr::Not(inner) | Expr::IsNull(inner) | Expr::IsNotNull(inner) => {
+        ExprKind::Not(inner) | ExprKind::IsNull(inner) | ExprKind::IsNotNull(inner) => {
             extract_nested_aggregates(inner, aggregates);
         }
-        Expr::MapLiteral(pairs) => {
+        ExprKind::MapLiteral(pairs) => {
             for (_, v) in pairs {
                 extract_nested_aggregates(v, aggregates);
             }
         }
-        Expr::List(items) => {
+        ExprKind::List(items) => {
             for item in items {
                 extract_nested_aggregates(item, aggregates);
             }
         }
-        Expr::ListComprehension { list_expr, .. } => {
+        ExprKind::ListComprehension { list_expr, .. } => {
             extract_nested_aggregates(list_expr, aggregates);
         }
-        Expr::Quantifier { list_expr, .. } => {
+        ExprKind::Quantifier { list_expr, .. } => {
             extract_nested_aggregates(list_expr, aggregates);
         }
         _ => {}
@@ -4302,8 +4343,8 @@ fn extract_nested_aggregates(expr: &Expr, aggregates: &mut Vec<AggregateExpr>) {
 
 /// Flatten a predicate into AND-connected conjuncts.
 fn decompose_conjuncts(expr: &Expr) -> Vec<Expr> {
-    match expr {
-        Expr::BinaryOp {
+    match &expr.kind {
+        ExprKind::BinaryOp {
             left,
             op: BinOp::And,
             right,
@@ -4318,10 +4359,12 @@ fn decompose_conjuncts(expr: &Expr) -> Vec<Expr> {
 
 /// Rebuild a conjunction from a list of conjuncts. Returns None if empty.
 fn rebuild_conjunction(conjuncts: Vec<Expr>) -> Option<Expr> {
-    conjuncts.into_iter().reduce(|acc, c| Expr::BinaryOp {
-        left: Box::new(acc),
-        op: BinOp::And,
-        right: Box::new(c),
+    conjuncts.into_iter().reduce(|acc, c| {
+        Expr::synthetic(ExprKind::BinaryOp {
+            left: Box::new(acc),
+            op: BinOp::And,
+            right: Box::new(c),
+        })
     })
 }
 
@@ -4336,14 +4379,14 @@ fn try_push_predicate(
     predicate: &Expr,
 ) -> Option<LogicalOp> {
     // Only handle: Property(alias, prop) = Literal(val)
-    let (alias, prop, lit) = match predicate {
-        Expr::BinaryOp {
+    let (alias, prop, lit) = match &predicate.kind {
+        ExprKind::BinaryOp {
             left,
             op: BinOp::Eq,
             right,
-        } => match (left.as_ref(), right.as_ref()) {
-            (Expr::Property(a, p), Expr::Literal(l)) => (a.clone(), p.clone(), l.clone()),
-            (Expr::Literal(l), Expr::Property(a, p)) => (a.clone(), p.clone(), l.clone()),
+        } => match (&left.as_ref().kind, &right.as_ref().kind) {
+            (ExprKind::Property(a, p), ExprKind::Literal(l)) => (a.clone(), p.clone(), l.clone()),
+            (ExprKind::Literal(l), ExprKind::Property(a, p)) => (a.clone(), p.clone(), l.clone()),
             _ => return None,
         },
         _ => return None,

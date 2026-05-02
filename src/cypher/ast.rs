@@ -1,5 +1,7 @@
 use std::collections::HashMap;
 
+use crate::types::Span;
+
 /// Top-level Cypher statement.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Statement {
@@ -378,9 +380,44 @@ pub struct Assignment {
     pub value: Expr,
 }
 
-/// Expression AST node.
+/// Expression AST node — wraps a kind with its source span.
+///
+/// The span identifies where this expression came from in the original query
+/// text. Synthesized expressions (e.g. planner rewrites) use `Span::synthetic()`.
+///
+/// Equality compares only `kind` — span is metadata and must not affect
+/// AST equality (the planner relies on structural equality to dedupe
+/// expressions across rewrites with different spans).
+#[derive(Debug, Clone)]
+pub struct Expr {
+    pub kind: ExprKind,
+    pub span: Span,
+}
+
+impl PartialEq for Expr {
+    fn eq(&self, other: &Self) -> bool {
+        self.kind == other.kind
+    }
+}
+
+impl Expr {
+    /// Construct an expression with an explicit source span.
+    pub fn new(kind: ExprKind, span: Span) -> Self {
+        Self { kind, span }
+    }
+
+    /// Construct an expression with no source location (planner-synthesized).
+    pub fn synthetic(kind: ExprKind) -> Self {
+        Self {
+            kind,
+            span: Span::synthetic(),
+        }
+    }
+}
+
+/// Discriminant for expression AST nodes — see `Expr` for the spanned wrapper.
 #[derive(Debug, Clone, PartialEq)]
-pub enum Expr {
+pub enum ExprKind {
     /// Literal value (string, int, float, bool, null).
     Literal(LiteralValue),
     /// Property access: variable.property

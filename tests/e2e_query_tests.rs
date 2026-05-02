@@ -1995,6 +1995,34 @@ fn e2e_null_propagation_arithmetic() {
 }
 
 #[test]
+fn e2e_undefined_variable_carries_source_span() {
+    let mut db = Database::open_memory().unwrap();
+    let tx = db.begin_read().unwrap();
+    // Probe a few query shapes — at least one should reach the planner's
+    // scope check and surface a line:col location.
+    let queries = [
+        "WITH 1 AS x RETURN unknown_var",
+        "MATCH (n) WITH n AS y RETURN unknown_var",
+        "MATCH (n) RETURN n.x ORDER BY zzz",
+        "MATCH (n) WITH n.x AS p RETURN q",
+    ];
+    let mut saw_span = false;
+    for q in queries {
+        if let Err(e) = tx.query(q) {
+            if format!("{e}").contains("at line ") {
+                saw_span = true;
+                break;
+            }
+        }
+    }
+    assert!(
+        saw_span,
+        "expected at least one undefined-variable error to carry a line:col span"
+    );
+    tx.commit().unwrap();
+}
+
+#[test]
 fn e2e_float_property() {
     let mut db = Database::open_memory().unwrap();
     let tx = db.begin_write().unwrap();

@@ -63,11 +63,14 @@ fn parse_match_with_where() {
     match stmt {
         Statement::Match(m) => {
             assert!(m.where_clause.is_some());
-            match m.where_clause.unwrap() {
-                Expr::BinaryOp { left, op, right } => {
+            match m.where_clause.unwrap().kind {
+                ExprKind::BinaryOp { left, op, right } => {
                     assert_eq!(op, BinOp::Eq);
-                    assert!(matches!(*left, Expr::Property(_, _)));
-                    assert!(matches!(*right, Expr::Literal(LiteralValue::I64(30))));
+                    assert!(matches!(left.kind, ExprKind::Property(_, _)));
+                    assert!(matches!(
+                        right.kind,
+                        ExprKind::Literal(LiteralValue::I64(30))
+                    ));
                 }
                 _ => panic!("expected binary op"),
             }
@@ -100,7 +103,10 @@ fn parse_match_with_order_by_and_limit() {
         Statement::Match(m) => {
             assert_eq!(m.order_by.len(), 1);
             assert!(m.order_by[0].descending);
-            assert_eq!(m.limit, Some(Expr::Literal(LiteralValue::I64(10))));
+            assert!(matches!(
+                m.limit.as_ref().map(|e| &e.kind),
+                Some(ExprKind::Literal(LiteralValue::I64(10)))
+            ));
         }
         _ => panic!("expected Match"),
     }
@@ -112,11 +118,11 @@ fn parse_match_with_count() {
     match stmt {
         Statement::Match(m) => {
             let item = &m.return_clause.items[0];
-            match &item.expr {
-                Expr::FunctionCall { name, args, .. } => {
+            match &item.expr.kind {
+                ExprKind::FunctionCall { name, args, .. } => {
                     assert_eq!(name, "count");
                     assert_eq!(args.len(), 1);
-                    assert!(matches!(args[0], Expr::Star));
+                    assert!(matches!(args[0].kind, ExprKind::Star));
                 }
                 _ => panic!("expected function call"),
             }
@@ -173,10 +179,11 @@ fn parse_delete() {
     match stmt {
         Statement::Delete(d) => {
             assert!(d.where_clause.is_some());
-            assert_eq!(
-                d.exprs,
-                vec![graphdblite::cypher::ast::Expr::Variable("n".to_string())]
-            );
+            assert_eq!(d.exprs.len(), 1);
+            assert!(matches!(
+                &d.exprs[0].kind,
+                graphdblite::cypher::ast::ExprKind::Variable(v) if v == "n"
+            ));
         }
         _ => panic!("expected Delete"),
     }
@@ -219,8 +226,8 @@ fn parse_merge() {
 fn parse_boolean_logic() {
     let stmt = parse("MATCH (n:Person) WHERE n.age > 20 AND n.age < 40 RETURN n").unwrap();
     match stmt {
-        Statement::Match(m) => match m.where_clause.unwrap() {
-            Expr::BinaryOp { op, .. } => assert_eq!(op, BinOp::And),
+        Statement::Match(m) => match m.where_clause.unwrap().kind {
+            ExprKind::BinaryOp { op, .. } => assert_eq!(op, BinOp::And),
             _ => panic!("expected AND"),
         },
         _ => panic!("expected Match"),
@@ -245,10 +252,10 @@ fn parse_incoming_relationship() {
 fn parse_string_literal() {
     let stmt = parse("MATCH (n:Person) WHERE n.name = 'Alice' RETURN n").unwrap();
     match stmt {
-        Statement::Match(m) => match m.where_clause.unwrap() {
-            Expr::BinaryOp { right, .. } => {
+        Statement::Match(m) => match m.where_clause.unwrap().kind {
+            ExprKind::BinaryOp { right, .. } => {
                 assert!(
-                    matches!(*right, Expr::Literal(LiteralValue::String(ref s)) if s == "Alice")
+                    matches!(right.kind, ExprKind::Literal(LiteralValue::String(ref s)) if s == "Alice")
                 );
             }
             _ => panic!("expected comparison"),

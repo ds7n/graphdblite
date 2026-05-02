@@ -6,7 +6,7 @@ use std::collections::HashMap;
 
 use rusqlite::Connection;
 
-use crate::cypher::ast::Expr;
+use crate::cypher::ast::{Expr, ExprKind};
 use crate::cypher::eval::{eval_predicate, expr_to_column_name};
 use crate::cypher::ir::*;
 use crate::cypher::record::Record;
@@ -330,8 +330,8 @@ pub(super) fn exec_correlated(
                         // Variable-length traversal — pass ALL labels at once.
                         let prop_filter_values: HashMap<String, Value> = var_length_prop_filters
                             .iter()
-                            .filter_map(|(k, expr)| match expr {
-                                Expr::Literal(lit) => Some((k.clone(), literal_to_value(lit))),
+                            .filter_map(|(k, expr)| match &expr.kind {
+                                ExprKind::Literal(lit) => Some((k.clone(), literal_to_value(lit))),
                                 _ => None,
                             })
                             .collect();
@@ -656,8 +656,8 @@ pub(super) fn exec_correlated(
             for rec in &input_records {
                 let mut projected = Record::new();
                 for item in items {
-                    match &item.expr {
-                        Expr::Star => {
+                    match &item.expr.kind {
+                        ExprKind::Star => {
                             for (key, val) in &rec.fields {
                                 projected.set(key.clone(), val.clone());
                             }
@@ -667,7 +667,7 @@ pub(super) fn exec_correlated(
                                 .alias
                                 .clone()
                                 .or_else(|| {
-                                    if let Expr::Variable(v) = &item.expr {
+                                    if let ExprKind::Variable(v) = &item.expr.kind {
                                         Some(v.clone())
                                     } else {
                                         None
@@ -686,7 +686,7 @@ pub(super) fn exec_correlated(
                             };
                             projected.set(col, val);
                             // Carry forward internal metadata for bound variables.
-                            if let Expr::Variable(v) = &item.expr {
+                            if let ExprKind::Variable(v) = &item.expr.kind {
                                 let alias = item.alias.as_deref().unwrap_or(v.as_str());
                                 for (key, val) in &rec.fields {
                                     if key.starts_with(&format!("{v}.")) {

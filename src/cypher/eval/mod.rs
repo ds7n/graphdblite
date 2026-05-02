@@ -3,7 +3,7 @@ mod temporal_ops;
 
 use rusqlite::Connection;
 
-use crate::cypher::ast::{BinOp, Expr, LiteralValue, QuantifierKind};
+use crate::cypher::ast::{BinOp, Expr, ExprKind, LiteralValue, QuantifierKind};
 use crate::cypher::record::Record;
 use crate::types::{ErrorCode, GraphError, QueryError, QueryPhase, Value};
 
@@ -16,9 +16,9 @@ use temporal_ops::{
 ///
 /// The `conn` parameter is needed for EXISTS subquery evaluation.
 pub fn eval_expr(expr: &Expr, record: &Record, conn: &Connection) -> crate::types::Result<Value> {
-    match expr {
-        Expr::Literal(lit) => Ok(literal_to_value(lit)),
-        Expr::Variable(name) => {
+    match &expr.kind {
+        ExprKind::Literal(lit) => Ok(literal_to_value(lit)),
+        ExprKind::Variable(name) => {
             // Try to reconstruct a full Node/Edge value from compound bindings
             // (e.g. n.__id, n.__label, n.prop) so that variables resolve to rich
             // objects when used in RETURN lists, maps, or comparisons.
@@ -28,7 +28,7 @@ pub fn eval_expr(expr: &Expr, record: &Record, conn: &Connection) -> crate::type
                 Ok(record.get(name).cloned().unwrap_or(Value::Null))
             }
         }
-        Expr::Property(var, prop) => {
+        ExprKind::Property(var, prop) => {
             // Check if the entity has been deleted (e.g. DELETE n RETURN n.prop).
             if record.get(&format!("{var}.__deleted")) == Some(&Value::Bool(true)) {
                 return Err(GraphError::Query(crate::types::QueryError::EntityNotFound {
@@ -114,15 +114,15 @@ pub fn eval_expr(expr: &Expr, record: &Record, conn: &Connection) -> crate::type
             }
             Ok(Value::Null)
         }
-        Expr::List(items) => {
+        ExprKind::List(items) => {
             let values: crate::types::Result<Vec<Value>> =
                 items.iter().map(|e| eval_expr(e, record, conn)).collect();
             Ok(Value::List(values?))
         }
-        Expr::Index { expr, index } => {
+        ExprKind::Index { expr, index } => {
             // If the base is a variable, first try to build a compound binding
             // for dynamic property access (n['name']).
-            if let Expr::Variable(var) = expr.as_ref() {
+            if let ExprKind::Variable(var) = &expr.as_ref().kind {
                 let idx_val = eval_expr(index, record, conn)?;
                 if let Value::String(key) = &idx_val {
                     // Dynamic property access on a node/edge variable.
@@ -199,7 +199,7 @@ pub fn eval_expr(expr: &Expr, record: &Record, conn: &Connection) -> crate::type
                 _ => Ok(Value::Null),
             }
         }
-        Expr::DotAccess { expr, key } => {
+        ExprKind::DotAccess { expr, key } => {
             let base = eval_expr(expr, record, conn)?;
             match &base {
                 Value::Map(m) => Ok(m.get(key).cloned().unwrap_or(Value::Null)),
@@ -214,7 +214,7 @@ pub fn eval_expr(expr: &Expr, record: &Record, conn: &Connection) -> crate::type
                 }
             }
         }
-        Expr::Slice { expr, start, end } => {
+        ExprKind::Slice { expr, start, end } => {
             let base = eval_expr(expr, record, conn)?;
             let start_val = start
                 .as_ref()
@@ -255,7 +255,7 @@ pub fn eval_expr(expr: &Expr, record: &Record, conn: &Connection) -> crate::type
                 _ => Ok(Value::Null),
             }
         }
-        Expr::HasLabel(var, labels) => {
+        ExprKind::HasLabel(var, labels) => {
             // n:Label — check if the node bound to var has all specified labels.
             if record.get(var) == Some(&Value::Null) {
                 return Ok(Value::Null);
@@ -285,32 +285,32 @@ pub fn eval_expr(expr: &Expr, record: &Record, conn: &Connection) -> crate::type
                 Ok(Value::Bool(false))
             }
         }
-        Expr::Star => Ok(Value::Null),
-        Expr::Parameter(name) => Err(crate::types::GraphError::argument(
+        ExprKind::Star => Ok(Value::Null),
+        ExprKind::Parameter(name) => Err(crate::types::GraphError::argument(
             crate::types::QueryPhase::Runtime,
             format!("unresolved parameter: ${name}"),
         )),
-        Expr::BinaryOp { left, op, right } => {
+        ExprKind::BinaryOp { left, op, right } => {
             let lval = eval_expr(left, record, conn)?;
             let rval = eval_expr(right, record, conn)?;
             eval_binop(&lval, *op, &rval)
         }
-        Expr::Not(inner) => {
+        ExprKind::Not(inner) => {
             let val = eval_expr(inner, record, conn)?;
             match to_tribool(&val)? {
                 Some(b) => Ok(Value::Bool(!b)),
                 None => Ok(Value::Null),
             }
         }
-        Expr::IsNull(inner) => {
+        ExprKind::IsNull(inner) => {
             let val = eval_expr(inner, record, conn)?;
             Ok(Value::Bool(matches!(val, Value::Null)))
         }
-        Expr::IsNotNull(inner) => {
+        ExprKind::IsNotNull(inner) => {
             let val = eval_expr(inner, record, conn)?;
             Ok(Value::Bool(!matches!(val, Value::Null)))
         }
-        Expr::Case {
+        ExprKind::Case {
             operand,
             alternatives,
             default,
@@ -337,7 +337,7 @@ pub fn eval_expr(expr: &Expr, record: &Record, conn: &Connection) -> crate::type
                 None => Ok(Value::Null),
             }
         }
-        Expr::ListComprehension {
+        ExprKind::ListComprehension {
             variable,
             list_expr,
             filter,
@@ -350,13 +350,13 @@ pub fn eval_expr(expr: &Expr, record: &Record, conn: &Connection) -> crate::type
             record,
             conn,
         ),
-        Expr::Quantifier {
+        ExprKind::Quantifier {
             kind,
             variable,
             list_expr,
             predicate,
         } => eval_quantifier(*kind, variable, list_expr, predicate, record, conn),
-        Expr::PatternComprehension {
+        ExprKind::PatternComprehension {
             path_variable,
             pattern,
             where_clause,
@@ -369,15 +369,15 @@ pub fn eval_expr(expr: &Expr, record: &Record, conn: &Connection) -> crate::type
             record,
             conn,
         ),
-        Expr::Exists {
+        ExprKind::Exists {
             patterns,
             where_clause,
         } => eval_exists(patterns, where_clause.as_deref(), record, conn),
-        Expr::PatternPredicate(pattern) => {
+        ExprKind::PatternPredicate(pattern) => {
             eval_exists(std::slice::from_ref(pattern), None, record, conn)
         }
-        Expr::ExistsSubquery(stmt) => eval_exists_subquery(stmt, record, conn),
-        Expr::MapLiteral(pairs) => {
+        ExprKind::ExistsSubquery(stmt) => eval_exists_subquery(stmt, record, conn),
+        ExprKind::MapLiteral(pairs) => {
             let mut map = std::collections::BTreeMap::new();
             for (k, expr) in pairs {
                 let val = eval_expr(expr, record, conn)?;
@@ -385,7 +385,7 @@ pub fn eval_expr(expr: &Expr, record: &Record, conn: &Connection) -> crate::type
             }
             Ok(Value::Map(map))
         }
-        Expr::FunctionCall {
+        ExprKind::FunctionCall {
             name,
             args,
             original_text,
@@ -456,7 +456,11 @@ fn eval_function_call(
     // Check for deleted entity access in function arguments.
     // Note: type() and id() are allowed on deleted entities per openCypher spec.
     if matches!(name_lower.as_str(), "labels" | "keys" | "properties") {
-        if let Some(Expr::Variable(var)) = args.first() {
+        if let Some(Expr {
+            kind: ExprKind::Variable(var),
+            ..
+        }) = args.first()
+        {
             if record.get(&format!("{var}.__deleted")) == Some(&Value::Bool(true)) {
                 return Err(GraphError::Query(
                     crate::types::QueryError::EntityNotFound {
@@ -489,12 +493,12 @@ fn eval_function_call(
             | "stdev"
             | "stdevp"
     ) {
-        let col = expr_to_column_name(&Expr::FunctionCall {
+        let col = expr_to_column_name(&Expr::synthetic(ExprKind::FunctionCall {
             name: name.to_string(),
             args: args.to_vec(),
             distinct: false,
             original_text: None,
-        });
+        }));
         if let Some(val) = record.get(&col) {
             return Ok(val.clone());
         }
@@ -615,7 +619,11 @@ fn eval_function_call(
             // keys(n) — return property keys for a node, edge, or map.
             // For variable-based lookup, prefer the database (source of truth
             // after mutations like REMOVE).
-            if let Some(Expr::Variable(var)) = args.first() {
+            if let Some(Expr {
+                kind: ExprKind::Variable(var),
+                ..
+            }) = args.first()
+            {
                 let id_key = format!("{var}.__id");
                 if let Some(Value::I64(id)) = record.get(&id_key) {
                     if let Ok(node) = crate::node::get_node(conn, crate::types::NodeId(*id as u64))
@@ -674,7 +682,11 @@ fn eval_function_call(
         }
         "labels" => {
             // labels(n) — return label list from the __labels record field or database.
-            if let Some(Expr::Variable(var)) = args.first() {
+            if let Some(Expr {
+                kind: ExprKind::Variable(var),
+                ..
+            }) = args.first()
+            {
                 let label_key = format!("{var}.__labels");
                 if let Some(val @ Value::List(_)) = record.get(&label_key) {
                     return Ok(val.clone());
@@ -702,7 +714,11 @@ fn eval_function_call(
         }
         "id" => {
             // id(n) — extract the node/edge ID.
-            if let Some(Expr::Variable(var)) = args.first() {
+            if let Some(Expr {
+                kind: ExprKind::Variable(var),
+                ..
+            }) = args.first()
+            {
                 let id_key = format!("{var}.__id");
                 if let Some(val @ Value::I64(_)) = record.get(&id_key) {
                     return Ok(val.clone());
@@ -718,7 +734,11 @@ fn eval_function_call(
         }
         "type" => {
             // type(r) — extract the relationship type from a binding.
-            if let Some(Expr::Variable(var)) = args.first() {
+            if let Some(Expr {
+                kind: ExprKind::Variable(var),
+                ..
+            }) = args.first()
+            {
                 let type_key = format!("{var}.__type");
                 if let Some(Value::String(s)) = record.get(&type_key) {
                     return Ok(Value::String(s.clone()));
@@ -744,7 +764,11 @@ fn eval_function_call(
         }
         "properties" => {
             // properties(n) — return a map of all properties on a node/edge/map.
-            if let Some(Expr::Variable(var)) = args.first() {
+            if let Some(Expr {
+                kind: ExprKind::Variable(var),
+                ..
+            }) = args.first()
+            {
                 if let Some(compound) = crate::cypher::executor::build_compound_binding(record, var)
                 {
                     return match compound {
@@ -1048,7 +1072,11 @@ fn eval_function_call(
         "startNode" | "startnode" => {
             // startNode(r) — get the start node of a relationship.
             // First try the argument as a compound edge binding.
-            if let Some(Expr::Variable(var)) = args.first() {
+            if let Some(Expr {
+                kind: ExprKind::Variable(var),
+                ..
+            }) = args.first()
+            {
                 let src_key = format!("{var}.__src");
                 if let Some(Value::I64(src_id)) = record.get(&src_key) {
                     let node_id = crate::types::NodeId(*src_id as u64);
@@ -1069,7 +1097,11 @@ fn eval_function_call(
         }
         "endNode" | "endnode" => {
             // endNode(r) — get the end node of a relationship.
-            if let Some(Expr::Variable(var)) = args.first() {
+            if let Some(Expr {
+                kind: ExprKind::Variable(var),
+                ..
+            }) = args.first()
+            {
                 let dst_key = format!("{var}.__dst");
                 if let Some(Value::I64(dst_id)) = record.get(&dst_key) {
                     let node_id = crate::types::NodeId(*dst_id as u64);
@@ -2008,7 +2040,7 @@ fn binop_precedence(op: &BinOp) -> u8 {
 
 /// Format a child expression, wrapping in parens if its precedence is lower.
 fn format_child_expr(expr: &Expr, parent_prec: u8, is_left: bool) -> String {
-    let needs_parens = if let Expr::BinaryOp { op, .. } = expr {
+    let needs_parens = if let ExprKind::BinaryOp { op, .. } = &expr.kind {
         let child_prec = binop_precedence(op);
         // Parenthesize if child has lower precedence, or same precedence
         // on the right side (to preserve left-to-right grouping).
@@ -2026,10 +2058,10 @@ fn format_child_expr(expr: &Expr, parent_prec: u8, is_left: bool) -> String {
 
 /// Resolve an expression to a column name for RETURN projections.
 pub fn expr_to_column_name(expr: &Expr) -> String {
-    match expr {
-        Expr::Variable(name) => name.clone(),
-        Expr::Property(var, prop) => format!("{var}.{prop}"),
-        Expr::FunctionCall {
+    match &expr.kind {
+        ExprKind::Variable(name) => name.clone(),
+        ExprKind::Property(var, prop) => format!("{var}.{prop}"),
+        ExprKind::FunctionCall {
             name,
             args,
             distinct,
@@ -2039,38 +2071,38 @@ pub fn expr_to_column_name(expr: &Expr) -> String {
                 return text.clone();
             }
             let dist_prefix = if *distinct { "DISTINCT " } else { "" };
-            if args.is_empty() || matches!(args[0], Expr::Star) {
+            if args.is_empty() || matches!(args[0].kind, ExprKind::Star) {
                 format!("{name}(*)")
             } else {
                 let arg_names: Vec<String> = args.iter().map(expr_to_column_name).collect();
                 format!("{name}({dist_prefix}{})", arg_names.join(", "))
             }
         }
-        Expr::Star => "*".to_string(),
-        Expr::Literal(lit) => match lit {
+        ExprKind::Star => "*".to_string(),
+        ExprKind::Literal(lit) => match lit {
             LiteralValue::Null => "null".to_string(),
             LiteralValue::Bool(b) => b.to_string(),
             LiteralValue::I64(n) => n.to_string(),
             LiteralValue::F64(n) => n.to_string(),
             LiteralValue::String(s) => format!("'{s}'"),
         },
-        Expr::Case { .. } => "CASE".to_string(),
-        Expr::List(items) => {
+        ExprKind::Case { .. } => "CASE".to_string(),
+        ExprKind::List(items) => {
             let inner: Vec<String> = items.iter().map(expr_to_column_name).collect();
             format!("[{}]", inner.join(", "))
         }
-        Expr::Index { expr, index } => {
+        ExprKind::Index { expr, index } => {
             format!(
                 "{}[{}]",
                 expr_to_column_name(expr),
                 expr_to_column_name(index)
             )
         }
-        Expr::DotAccess { expr, key } => {
+        ExprKind::DotAccess { expr, key } => {
             let base = expr_to_column_name(expr);
             let needs_parens = !matches!(
-                expr.as_ref(),
-                Expr::Variable(_) | Expr::DotAccess { .. } | Expr::Property(..)
+                &expr.as_ref().kind,
+                ExprKind::Variable(_) | ExprKind::DotAccess { .. } | ExprKind::Property(..)
             );
             if needs_parens {
                 format!("({base}).{key}")
@@ -2078,7 +2110,7 @@ pub fn expr_to_column_name(expr: &Expr) -> String {
                 format!("{base}.{key}")
             }
         }
-        Expr::Slice { expr, start, end } => {
+        ExprKind::Slice { expr, start, end } => {
             let s = start
                 .as_ref()
                 .map(|e| expr_to_column_name(e))
@@ -2089,7 +2121,7 @@ pub fn expr_to_column_name(expr: &Expr) -> String {
                 .unwrap_or_default();
             format!("{}[{}..{}]", expr_to_column_name(expr), s, e)
         }
-        Expr::BinaryOp { left, op, right } => {
+        ExprKind::BinaryOp { left, op, right } => {
             let op_str = match op {
                 BinOp::Add => " + ",
                 BinOp::Sub => " - ",
@@ -2116,15 +2148,15 @@ pub fn expr_to_column_name(expr: &Expr) -> String {
             let r = format_child_expr(right, prec, false);
             format!("{l}{op_str}{r}")
         }
-        Expr::IsNull(inner) => format!("{} IS NULL", expr_to_column_name(inner)),
-        Expr::IsNotNull(inner) => format!("{} IS NOT NULL", expr_to_column_name(inner)),
-        Expr::Not(inner) => format!("NOT {}", expr_to_column_name(inner)),
-        Expr::PatternComprehension { .. } => "_expr".to_string(),
-        Expr::HasLabel(var, labels) => {
+        ExprKind::IsNull(inner) => format!("{} IS NULL", expr_to_column_name(inner)),
+        ExprKind::IsNotNull(inner) => format!("{} IS NOT NULL", expr_to_column_name(inner)),
+        ExprKind::Not(inner) => format!("NOT {}", expr_to_column_name(inner)),
+        ExprKind::PatternComprehension { .. } => "_expr".to_string(),
+        ExprKind::HasLabel(var, labels) => {
             let label_str: Vec<String> = labels.iter().map(|l| format!(":{l}")).collect();
             format!("({var}{})", label_str.join(""))
         }
-        Expr::MapLiteral(pairs) => {
+        ExprKind::MapLiteral(pairs) => {
             let inner: Vec<String> = pairs
                 .iter()
                 .map(|(k, v)| format!("{k}: {}", expr_to_column_name(v)))

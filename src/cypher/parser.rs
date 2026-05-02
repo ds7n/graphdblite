@@ -75,6 +75,19 @@ fn unescape_string(raw: &str) -> crate::types::Result<String> {
     Ok(out)
 }
 
+/// Convert a pest pair span into our lightweight `Span`.
+#[allow(dead_code)]
+fn span_from_pair(pair: &pest::iterators::Pair<Rule>) -> Span {
+    let s = pair.as_span();
+    let (line, col) = s.start_pos().line_col();
+    Span {
+        start: s.start(),
+        end: s.end(),
+        line: line as u32,
+        col: col as u32,
+    }
+}
+
 /// Convert a pest error position into our lightweight `Span`.
 fn pest_span(e: &pest::error::Error<Rule>) -> Span {
     use pest::error::{InputLocation, LineColLocation};
@@ -933,7 +946,7 @@ fn parse_set_item_list(pair: pest::iterators::Pair<Rule>) -> crate::types::Resul
                         let expr = parse_expr(prop_parts.next().unwrap())?;
                         let property = prop_parts.next().unwrap().as_str().to_string();
                         // Extract variable name from the expression
-                        if let Expr::Variable(var) = expr {
+                        if let ExprKind::Variable(var) = expr.kind {
                             items.push(SetItem::Property(Assignment {
                                 variable: var,
                                 property,
@@ -1634,11 +1647,11 @@ fn parse_xor_term(pair: pest::iterators::Pair<Rule>) -> crate::types::Result<Exp
             let right = parse_bool_term(children.remove(i))?;
             children.remove(i - 1);
             i -= 1;
-            left = Expr::BinaryOp {
+            left = Expr::synthetic(ExprKind::BinaryOp {
                 left: Box::new(left),
                 op: BinOp::Xor,
                 right: Box::new(right),
-            };
+            });
         } else {
             i += 1;
         }
@@ -1662,11 +1675,11 @@ fn parse_bool_term(pair: pest::iterators::Pair<Rule>) -> crate::types::Result<Ex
             let right = parse_bool_factor(children.remove(i))?;
             children.remove(i - 1);
             i -= 1;
-            left = Expr::BinaryOp {
+            left = Expr::synthetic(ExprKind::BinaryOp {
                 left: Box::new(left),
                 op: BinOp::And,
                 right: Box::new(right),
-            };
+            });
         } else {
             i += 1;
         }
@@ -1689,7 +1702,7 @@ fn parse_bool_factor(pair: pest::iterators::Pair<Rule>) -> crate::types::Result<
 
     let mut expr = parse_bool_primary(primary.unwrap())?;
     for _ in 0..not_count {
-        expr = Expr::Not(Box::new(expr));
+        expr = Expr::synthetic(ExprKind::Not(Box::new(expr)));
     }
     Ok(expr)
 }
@@ -1724,11 +1737,11 @@ fn parse_cmp_or_value(pair: pest::iterators::Pair<Rule>) -> crate::types::Result
         let mut inner = suffix.into_inner();
         let op = parse_comp_op(inner.next().unwrap())?;
         let right = parse_predicate_expr(inner.next().unwrap())?;
-        comparisons.push(Expr::BinaryOp {
+        comparisons.push(Expr::synthetic(ExprKind::BinaryOp {
             left: Box::new(prev.clone()),
             op,
             right: Box::new(right.clone()),
-        });
+        }));
         prev = right;
     }
 
@@ -1738,11 +1751,11 @@ fn parse_cmp_or_value(pair: pest::iterators::Pair<Rule>) -> crate::types::Result
         // Chain with AND: (a < b) AND (b < c) AND ...
         let mut result = comparisons.remove(0);
         for cmp in comparisons {
-            result = Expr::BinaryOp {
+            result = Expr::synthetic(ExprKind::BinaryOp {
                 left: Box::new(result),
                 op: BinOp::And,
                 right: Box::new(cmp),
-            };
+            });
         }
         Ok(result)
     }
@@ -1757,7 +1770,7 @@ fn parse_cmp_primary(pair: pest::iterators::Pair<Rule>) -> crate::types::Result<
         Rule::exists_full_subquery => parse_exists_full_subquery(inner),
         Rule::pattern_predicate => {
             let pattern = parse_pattern(inner)?;
-            Ok(Expr::PatternPredicate(pattern))
+            Ok(Expr::synthetic(ExprKind::PatternPredicate(pattern)))
         }
         Rule::expr => parse_expr(inner),
         Rule::add_expr => parse_add_expr(inner),
@@ -1776,30 +1789,30 @@ fn parse_predicate_expr(pair: pest::iterators::Pair<Rule>) -> crate::types::Resu
     match children.next() {
         None => Ok(left),
         Some(suffix) => match suffix.as_rule() {
-            Rule::is_not_null_suffix => Ok(Expr::IsNotNull(Box::new(left))),
-            Rule::is_null_suffix => Ok(Expr::IsNull(Box::new(left))),
+            Rule::is_not_null_suffix => Ok(Expr::synthetic(ExprKind::IsNotNull(Box::new(left)))),
+            Rule::is_null_suffix => Ok(Expr::synthetic(ExprKind::IsNull(Box::new(left)))),
             Rule::in_suffix => {
                 let right_pair = suffix
                     .into_inner()
                     .find(|p| p.as_rule() == Rule::add_expr)
                     .unwrap();
                 let right = parse_add_expr(right_pair)?;
-                Ok(Expr::BinaryOp {
+                Ok(Expr::synthetic(ExprKind::BinaryOp {
                     left: Box::new(left),
                     op: BinOp::In,
                     right: Box::new(right),
-                })
+                }))
             }
             Rule::string_pred_suffix => {
                 let mut inner = suffix.into_inner();
                 let op_pair = inner.next().unwrap();
                 let op = parse_string_pred_op(op_pair)?;
                 let right = parse_add_expr(inner.next().unwrap())?;
-                Ok(Expr::BinaryOp {
+                Ok(Expr::synthetic(ExprKind::BinaryOp {
                     left: Box::new(left),
                     op,
                     right: Box::new(right),
-                })
+                }))
             }
             _ => Err(GraphError::syntax(format!(
                 "unexpected predicate_expr suffix: {:?}",
@@ -1848,11 +1861,11 @@ fn parse_case_expr(pair: pest::iterators::Pair<Rule>) -> crate::types::Result<Ex
         }
     }
 
-    Ok(Expr::Case {
+    Ok(Expr::synthetic(ExprKind::Case {
         operand,
         alternatives,
         default,
-    })
+    }))
 }
 
 fn parse_exists_subquery(pair: pest::iterators::Pair<Rule>) -> crate::types::Result<Expr> {
@@ -1873,10 +1886,10 @@ fn parse_exists_subquery(pair: pest::iterators::Pair<Rule>) -> crate::types::Res
         ));
     }
 
-    Ok(Expr::Exists {
+    Ok(Expr::synthetic(ExprKind::Exists {
         patterns,
         where_clause,
-    })
+    }))
 }
 
 /// Parse EXISTS { MATCH ... [WITH ...] [RETURN ...] } full subquery.
@@ -1957,7 +1970,7 @@ fn parse_exists_full_subquery(pair: pest::iterators::Pair<Rule>) -> crate::types
     let rc = return_clause.unwrap_or_else(|| ReturnClause {
         distinct: false,
         items: vec![ReturnItem {
-            expr: Expr::Literal(LiteralValue::Bool(true)),
+            expr: Expr::synthetic(ExprKind::Literal(LiteralValue::Bool(true))),
             alias: Some("__exists".to_string()),
         }],
     });
@@ -1972,7 +1985,9 @@ fn parse_exists_full_subquery(pair: pest::iterators::Pair<Rule>) -> crate::types
         skip,
         limit,
     };
-    Ok(Expr::ExistsSubquery(Box::new(Statement::Match(stmt))))
+    Ok(Expr::synthetic(ExprKind::ExistsSubquery(Box::new(
+        Statement::Match(stmt),
+    ))))
 }
 
 fn parse_comp_op(pair: pest::iterators::Pair<Rule>) -> crate::types::Result<BinOp> {
@@ -2020,11 +2035,11 @@ fn parse_expr(pair: pest::iterators::Pair<Rule>) -> crate::types::Result<Expr> {
             let right = parse_xor_term(children.remove(i))?;
             children.remove(i - 1); // remove or_op
             i -= 1;
-            left = Expr::BinaryOp {
+            left = Expr::synthetic(ExprKind::BinaryOp {
                 left: Box::new(left),
                 op: BinOp::Or,
                 right: Box::new(right),
-            };
+            });
         } else {
             i += 1;
         }
@@ -2040,11 +2055,11 @@ fn parse_in_expr(pair: pest::iterators::Pair<Rule>) -> crate::types::Result<Expr
     // in_expr = { add_expr ~ (IN ~ add_expr)? }
     let left = parse_add_expr(children.remove(0))?;
     let right = parse_add_expr(children.remove(0))?;
-    Ok(Expr::BinaryOp {
+    Ok(Expr::synthetic(ExprKind::BinaryOp {
         left: Box::new(left),
         op: BinOp::In,
         right: Box::new(right),
-    })
+    }))
 }
 
 fn parse_add_expr(pair: pest::iterators::Pair<Rule>) -> crate::types::Result<Expr> {
@@ -2067,11 +2082,11 @@ fn parse_add_expr(pair: pest::iterators::Pair<Rule>) -> crate::types::Result<Exp
             }
         };
         let right = parse_mul_expr(iter.next().unwrap())?;
-        left = Expr::BinaryOp {
+        left = Expr::synthetic(ExprKind::BinaryOp {
             left: Box::new(left),
             op,
             right: Box::new(right),
-        };
+        });
     }
     Ok(left)
 }
@@ -2096,11 +2111,11 @@ fn parse_mul_expr(pair: pest::iterators::Pair<Rule>) -> crate::types::Result<Exp
             }
         };
         let right = parse_exp_expr(iter.next().unwrap())?;
-        left = Expr::BinaryOp {
+        left = Expr::synthetic(ExprKind::BinaryOp {
             left: Box::new(left),
             op,
             right: Box::new(right),
-        };
+        });
     }
     Ok(left)
 }
@@ -2116,11 +2131,11 @@ fn parse_exp_expr(pair: pest::iterators::Pair<Rule>) -> crate::types::Result<Exp
     while let Some(op_pair) = iter.next() {
         if op_pair.as_rule() == Rule::exp_op {
             let right = parse_atom_expr(iter.next().unwrap())?;
-            left = Expr::BinaryOp {
+            left = Expr::synthetic(ExprKind::BinaryOp {
                 left: Box::new(left),
                 op: BinOp::Pow,
                 right: Box::new(right),
-            };
+            });
         }
     }
     Ok(left)
@@ -2141,10 +2156,10 @@ fn parse_atom_expr(pair: pest::iterators::Pair<Rule>) -> crate::types::Result<Ex
                         strip_backticks(sub.into_inner().next().unwrap().as_str()).to_string();
                     // Chained dot access: wrap as DotAccess for correct column
                     // naming (m.a.b → "m.a.b" not "m.a['b']").
-                    expr = Expr::DotAccess {
+                    expr = Expr::synthetic(ExprKind::DotAccess {
                         expr: Box::new(expr),
                         key: prop,
-                    };
+                    });
                 }
             }
             Ok(expr)
@@ -2154,10 +2169,11 @@ fn parse_atom_expr(pair: pest::iterators::Pair<Rule>) -> crate::types::Result<Ex
         Rule::dotted_function_call => parse_dotted_function_call(pair),
         Rule::function_call => parse_function_call(pair),
         Rule::property_access => {
+            let span = span_from_pair(&pair);
             let mut parts = pair.into_inner();
             let var = strip_backticks(parts.next().unwrap().as_str()).to_string();
             let prop = strip_backticks(parts.next().unwrap().as_str()).to_string();
-            Ok(Expr::Property(var, prop))
+            Ok(Expr::new(ExprKind::Property(var, prop), span))
         }
         Rule::has_label_expr => {
             let mut parts = pair.into_inner();
@@ -2167,7 +2183,7 @@ fn parse_atom_expr(pair: pest::iterators::Pair<Rule>) -> crate::types::Result<Ex
                 .into_inner()
                 .map(|p| p.as_str().to_string())
                 .collect();
-            Ok(Expr::HasLabel(var, labels))
+            Ok(Expr::synthetic(ExprKind::HasLabel(var, labels)))
         }
         Rule::literal => parse_literal(pair),
         Rule::pattern_comprehension => parse_pattern_comprehension(pair),
@@ -2178,7 +2194,7 @@ fn parse_atom_expr(pair: pest::iterators::Pair<Rule>) -> crate::types::Result<Ex
                 .filter(|p| p.as_rule() == Rule::expr)
                 .map(parse_expr)
                 .collect();
-            Ok(Expr::List(items?))
+            Ok(Expr::synthetic(ExprKind::List(items?)))
         }
         Rule::map_literal => {
             let mut pairs = Vec::new();
@@ -2191,16 +2207,20 @@ fn parse_atom_expr(pair: pest::iterators::Pair<Rule>) -> crate::types::Result<Ex
                     pairs.push((key, value));
                 }
             }
-            Ok(Expr::MapLiteral(pairs))
+            Ok(Expr::synthetic(ExprKind::MapLiteral(pairs)))
         }
-        Rule::star => Ok(Expr::Star),
+        Rule::star => Ok(Expr::synthetic(ExprKind::Star)),
         Rule::parameter => {
             let name = pair.into_inner().next().unwrap().as_str().to_string();
-            Ok(Expr::Parameter(name))
+            Ok(Expr::synthetic(ExprKind::Parameter(name)))
         }
-        Rule::variable => Ok(Expr::Variable(
-            pair.into_inner().next().unwrap().as_str().to_string(),
-        )),
+        Rule::variable => {
+            let span = span_from_pair(&pair);
+            Ok(Expr::new(
+                ExprKind::Variable(pair.into_inner().next().unwrap().as_str().to_string()),
+                span,
+            ))
+        }
         Rule::expr => parse_expr(pair),
         Rule::in_expr => parse_in_expr(pair),
         Rule::add_expr => parse_add_expr(pair),
@@ -2209,11 +2229,11 @@ fn parse_atom_expr(pair: pest::iterators::Pair<Rule>) -> crate::types::Result<Ex
         Rule::unary_minus_expr => {
             let inner = pair.into_inner().next().unwrap();
             let expr = parse_atom_expr(inner)?;
-            Ok(Expr::BinaryOp {
-                left: Box::new(Expr::Literal(LiteralValue::I64(0))),
+            Ok(Expr::synthetic(ExprKind::BinaryOp {
+                left: Box::new(Expr::synthetic(ExprKind::Literal(LiteralValue::I64(0)))),
                 op: BinOp::Sub,
                 right: Box::new(expr),
-            })
+            }))
         }
         _ => Err(GraphError::syntax(format!(
             "unexpected expr: {:?}",
@@ -2235,38 +2255,38 @@ fn parse_subscript(base: Expr, pair: pest::iterators::Pair<Rule>) -> crate::type
             let mut exprs = inner.into_inner().filter(|p| p.as_rule() == Rule::expr);
             let start = parse_expr(exprs.next().unwrap())?;
             let end = parse_expr(exprs.next().unwrap())?;
-            Ok(Expr::Slice {
+            Ok(Expr::synthetic(ExprKind::Slice {
                 expr: Box::new(base),
                 start: Some(Box::new(start)),
                 end: Some(Box::new(end)),
-            })
+            }))
         }
         Rule::slice_from => {
             let start_pair = inner
                 .into_inner()
                 .find(|p| p.as_rule() == Rule::expr)
                 .unwrap();
-            Ok(Expr::Slice {
+            Ok(Expr::synthetic(ExprKind::Slice {
                 expr: Box::new(base),
                 start: Some(Box::new(parse_expr(start_pair)?)),
                 end: None,
-            })
+            }))
         }
         Rule::slice_to => {
             let end_pair = inner
                 .into_inner()
                 .find(|p| p.as_rule() == Rule::expr)
                 .unwrap();
-            Ok(Expr::Slice {
+            Ok(Expr::synthetic(ExprKind::Slice {
                 expr: Box::new(base),
                 start: None,
                 end: Some(Box::new(parse_expr(end_pair)?)),
-            })
+            }))
         }
-        Rule::expr => Ok(Expr::Index {
+        Rule::expr => Ok(Expr::synthetic(ExprKind::Index {
             expr: Box::new(base),
             index: Box::new(parse_expr(inner)?),
-        }),
+        })),
         _ => Err(GraphError::syntax(format!(
             "unexpected subscript: {:?}",
             inner.as_rule()
@@ -2277,6 +2297,7 @@ fn parse_subscript(base: Expr, pair: pest::iterators::Pair<Rule>) -> crate::type
 /// Parse a dotted function call: `datetime.fromepoch(args)`, `duration.between(args)`, etc.
 fn parse_dotted_function_call(pair: pest::iterators::Pair<Rule>) -> crate::types::Result<Expr> {
     let original_text = pair.as_str().to_string();
+    let span = span_from_pair(&pair);
     let mut name = String::new();
     let mut args = Vec::new();
 
@@ -2286,7 +2307,7 @@ fn parse_dotted_function_call(pair: pest::iterators::Pair<Rule>) -> crate::types
             Rule::function_args => {
                 for arg in inner.into_inner() {
                     match arg.as_rule() {
-                        Rule::star => args.push(Expr::Star),
+                        Rule::star => args.push(Expr::synthetic(ExprKind::Star)),
                         Rule::expr_list => {
                             for expr_pair in arg.into_inner() {
                                 if expr_pair.as_rule() == Rule::expr {
@@ -2303,16 +2324,20 @@ fn parse_dotted_function_call(pair: pest::iterators::Pair<Rule>) -> crate::types
         }
     }
 
-    Ok(Expr::FunctionCall {
-        name,
-        args,
-        distinct: false,
-        original_text: Some(original_text),
-    })
+    Ok(Expr::new(
+        ExprKind::FunctionCall {
+            name,
+            args,
+            distinct: false,
+            original_text: Some(original_text),
+        },
+        span,
+    ))
 }
 
 fn parse_function_call(pair: pest::iterators::Pair<Rule>) -> crate::types::Result<Expr> {
     let original_text = pair.as_str().to_string();
+    let span = span_from_pair(&pair);
     let mut name = String::new();
     let mut args = Vec::new();
     let mut distinct = false;
@@ -2323,7 +2348,7 @@ fn parse_function_call(pair: pest::iterators::Pair<Rule>) -> crate::types::Resul
             Rule::function_args => {
                 for arg in inner.into_inner() {
                     match arg.as_rule() {
-                        Rule::star => args.push(Expr::Star),
+                        Rule::star => args.push(Expr::synthetic(ExprKind::Star)),
                         Rule::distinct_keyword => distinct = true,
                         Rule::expr_list => {
                             for expr_pair in arg.into_inner() {
@@ -2341,12 +2366,15 @@ fn parse_function_call(pair: pest::iterators::Pair<Rule>) -> crate::types::Resul
         }
     }
 
-    Ok(Expr::FunctionCall {
-        name,
-        args,
-        distinct,
-        original_text: Some(original_text),
-    })
+    Ok(Expr::new(
+        ExprKind::FunctionCall {
+            name,
+            args,
+            distinct,
+            original_text: Some(original_text),
+        },
+        span,
+    ))
 }
 
 /// Parse an integer literal string, handling decimal, hex (0x), and octal (0o) formats.
@@ -2396,7 +2424,7 @@ fn parse_literal(pair: pest::iterators::Pair<Rule>) -> crate::types::Result<Expr
             let s = inner.as_str();
             let n: i64 = parse_integer_literal(s)
                 .map_err(|e| GraphError::syntax(format!("invalid integer literal: {e}")))?;
-            Ok(Expr::Literal(LiteralValue::I64(n)))
+            Ok(Expr::synthetic(ExprKind::Literal(LiteralValue::I64(n))))
         }
         Rule::float_literal => {
             let mut n: f64 = inner
@@ -2412,18 +2440,20 @@ fn parse_literal(pair: pest::iterators::Pair<Rule>) -> crate::types::Result<Expr
             if n == 0.0 && n.is_sign_negative() {
                 n = 0.0;
             }
-            Ok(Expr::Literal(LiteralValue::F64(n)))
+            Ok(Expr::synthetic(ExprKind::Literal(LiteralValue::F64(n))))
         }
         Rule::string_literal => {
             let quoted = inner.into_inner().next().unwrap();
             let raw = quoted.into_inner().next().unwrap().as_str();
-            Ok(Expr::Literal(LiteralValue::String(unescape_string(raw)?)))
+            Ok(Expr::synthetic(ExprKind::Literal(LiteralValue::String(
+                unescape_string(raw)?,
+            ))))
         }
         Rule::bool_literal => {
             let b = inner.as_str().to_uppercase() == "TRUE";
-            Ok(Expr::Literal(LiteralValue::Bool(b)))
+            Ok(Expr::synthetic(ExprKind::Literal(LiteralValue::Bool(b))))
         }
-        Rule::null_literal => Ok(Expr::Literal(LiteralValue::Null)),
+        Rule::null_literal => Ok(Expr::synthetic(ExprKind::Literal(LiteralValue::Null))),
         _ => Err(GraphError::syntax(format!(
             "unexpected literal: {:?}",
             inner.as_rule()
@@ -2453,7 +2483,7 @@ fn parse_list_comprehension(pair: pest::iterators::Pair<Rule>) -> crate::types::
         }
     }
 
-    Ok(Expr::ListComprehension {
+    Ok(Expr::synthetic(ExprKind::ListComprehension {
         variable: variable.ok_or_else(|| {
             GraphError::syntax("missing variable in list comprehension".to_string())
         })?,
@@ -2462,7 +2492,7 @@ fn parse_list_comprehension(pair: pest::iterators::Pair<Rule>) -> crate::types::
         })?,
         filter,
         map_expr,
-    })
+    }))
 }
 
 /// Parse a pattern comprehension: [(p = )? pattern (WHERE pred)? | expr].
@@ -2503,7 +2533,7 @@ fn parse_pattern_comprehension(pair: pest::iterators::Pair<Rule>) -> crate::type
         }
     }
 
-    Ok(Expr::PatternComprehension {
+    Ok(Expr::synthetic(ExprKind::PatternComprehension {
         path_variable,
         pattern: pattern.ok_or_else(|| {
             GraphError::syntax("missing pattern in pattern comprehension".to_string())
@@ -2512,7 +2542,7 @@ fn parse_pattern_comprehension(pair: pest::iterators::Pair<Rule>) -> crate::type
         map_expr: map_expr.ok_or_else(|| {
             GraphError::syntax("missing map expression in pattern comprehension".to_string())
         })?,
-    })
+    }))
 }
 
 /// Parse a quantifier predicate: none/single/any/all(x IN list WHERE pred).
@@ -2542,7 +2572,7 @@ fn parse_quantifier_expr(pair: pest::iterators::Pair<Rule>) -> crate::types::Res
         }
     }
 
-    Ok(Expr::Quantifier {
+    Ok(Expr::synthetic(ExprKind::Quantifier {
         kind: kind.ok_or_else(|| GraphError::syntax("missing quantifier name".to_string()))?,
         variable: variable
             .ok_or_else(|| GraphError::syntax("missing variable in quantifier".to_string()))?,
@@ -2552,7 +2582,7 @@ fn parse_quantifier_expr(pair: pest::iterators::Pair<Rule>) -> crate::types::Res
         predicate: predicate.ok_or_else(|| {
             GraphError::syntax("missing WHERE predicate in quantifier".to_string())
         })?,
-    })
+    }))
 }
 
 // === Error humanization ===
@@ -2630,21 +2660,23 @@ use crate::types::Value;
 /// Convert a Value to an Expr, handling all types including List and Map.
 fn value_to_expr(val: &Value) -> crate::types::Result<Expr> {
     match val {
-        Value::Null => Ok(Expr::Literal(LiteralValue::Null)),
-        Value::Bool(b) => Ok(Expr::Literal(LiteralValue::Bool(*b))),
-        Value::I64(n) => Ok(Expr::Literal(LiteralValue::I64(*n))),
-        Value::F64(n) => Ok(Expr::Literal(LiteralValue::F64(*n))),
-        Value::String(s) => Ok(Expr::Literal(LiteralValue::String(s.clone()))),
+        Value::Null => Ok(Expr::synthetic(ExprKind::Literal(LiteralValue::Null))),
+        Value::Bool(b) => Ok(Expr::synthetic(ExprKind::Literal(LiteralValue::Bool(*b)))),
+        Value::I64(n) => Ok(Expr::synthetic(ExprKind::Literal(LiteralValue::I64(*n)))),
+        Value::F64(n) => Ok(Expr::synthetic(ExprKind::Literal(LiteralValue::F64(*n)))),
+        Value::String(s) => Ok(Expr::synthetic(ExprKind::Literal(LiteralValue::String(
+            s.clone(),
+        )))),
         Value::List(items) => {
             let exprs: crate::types::Result<Vec<Expr>> = items.iter().map(value_to_expr).collect();
-            Ok(Expr::List(exprs?))
+            Ok(Expr::synthetic(ExprKind::List(exprs?)))
         }
         Value::Map(map) => {
             let pairs: crate::types::Result<Vec<(String, Expr)>> = map
                 .iter()
                 .map(|(k, v)| value_to_expr(v).map(|e| (k.clone(), e)))
                 .collect();
-            Ok(Expr::MapLiteral(pairs?))
+            Ok(Expr::synthetic(ExprKind::MapLiteral(pairs?)))
         }
         _ => Err(GraphError::argument(
             crate::types::QueryPhase::SemanticAnalysis,
@@ -2654,8 +2686,8 @@ fn value_to_expr(val: &Value) -> crate::types::Result<Expr> {
 }
 
 fn resolve_expr(expr: &Expr, params: &HashMap<String, Value>) -> crate::types::Result<Expr> {
-    match expr {
-        Expr::Parameter(name) => {
+    match &expr.kind {
+        ExprKind::Parameter(name) => {
             let val = params.get(name).ok_or_else(|| {
                 GraphError::argument(
                     crate::types::QueryPhase::SemanticAnalysis,
@@ -2664,15 +2696,21 @@ fn resolve_expr(expr: &Expr, params: &HashMap<String, Value>) -> crate::types::R
             })?;
             value_to_expr(val)
         }
-        Expr::BinaryOp { left, op, right } => Ok(Expr::BinaryOp {
+        ExprKind::BinaryOp { left, op, right } => Ok(Expr::synthetic(ExprKind::BinaryOp {
             left: Box::new(resolve_expr(left, params)?),
             op: *op,
             right: Box::new(resolve_expr(right, params)?),
-        }),
-        Expr::Not(inner) => Ok(Expr::Not(Box::new(resolve_expr(inner, params)?))),
-        Expr::IsNull(inner) => Ok(Expr::IsNull(Box::new(resolve_expr(inner, params)?))),
-        Expr::IsNotNull(inner) => Ok(Expr::IsNotNull(Box::new(resolve_expr(inner, params)?))),
-        Expr::FunctionCall {
+        })),
+        ExprKind::Not(inner) => Ok(Expr::synthetic(ExprKind::Not(Box::new(resolve_expr(
+            inner, params,
+        )?)))),
+        ExprKind::IsNull(inner) => Ok(Expr::synthetic(ExprKind::IsNull(Box::new(resolve_expr(
+            inner, params,
+        )?)))),
+        ExprKind::IsNotNull(inner) => Ok(Expr::synthetic(ExprKind::IsNotNull(Box::new(
+            resolve_expr(inner, params)?,
+        )))),
+        ExprKind::FunctionCall {
             name,
             args,
             distinct,
@@ -2680,14 +2718,14 @@ fn resolve_expr(expr: &Expr, params: &HashMap<String, Value>) -> crate::types::R
         } => {
             let resolved: crate::types::Result<Vec<Expr>> =
                 args.iter().map(|a| resolve_expr(a, params)).collect();
-            Ok(Expr::FunctionCall {
+            Ok(Expr::synthetic(ExprKind::FunctionCall {
                 name: name.clone(),
                 args: resolved?,
                 distinct: *distinct,
                 original_text: original_text.clone(),
-            })
+            }))
         }
-        Expr::Case {
+        ExprKind::Case {
             operand,
             alternatives,
             default,
@@ -2707,23 +2745,23 @@ fn resolve_expr(expr: &Expr, params: &HashMap<String, Value>) -> crate::types::R
                 .as_ref()
                 .map(|d| resolve_expr(d, params).map(Box::new))
                 .transpose()?;
-            Ok(Expr::Case {
+            Ok(Expr::synthetic(ExprKind::Case {
                 operand: resolved_operand,
                 alternatives: resolved_alts,
                 default: resolved_default,
-            })
+            }))
         }
-        Expr::List(items) => {
+        ExprKind::List(items) => {
             let resolved: crate::types::Result<Vec<Expr>> =
                 items.iter().map(|e| resolve_expr(e, params)).collect();
-            Ok(Expr::List(resolved?))
+            Ok(Expr::synthetic(ExprKind::List(resolved?)))
         }
-        Expr::ListComprehension {
+        ExprKind::ListComprehension {
             variable,
             list_expr,
             filter,
             map_expr,
-        } => Ok(Expr::ListComprehension {
+        } => Ok(Expr::synthetic(ExprKind::ListComprehension {
             variable: variable.clone(),
             list_expr: Box::new(resolve_expr(list_expr, params)?),
             filter: filter
@@ -2734,13 +2772,13 @@ fn resolve_expr(expr: &Expr, params: &HashMap<String, Value>) -> crate::types::R
                 .as_ref()
                 .map(|m| resolve_expr(m, params).map(Box::new))
                 .transpose()?,
-        }),
-        Expr::PatternComprehension {
+        })),
+        ExprKind::PatternComprehension {
             path_variable,
             pattern,
             where_clause,
             map_expr,
-        } => Ok(Expr::PatternComprehension {
+        } => Ok(Expr::synthetic(ExprKind::PatternComprehension {
             path_variable: path_variable.clone(),
             pattern: resolve_pattern(pattern, params)?,
             where_clause: where_clause
@@ -2748,55 +2786,55 @@ fn resolve_expr(expr: &Expr, params: &HashMap<String, Value>) -> crate::types::R
                 .map(|w| resolve_expr(w, params).map(Box::new))
                 .transpose()?,
             map_expr: Box::new(resolve_expr(map_expr, params)?),
-        }),
-        Expr::Quantifier {
+        })),
+        ExprKind::Quantifier {
             kind,
             variable,
             list_expr,
             predicate,
-        } => Ok(Expr::Quantifier {
+        } => Ok(Expr::synthetic(ExprKind::Quantifier {
             kind: *kind,
             variable: variable.clone(),
             list_expr: Box::new(resolve_expr(list_expr, params)?),
             predicate: Box::new(resolve_expr(predicate, params)?),
-        }),
-        Expr::Exists {
+        })),
+        ExprKind::Exists {
             patterns,
             where_clause,
-        } => Ok(Expr::Exists {
+        } => Ok(Expr::synthetic(ExprKind::Exists {
             patterns: resolve_patterns(patterns, params)?,
             where_clause: where_clause
                 .as_ref()
                 .map(|w| resolve_expr(w, params).map(Box::new))
                 .transpose()?,
-        }),
-        Expr::ExistsSubquery(stmt) => {
+        })),
+        ExprKind::ExistsSubquery(stmt) => {
             // Parameters inside the subquery statement are resolved via
             // resolve_params which handles all statement types.
-            Ok(Expr::ExistsSubquery(Box::new(resolve_params(
-                stmt, params,
-            )?)))
+            Ok(Expr::synthetic(ExprKind::ExistsSubquery(Box::new(
+                resolve_params(stmt, params)?,
+            ))))
         }
-        Expr::MapLiteral(pairs) => {
+        ExprKind::MapLiteral(pairs) => {
             let resolved: crate::types::Result<Vec<(String, Expr)>> = pairs
                 .iter()
                 .map(|(k, v)| resolve_expr(v, params).map(|r| (k.clone(), r)))
                 .collect();
-            Ok(Expr::MapLiteral(resolved?))
+            Ok(Expr::synthetic(ExprKind::MapLiteral(resolved?)))
         }
-        Expr::Index { expr: e, index } => Ok(Expr::Index {
+        ExprKind::Index { expr: e, index } => Ok(Expr::synthetic(ExprKind::Index {
             expr: Box::new(resolve_expr(e, params)?),
             index: Box::new(resolve_expr(index, params)?),
-        }),
-        Expr::DotAccess { expr: e, key } => Ok(Expr::DotAccess {
+        })),
+        ExprKind::DotAccess { expr: e, key } => Ok(Expr::synthetic(ExprKind::DotAccess {
             expr: Box::new(resolve_expr(e, params)?),
             key: key.clone(),
-        }),
-        Expr::Slice {
+        })),
+        ExprKind::Slice {
             expr: e,
             start,
             end,
-        } => Ok(Expr::Slice {
+        } => Ok(Expr::synthetic(ExprKind::Slice {
             expr: Box::new(resolve_expr(e, params)?),
             start: start
                 .as_ref()
@@ -2806,14 +2844,14 @@ fn resolve_expr(expr: &Expr, params: &HashMap<String, Value>) -> crate::types::R
                 .as_ref()
                 .map(|e_val| resolve_expr(e_val, params).map(Box::new))
                 .transpose()?,
-        }),
+        })),
         // Leaf nodes that contain no sub-expressions.
-        Expr::Literal(_)
-        | Expr::Property(_, _)
-        | Expr::Variable(_)
-        | Expr::HasLabel(_, _)
-        | Expr::PatternPredicate(_)
-        | Expr::Star => Ok(expr.clone()),
+        ExprKind::Literal(_)
+        | ExprKind::Property(_, _)
+        | ExprKind::Variable(_)
+        | ExprKind::HasLabel(_, _)
+        | ExprKind::PatternPredicate(_)
+        | ExprKind::Star => Ok(expr.clone()),
     }
 }
 

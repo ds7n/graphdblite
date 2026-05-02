@@ -3273,12 +3273,9 @@ fn validate_no_aggregation_in_list_comp(expr: &Expr) -> crate::types::Result<()>
 /// Used to detect VariableTypeConflict when a scalar-bound variable is later
 /// used as a node or relationship in MATCH.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[allow(dead_code)]
 enum WithValueKind {
     Scalar, // literal, property access, list, etc.
-    Node,
-    Relationship,
-    Path,
+    Node,   // conservative pass-through — variables, function calls
 }
 
 /// Infer the kind of value a WITH/RETURN expression produces.

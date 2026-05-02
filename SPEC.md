@@ -122,8 +122,10 @@ All bindings expose: `open`, `open_memory`, `begin_read`, `begin_write`, `query`
 - Backfilled on creation, maintained on writes
 
 ### Error model
-- openCypher-aligned error taxonomy: `SyntaxError`, `TypeError`, `SemanticError`, `EntityNotFound`, `ArgumentError`, `ArithmeticError`, `ConstraintViolation`
-- Each error carries a `QueryPhase` (Parse, SemanticAnalysis, Runtime)
+- openCypher-aligned error taxonomy: `SyntaxError`, `TypeError`, `SemanticError`, `EntityNotFound`, `ArgumentError`, `ArithmeticError`, `ConstraintViolation`, `ProcedureError`
+- Each error carries `phase: QueryPhase`, `code: ErrorCode` (~30 structured openCypher codes), `message`, optional `hint`, optional `span` (source position)
+- Display format: `Kind(Code) at <span|phase>: msg` with optional `hint:` line
+- Parser-phase errors carry source spans (line:col) via pest; full span threading through AST/planner is a future task
 - Compile-time validation: undefined variables, duplicate aliases, type mismatches, invalid aggregation nesting
 
 ### TCK conformance

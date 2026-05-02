@@ -191,15 +191,13 @@ pub fn plan(conn: &Connection, stmt: &Statement) -> crate::types::Result<Logical
 /// Recurses into all child operators so nested patterns are still optimized.
 fn push_limit_into_var_length_expand(op: &mut LogicalOp) {
     if let LogicalOp::Limit { input, count } = op {
-        if let Some(expand) = find_pushdown_target(input) {
-            if let LogicalOp::Expand { result_cap, .. } = expand {
-                // Take the tighter of any existing cap and the new one.
-                let new_cap = match *result_cap {
-                    Some(existing) => existing.min(*count),
-                    None => *count,
-                };
-                *result_cap = Some(new_cap);
-            }
+        if let Some(LogicalOp::Expand { result_cap, .. }) = find_pushdown_target(input) {
+            // Take the tighter of any existing cap and the new one.
+            let new_cap = match *result_cap {
+                Some(existing) => existing.min(*count),
+                None => *count,
+            };
+            *result_cap = Some(new_cap);
         }
     }
     // Recurse into children so nested Limit/Expand chains (e.g. inside a

@@ -545,6 +545,7 @@ pub struct PathStep {
 /// match are pruned immediately rather than filtering results after traversal.
 ///
 /// Zero-length paths (min_hops=0) include the start node with empty step list.
+#[allow(clippy::too_many_arguments)]
 pub fn traverse_paths(
     conn: &Connection,
     start: NodeId,

@@ -25,8 +25,8 @@ fn to_py_err(e: GraphError) -> PyErr {
         // preserving the existing coarse surface area. Future refinement could
         // introduce per-kind exception classes.
         GraphError::Query(_) => ParseError::new_err(e.to_string()),
-        GraphError::Storage(_) => StorageError::new_err(e.to_string()),
-        GraphError::NodeNotFound(_) => NodeNotFoundError::new_err(e.to_string()),
+        GraphError::Storage { .. } => StorageError::new_err(e.to_string()),
+        GraphError::NodeNotFound { .. } => NodeNotFoundError::new_err(e.to_string()),
         _ => GraphDBError::new_err(e.to_string()),
     }
 }

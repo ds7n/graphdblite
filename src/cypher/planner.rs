@@ -2975,8 +2975,9 @@ fn validate_delete_exprs(
         match expr {
             Expr::Variable(var) => {
                 if !scope.contains(var) {
-                    return Err(GraphError::syntax(var.to_string())
-                        .with_code(ErrorCode::UndefinedVariable));
+                    return Err(
+                        GraphError::syntax(var.to_string()).with_code(ErrorCode::UndefinedVariable)
+                    );
                 }
             }
             // HasLabel expression (e.g. `n:Person`) is not a valid DELETE target.

@@ -3137,7 +3137,6 @@ fn find_merge_match_evaluated(
 }
 
 /// Find ALL nodes matching label + pre-evaluated property values.
-#[allow(dead_code)]
 fn find_merge_matches_evaluated(
     conn: &Connection,
     label: &str,

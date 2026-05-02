@@ -21,16 +21,16 @@ fn eval_skip_limit(expr: &Expr, conn: &Connection) -> crate::types::Result<u64> 
     match expr {
         Expr::Literal(LiteralValue::I64(n)) => {
             if *n < 0 {
-                return Err(GraphError::syntax(
-                    "NegativeIntegerArgument: SKIP/LIMIT must be a non-negative integer",
-                )
-                .with_code(ErrorCode::NegativeIntegerArgument));
+                return Err(
+                    GraphError::syntax("SKIP/LIMIT must be a non-negative integer")
+                        .with_code(ErrorCode::NegativeIntegerArgument),
+                );
             }
             Ok(*n as u64)
         }
         Expr::Literal(LiteralValue::F64(_)) => Err(GraphError::type_error(
             crate::types::QueryPhase::Runtime,
-            "InvalidArgumentType: SKIP/LIMIT does not accept a floating point value",
+            "SKIP/LIMIT does not accept a floating point value",
         )
         .with_code(ErrorCode::InvalidArgumentType)),
         _ => {
@@ -41,7 +41,7 @@ fn eval_skip_limit(expr: &Expr, conn: &Connection) -> crate::types::Result<u64> 
                 Value::I64(n) => {
                     if n < 0 {
                         return Err(GraphError::syntax(
-                            "NegativeIntegerArgument: SKIP/LIMIT must be a non-negative integer",
+                            "SKIP/LIMIT must be a non-negative integer",
                         )
                         .with_code(ErrorCode::NegativeIntegerArgument));
                     }
@@ -49,17 +49,17 @@ fn eval_skip_limit(expr: &Expr, conn: &Connection) -> crate::types::Result<u64> 
                 }
                 Value::F64(_) => Err(GraphError::type_error(
                     crate::types::QueryPhase::Runtime,
-                    "InvalidArgumentType: SKIP/LIMIT does not accept a floating point value",
+                    "SKIP/LIMIT does not accept a floating point value",
                 )
                 .with_code(ErrorCode::InvalidArgumentType)),
                 Value::Null => Err(GraphError::type_error(
                     crate::types::QueryPhase::Runtime,
-                    "InvalidArgumentType: SKIP/LIMIT does not accept NULL",
+                    "SKIP/LIMIT does not accept NULL",
                 )
                 .with_code(ErrorCode::InvalidArgumentType)),
                 _ => Err(GraphError::type_error(
                     crate::types::QueryPhase::Runtime,
-                    "InvalidArgumentType: SKIP/LIMIT must evaluate to an integer",
+                    "SKIP/LIMIT must evaluate to an integer",
                 )
                 .with_code(ErrorCode::InvalidArgumentType)),
             }
@@ -340,7 +340,7 @@ fn plan_call(
     let proc_def = procedures.get(procedure_name).ok_or_else(|| {
         GraphError::Query(crate::types::QueryError::ProcedureError {
             phase: crate::types::QueryPhase::SemanticAnalysis,
-            message: format!("ProcedureNotFound: unknown procedure `{procedure_name}`"),
+            message: format!("unknown procedure `{procedure_name}`"),
             code: ErrorCode::ProcedureNotFound,
             hint: None,
             span: None,
@@ -352,18 +352,18 @@ fn plan_call(
 
     // 8. UnexpectedSyntax — YIELD * in an in-query context.
     if yield_star && is_in_query {
-        return Err(GraphError::syntax(
-            "UnexpectedSyntax: YIELD * is not allowed in an in-query CALL",
-        )
-        .with_code(ErrorCode::UnexpectedSyntax));
+        return Err(
+            GraphError::syntax("YIELD * is not allowed in an in-query CALL")
+                .with_code(ErrorCode::UnexpectedSyntax),
+        );
     }
 
     // 3. InvalidArgumentPassingMode — implicit args with YIELD (in-query form).
     if implicit_args && (yield_items.is_some() || yield_star) {
-        return Err(GraphError::syntax(
-            "InvalidArgumentPassingMode: implicit argument passing is not allowed with YIELD",
-        )
-        .with_code(ErrorCode::InvalidArgumentPassingMode));
+        return Err(
+            GraphError::syntax("implicit argument passing is not allowed with YIELD")
+                .with_code(ErrorCode::InvalidArgumentPassingMode),
+        );
     }
 
     // 7. MissingParameter — implicit args, missing required parameter.
@@ -379,8 +379,9 @@ fn plan_call(
                 built_args.push(value_to_literal_expr(val));
             } else {
                 return Err(GraphError::syntax(
-                    "MissingParameter: implicit argument passing requires all procedure parameters to be provided",
-                ).with_code(ErrorCode::MissingParameter));
+                    "implicit argument passing requires all procedure parameters to be provided",
+                )
+                .with_code(ErrorCode::MissingParameter));
             }
         }
         built_args
@@ -393,7 +394,7 @@ fn plan_call(
         // 2. InvalidNumberOfArguments — wrong arg count.
         if args.len() != proc_def.inputs.len() {
             return Err(GraphError::syntax(format!(
-                "InvalidNumberOfArguments: expected {} argument(s) but got {}",
+                "expected {} argument(s) but got {}",
                 proc_def.inputs.len(),
                 args.len()
             ))
@@ -404,7 +405,7 @@ fn plan_call(
         for arg in args {
             if is_aggregate_fn(arg) {
                 return Err(GraphError::syntax(
-                    "InvalidAggregation: aggregation functions are not allowed in CALL arguments",
+                    "aggregation functions are not allowed in CALL arguments",
                 )
                 .with_code(ErrorCode::InvalidAggregation));
             }
@@ -432,9 +433,9 @@ fn plan_call(
         for (col, alias) in items {
             let bind_name = alias.as_deref().unwrap_or(col);
             if !bound_names.insert(bind_name.to_string()) {
-                return Err(GraphError::syntax(format!(
-                    "VariableAlreadyBound: variable `{bind_name}` already declared",
-                ))
+                return Err(GraphError::syntax(
+                    format!("variable `{bind_name}` already declared",),
+                )
                 .with_code(ErrorCode::VariableAlreadyBound));
             }
         }
@@ -576,19 +577,17 @@ fn check_return_vars_in_scope(expr: &Expr, scope: &HashSet<String>) -> crate::ty
     match expr {
         Expr::Variable(name) => {
             if !scope.contains(name) {
-                return Err(GraphError::syntax(format!(
-                    "UndefinedVariable: variable `{name}` not defined",
-                ))
-                .with_code(ErrorCode::UndefinedVariable));
+                return Err(
+                    GraphError::syntax(format!("variable `{name}` not defined",))
+                        .with_code(ErrorCode::UndefinedVariable),
+                );
             }
             Ok(())
         }
         Expr::Property(var, _) => {
             if !scope.contains(var) {
-                return Err(GraphError::syntax(format!(
-                    "UndefinedVariable: variable `{var}` not defined",
-                ))
-                .with_code(ErrorCode::UndefinedVariable));
+                return Err(GraphError::syntax(format!("variable `{var}` not defined",))
+                    .with_code(ErrorCode::UndefinedVariable));
             }
             Ok(())
         }
@@ -635,7 +634,7 @@ fn plan_inner(
         Statement::Call { procedure_name, .. } => Err(GraphError::Query(
             crate::types::QueryError::ProcedureError {
                 phase: crate::types::QueryPhase::SemanticAnalysis,
-                message: format!("ProcedureNotFound: unknown procedure `{procedure_name}`"),
+                message: format!("unknown procedure `{procedure_name}`"),
                 code: ErrorCode::ProcedureNotFound,
                 hint: None,
                 span: None,
@@ -651,8 +650,10 @@ fn plan_inner(
                 for cols in &columns[1..] {
                     if cols != first {
                         return Err(GraphError::syntax(
-                            "DifferentColumnsInUnion: all sub queries in a UNION must have the same column names".to_string(),
-                        ).with_code(ErrorCode::DifferentColumnsInUnion));
+                            "all sub queries in a UNION must have the same column names"
+                                .to_string(),
+                        )
+                        .with_code(ErrorCode::DifferentColumnsInUnion));
                     }
                 }
             }
@@ -710,7 +711,7 @@ fn plan_match(
     if let Some(ref predicate) = stmt.where_clause {
         if is_aggregate_fn(predicate) {
             return Err(GraphError::syntax(
-                "InvalidAggregation: aggregation functions are not allowed in WHERE".to_string(),
+                "aggregation functions are not allowed in WHERE".to_string(),
             )
             .with_code(ErrorCode::InvalidAggregation));
         }
@@ -720,8 +721,7 @@ fn plan_match(
                 if *kind == VarKind::Node || *kind == VarKind::Relationship {
                     return Err(GraphError::type_error(
                         crate::types::QueryPhase::SemanticAnalysis,
-                        "InvalidArgumentType: a single node pattern is not a valid predicate"
-                            .to_string(),
+                        "a single node pattern is not a valid predicate".to_string(),
                     )
                     .with_code(ErrorCode::InvalidArgumentType));
                 }
@@ -814,8 +814,9 @@ fn plan_match(
                                     if let Some(&kind) = with_value_kinds.get(var) {
                                         if kind == WithValueKind::Scalar {
                                             return Err(GraphError::syntax(format!(
-                                                "VariableTypeConflict: variable `{var}` already defined as a scalar value"
-                                            )).with_code(ErrorCode::VariableTypeConflict));
+                                                "variable `{var}` already defined as a scalar value"
+                                            ))
+                                            .with_code(ErrorCode::VariableTypeConflict));
                                         }
                                     }
                                 }
@@ -827,7 +828,7 @@ fn plan_match(
                                         if let Some(&kind) = with_value_kinds.get(var) {
                                             if kind == WithValueKind::Scalar {
                                                 return Err(GraphError::syntax(format!(
-                                                    "VariableTypeConflict: variable `{var}` already defined as a scalar value"
+                                                    "variable `{var}` already defined as a scalar value"
                                                 )).with_code(ErrorCode::VariableTypeConflict));
                                             }
                                         }
@@ -1459,8 +1460,9 @@ fn plan_merge(conn: &Connection, stmt: &MergeStatement) -> crate::types::Result<
                 ) => {
                     if rel.var_length.is_some() {
                         return Err(GraphError::syntax(
-                            "CreatingVarLength: variable-length relationships are not allowed in MERGE".to_string(),
-                        ).with_code(ErrorCode::CreatingVarLength));
+                            "variable-length relationships are not allowed in MERGE".to_string(),
+                        )
+                        .with_code(ErrorCode::CreatingVarLength));
                     }
                 }
                 _ => {
@@ -1558,7 +1560,7 @@ fn plan_multi_clause(
                         if with_value_kinds.contains_key(path_var) {
                             // Path variable re-assigned — VariableAlreadyBound.
                             return Err(GraphError::syntax(format!(
-                                "VariableAlreadyBound: variable `{path_var}` already bound"
+                                "variable `{path_var}` already bound"
                             ))
                             .with_code(ErrorCode::VariableAlreadyBound));
                         }
@@ -1570,8 +1572,9 @@ fn plan_multi_clause(
                                     if let Some(&kind) = with_value_kinds.get(var) {
                                         if kind == WithValueKind::Scalar {
                                             return Err(GraphError::syntax(format!(
-                                                "VariableTypeConflict: variable `{var}` already defined as a scalar value"
-                                            )).with_code(ErrorCode::VariableTypeConflict));
+                                                "variable `{var}` already defined as a scalar value"
+                                            ))
+                                            .with_code(ErrorCode::VariableTypeConflict));
                                         }
                                     }
                                 }
@@ -1581,8 +1584,9 @@ fn plan_multi_clause(
                                     if let Some(&kind) = with_value_kinds.get(var) {
                                         if kind == WithValueKind::Scalar {
                                             return Err(GraphError::syntax(format!(
-                                                "VariableTypeConflict: variable `{var}` already defined as a scalar value"
-                                            )).with_code(ErrorCode::VariableTypeConflict));
+                                                "variable `{var}` already defined as a scalar value"
+                                            ))
+                                            .with_code(ErrorCode::VariableTypeConflict));
                                         }
                                     }
                                 }
@@ -1670,7 +1674,7 @@ fn plan_multi_clause(
                             if let Some(ref var) = n.variable {
                                 if scope_vars.contains(var) || seen_create_vars.contains(var) {
                                     return Err(GraphError::syntax(format!(
-                                        "VariableAlreadyBound: variable `{var}` already bound"
+                                        "variable `{var}` already bound"
                                     ))
                                     .with_code(ErrorCode::VariableAlreadyBound));
                                 }
@@ -1683,7 +1687,7 @@ fn plan_multi_clause(
                             if let Some(ref var) = r.variable {
                                 if scope_vars.contains(var) || seen_create_vars.contains(var) {
                                     return Err(GraphError::syntax(format!(
-                                        "VariableAlreadyBound: variable `{var}` already bound"
+                                        "variable `{var}` already bound"
                                     ))
                                     .with_code(ErrorCode::VariableAlreadyBound));
                                 }
@@ -1728,8 +1732,10 @@ fn plan_multi_clause(
                     if let PatternElement::Relationship(rel) = el {
                         if rel.var_length.is_some() {
                             return Err(GraphError::syntax(
-                                "CreatingVarLength: variable-length relationships are not allowed in MERGE".to_string(),
-                            ).with_code(ErrorCode::CreatingVarLength));
+                                "variable-length relationships are not allowed in MERGE"
+                                    .to_string(),
+                            )
+                            .with_code(ErrorCode::CreatingVarLength));
                         }
                     }
                 }
@@ -1765,9 +1771,8 @@ fn plan_multi_clause(
                     for sort_item in &with.order_by {
                         if !is_aggregate_fn(&sort_item.expr) {
                             check_expr_variables(&sort_item.expr, &order_scope).map_err(|_| {
-                                GraphError::syntax(
-                                    "UndefinedVariable: ORDER BY references a variable not in scope"
-                                ).with_code(ErrorCode::UndefinedVariable)
+                                GraphError::syntax("ORDER BY references a variable not in scope")
+                                    .with_code(ErrorCode::UndefinedVariable)
                             })?;
                         }
                     }
@@ -1878,13 +1883,13 @@ fn plan_multi_clause(
                         // VariableAlreadyBound: yield alias conflicts with prior scope.
                         if scope_vars.contains(bind_name) {
                             return Err(GraphError::syntax(format!(
-                                "VariableAlreadyBound: variable `{bind_name}` already declared",
+                                "variable `{bind_name}` already declared",
                             ))
                             .with_code(ErrorCode::VariableAlreadyBound));
                         }
                         if !bound_names.insert(bind_name.to_string()) {
                             return Err(GraphError::syntax(format!(
-                                "VariableAlreadyBound: variable `{bind_name}` already declared",
+                                "variable `{bind_name}` already declared",
                             ))
                             .with_code(ErrorCode::VariableAlreadyBound));
                         }
@@ -1898,16 +1903,18 @@ fn plan_multi_clause(
                 // InvalidArgumentPassingMode: implicit args with YIELD in multi-clause.
                 if *implicit_args && (yield_items.is_some() || *yield_star) {
                     return Err(GraphError::syntax(
-                        "InvalidArgumentPassingMode: implicit argument passing is not allowed with YIELD",
-                    ).with_code(ErrorCode::InvalidArgumentPassingMode));
+                        "implicit argument passing is not allowed with YIELD",
+                    )
+                    .with_code(ErrorCode::InvalidArgumentPassingMode));
                 }
 
                 // InvalidAggregation: aggregate function in CALL argument.
                 for arg in args {
                     if is_aggregate_fn(arg) {
                         return Err(GraphError::syntax(
-                            "InvalidAggregation: aggregation functions are not allowed in CALL arguments",
-                        ).with_code(ErrorCode::InvalidAggregation));
+                            "aggregation functions are not allowed in CALL arguments",
+                        )
+                        .with_code(ErrorCode::InvalidAggregation));
                     }
                 }
 
@@ -2020,7 +2027,7 @@ fn plan_with_scoped(
             )
         {
             return Err(GraphError::syntax(
-                "NoExpressionAlias: expression in WITH must be aliased (use AS)".to_string(),
+                "expression in WITH must be aliased (use AS)".to_string(),
             )
             .with_code(ErrorCode::NoExpressionAlias));
         }
@@ -2061,8 +2068,10 @@ fn plan_with_scoped(
                     let agg_col = crate::cypher::eval::expr_to_column_name(agg_expr);
                     if !projected_agg_cols.contains(&agg_col) {
                         return Err(GraphError::syntax(
-                            "UndefinedVariable: ORDER BY contains an aggregation that is not projected in WITH".to_string(),
-                        ).with_code(ErrorCode::UndefinedVariable));
+                            "ORDER BY contains an aggregation that is not projected in WITH"
+                                .to_string(),
+                        )
+                        .with_code(ErrorCode::UndefinedVariable));
                     }
                 }
             }
@@ -2183,10 +2192,10 @@ fn plan_intermediate_match_with_scope(
     for pattern in &im.patterns {
         if let Some(ref path_var) = pattern.path_variable {
             if upstream_vars.contains(path_var) {
-                return Err(GraphError::syntax(format!(
-                    "VariableAlreadyBound: variable `{path_var}` already defined"
-                ))
-                .with_code(ErrorCode::VariableAlreadyBound));
+                return Err(
+                    GraphError::syntax(format!("variable `{path_var}` already defined"))
+                        .with_code(ErrorCode::VariableAlreadyBound),
+                );
             }
         }
     }
@@ -2451,22 +2460,21 @@ fn validate_expr_types(
                         "type" if *kind == VarKind::Node => {
                             return Err(GraphError::type_error(
                                 crate::types::QueryPhase::SemanticAnalysis,
-                                "InvalidArgumentType: type() requires a relationship".to_string(),
+                                "type() requires a relationship".to_string(),
                             )
                             .with_code(ErrorCode::InvalidArgumentType));
                         }
                         "length" if *kind == VarKind::Node || *kind == VarKind::Relationship => {
                             return Err(GraphError::type_error(
                                 crate::types::QueryPhase::SemanticAnalysis,
-                                "InvalidArgumentType: length() requires a path, string, or list"
-                                    .to_string(),
+                                "length() requires a path, string, or list".to_string(),
                             )
                             .with_code(ErrorCode::InvalidArgumentType));
                         }
                         "size" if *kind == VarKind::Path => {
                             return Err(GraphError::type_error(
                                 crate::types::QueryPhase::SemanticAnalysis,
-                                "InvalidArgumentType: size() requires a string or list".to_string(),
+                                "size() requires a string or list".to_string(),
                             )
                             .with_code(ErrorCode::InvalidArgumentType));
                         }
@@ -2475,7 +2483,7 @@ fn validate_expr_types(
                         {
                             return Err(GraphError::type_error(
                                 crate::types::QueryPhase::SemanticAnalysis,
-                                format!("InvalidArgumentValue: {name}() cannot convert a {kind:?}"),
+                                format!("{name}() cannot convert a {kind:?}"),
                             )
                             .with_code(ErrorCode::InvalidArgumentValue));
                         }
@@ -2492,7 +2500,7 @@ fn validate_expr_types(
                 if *kind == VarKind::Path {
                     return Err(GraphError::type_error(
                         crate::types::QueryPhase::SemanticAnalysis,
-                        "InvalidArgumentType: property access on a path is not allowed".to_string(),
+                        "property access on a path is not allowed".to_string(),
                     )
                     .with_code(ErrorCode::InvalidArgumentType));
                 }
@@ -2528,7 +2536,7 @@ fn validate_expr_types(
                         let elem_type = if all_strings { "String" } else { "Boolean" };
                         return Err(GraphError::type_error(
                             crate::types::QueryPhase::SemanticAnalysis,
-                            format!("InvalidArgumentType: {elem_type} is not a valid argument type for arithmetic operations"),
+                            format!("{elem_type} is not a valid argument type for arithmetic operations"),
                         ).with_code(ErrorCode::InvalidArgumentType));
                     }
                 }
@@ -2584,14 +2592,16 @@ fn check_expr_variables(expr: &Expr, scope: &HashSet<String>) -> crate::types::R
     match expr {
         Expr::Variable(var) => {
             if !scope.contains(var) {
-                return Err(GraphError::syntax(format!("UndefinedVariable: {var}"))
-                    .with_code(ErrorCode::UndefinedVariable));
+                return Err(
+                    GraphError::syntax(var.to_string()).with_code(ErrorCode::UndefinedVariable)
+                );
             }
         }
         Expr::Property(var, _) => {
             if !scope.contains(var) {
-                return Err(GraphError::syntax(format!("UndefinedVariable: {var}"))
-                    .with_code(ErrorCode::UndefinedVariable));
+                return Err(
+                    GraphError::syntax(var.to_string()).with_code(ErrorCode::UndefinedVariable)
+                );
             }
         }
         Expr::BinaryOp { left, right, .. } => {
@@ -2661,8 +2671,9 @@ fn check_expr_variables(expr: &Expr, scope: &HashSet<String>) -> crate::types::R
         }
         Expr::HasLabel(var, _) => {
             if !scope.contains(var) {
-                return Err(GraphError::syntax(format!("UndefinedVariable: {var}"))
-                    .with_code(ErrorCode::UndefinedVariable));
+                return Err(
+                    GraphError::syntax(var.to_string()).with_code(ErrorCode::UndefinedVariable)
+                );
             }
         }
     }
@@ -2684,8 +2695,7 @@ fn validate_pattern_predicate_vars(
                     if n.variable.as_ref().is_some_and(|v| scope.contains(v)) {
                         return Err(GraphError::type_error(
                             crate::types::QueryPhase::SemanticAnalysis,
-                            "InvalidArgumentType: a single node pattern is not a valid predicate"
-                                .to_string(),
+                            "a single node pattern is not a valid predicate".to_string(),
                         )
                         .with_code(ErrorCode::InvalidArgumentType));
                     }
@@ -2697,20 +2707,16 @@ fn validate_pattern_predicate_vars(
                     PatternElement::Node(n) => {
                         if let Some(ref var) = n.variable {
                             if !scope.contains(var) {
-                                return Err(GraphError::syntax(format!(
-                                    "UndefinedVariable: {var}"
-                                ))
-                                .with_code(ErrorCode::UndefinedVariable));
+                                return Err(GraphError::syntax(var.to_string())
+                                    .with_code(ErrorCode::UndefinedVariable));
                             }
                         }
                     }
                     PatternElement::Relationship(r) => {
                         if let Some(ref var) = r.variable {
                             if !scope.contains(var) {
-                                return Err(GraphError::syntax(format!(
-                                    "UndefinedVariable: {var}"
-                                ))
-                                .with_code(ErrorCode::UndefinedVariable));
+                                return Err(GraphError::syntax(var.to_string())
+                                    .with_code(ErrorCode::UndefinedVariable));
                             }
                         }
                     }
@@ -2734,10 +2740,10 @@ fn validate_pattern_predicate_vars(
 fn reject_pattern_predicates(expr: &Expr) -> crate::types::Result<()> {
     match expr {
         Expr::PatternPredicate(_) => {
-            return Err(GraphError::syntax(
-                "UnexpectedSyntax: pattern expressions are not allowed here".to_string(),
-            )
-            .with_code(ErrorCode::UnexpectedSyntax));
+            return Err(
+                GraphError::syntax("pattern expressions are not allowed here".to_string())
+                    .with_code(ErrorCode::UnexpectedSyntax),
+            );
         }
         Expr::FunctionCall { args, .. } => {
             for arg in args {
@@ -2833,19 +2839,22 @@ fn validate_create_patterns(
                     // CREATE relationships must have exactly one type.
                     if rel.rel_types.is_empty() {
                         return Err(GraphError::syntax(
-                            "NoSingleRelationshipType: a relationship must have exactly one type in CREATE"
-                        ).with_code(ErrorCode::NoSingleRelationshipType));
+                            "a relationship must have exactly one type in CREATE",
+                        )
+                        .with_code(ErrorCode::NoSingleRelationshipType));
                     }
                     if rel.rel_types.len() > 1 {
                         return Err(GraphError::syntax(
-                            "NoSingleRelationshipType: a relationship must have exactly one type in CREATE"
-                        ).with_code(ErrorCode::NoSingleRelationshipType));
+                            "a relationship must have exactly one type in CREATE",
+                        )
+                        .with_code(ErrorCode::NoSingleRelationshipType));
                     }
                     // CREATE relationships must be directed.
                     if rel.direction == RelDirection::Undirected {
                         return Err(GraphError::syntax(
-                            "RequiresDirectedRelationship: only directed relationships are supported in CREATE"
-                        ).with_code(ErrorCode::RequiresDirectedRelationship));
+                            "only directed relationships are supported in CREATE",
+                        )
+                        .with_code(ErrorCode::RequiresDirectedRelationship));
                     }
                     // Check property expressions for undefined variables.
                     for expr in rel.properties.values() {
@@ -2882,13 +2891,15 @@ fn validate_merge_pattern(
                 // MERGE relationships must have exactly one type.
                 if rel.rel_types.is_empty() {
                     return Err(GraphError::syntax(
-                        "NoSingleRelationshipType: a relationship must have exactly one type in MERGE"
-                    ).with_code(ErrorCode::NoSingleRelationshipType));
+                        "a relationship must have exactly one type in MERGE",
+                    )
+                    .with_code(ErrorCode::NoSingleRelationshipType));
                 }
                 if rel.rel_types.len() > 1 {
                     return Err(GraphError::syntax(
-                        "NoSingleRelationshipType: a relationship must have exactly one type in MERGE"
-                    ).with_code(ErrorCode::NoSingleRelationshipType));
+                        "a relationship must have exactly one type in MERGE",
+                    )
+                    .with_code(ErrorCode::NoSingleRelationshipType));
                 }
                 if let Some(ref var) = rel.variable {
                     merge_vars.insert(var.clone());
@@ -2901,22 +2912,20 @@ fn validate_merge_pattern(
         match item {
             SetItem::Property(a) => {
                 if !merge_vars.contains(&a.variable) {
-                    return Err(
-                        GraphError::syntax(format!("UndefinedVariable: {}", a.variable))
-                            .with_code(ErrorCode::UndefinedVariable),
-                    );
+                    return Err(GraphError::syntax(a.variable.to_string())
+                        .with_code(ErrorCode::UndefinedVariable));
                 }
                 check_expr_variables(&a.value, &merge_vars)?;
             }
             SetItem::Label { variable, .. } => {
                 if !merge_vars.contains(variable) {
-                    return Err(GraphError::syntax(format!("UndefinedVariable: {variable}"))
+                    return Err(GraphError::syntax(variable.to_string())
                         .with_code(ErrorCode::UndefinedVariable));
                 }
             }
             SetItem::MapOverwrite { variable, value } | SetItem::MapMerge { variable, value } => {
                 if !merge_vars.contains(variable) {
-                    return Err(GraphError::syntax(format!("UndefinedVariable: {variable}"))
+                    return Err(GraphError::syntax(variable.to_string())
                         .with_code(ErrorCode::UndefinedVariable));
                 }
                 check_expr_variables(value, &merge_vars)?;
@@ -2932,23 +2941,21 @@ fn validate_set_variables(items: &[SetItem], scope: &HashSet<String>) -> crate::
         match item {
             SetItem::Property(a) => {
                 if !scope.contains(&a.variable) {
-                    return Err(
-                        GraphError::syntax(format!("UndefinedVariable: {}", a.variable))
-                            .with_code(ErrorCode::UndefinedVariable),
-                    );
+                    return Err(GraphError::syntax(a.variable.to_string())
+                        .with_code(ErrorCode::UndefinedVariable));
                 }
                 check_expr_variables(&a.value, scope)?;
                 reject_pattern_predicates(&a.value)?;
             }
             SetItem::Label { variable, .. } => {
                 if !scope.contains(variable) {
-                    return Err(GraphError::syntax(format!("UndefinedVariable: {variable}"))
+                    return Err(GraphError::syntax(variable.to_string())
                         .with_code(ErrorCode::UndefinedVariable));
                 }
             }
             SetItem::MapOverwrite { variable, value } | SetItem::MapMerge { variable, value } => {
                 if !scope.contains(variable) {
-                    return Err(GraphError::syntax(format!("UndefinedVariable: {variable}"))
+                    return Err(GraphError::syntax(variable.to_string())
                         .with_code(ErrorCode::UndefinedVariable));
                 }
                 check_expr_variables(value, scope)?;
@@ -2968,37 +2975,37 @@ fn validate_delete_exprs(
         match expr {
             Expr::Variable(var) => {
                 if !scope.contains(var) {
-                    return Err(GraphError::syntax(format!("UndefinedVariable: {var}"))
+                    return Err(GraphError::syntax(var.to_string())
                         .with_code(ErrorCode::UndefinedVariable));
                 }
             }
             // HasLabel expression (e.g. `n:Person`) is not a valid DELETE target.
             Expr::HasLabel(..) => {
-                return Err(GraphError::syntax(
-                    "InvalidDelete: cannot delete a label predicate expression",
-                )
-                .with_code(ErrorCode::InvalidDelete));
+                return Err(
+                    GraphError::syntax("cannot delete a label predicate expression")
+                        .with_code(ErrorCode::InvalidDelete),
+                );
             }
             // Literal expressions are not valid DELETE targets.
             Expr::Literal(_) => {
-                return Err(GraphError::syntax(
-                    "InvalidArgumentType: DELETE requires a node, relationship, or path",
-                )
-                .with_code(ErrorCode::InvalidArgumentType));
+                return Err(
+                    GraphError::syntax("DELETE requires a node, relationship, or path")
+                        .with_code(ErrorCode::InvalidArgumentType),
+                );
             }
             // Binary/arithmetic expressions are not valid DELETE targets.
             Expr::BinaryOp { .. } => {
-                return Err(GraphError::syntax(
-                    "InvalidArgumentType: DELETE requires a node, relationship, or path",
-                )
-                .with_code(ErrorCode::InvalidArgumentType));
+                return Err(
+                    GraphError::syntax("DELETE requires a node, relationship, or path")
+                        .with_code(ErrorCode::InvalidArgumentType),
+                );
             }
             // Property access (e.g. nodes.key), index (e.g. friends[0]) — valid.
             // DotAccess (e.g. rels.key.key[0]) — valid.
             _ => {
                 if let Some(root) = extract_root_variable(expr) {
                     if !scope.contains(&root) {
-                        return Err(GraphError::syntax(format!("UndefinedVariable: {root}"))
+                        return Err(GraphError::syntax(root.to_string())
                             .with_code(ErrorCode::UndefinedVariable));
                     }
                 }
@@ -3025,7 +3032,7 @@ fn validate_no_aggregation_in_order_by(order_by: &[SortItem]) -> crate::types::R
     for item in order_by {
         if is_aggregate_fn(&item.expr) {
             return Err(GraphError::syntax(
-                "InvalidAggregation: aggregation functions are not allowed in ORDER BY when there is no aggregation in the preceding WITH/RETURN"
+                "aggregation functions are not allowed in ORDER BY when there is no aggregation in the preceding WITH/RETURN"
             ).with_code(ErrorCode::InvalidAggregation));
         }
     }
@@ -3057,10 +3064,10 @@ fn validate_return_order_by_with_aggregates(
             for leaf in &non_agg_leaves {
                 let col = crate::cypher::eval::expr_to_column_name(leaf);
                 if !returned_cols.contains(&col) {
-                    return Err(GraphError::syntax(
-                        "UndefinedVariable: ORDER BY references a variable not in RETURN",
-                    )
-                    .with_code(ErrorCode::UndefinedVariable));
+                    return Err(
+                        GraphError::syntax("ORDER BY references a variable not in RETURN")
+                            .with_code(ErrorCode::UndefinedVariable),
+                    );
                 }
             }
         }
@@ -3101,10 +3108,10 @@ fn validate_distinct_order_by(
                 continue;
             }
         }
-        return Err(GraphError::syntax(
-            "UndefinedVariable: ORDER BY references a variable not in RETURN DISTINCT",
-        )
-        .with_code(ErrorCode::UndefinedVariable));
+        return Err(
+            GraphError::syntax("ORDER BY references a variable not in RETURN DISTINCT")
+                .with_code(ErrorCode::UndefinedVariable),
+        );
     }
     Ok(())
 }
@@ -3211,18 +3218,14 @@ fn validate_non_agg_leaves_in_scope(
         }
         Expr::Variable(name) => {
             if !scope.contains(name) {
-                return Err(GraphError::syntax(format!(
-                    "UndefinedVariable: variable `{name}` not defined"
-                ))
-                .with_code(ErrorCode::UndefinedVariable));
+                return Err(GraphError::syntax(format!("variable `{name}` not defined"))
+                    .with_code(ErrorCode::UndefinedVariable));
             }
         }
         Expr::Property(var, _) => {
             if !scope.contains(var) {
-                return Err(GraphError::syntax(format!(
-                    "UndefinedVariable: variable `{var}` not defined"
-                ))
-                .with_code(ErrorCode::UndefinedVariable));
+                return Err(GraphError::syntax(format!("variable `{var}` not defined"))
+                    .with_code(ErrorCode::UndefinedVariable));
             }
         }
         Expr::BinaryOp { left, right, .. } => {
@@ -3242,18 +3245,14 @@ fn validate_expr_in_scope(expr: &Expr, scope: &HashSet<String>) -> crate::types:
     match expr {
         Expr::Variable(name) => {
             if !scope.contains(name) {
-                return Err(GraphError::syntax(format!(
-                    "UndefinedVariable: variable `{name}` not defined"
-                ))
-                .with_code(ErrorCode::UndefinedVariable));
+                return Err(GraphError::syntax(format!("variable `{name}` not defined"))
+                    .with_code(ErrorCode::UndefinedVariable));
             }
         }
         Expr::Property(var, _) => {
             if !scope.contains(var) {
-                return Err(GraphError::syntax(format!(
-                    "UndefinedVariable: variable `{var}` not defined"
-                ))
-                .with_code(ErrorCode::UndefinedVariable));
+                return Err(GraphError::syntax(format!("variable `{var}` not defined"))
+                    .with_code(ErrorCode::UndefinedVariable));
             }
         }
         Expr::BinaryOp { left, right, .. } => {
@@ -3290,8 +3289,9 @@ fn validate_no_aggregation_in_list_comp(expr: &Expr) -> crate::types::Result<()>
             if let Some(ref me) = map_expr {
                 if is_aggregate_fn(me) {
                     return Err(GraphError::syntax(
-                        "InvalidAggregation: aggregation functions are not allowed in list comprehension"
-                    ).with_code(ErrorCode::InvalidAggregation));
+                        "aggregation functions are not allowed in list comprehension",
+                    )
+                    .with_code(ErrorCode::InvalidAggregation));
                 }
                 validate_no_aggregation_in_list_comp(me)?;
             }
@@ -3359,10 +3359,10 @@ fn validate_merge_variable_rebinding(
         if let PatternElement::Node(n) = &pattern.elements[0] {
             if let Some(ref var) = n.variable {
                 if scope.contains(var) {
-                    return Err(GraphError::syntax(format!(
-                        "VariableAlreadyBound: variable `{var}` already bound"
-                    ))
-                    .with_code(ErrorCode::VariableAlreadyBound));
+                    return Err(
+                        GraphError::syntax(format!("variable `{var}` already bound"))
+                            .with_code(ErrorCode::VariableAlreadyBound),
+                    );
                 }
             }
         }
@@ -3374,20 +3374,20 @@ fn validate_merge_variable_rebinding(
             if let PatternElement::Relationship(rel) = elem {
                 if let Some(ref var) = rel.variable {
                     if scope.contains(var) {
-                        return Err(GraphError::syntax(format!(
-                            "VariableAlreadyBound: variable `{var}` already bound"
-                        ))
-                        .with_code(ErrorCode::VariableAlreadyBound));
+                        return Err(
+                            GraphError::syntax(format!("variable `{var}` already bound"))
+                                .with_code(ErrorCode::VariableAlreadyBound),
+                        );
                     }
                 }
             }
             if let PatternElement::Node(n) = elem {
                 if let Some(ref var) = n.variable {
                     if scope.contains(var) && !n.labels.is_empty() {
-                        return Err(GraphError::syntax(format!(
-                            "VariableAlreadyBound: variable `{var}` already bound"
-                        ))
-                        .with_code(ErrorCode::VariableAlreadyBound));
+                        return Err(
+                            GraphError::syntax(format!("variable `{var}` already bound"))
+                                .with_code(ErrorCode::VariableAlreadyBound),
+                        );
                     }
                 }
             }
@@ -3490,7 +3490,7 @@ fn validate_variable_types_with_map(
                             // (bound relationship reference in a cross-MATCH pattern).
                             if !prior_rels.contains(var) {
                                 return Err(GraphError::syntax(format!(
-                                    "VariableAlreadyBound: cannot use relationship variable '{var}' more than once in a pattern"
+                                    "cannot use relationship variable '{var}' more than once in a pattern"
                                 )).with_code(ErrorCode::VariableAlreadyBound));
                             }
                         } else {
@@ -3859,7 +3859,7 @@ fn plan_create_pattern_with_counter(
                 if already_seen && !node.labels.is_empty() {
                     // Rebinding a variable with new labels is a VariableAlreadyBound error.
                     return Err(GraphError::syntax(format!(
-                        "VariableAlreadyBound: variable `{}` already bound",
+                        "variable `{}` already bound",
                         alias.as_deref().unwrap_or("?")
                     ))
                     .with_code(ErrorCode::VariableAlreadyBound));
@@ -3878,8 +3878,9 @@ fn plan_create_pattern_with_counter(
                 // Variable-length relationships are not allowed in CREATE patterns.
                 if rel.var_length.is_some() {
                     return Err(GraphError::syntax(
-                        "CreatingVarLength: variable-length relationships are not allowed in CREATE".to_string(),
-                    ).with_code(ErrorCode::CreatingVarLength));
+                        "variable-length relationships are not allowed in CREATE".to_string(),
+                    )
+                    .with_code(ErrorCode::CreatingVarLength));
                 }
 
                 let dst_node = match pattern.elements.get(i + 1) {
@@ -3900,7 +3901,7 @@ fn plan_create_pattern_with_counter(
                     dst_is_named && dst_alias.as_ref().is_some_and(|n| !seen.insert(n.clone()));
                 if dst_already_seen && !dst_node.labels.is_empty() {
                     return Err(GraphError::syntax(format!(
-                        "VariableAlreadyBound: variable `{}` already bound",
+                        "variable `{}` already bound",
                         dst_alias.as_deref().unwrap_or("?")
                     ))
                     .with_code(ErrorCode::VariableAlreadyBound));
@@ -4115,8 +4116,7 @@ fn split_aggregates(items: &[ReturnItem]) -> crate::types::Result<(Vec<Expr>, Ve
                     if contains_nondeterministic_fn(arg) {
                         return Err(GraphError::type_error(
                             crate::types::QueryPhase::SemanticAnalysis,
-                            "NonConstantExpression: non-deterministic function inside aggregate"
-                                .to_string(),
+                            "non-deterministic function inside aggregate".to_string(),
                         )
                         .with_code(ErrorCode::NonConstantExpression));
                     }
@@ -4153,8 +4153,9 @@ fn split_aggregates(items: &[ReturnItem]) -> crate::types::Result<(Vec<Expr>, Ve
         for leaf in &non_agg_leaves {
             if !group_keys.iter().any(|gk| gk == *leaf) {
                 return Err(GraphError::syntax(
-                    "AmbiguousAggregationExpression: expression mixes aggregate and non-aggregate sub-expressions".to_string(),
-                ).with_code(ErrorCode::AmbiguousAggregationExpression));
+                    "expression mixes aggregate and non-aggregate sub-expressions".to_string(),
+                )
+                .with_code(ErrorCode::AmbiguousAggregationExpression));
             }
         }
     }

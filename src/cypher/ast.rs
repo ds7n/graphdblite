@@ -49,6 +49,12 @@ pub enum Statement {
 }
 
 /// A clause in a multi-clause statement.
+//
+// Variant sizes vary by ~hundreds of bytes (Match holds Vec<Pattern> +
+// Vec<OptionalMatch>; Create holds only Vec<Pattern>). Boxing the heavy
+// variants would touch every match arm in the planner for ~zero runtime
+// benefit — there's only ever a handful of clauses per parsed query.
+#[allow(clippy::large_enum_variant)]
 #[derive(Debug, Clone, PartialEq)]
 pub enum Clause {
     Match {
@@ -285,6 +291,10 @@ pub enum UnwindBody {
 }
 
 /// Intermediate clause (WITH, UNWIND, or MATCH) within a MATCH statement.
+//
+// WithClause is much larger than UnwindClause; same rationale as `Clause` —
+// not worth boxing for an AST that lives briefly per query.
+#[allow(clippy::large_enum_variant)]
 #[derive(Debug, Clone, PartialEq)]
 pub enum IntermediateClause {
     With(WithClause),

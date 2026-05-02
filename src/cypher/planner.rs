@@ -28,7 +28,7 @@ fn suggest_close_name<'a>(
     let mut best: Option<(usize, &str)> = None;
     for cand in candidates {
         let d = levenshtein_lc(&target_lc, &cand.to_ascii_lowercase());
-        if d <= max_dist && best.map_or(true, |(bd, _)| d < bd) {
+        if d <= max_dist && best.is_none_or(|(bd, _)| d < bd) {
             best = Some((d, cand.as_str()));
         }
     }

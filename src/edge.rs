@@ -436,6 +436,11 @@ pub fn traverse(
         for neighbor in neighbors {
             if next_depth >= min_hops && neighbor != start && in_result.insert(neighbor.0) {
                 result.push(neighbor);
+                if let Some(cap) = max_results {
+                    if result.len() >= cap {
+                        return Ok(result);
+                    }
+                }
             }
 
             // Only traverse further if we haven't visited this node yet.
@@ -445,7 +450,6 @@ pub fn traverse(
         }
     }
 
-    let _ = max_results;
     Ok(result)
 }
 
@@ -485,6 +489,11 @@ pub fn traverse_with_depth(
         for neighbor in neighbors {
             if next_depth >= min_hops && neighbor != start && in_result.insert(neighbor.0) {
                 result.push((neighbor, next_depth));
+                if let Some(cap) = max_results {
+                    if result.len() >= cap {
+                        return Ok(result);
+                    }
+                }
             }
 
             if visited.insert(neighbor.0) {
@@ -493,7 +502,6 @@ pub fn traverse_with_depth(
         }
     }
 
-    let _ = max_results;
     Ok(result)
 }
 
@@ -552,6 +560,11 @@ pub fn traverse_paths(
     // Zero-length match: the start node itself.
     if min_hops == 0 {
         results.push((start, Vec::new()));
+        if let Some(cap) = max_results {
+            if results.len() >= cap {
+                return Ok(results);
+            }
+        }
     }
 
     if max_hops == 0 {
@@ -679,6 +692,11 @@ pub fn traverse_paths(
                         let mut new_path = path.clone();
                         new_path.push(step);
                         results.push((neighbor, new_path.clone()));
+                        if let Some(cap) = max_results {
+                            if results.len() >= cap {
+                                return Ok(results);
+                            }
+                        }
                         let mut new_visited = visited_edges.clone();
                         new_visited.insert(edge_key);
                         stack.push((neighbor, new_path, new_visited));
@@ -687,6 +705,11 @@ pub fn traverse_paths(
                         let mut new_path = path.clone();
                         new_path.push(step);
                         results.push((neighbor, new_path));
+                        if let Some(cap) = max_results {
+                            if results.len() >= cap {
+                                return Ok(results);
+                            }
+                        }
                     } else if want_continue {
                         // Below min_hops — only push to stack.
                         let mut new_path = path.clone();
@@ -700,7 +723,6 @@ pub fn traverse_paths(
         }
     }
 
-    let _ = max_results;
     Ok(results)
 }
 

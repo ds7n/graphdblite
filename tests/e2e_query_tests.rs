@@ -2023,6 +2023,22 @@ fn e2e_undefined_variable_carries_source_span() {
 }
 
 #[test]
+fn e2e_undefined_variable_did_you_mean_hint() {
+    let mut db = Database::open_memory().unwrap();
+    let tx = db.begin_read().unwrap();
+    // `nmae` is one transposition away from the in-scope `name`.
+    let err = tx
+        .query("WITH 'Alice' AS name RETURN nmae")
+        .expect_err("expected undefined-variable error");
+    let msg = format!("{err}");
+    assert!(
+        msg.contains("did you mean") && msg.contains("name"),
+        "expected suggestion in error, got: {msg}"
+    );
+    tx.commit().unwrap();
+}
+
+#[test]
 fn e2e_float_property() {
     let mut db = Database::open_memory().unwrap();
     let tx = db.begin_write().unwrap();

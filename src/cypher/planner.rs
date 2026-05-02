@@ -7,10 +7,67 @@ use crate::cypher::ast::*;
 use crate::cypher::ir::*;
 use crate::cypher::record::Record;
 use crate::index;
-use crate::types::{Direction, ErrorCode, GraphError, Value};
+use crate::types::{Direction, ErrorCode, GraphError, Span, Value};
 
 /// Global counter for unique anonymous variable aliases across all plan_single_pattern calls.
 static ANON_COUNTER: AtomicUsize = AtomicUsize::new(0);
+
+/// Suggest the closest in-scope name for a misspelled identifier.
+///
+/// Returns the closest candidate within Levenshtein distance ≤ 2 (or ≤ 1
+/// for short names), ignoring case. Returns `None` if nothing close enough
+/// is found — callers should not blindly attach a suggestion that's only
+/// vaguely similar.
+fn suggest_close_name<'a>(
+    target: &str,
+    candidates: impl IntoIterator<Item = &'a String>,
+) -> Option<String> {
+    // Tighter threshold for short names so `n` doesn't match every 2-char alias.
+    let max_dist = if target.len() <= 3 { 1 } else { 2 };
+    let target_lc = target.to_ascii_lowercase();
+    let mut best: Option<(usize, &str)> = None;
+    for cand in candidates {
+        let d = levenshtein_lc(&target_lc, &cand.to_ascii_lowercase());
+        if d <= max_dist && best.map_or(true, |(bd, _)| d < bd) {
+            best = Some((d, cand.as_str()));
+        }
+    }
+    best.map(|(_, s)| s.to_string())
+}
+
+/// Build an `UndefinedVariable` error with a `did you mean X?` hint when a
+/// close in-scope name exists.
+fn undefined_variable_error(name: &str, scope: &HashSet<String>, span: Span) -> GraphError {
+    let mut err = GraphError::syntax(name.to_string())
+        .with_code(ErrorCode::UndefinedVariable)
+        .with_span(span);
+    if let Some(suggestion) = suggest_close_name(name, scope) {
+        err = err.with_hint(format!("did you mean `{suggestion}`?"));
+    }
+    err
+}
+
+/// Compute Levenshtein edit distance on already-lowercased ASCII byte slices.
+fn levenshtein_lc(a: &str, b: &str) -> usize {
+    let (a, b) = (a.as_bytes(), b.as_bytes());
+    if a.is_empty() {
+        return b.len();
+    }
+    if b.is_empty() {
+        return a.len();
+    }
+    let mut prev: Vec<usize> = (0..=b.len()).collect();
+    let mut cur = vec![0usize; b.len() + 1];
+    for (i, &ca) in a.iter().enumerate() {
+        cur[0] = i + 1;
+        for (j, &cb) in b.iter().enumerate() {
+            let cost = if ca == cb { 0 } else { 1 };
+            cur[j + 1] = (cur[j] + 1).min(prev[j + 1] + 1).min(prev[j] + cost);
+        }
+        std::mem::swap(&mut prev, &mut cur);
+    }
+    prev[b.len()]
+}
 
 /// Evaluate a SKIP/LIMIT expression to a u64 at plan time.
 ///
@@ -2609,16 +2666,12 @@ fn check_expr_variables(expr: &Expr, scope: &HashSet<String>) -> crate::types::R
     match &expr.kind {
         ExprKind::Variable(var) => {
             if !scope.contains(var) {
-                return Err(GraphError::syntax(var.to_string())
-                    .with_code(ErrorCode::UndefinedVariable)
-                    .with_span(expr.span));
+                return Err(undefined_variable_error(var, scope, expr.span));
             }
         }
         ExprKind::Property(var, _) => {
             if !scope.contains(var) {
-                return Err(GraphError::syntax(var.to_string())
-                    .with_code(ErrorCode::UndefinedVariable)
-                    .with_span(expr.span));
+                return Err(undefined_variable_error(var, scope, expr.span));
             }
         }
         ExprKind::BinaryOp { left, right, .. } => {
@@ -3236,16 +3289,12 @@ fn validate_non_agg_leaves_in_scope(
         }
         ExprKind::Variable(name) => {
             if !scope.contains(name) {
-                return Err(GraphError::syntax(format!("variable `{name}` not defined"))
-                    .with_code(ErrorCode::UndefinedVariable)
-                    .with_span(expr.span));
+                return Err(undefined_variable_error(name, scope, expr.span));
             }
         }
         ExprKind::Property(var, _) => {
             if !scope.contains(var) {
-                return Err(GraphError::syntax(format!("variable `{var}` not defined"))
-                    .with_code(ErrorCode::UndefinedVariable)
-                    .with_span(expr.span));
+                return Err(undefined_variable_error(var, scope, expr.span));
             }
         }
         ExprKind::BinaryOp { left, right, .. } => {
@@ -3265,16 +3314,12 @@ fn validate_expr_in_scope(expr: &Expr, scope: &HashSet<String>) -> crate::types:
     match &expr.kind {
         ExprKind::Variable(name) => {
             if !scope.contains(name) {
-                return Err(GraphError::syntax(format!("variable `{name}` not defined"))
-                    .with_code(ErrorCode::UndefinedVariable)
-                    .with_span(expr.span));
+                return Err(undefined_variable_error(name, scope, expr.span));
             }
         }
         ExprKind::Property(var, _) => {
             if !scope.contains(var) {
-                return Err(GraphError::syntax(format!("variable `{var}` not defined"))
-                    .with_code(ErrorCode::UndefinedVariable)
-                    .with_span(expr.span));
+                return Err(undefined_variable_error(var, scope, expr.span));
             }
         }
         ExprKind::BinaryOp { left, right, .. } => {

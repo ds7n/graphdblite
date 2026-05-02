@@ -284,10 +284,16 @@ impl<'a> WriteTransaction<'a> {
         )?;
         // Verify both endpoints exist.
         if !node::node_exists(&self.tx, src)? {
-            return Err(GraphError::NodeNotFound(src));
+            return Err(GraphError::NodeNotFound {
+                id: src,
+                hint: None,
+            });
         }
         if !node::node_exists(&self.tx, dst)? {
-            return Err(GraphError::NodeNotFound(dst));
+            return Err(GraphError::NodeNotFound {
+                id: dst,
+                hint: None,
+            });
         }
         edge::create_edge(&self.tx, src, dst, label, properties)
     }

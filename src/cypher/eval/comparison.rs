@@ -2,6 +2,7 @@
 //!
 //! Three-valued equality (with null propagation), ordering, and type utilities.
 
+use crate::types::ErrorCode;
 use crate::types::Value;
 
 /// Three-valued equality: returns Null if either operand is null.
@@ -193,6 +194,9 @@ pub(super) fn to_tribool(v: &Value) -> crate::types::Result<Option<bool>> {
                 "Type mismatch: expected Boolean but was {}",
                 value_type_name(v)
             ),
+            code: ErrorCode::Other,
+            hint: None,
+            span: None,
         })),
     }
 }

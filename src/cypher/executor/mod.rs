@@ -10,7 +10,9 @@ use crate::cypher::record::Record;
 use crate::edge;
 use crate::index;
 use crate::node;
-use crate::types::{Direction, GraphError, NodeId, PathValue, Properties, Result, Value};
+use crate::types::{
+    Direction, ErrorCode, GraphError, NodeId, PathValue, Properties, Result, Value,
+};
 
 use crate::cypher::procedure::ProcedureRegistry;
 
@@ -925,6 +927,9 @@ fn exec_project(
                                     message: format!(
                                         "DeletedEntityAccess: cannot access property `{prop}` on deleted entity `{var}`"
                                     ),
+                                    code: ErrorCode::Other,
+                                    hint: None,
+                                    span: None,
                                 },
                             ));
                         }
@@ -2642,6 +2647,9 @@ fn exec_call(
         GraphError::Query(crate::types::QueryError::ProcedureError {
             phase: crate::types::QueryPhase::Runtime,
             message: format!("ProcedureNotFound: unknown procedure `{procedure_name}`"),
+            code: ErrorCode::Other,
+            hint: None,
+            span: None,
         })
     })?;
 
@@ -2763,9 +2771,11 @@ fn exec_unwind(
                 // UNWIND null produces no rows (like UNWIND []).
             }
             _ => {
-                return Err(GraphError::Serialization(format!(
-                    "UNWIND requires a list, got: {val}"
-                )));
+                return Err(GraphError::Serialization {
+                    context: String::new(),
+                    source: format!("UNWIND requires a list, got: {val}"),
+                    hint: None,
+                });
             }
         }
     }

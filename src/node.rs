@@ -25,7 +25,11 @@ pub fn create_node(conn: &Connection, labels: &[String], properties: Properties)
         labels: sorted_labels.clone(),
         properties,
     };
-    let data = rmp_serde::to_vec(&record).map_err(|e| GraphError::Serialization(e.to_string()))?;
+    let data = rmp_serde::to_vec(&record).map_err(|e| GraphError::Serialization {
+        context: String::new(),
+        source: e.to_string(),
+        hint: None,
+    })?;
     let label_col = sorted_labels.join(":");
     put_node(conn, &id.to_be_bytes(), &label_col, &data)?;
     for label in &sorted_labels {
@@ -36,10 +40,14 @@ pub fn create_node(conn: &Connection, labels: &[String], properties: Properties)
 
 /// Get a node by ID.
 pub fn get_node(conn: &Connection, id: NodeId) -> Result<Node> {
-    let data =
-        kv::get(conn, kv::TABLE_NODES, &id.to_be_bytes())?.ok_or(GraphError::NodeNotFound(id))?;
+    let data = kv::get(conn, kv::TABLE_NODES, &id.to_be_bytes())?
+        .ok_or(GraphError::NodeNotFound { id, hint: None })?;
     let record: NodeRecord =
-        rmp_serde::from_slice(&data).map_err(|e| GraphError::Serialization(e.to_string()))?;
+        rmp_serde::from_slice(&data).map_err(|e| GraphError::Serialization {
+            context: String::new(),
+            source: e.to_string(),
+            hint: None,
+        })?;
     Ok(Node {
         id,
         labels: record.labels,
@@ -96,17 +104,24 @@ pub fn delete_node(conn: &Connection, id: NodeId) -> Result<()> {
 /// Set a property on an existing node (read-modify-write).
 pub fn set_node_property(conn: &Connection, id: NodeId, key: &str, value: Value) -> Result<()> {
     validate_name(key)?;
-    let data =
-        kv::get(conn, kv::TABLE_NODES, &id.to_be_bytes())?.ok_or(GraphError::NodeNotFound(id))?;
+    let data = kv::get(conn, kv::TABLE_NODES, &id.to_be_bytes())?
+        .ok_or(GraphError::NodeNotFound { id, hint: None })?;
     let mut record: NodeRecord =
-        rmp_serde::from_slice(&data).map_err(|e| GraphError::Serialization(e.to_string()))?;
+        rmp_serde::from_slice(&data).map_err(|e| GraphError::Serialization {
+            context: String::new(),
+            source: e.to_string(),
+            hint: None,
+        })?;
     if value == Value::Null {
         record.properties.remove(key);
     } else {
         record.properties.insert(key.to_string(), value);
     }
-    let new_data =
-        rmp_serde::to_vec(&record).map_err(|e| GraphError::Serialization(e.to_string()))?;
+    let new_data = rmp_serde::to_vec(&record).map_err(|e| GraphError::Serialization {
+        context: String::new(),
+        source: e.to_string(),
+        hint: None,
+    })?;
     let label_col = record.labels.join(":");
     put_node(conn, &id.to_be_bytes(), &label_col, &new_data)?;
     Ok(())
@@ -114,13 +129,20 @@ pub fn set_node_property(conn: &Connection, id: NodeId, key: &str, value: Value)
 
 /// Remove a property from an existing node.
 pub fn remove_node_property(conn: &Connection, id: NodeId, key: &str) -> Result<()> {
-    let data =
-        kv::get(conn, kv::TABLE_NODES, &id.to_be_bytes())?.ok_or(GraphError::NodeNotFound(id))?;
+    let data = kv::get(conn, kv::TABLE_NODES, &id.to_be_bytes())?
+        .ok_or(GraphError::NodeNotFound { id, hint: None })?;
     let mut record: NodeRecord =
-        rmp_serde::from_slice(&data).map_err(|e| GraphError::Serialization(e.to_string()))?;
+        rmp_serde::from_slice(&data).map_err(|e| GraphError::Serialization {
+            context: String::new(),
+            source: e.to_string(),
+            hint: None,
+        })?;
     record.properties.remove(key);
-    let new_data =
-        rmp_serde::to_vec(&record).map_err(|e| GraphError::Serialization(e.to_string()))?;
+    let new_data = rmp_serde::to_vec(&record).map_err(|e| GraphError::Serialization {
+        context: String::new(),
+        source: e.to_string(),
+        hint: None,
+    })?;
     let label_col = record.labels.join(":");
     put_node(conn, &id.to_be_bytes(), &label_col, &new_data)?;
     Ok(())
@@ -128,16 +150,23 @@ pub fn remove_node_property(conn: &Connection, id: NodeId, key: &str) -> Result<
 
 /// Remove a label from an existing node.
 pub fn remove_node_label(conn: &Connection, id: NodeId, label: &str) -> Result<()> {
-    let data =
-        kv::get(conn, kv::TABLE_NODES, &id.to_be_bytes())?.ok_or(GraphError::NodeNotFound(id))?;
+    let data = kv::get(conn, kv::TABLE_NODES, &id.to_be_bytes())?
+        .ok_or(GraphError::NodeNotFound { id, hint: None })?;
     let mut record: NodeRecord =
-        rmp_serde::from_slice(&data).map_err(|e| GraphError::Serialization(e.to_string()))?;
+        rmp_serde::from_slice(&data).map_err(|e| GraphError::Serialization {
+            context: String::new(),
+            source: e.to_string(),
+            hint: None,
+        })?;
     if !record.labels.contains(&label.to_string()) {
         return Ok(());
     }
     record.labels.retain(|l| l != label);
-    let new_data =
-        rmp_serde::to_vec(&record).map_err(|e| GraphError::Serialization(e.to_string()))?;
+    let new_data = rmp_serde::to_vec(&record).map_err(|e| GraphError::Serialization {
+        context: String::new(),
+        source: e.to_string(),
+        hint: None,
+    })?;
     let label_col = record.labels.join(":");
     put_node(conn, &id.to_be_bytes(), &label_col, &new_data)?;
     stats::decrement_label_count(conn, label)?;
@@ -146,17 +175,24 @@ pub fn remove_node_label(conn: &Connection, id: NodeId, label: &str) -> Result<(
 
 /// Add a label to an existing node. No-op if already present.
 pub fn add_node_label(conn: &Connection, id: NodeId, label: &str) -> Result<()> {
-    let data =
-        kv::get(conn, kv::TABLE_NODES, &id.to_be_bytes())?.ok_or(GraphError::NodeNotFound(id))?;
+    let data = kv::get(conn, kv::TABLE_NODES, &id.to_be_bytes())?
+        .ok_or(GraphError::NodeNotFound { id, hint: None })?;
     let mut record: NodeRecord =
-        rmp_serde::from_slice(&data).map_err(|e| GraphError::Serialization(e.to_string()))?;
+        rmp_serde::from_slice(&data).map_err(|e| GraphError::Serialization {
+            context: String::new(),
+            source: e.to_string(),
+            hint: None,
+        })?;
     if record.labels.contains(&label.to_string()) {
         return Ok(());
     }
     record.labels.push(label.to_string());
     record.labels.sort();
-    let new_data =
-        rmp_serde::to_vec(&record).map_err(|e| GraphError::Serialization(e.to_string()))?;
+    let new_data = rmp_serde::to_vec(&record).map_err(|e| GraphError::Serialization {
+        context: String::new(),
+        source: e.to_string(),
+        hint: None,
+    })?;
     let label_col = record.labels.join(":");
     put_node(conn, &id.to_be_bytes(), &label_col, &new_data)?;
     stats::increment_label_count(conn, label)?;
@@ -169,13 +205,20 @@ pub fn set_all_node_properties(
     id: NodeId,
     properties: Properties,
 ) -> Result<()> {
-    let data =
-        kv::get(conn, kv::TABLE_NODES, &id.to_be_bytes())?.ok_or(GraphError::NodeNotFound(id))?;
+    let data = kv::get(conn, kv::TABLE_NODES, &id.to_be_bytes())?
+        .ok_or(GraphError::NodeNotFound { id, hint: None })?;
     let mut record: NodeRecord =
-        rmp_serde::from_slice(&data).map_err(|e| GraphError::Serialization(e.to_string()))?;
+        rmp_serde::from_slice(&data).map_err(|e| GraphError::Serialization {
+            context: String::new(),
+            source: e.to_string(),
+            hint: None,
+        })?;
     record.properties = properties;
-    let new_data =
-        rmp_serde::to_vec(&record).map_err(|e| GraphError::Serialization(e.to_string()))?;
+    let new_data = rmp_serde::to_vec(&record).map_err(|e| GraphError::Serialization {
+        context: String::new(),
+        source: e.to_string(),
+        hint: None,
+    })?;
     let label_col = record.labels.join(":");
     put_node(conn, &id.to_be_bytes(), &label_col, &new_data)?;
     Ok(())
@@ -213,12 +256,18 @@ pub fn find_nodes_by_label(conn: &Connection, label: &str) -> Result<Vec<Node>> 
     let mut nodes = Vec::new();
     for (key, data) in rows {
         let record: NodeRecord =
-            rmp_serde::from_slice(&data).map_err(|e| GraphError::Serialization(e.to_string()))?;
-        let id = NodeId::from_be_bytes(
-            key.get(..8)
-                .and_then(|s| s.try_into().ok())
-                .ok_or_else(|| GraphError::Serialization("corrupt node key bytes".into()))?,
-        );
+            rmp_serde::from_slice(&data).map_err(|e| GraphError::Serialization {
+                context: String::new(),
+                source: e.to_string(),
+                hint: None,
+            })?;
+        let id = NodeId::from_be_bytes(key.get(..8).and_then(|s| s.try_into().ok()).ok_or_else(
+            || GraphError::Serialization {
+                context: String::new(),
+                source: "corrupt node key bytes".into(),
+                hint: None,
+            },
+        )?);
         nodes.push(Node {
             id,
             labels: record.labels,

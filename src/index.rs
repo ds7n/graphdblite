@@ -11,7 +11,11 @@ fn index_table_name(label: &str, property: &str) -> String {
 
 /// Build the index key: [msgpack(value)][node_id: 8 bytes BE].
 fn index_key(value: &Value, node_id: NodeId) -> Result<Vec<u8>> {
-    let mut key = rmp_serde::to_vec(value).map_err(|e| GraphError::Serialization(e.to_string()))?;
+    let mut key = rmp_serde::to_vec(value).map_err(|e| GraphError::Serialization {
+        context: String::new(),
+        source: e.to_string(),
+        hint: None,
+    })?;
     key.extend_from_slice(&node_id.to_be_bytes());
     Ok(key)
 }
@@ -30,10 +34,11 @@ pub fn create_index(conn: &Connection, label: &str, property: &str) -> Result<()
         |row| row.get(0),
     )?;
     if exists {
-        return Err(GraphError::IndexAlreadyExists(
-            label.to_string(),
-            property.to_string(),
-        ));
+        return Err(GraphError::IndexAlreadyExists {
+            label: label.to_string(),
+            property: property.to_string(),
+            hint: None,
+        });
     }
 
     // Create the index table (key-only, empty value).
@@ -65,10 +70,11 @@ pub fn drop_index(conn: &Connection, label: &str, property: &str) -> Result<()> 
         |row| row.get(0),
     )?;
     if !exists {
-        return Err(GraphError::IndexNotFound(
-            label.to_string(),
-            property.to_string(),
-        ));
+        return Err(GraphError::IndexNotFound {
+            label: label.to_string(),
+            property: property.to_string(),
+            hint: None,
+        });
     }
     conn.execute(&format!("DROP TABLE \"{table}\""), [])?;
     Ok(())
@@ -84,14 +90,21 @@ pub fn index_lookup(
     let table = index_table_name(label, property);
 
     // Build prefix from the serialized value.
-    let prefix = rmp_serde::to_vec(value).map_err(|e| GraphError::Serialization(e.to_string()))?;
+    let prefix = rmp_serde::to_vec(value).map_err(|e| GraphError::Serialization {
+        context: String::new(),
+        source: e.to_string(),
+        hint: None,
+    })?;
     let entries = match kv::scan_prefix(conn, &table, &prefix) {
         Ok(e) => e,
-        Err(GraphError::Storage(ref e)) if e.to_string().contains("no such table") => {
-            return Err(GraphError::IndexNotFound(
-                label.to_string(),
-                property.to_string(),
-            ));
+        Err(GraphError::Storage { source: ref e, .. })
+            if e.to_string().contains("no such table") =>
+        {
+            return Err(GraphError::IndexNotFound {
+                label: label.to_string(),
+                property: property.to_string(),
+                hint: None,
+            });
         }
         Err(e) => return Err(e),
     };
@@ -101,9 +114,14 @@ pub fn index_lookup(
         // Key = [msgpack(value)][node_id: 8 BE]
         // Extract the last 8 bytes as node_id.
         if key.len() >= 8 {
-            let id_bytes: [u8; 8] = key[key.len() - 8..]
-                .try_into()
-                .map_err(|_| GraphError::Serialization("corrupt index key bytes".into()))?;
+            let id_bytes: [u8; 8] =
+                key[key.len() - 8..]
+                    .try_into()
+                    .map_err(|_| GraphError::Serialization {
+                        context: String::new(),
+                        source: "corrupt index key bytes".into(),
+                        hint: None,
+                    })?;
             ids.push(NodeId::from_be_bytes(id_bytes));
         }
     }
@@ -175,10 +193,16 @@ pub fn index_count_for_value(
     value: &Value,
 ) -> Result<usize> {
     let table = index_table_name(label, property);
-    let prefix = rmp_serde::to_vec(value).map_err(|e| GraphError::Serialization(e.to_string()))?;
+    let prefix = rmp_serde::to_vec(value).map_err(|e| GraphError::Serialization {
+        context: String::new(),
+        source: e.to_string(),
+        hint: None,
+    })?;
     let entries = match kv::scan_prefix(conn, &table, &prefix) {
         Ok(e) => e,
-        Err(GraphError::Storage(ref e)) if e.to_string().contains("no such table") => {
+        Err(GraphError::Storage { source: ref e, .. })
+            if e.to_string().contains("no such table") =>
+        {
             return Ok(0);
         }
         Err(e) => return Err(e),

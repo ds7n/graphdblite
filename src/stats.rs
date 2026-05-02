@@ -13,7 +13,11 @@ pub fn get_label_count(conn: &Connection, label: &str) -> Result<u64> {
     match result {
         Ok(data) if data.len() == 8 => {
             Ok(u64::from_be_bytes(data[..8].try_into().map_err(|_| {
-                GraphError::Serialization("corrupt label count bytes".into())
+                GraphError::Serialization {
+                    context: String::new(),
+                    source: "corrupt label count bytes".into(),
+                    hint: None,
+                }
             })?))
         }
         _ => Ok(0),

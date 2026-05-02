@@ -83,7 +83,11 @@ pub fn init_schema(conn: &Connection) -> Result<()> {
 
     // Reject databases created by a newer library.
     if db_version > SCHEMA_VERSION {
-        return Err(GraphError::SchemaMismatch(db_version, SCHEMA_VERSION));
+        return Err(GraphError::SchemaMismatch {
+            found: db_version,
+            supported: SCHEMA_VERSION,
+            hint: None,
+        });
     }
 
     // Migrate v1 → v2: add label column to nodes table.

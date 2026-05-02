@@ -48,54 +48,99 @@ fn parse_offset(s: &str) -> Result<FixedOffset> {
     } else if s.starts_with('-') {
         -1
     } else {
-        return Err(GraphError::Serialization(format!("invalid offset: {s}")));
+        return Err(GraphError::Serialization {
+            context: String::new(),
+            source: format!("invalid offset: {s}"),
+            hint: None,
+        });
     };
     let body = &s[1..];
     let (h, m) = if body.len() == 2 {
         // +HH
         (
-            body.parse::<i32>()
-                .map_err(|e| GraphError::Serialization(e.to_string()))?,
+            body.parse::<i32>().map_err(|e| GraphError::Serialization {
+                context: String::new(),
+                source: e.to_string(),
+                hint: None,
+            })?,
             0,
         )
     } else if body.len() == 4 {
         // +HHMM
         let hh = body[..2]
             .parse::<i32>()
-            .map_err(|e| GraphError::Serialization(e.to_string()))?;
+            .map_err(|e| GraphError::Serialization {
+                context: String::new(),
+                source: e.to_string(),
+                hint: None,
+            })?;
         let mm = body[2..]
             .parse::<i32>()
-            .map_err(|e| GraphError::Serialization(e.to_string()))?;
+            .map_err(|e| GraphError::Serialization {
+                context: String::new(),
+                source: e.to_string(),
+                hint: None,
+            })?;
         (hh, mm)
     } else if body.len() == 5 && body.as_bytes()[2] == b':' {
         // +HH:MM
         let hh = body[..2]
             .parse::<i32>()
-            .map_err(|e| GraphError::Serialization(e.to_string()))?;
+            .map_err(|e| GraphError::Serialization {
+                context: String::new(),
+                source: e.to_string(),
+                hint: None,
+            })?;
         let mm = body[3..]
             .parse::<i32>()
-            .map_err(|e| GraphError::Serialization(e.to_string()))?;
+            .map_err(|e| GraphError::Serialization {
+                context: String::new(),
+                source: e.to_string(),
+                hint: None,
+            })?;
         (hh, mm)
     } else if body.len() == 8 && body.as_bytes()[2] == b':' && body.as_bytes()[5] == b':' {
         // +HH:MM:SS — historical offsets with seconds precision
         let hh = body[..2]
             .parse::<i32>()
-            .map_err(|e| GraphError::Serialization(e.to_string()))?;
+            .map_err(|e| GraphError::Serialization {
+                context: String::new(),
+                source: e.to_string(),
+                hint: None,
+            })?;
         let mm = body[3..5]
             .parse::<i32>()
-            .map_err(|e| GraphError::Serialization(e.to_string()))?;
+            .map_err(|e| GraphError::Serialization {
+                context: String::new(),
+                source: e.to_string(),
+                hint: None,
+            })?;
         let ss = body[6..8]
             .parse::<i32>()
-            .map_err(|e| GraphError::Serialization(e.to_string()))?;
+            .map_err(|e| GraphError::Serialization {
+                context: String::new(),
+                source: e.to_string(),
+                hint: None,
+            })?;
         let total = sign * (hh * 3600 + mm * 60 + ss);
-        return FixedOffset::east_opt(total)
-            .ok_or_else(|| GraphError::Serialization(format!("offset out of range: {s}")));
+        return FixedOffset::east_opt(total).ok_or_else(|| GraphError::Serialization {
+            context: String::new(),
+            source: format!("offset out of range: {s}"),
+            hint: None,
+        });
     } else {
-        return Err(GraphError::Serialization(format!("invalid offset: {s}")));
+        return Err(GraphError::Serialization {
+            context: String::new(),
+            source: format!("invalid offset: {s}"),
+            hint: None,
+        });
     };
     let secs = sign * (h * 3600 + m * 60);
-    FixedOffset::east_opt(secs)
-        .ok_or_else(|| GraphError::Serialization(format!("offset out of range: {s}")))
+    FixedOffset::east_opt(secs).ok_or_else(|| GraphError::Serialization {
+        context: String::new(),
+        source: format!("offset out of range: {s}"),
+        hint: None,
+    })
 }
 
 /// Split a time string from its trailing timezone offset.
@@ -124,33 +169,60 @@ fn parse_time_str(s: &str) -> Result<NaiveTime> {
     if s.contains(':') {
         // Colon-separated: HH:MM, HH:MM:SS, HH:MM:SS.nnn
         let parts: Vec<&str> = s.splitn(3, ':').collect();
-        let h: u32 = parts[0]
-            .parse()
-            .map_err(|e: std::num::ParseIntError| GraphError::Serialization(e.to_string()))?;
-        let m: u32 = parts
-            .get(1)
-            .unwrap_or(&"0")
-            .parse()
-            .map_err(|e: std::num::ParseIntError| GraphError::Serialization(e.to_string()))?;
+        let h: u32 =
+            parts[0]
+                .parse()
+                .map_err(|e: std::num::ParseIntError| GraphError::Serialization {
+                    context: String::new(),
+                    source: e.to_string(),
+                    hint: None,
+                })?;
+        let m: u32 =
+            parts
+                .get(1)
+                .unwrap_or(&"0")
+                .parse()
+                .map_err(|e: std::num::ParseIntError| GraphError::Serialization {
+                    context: String::new(),
+                    source: e.to_string(),
+                    hint: None,
+                })?;
         if parts.len() < 3 {
-            return NaiveTime::from_hms_opt(h, m, 0)
-                .ok_or_else(|| GraphError::Serialization(format!("invalid time: {s}")));
+            return NaiveTime::from_hms_opt(h, m, 0).ok_or_else(|| GraphError::Serialization {
+                context: String::new(),
+                source: format!("invalid time: {s}"),
+                hint: None,
+            });
         }
         let sec_part = parts[2];
         if let Some(dot_pos) = sec_part.find('.') {
             let sec: u32 = sec_part[..dot_pos]
                 .parse()
-                .map_err(|e: std::num::ParseIntError| GraphError::Serialization(e.to_string()))?;
+                .map_err(|e: std::num::ParseIntError| GraphError::Serialization {
+                    context: String::new(),
+                    source: e.to_string(),
+                    hint: None,
+                })?;
             let frac = &sec_part[dot_pos + 1..];
             let nano = parse_frac_nanos(frac)?;
-            NaiveTime::from_hms_nano_opt(h, m, sec, nano)
-                .ok_or_else(|| GraphError::Serialization(format!("invalid time: {s}")))
+            NaiveTime::from_hms_nano_opt(h, m, sec, nano).ok_or_else(|| GraphError::Serialization {
+                context: String::new(),
+                source: format!("invalid time: {s}"),
+                hint: None,
+            })
         } else {
-            let sec: u32 = sec_part
-                .parse()
-                .map_err(|e: std::num::ParseIntError| GraphError::Serialization(e.to_string()))?;
-            NaiveTime::from_hms_opt(h, m, sec)
-                .ok_or_else(|| GraphError::Serialization(format!("invalid time: {s}")))
+            let sec: u32 = sec_part.parse().map_err(|e: std::num::ParseIntError| {
+                GraphError::Serialization {
+                    context: String::new(),
+                    source: e.to_string(),
+                    hint: None,
+                }
+            })?;
+            NaiveTime::from_hms_opt(h, m, sec).ok_or_else(|| GraphError::Serialization {
+                context: String::new(),
+                source: format!("invalid time: {s}"),
+                hint: None,
+            })
         }
     } else {
         // Compact: HH, HHMM, HHMMSS, HHMMSS.nnn
@@ -163,35 +235,61 @@ fn parse_time_str(s: &str) -> Result<NaiveTime> {
             2 => (
                 digits
                     .parse::<u32>()
-                    .map_err(|e| GraphError::Serialization(e.to_string()))?,
+                    .map_err(|e| GraphError::Serialization {
+                        context: String::new(),
+                        source: e.to_string(),
+                        hint: None,
+                    })?,
                 0u32,
                 0u32,
             ),
             4 => {
                 let hh = digits[..2]
                     .parse::<u32>()
-                    .map_err(|e| GraphError::Serialization(e.to_string()))?;
+                    .map_err(|e| GraphError::Serialization {
+                        context: String::new(),
+                        source: e.to_string(),
+                        hint: None,
+                    })?;
                 let mm = digits[2..]
                     .parse::<u32>()
-                    .map_err(|e| GraphError::Serialization(e.to_string()))?;
+                    .map_err(|e| GraphError::Serialization {
+                        context: String::new(),
+                        source: e.to_string(),
+                        hint: None,
+                    })?;
                 (hh, mm, 0)
             }
             6 => {
                 let hh = digits[..2]
                     .parse::<u32>()
-                    .map_err(|e| GraphError::Serialization(e.to_string()))?;
+                    .map_err(|e| GraphError::Serialization {
+                        context: String::new(),
+                        source: e.to_string(),
+                        hint: None,
+                    })?;
                 let mm = digits[2..4]
                     .parse::<u32>()
-                    .map_err(|e| GraphError::Serialization(e.to_string()))?;
+                    .map_err(|e| GraphError::Serialization {
+                        context: String::new(),
+                        source: e.to_string(),
+                        hint: None,
+                    })?;
                 let ss = digits[4..]
                     .parse::<u32>()
-                    .map_err(|e| GraphError::Serialization(e.to_string()))?;
+                    .map_err(|e| GraphError::Serialization {
+                        context: String::new(),
+                        source: e.to_string(),
+                        hint: None,
+                    })?;
                 (hh, mm, ss)
             }
             _ => {
-                return Err(GraphError::Serialization(format!(
-                    "invalid compact time: {s}"
-                )))
+                return Err(GraphError::Serialization {
+                    context: String::new(),
+                    source: format!("invalid compact time: {s}"),
+                    hint: None,
+                })
             }
         };
         let nano = if let Some(f) = frac {
@@ -199,8 +297,11 @@ fn parse_time_str(s: &str) -> Result<NaiveTime> {
         } else {
             0
         };
-        NaiveTime::from_hms_nano_opt(h, m, sec, nano)
-            .ok_or_else(|| GraphError::Serialization(format!("invalid time: {s}")))
+        NaiveTime::from_hms_nano_opt(h, m, sec, nano).ok_or_else(|| GraphError::Serialization {
+            context: String::new(),
+            source: format!("invalid time: {s}"),
+            hint: None,
+        })
     }
 }
 
@@ -209,8 +310,11 @@ fn parse_num<T: std::str::FromStr>(s: &str) -> Result<T>
 where
     T::Err: fmt::Display,
 {
-    s.parse::<T>()
-        .map_err(|e| GraphError::Serialization(e.to_string()))
+    s.parse::<T>().map_err(|e| GraphError::Serialization {
+        context: String::new(),
+        source: e.to_string(),
+        hint: None,
+    })
 }
 
 /// Parse fractional seconds string (up to 9 digits) into nanoseconds.
@@ -222,7 +326,11 @@ fn parse_frac_nanos(frac: &str) -> Result<u32> {
     padded.truncate(9);
     padded
         .parse::<u32>()
-        .map_err(|e| GraphError::Serialization(e.to_string()))
+        .map_err(|e| GraphError::Serialization {
+            context: String::new(),
+            source: e.to_string(),
+            hint: None,
+        })
 }
 
 /// Parse a date string into `NaiveDate`.
@@ -237,36 +345,68 @@ fn parse_date_str(s: &str) -> Result<NaiveDate> {
         match parts.len() {
             3 => {
                 let y: i32 = parts[0].parse().map_err(|e: std::num::ParseIntError| {
-                    GraphError::Serialization(e.to_string())
+                    GraphError::Serialization {
+                        context: String::new(),
+                        source: e.to_string(),
+                        hint: None,
+                    }
                 })?;
                 let m: u32 = parts[1].parse().map_err(|e: std::num::ParseIntError| {
-                    GraphError::Serialization(e.to_string())
+                    GraphError::Serialization {
+                        context: String::new(),
+                        source: e.to_string(),
+                        hint: None,
+                    }
                 })?;
                 let d: u32 = parts[2].parse().map_err(|e: std::num::ParseIntError| {
-                    GraphError::Serialization(e.to_string())
+                    GraphError::Serialization {
+                        context: String::new(),
+                        source: e.to_string(),
+                        hint: None,
+                    }
                 })?;
-                NaiveDate::from_ymd_opt(y, m, d)
-                    .ok_or_else(|| GraphError::Serialization(format!("invalid date: {s}")))
+                NaiveDate::from_ymd_opt(y, m, d).ok_or_else(|| GraphError::Serialization {
+                    context: String::new(),
+                    source: format!("invalid date: {s}"),
+                    hint: None,
+                })
             }
             2 => {
                 let y: i32 = parts[0].parse().map_err(|e: std::num::ParseIntError| {
-                    GraphError::Serialization(e.to_string())
+                    GraphError::Serialization {
+                        context: String::new(),
+                        source: e.to_string(),
+                        hint: None,
+                    }
                 })?;
                 let part2: u32 = parts[1].parse().map_err(|e: std::num::ParseIntError| {
-                    GraphError::Serialization(e.to_string())
+                    GraphError::Serialization {
+                        context: String::new(),
+                        source: e.to_string(),
+                        hint: None,
+                    }
                 })?;
                 if parts[1].len() == 3 {
                     // Ordinal: YYYY-DDD
-                    NaiveDate::from_yo_opt(y, part2).ok_or_else(|| {
-                        GraphError::Serialization(format!("invalid ordinal date: {s}"))
+                    NaiveDate::from_yo_opt(y, part2).ok_or_else(|| GraphError::Serialization {
+                        context: String::new(),
+                        source: format!("invalid ordinal date: {s}"),
+                        hint: None,
                     })
                 } else {
                     // YYYY-MM (day defaults to 1)
-                    NaiveDate::from_ymd_opt(y, part2, 1)
-                        .ok_or_else(|| GraphError::Serialization(format!("invalid date: {s}")))
+                    NaiveDate::from_ymd_opt(y, part2, 1).ok_or_else(|| GraphError::Serialization {
+                        context: String::new(),
+                        source: format!("invalid date: {s}"),
+                        hint: None,
+                    })
                 }
             }
-            _ => Err(GraphError::Serialization(format!("invalid date: {s}"))),
+            _ => Err(GraphError::Serialization {
+                context: String::new(),
+                source: format!("invalid date: {s}"),
+                hint: None,
+            }),
         }
     } else {
         // Compact forms: YYYYMMDD, YYYYMM, YYYY, YYYYDDD
@@ -275,29 +415,45 @@ fn parse_date_str(s: &str) -> Result<NaiveDate> {
                 let y: i32 = parse_num(&s[..4])?;
                 let m: u32 = parse_num(&s[4..6])?;
                 let d: u32 = parse_num(&s[6..])?;
-                NaiveDate::from_ymd_opt(y, m, d)
-                    .ok_or_else(|| GraphError::Serialization(format!("invalid date: {s}")))
+                NaiveDate::from_ymd_opt(y, m, d).ok_or_else(|| GraphError::Serialization {
+                    context: String::new(),
+                    source: format!("invalid date: {s}"),
+                    hint: None,
+                })
             }
             7 => {
                 // YYYYDDD
                 let y: i32 = parse_num(&s[..4])?;
                 let d: u32 = parse_num(&s[4..])?;
-                NaiveDate::from_yo_opt(y, d)
-                    .ok_or_else(|| GraphError::Serialization(format!("invalid ordinal date: {s}")))
+                NaiveDate::from_yo_opt(y, d).ok_or_else(|| GraphError::Serialization {
+                    context: String::new(),
+                    source: format!("invalid ordinal date: {s}"),
+                    hint: None,
+                })
             }
             6 => {
                 // YYYYMM
                 let y: i32 = parse_num(&s[..4])?;
                 let m: u32 = parse_num(&s[4..])?;
-                NaiveDate::from_ymd_opt(y, m, 1)
-                    .ok_or_else(|| GraphError::Serialization(format!("invalid date: {s}")))
+                NaiveDate::from_ymd_opt(y, m, 1).ok_or_else(|| GraphError::Serialization {
+                    context: String::new(),
+                    source: format!("invalid date: {s}"),
+                    hint: None,
+                })
             }
             4 => {
                 let y: i32 = parse_num(s)?;
-                NaiveDate::from_ymd_opt(y, 1, 1)
-                    .ok_or_else(|| GraphError::Serialization(format!("invalid date: {s}")))
+                NaiveDate::from_ymd_opt(y, 1, 1).ok_or_else(|| GraphError::Serialization {
+                    context: String::new(),
+                    source: format!("invalid date: {s}"),
+                    hint: None,
+                })
             }
-            _ => Err(GraphError::Serialization(format!("invalid date: {s}"))),
+            _ => Err(GraphError::Serialization {
+                context: String::new(),
+                source: format!("invalid date: {s}"),
+                hint: None,
+            }),
         }
     }
 }
@@ -307,28 +463,51 @@ fn parse_week_date(s: &str) -> Result<NaiveDate> {
     // Strip hyphens for uniform handling, but track original for error messages.
     let compact = s.replace('-', "");
     // Expected: YYYYWww or YYYYWwwD
-    let w_pos = compact
-        .find('W')
-        .ok_or_else(|| GraphError::Serialization(format!("invalid week date: {s}")))?;
+    let w_pos = compact.find('W').ok_or_else(|| GraphError::Serialization {
+        context: String::new(),
+        source: format!("invalid week date: {s}"),
+        hint: None,
+    })?;
     let year: i32 = compact[..w_pos]
         .parse()
-        .map_err(|e: std::num::ParseIntError| GraphError::Serialization(e.to_string()))?;
+        .map_err(|e: std::num::ParseIntError| GraphError::Serialization {
+            context: String::new(),
+            source: e.to_string(),
+            hint: None,
+        })?;
     let after_w = &compact[w_pos + 1..];
     let (week, day) = if after_w.len() >= 3 {
-        let wk: u32 = after_w[..2]
-            .parse()
-            .map_err(|e: std::num::ParseIntError| GraphError::Serialization(e.to_string()))?;
+        let wk: u32 = after_w[..2].parse().map_err(|e: std::num::ParseIntError| {
+            GraphError::Serialization {
+                context: String::new(),
+                source: e.to_string(),
+                hint: None,
+            }
+        })?;
         let d: u32 = after_w[2..3]
             .parse()
-            .map_err(|e: std::num::ParseIntError| GraphError::Serialization(e.to_string()))?;
+            .map_err(|e: std::num::ParseIntError| GraphError::Serialization {
+                context: String::new(),
+                source: e.to_string(),
+                hint: None,
+            })?;
         (wk, d)
     } else if after_w.len() == 2 {
-        let wk: u32 = after_w
-            .parse()
-            .map_err(|e: std::num::ParseIntError| GraphError::Serialization(e.to_string()))?;
+        let wk: u32 =
+            after_w
+                .parse()
+                .map_err(|e: std::num::ParseIntError| GraphError::Serialization {
+                    context: String::new(),
+                    source: e.to_string(),
+                    hint: None,
+                })?;
         (wk, 1) // default to Monday
     } else {
-        return Err(GraphError::Serialization(format!("invalid week date: {s}")));
+        return Err(GraphError::Serialization {
+            context: String::new(),
+            source: format!("invalid week date: {s}"),
+            hint: None,
+        });
     };
     let weekday = match day {
         1 => chrono::Weekday::Mon,
@@ -339,13 +518,18 @@ fn parse_week_date(s: &str) -> Result<NaiveDate> {
         6 => chrono::Weekday::Sat,
         7 => chrono::Weekday::Sun,
         _ => {
-            return Err(GraphError::Serialization(format!(
-                "invalid day of week {day} in: {s}"
-            )))
+            return Err(GraphError::Serialization {
+                context: String::new(),
+                source: format!("invalid day of week {day} in: {s}"),
+                hint: None,
+            })
         }
     };
-    NaiveDate::from_isoywd_opt(year, week, weekday)
-        .ok_or_else(|| GraphError::Serialization(format!("invalid week date: {s}")))
+    NaiveDate::from_isoywd_opt(year, week, weekday).ok_or_else(|| GraphError::Serialization {
+        context: String::new(),
+        source: format!("invalid week date: {s}"),
+        hint: None,
+    })
 }
 
 /// Format a `NaiveTime` using the TCK local-time rules:
@@ -464,8 +648,11 @@ fn time_from_map(map: &BTreeMap<String, Value>) -> Result<NaiveTime> {
         .unwrap_or(0) as u32;
     nano += get_i64(map, "millisecond").unwrap_or(0) as u32 * 1_000_000;
     nano += get_i64(map, "microsecond").unwrap_or(0) as u32 * 1_000;
-    NaiveTime::from_hms_nano_opt(h, m, s, nano)
-        .ok_or_else(|| GraphError::Serialization("invalid time components".to_string()))
+    NaiveTime::from_hms_nano_opt(h, m, s, nano).ok_or_else(|| GraphError::Serialization {
+        context: String::new(),
+        source: "invalid time components".to_string(),
+        hint: None,
+    })
 }
 
 /// Build a `NaiveDate` from map keys (year, month, day, week, dayOfWeek, ordinalDay, quarter, dayOfQuarter).
@@ -499,19 +686,29 @@ fn date_from_map(map: &BTreeMap<String, Value>) -> Result<NaiveDate> {
             6 => chrono::Weekday::Sat,
             7 => chrono::Weekday::Sun,
             _ => {
-                return Err(GraphError::Serialization(format!(
-                    "invalid dayOfWeek: {dow}"
-                )))
+                return Err(GraphError::Serialization {
+                    context: String::new(),
+                    source: format!("invalid dayOfWeek: {dow}"),
+                    hint: None,
+                })
             }
         };
-        NaiveDate::from_isoywd_opt(year, week as u32, weekday)
-            .ok_or_else(|| GraphError::Serialization("invalid week date components".to_string()))
+        NaiveDate::from_isoywd_opt(year, week as u32, weekday).ok_or_else(|| {
+            GraphError::Serialization {
+                context: String::new(),
+                source: "invalid week date components".to_string(),
+                hint: None,
+            }
+        })
     } else if let Some(ord) = get_i64(map, "ordinalDay") {
         let year = get_i64(map, "year")
             .or_else(|| base_date.map(|d| d.year() as i64))
             .unwrap_or(0) as i32;
-        NaiveDate::from_yo_opt(year, ord as u32)
-            .ok_or_else(|| GraphError::Serialization("invalid ordinal date components".to_string()))
+        NaiveDate::from_yo_opt(year, ord as u32).ok_or_else(|| GraphError::Serialization {
+            context: String::new(),
+            source: "invalid ordinal date components".to_string(),
+            hint: None,
+        })
     } else if let Some(quarter) = get_i64(map, "quarter") {
         let year = get_i64(map, "year")
             .or_else(|| base_date.map(|d| d.year() as i64))
@@ -519,23 +716,40 @@ fn date_from_map(map: &BTreeMap<String, Value>) -> Result<NaiveDate> {
         let quarter_start_month = ((quarter - 1) * 3 + 1) as u32;
         if let Some(doq) = get_i64(map, "dayOfQuarter") {
             // Explicit dayOfQuarter: count from first day of the quarter.
-            let start = NaiveDate::from_ymd_opt(year, quarter_start_month, 1)
-                .ok_or_else(|| GraphError::Serialization("invalid quarter".to_string()))?;
+            let start = NaiveDate::from_ymd_opt(year, quarter_start_month, 1).ok_or_else(|| {
+                GraphError::Serialization {
+                    context: String::new(),
+                    source: "invalid quarter".to_string(),
+                    hint: None,
+                }
+            })?;
             start
                 .checked_add_signed(chrono::Duration::days(doq - 1))
-                .ok_or_else(|| GraphError::Serialization("dayOfQuarter out of range".to_string()))
+                .ok_or_else(|| GraphError::Serialization {
+                    context: String::new(),
+                    source: "dayOfQuarter out of range".to_string(),
+                    hint: None,
+                })
         } else if let Some(bd) = base_date {
             // No explicit dayOfQuarter but base date present: preserve month-offset
             // within the quarter and day-of-month from the base date.
             let base_month_in_quarter = (bd.month() - 1) % 3; // 0, 1, or 2
             let month = quarter_start_month + base_month_in_quarter;
             let day = get_i64(map, "day").unwrap_or(bd.day() as i64) as u32;
-            NaiveDate::from_ymd_opt(year, month, day)
-                .ok_or_else(|| GraphError::Serialization("invalid quarter date".to_string()))
+            NaiveDate::from_ymd_opt(year, month, day).ok_or_else(|| GraphError::Serialization {
+                context: String::new(),
+                source: "invalid quarter date".to_string(),
+                hint: None,
+            })
         } else {
             // No base date, no dayOfQuarter: first day of the quarter.
-            NaiveDate::from_ymd_opt(year, quarter_start_month, 1)
-                .ok_or_else(|| GraphError::Serialization("invalid quarter".to_string()))
+            NaiveDate::from_ymd_opt(year, quarter_start_month, 1).ok_or_else(|| {
+                GraphError::Serialization {
+                    context: String::new(),
+                    source: "invalid quarter".to_string(),
+                    hint: None,
+                }
+            })
         }
     } else {
         let year = get_i64(map, "year")
@@ -547,8 +761,11 @@ fn date_from_map(map: &BTreeMap<String, Value>) -> Result<NaiveDate> {
         let day = get_i64(map, "day")
             .or_else(|| base_date.map(|d| d.day() as i64))
             .unwrap_or(1) as u32;
-        NaiveDate::from_ymd_opt(year, month, day)
-            .ok_or_else(|| GraphError::Serialization("invalid date components".to_string()))
+        NaiveDate::from_ymd_opt(year, month, day).ok_or_else(|| GraphError::Serialization {
+            context: String::new(),
+            source: "invalid date components".to_string(),
+            hint: None,
+        })
     }
 }
 
@@ -586,9 +803,11 @@ fn offset_from_map(map: &BTreeMap<String, Value>) -> Result<(FixedOffset, Option
 /// Resolve an IANA timezone name to offset using the current time.
 /// Used when no specific datetime context is available (e.g. CypherTime).
 fn resolve_tz_name_now(name: &str) -> Result<(FixedOffset, Option<String>)> {
-    let tz: chrono_tz::Tz = name
-        .parse()
-        .map_err(|_| GraphError::Serialization(format!("unknown timezone: {name}")))?;
+    let tz: chrono_tz::Tz = name.parse().map_err(|_| GraphError::Serialization {
+        context: String::new(),
+        source: format!("unknown timezone: {name}"),
+        hint: None,
+    })?;
     let now = chrono::Utc::now().with_timezone(&tz);
     let off = now.offset().fix();
     Ok((off, Some(name.to_string())))
@@ -597,12 +816,19 @@ fn resolve_tz_name_now(name: &str) -> Result<(FixedOffset, Option<String>)> {
 /// Resolve an IANA timezone name to offset at a specific NaiveDateTime.
 /// Uses the earliest valid local time (handles DST transitions).
 fn resolve_tz_name_at(name: &str, dt: &NaiveDateTime) -> Result<(FixedOffset, Option<String>)> {
-    let tz: chrono_tz::Tz = name
-        .parse()
-        .map_err(|_| GraphError::Serialization(format!("unknown timezone: {name}")))?;
-    let aware = tz.from_local_datetime(dt).earliest().ok_or_else(|| {
-        GraphError::Serialization(format!("ambiguous or invalid datetime in timezone: {name}"))
+    let tz: chrono_tz::Tz = name.parse().map_err(|_| GraphError::Serialization {
+        context: String::new(),
+        source: format!("unknown timezone: {name}"),
+        hint: None,
     })?;
+    let aware = tz
+        .from_local_datetime(dt)
+        .earliest()
+        .ok_or_else(|| GraphError::Serialization {
+            context: String::new(),
+            source: format!("ambiguous or invalid datetime in timezone: {name}"),
+            hint: None,
+        })?;
     let off = aware.offset().fix();
     Ok((off, Some(name.to_string())))
 }
@@ -1121,10 +1347,14 @@ impl<'de> Deserialize<'de> for CypherLocalDateTime {
 impl CypherLocalDateTime {
     /// Parse from ISO 8601, e.g. `1984-10-11T12:31:14`.
     pub fn from_iso_string(s: &str) -> Result<Self> {
-        let t_pos = s
-            .find('T')
-            .or_else(|| s.find('t'))
-            .ok_or_else(|| GraphError::Serialization(format!("expected 'T' separator in: {s}")))?;
+        let t_pos =
+            s.find('T')
+                .or_else(|| s.find('t'))
+                .ok_or_else(|| GraphError::Serialization {
+                    context: String::new(),
+                    source: format!("expected 'T' separator in: {s}"),
+                    hint: None,
+                })?;
         let date = parse_date_str(&s[..t_pos])?;
         let time = parse_time_str(&s[t_pos + 1..])?;
         Ok(CypherLocalDateTime(NaiveDateTime::new(date, time)))
@@ -1302,10 +1532,14 @@ impl CypherDateTime {
     /// Parse from ISO 8601 with timezone, e.g. `1984-10-11T12:31:14Z` or
     /// `2015-07-21T21:40:32.142+02:00[Europe/Stockholm]`.
     pub fn from_iso_string(s: &str) -> Result<Self> {
-        let t_pos = s
-            .find('T')
-            .or_else(|| s.find('t'))
-            .ok_or_else(|| GraphError::Serialization(format!("expected 'T' separator in: {s}")))?;
+        let t_pos =
+            s.find('T')
+                .or_else(|| s.find('t'))
+                .ok_or_else(|| GraphError::Serialization {
+                    context: String::new(),
+                    source: format!("expected 'T' separator in: {s}"),
+                    hint: None,
+                })?;
         let date = parse_date_str(&s[..t_pos])?;
         let time_and_off = &s[t_pos + 1..];
 
@@ -1330,9 +1564,11 @@ impl CypherDateTime {
             let (resolved, _) = resolve_tz_name_at(tz, &ndt)?;
             resolved
         } else {
-            return Err(GraphError::Serialization(format!(
-                "CypherDateTime requires an offset or timezone: {s}"
-            )));
+            return Err(GraphError::Serialization {
+                context: String::new(),
+                source: format!("CypherDateTime requires an offset or timezone: {s}"),
+                hint: None,
+            });
         };
 
         Ok(CypherDateTime(NaiveDateTime::new(date, time), off, tz_name))
@@ -1360,9 +1596,12 @@ impl CypherDateTime {
                         // Convert via UTC intermediary, then resolve target named tz.
                         let utc_ndt =
                             ndt - chrono::Duration::seconds(src_off.local_minus_utc() as i64);
-                        let tz: chrono_tz::Tz = s.parse().map_err(|_| {
-                            GraphError::Serialization(format!("unknown timezone: {s}"))
-                        })?;
+                        let tz: chrono_tz::Tz =
+                            s.parse().map_err(|_| GraphError::Serialization {
+                                context: String::new(),
+                                source: format!("unknown timezone: {s}"),
+                                hint: None,
+                            })?;
                         let aware = tz.from_utc_datetime(&utc_ndt);
                         let off = aware.offset().fix();
                         let converted = aware.naive_local();
@@ -1608,9 +1847,11 @@ impl CypherDuration {
     /// Parse an ISO 8601 duration string, e.g. `P1Y2M3DT4H5M6.789S`.
     pub fn from_iso_string(s: &str) -> Result<Self> {
         if !s.starts_with('P') && !s.starts_with('p') {
-            return Err(GraphError::Serialization(format!(
-                "duration must start with 'P': {s}"
-            )));
+            return Err(GraphError::Serialization {
+                context: String::new(),
+                source: format!("duration must start with 'P': {s}"),
+                hint: None,
+            });
         }
         let body = &s[1..];
 
@@ -1633,20 +1874,34 @@ impl CypherDuration {
                 let parts: Vec<&str> = date_part.split('-').collect();
                 if parts.len() == 3 {
                     let y: i64 = parts[0].parse().map_err(|e: std::num::ParseIntError| {
-                        GraphError::Serialization(e.to_string())
+                        GraphError::Serialization {
+                            context: String::new(),
+                            source: e.to_string(),
+                            hint: None,
+                        }
                     })?;
                     let m: i64 = parts[1].parse().map_err(|e: std::num::ParseIntError| {
-                        GraphError::Serialization(e.to_string())
+                        GraphError::Serialization {
+                            context: String::new(),
+                            source: e.to_string(),
+                            hint: None,
+                        }
                     })?;
                     let d: i64 = parts[2].parse().map_err(|e: std::num::ParseIntError| {
-                        GraphError::Serialization(e.to_string())
+                        GraphError::Serialization {
+                            context: String::new(),
+                            source: e.to_string(),
+                            hint: None,
+                        }
                     })?;
                     months += y * 12 + m;
                     days += d;
                 } else {
-                    return Err(GraphError::Serialization(format!(
-                        "invalid date-format duration: {date_part}"
-                    )));
+                    return Err(GraphError::Serialization {
+                        context: String::new(),
+                        source: format!("invalid date-format duration: {date_part}"),
+                        hint: None,
+                    });
                 }
             } else {
                 parse_duration_date_part(
@@ -1667,10 +1922,18 @@ impl CypherDuration {
                     let parts: Vec<&str> = tp.split(':').collect();
                     if parts.len() >= 2 {
                         let h: i64 = parts[0].parse().map_err(|e: std::num::ParseIntError| {
-                            GraphError::Serialization(e.to_string())
+                            GraphError::Serialization {
+                                context: String::new(),
+                                source: e.to_string(),
+                                hint: None,
+                            }
                         })?;
                         let m: i64 = parts[1].parse().map_err(|e: std::num::ParseIntError| {
-                            GraphError::Serialization(e.to_string())
+                            GraphError::Serialization {
+                                context: String::new(),
+                                source: e.to_string(),
+                                hint: None,
+                            }
                         })?;
                         seconds += h * 3600 + m * 60;
                         if parts.len() == 3 {
@@ -1682,7 +1945,11 @@ impl CypherDuration {
                                     0
                                 } else {
                                     int_part.parse().map_err(|e: std::num::ParseIntError| {
-                                        GraphError::Serialization(e.to_string())
+                                        GraphError::Serialization {
+                                            context: String::new(),
+                                            source: e.to_string(),
+                                            hint: None,
+                                        }
                                     })?
                                 };
                                 seconds += int_val;
@@ -1690,7 +1957,11 @@ impl CypherDuration {
                             } else {
                                 let s_val: i64 =
                                     s_str.parse().map_err(|e: std::num::ParseIntError| {
-                                        GraphError::Serialization(e.to_string())
+                                        GraphError::Serialization {
+                                            context: String::new(),
+                                            source: e.to_string(),
+                                            hint: None,
+                                        }
                                     })?;
                                 seconds += s_val;
                             }
@@ -1812,9 +2083,14 @@ fn parse_duration_date_part(
             continue;
         }
         let num_str = &s[num_start..i];
-        let n: f64 = num_str
-            .parse()
-            .map_err(|e: std::num::ParseFloatError| GraphError::Serialization(e.to_string()))?;
+        let n: f64 =
+            num_str
+                .parse()
+                .map_err(|e: std::num::ParseFloatError| GraphError::Serialization {
+                    context: String::new(),
+                    source: e.to_string(),
+                    hint: None,
+                })?;
         let int_part = n.trunc() as i64;
         let frac = n - n.trunc();
         match b {
@@ -1841,9 +2117,11 @@ fn parse_duration_date_part(
                 cascade_frac_days(frac, seconds, nanos);
             }
             _ => {
-                return Err(GraphError::Serialization(format!(
-                    "unexpected char '{b}' in duration date part"
-                )))
+                return Err(GraphError::Serialization {
+                    context: String::new(),
+                    source: format!("unexpected char '{b}' in duration date part"),
+                    hint: None,
+                })
             }
         }
         i += 1;
@@ -1875,7 +2153,11 @@ fn parse_duration_time_part(s: &str, seconds: &mut i64, nanos: &mut i64) -> Resu
         match b {
             b'H' | b'h' => {
                 let n: f64 = num_str.parse().map_err(|e: std::num::ParseFloatError| {
-                    GraphError::Serialization(e.to_string())
+                    GraphError::Serialization {
+                        context: String::new(),
+                        source: e.to_string(),
+                        hint: None,
+                    }
                 })?;
                 let int_part = n.trunc() as i64;
                 let frac = n - n.trunc();
@@ -1888,7 +2170,11 @@ fn parse_duration_time_part(s: &str, seconds: &mut i64, nanos: &mut i64) -> Resu
             }
             b'M' | b'm' => {
                 let n: f64 = num_str.parse().map_err(|e: std::num::ParseFloatError| {
-                    GraphError::Serialization(e.to_string())
+                    GraphError::Serialization {
+                        context: String::new(),
+                        source: e.to_string(),
+                        hint: None,
+                    }
                 })?;
                 let int_part = n.trunc() as i64;
                 let frac = n - n.trunc();
@@ -1909,7 +2195,11 @@ fn parse_duration_time_part(s: &str, seconds: &mut i64, nanos: &mut i64) -> Resu
                         0
                     } else {
                         int_part.parse().map_err(|e: std::num::ParseIntError| {
-                            GraphError::Serialization(e.to_string())
+                            GraphError::Serialization {
+                                context: String::new(),
+                                source: e.to_string(),
+                                hint: None,
+                            }
                         })?
                     };
                     let frac_nanos = parse_frac_nanos(frac_part)? as i64;
@@ -1917,15 +2207,21 @@ fn parse_duration_time_part(s: &str, seconds: &mut i64, nanos: &mut i64) -> Resu
                     *nanos += if negative { -frac_nanos } else { frac_nanos };
                 } else {
                     let n: i64 = num_str.parse().map_err(|e: std::num::ParseIntError| {
-                        GraphError::Serialization(e.to_string())
+                        GraphError::Serialization {
+                            context: String::new(),
+                            source: e.to_string(),
+                            hint: None,
+                        }
                     })?;
                     *seconds += n;
                 }
             }
             _ => {
-                return Err(GraphError::Serialization(format!(
-                    "unexpected char '{b}' in duration time part"
-                )))
+                return Err(GraphError::Serialization {
+                    context: String::new(),
+                    source: format!("unexpected char '{b}' in duration time part"),
+                    hint: None,
+                })
             }
         }
         i += 1;
@@ -2331,8 +2627,10 @@ pub fn parse_offset_public(s: &str) -> Result<i32> {
 
 /// Truncate a date to the given unit, then apply optional map overrides.
 pub fn truncate_date(unit: &str, val: &Value, map: &BTreeMap<String, Value>) -> Result<NaiveDate> {
-    let date = extract_date(val).ok_or_else(|| {
-        GraphError::Serialization("truncate_date requires a temporal with a date component".into())
+    let date = extract_date(val).ok_or_else(|| GraphError::Serialization {
+        context: String::new(),
+        source: "truncate_date requires a temporal with a date component".into(),
+        hint: None,
     })?;
     let mut d = truncate_date_core(unit, date)?;
 
@@ -2340,7 +2638,11 @@ pub fn truncate_date(unit: &str, val: &Value, map: &BTreeMap<String, Value>) -> 
     if let Some(Value::I64(day)) = map.get("day") {
         d = d
             .with_day(*day as u32)
-            .ok_or_else(|| GraphError::Serialization(format!("invalid day: {day}")))?;
+            .ok_or_else(|| GraphError::Serialization {
+                context: String::new(),
+                source: format!("invalid day: {day}"),
+                hint: None,
+            })?;
     }
     if let Some(Value::I64(dow)) = map.get("dayOfWeek") {
         // dayOfWeek override: keep the same week, change to the given day.
@@ -2352,7 +2654,11 @@ pub fn truncate_date(unit: &str, val: &Value, map: &BTreeMap<String, Value>) -> 
     if let Some(Value::I64(m)) = map.get("month") {
         d = d
             .with_month(*m as u32)
-            .ok_or_else(|| GraphError::Serialization(format!("invalid month: {m}")))?;
+            .ok_or_else(|| GraphError::Serialization {
+                context: String::new(),
+                source: format!("invalid month: {m}"),
+                hint: None,
+            })?;
     }
 
     Ok(d)
@@ -2383,16 +2689,20 @@ fn truncate_date_core(unit: &str, date: NaiveDate) -> Result<NaiveDate> {
             Ok(date - chrono::Duration::days(dow))
         }
         "day" | "hour" | "minute" | "second" | "millisecond" | "microsecond" => Ok(date),
-        _ => Err(GraphError::Serialization(format!(
-            "unsupported truncation unit for date: {unit}"
-        ))),
+        _ => Err(GraphError::Serialization {
+            context: String::new(),
+            source: format!("unsupported truncation unit for date: {unit}"),
+            hint: None,
+        }),
     }
 }
 
 /// Truncate a time to the given unit, then apply optional map overrides.
 pub fn truncate_time(unit: &str, val: &Value, map: &BTreeMap<String, Value>) -> Result<NaiveTime> {
-    let time = extract_time(val).ok_or_else(|| {
-        GraphError::Serialization("truncate_time requires a temporal with a time component".into())
+    let time = extract_time(val).ok_or_else(|| GraphError::Serialization {
+        context: String::new(),
+        source: "truncate_time requires a temporal with a time component".into(),
+        hint: None,
     })?;
     let mut t = truncate_time_core(unit, time)?;
 
@@ -2405,7 +2715,11 @@ pub fn truncate_time(unit: &str, val: &Value, map: &BTreeMap<String, Value>) -> 
         let new_nanos = truncated_nanos + *ns as u32;
         t = t
             .with_nanosecond(new_nanos)
-            .ok_or_else(|| GraphError::Serialization(format!("invalid nanosecond: {ns}")))?;
+            .ok_or_else(|| GraphError::Serialization {
+                context: String::new(),
+                source: format!("invalid nanosecond: {ns}"),
+                hint: None,
+            })?;
     }
 
     Ok(t)
@@ -2436,9 +2750,11 @@ fn truncate_time_core(unit: &str, time: NaiveTime) -> Result<NaiveTime> {
                     .unwrap(),
             )
         }
-        _ => Err(GraphError::Serialization(format!(
-            "unsupported truncation unit for time: {unit}"
-        ))),
+        _ => Err(GraphError::Serialization {
+            context: String::new(),
+            source: format!("unsupported truncation unit for time: {unit}"),
+            hint: None,
+        }),
     }
 }
 

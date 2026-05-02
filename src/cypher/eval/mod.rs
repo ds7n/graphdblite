@@ -5,7 +5,7 @@ use rusqlite::Connection;
 
 use crate::cypher::ast::{BinOp, Expr, LiteralValue, QuantifierKind};
 use crate::cypher::record::Record;
-use crate::types::{GraphError, QueryError, QueryPhase, Value};
+use crate::types::{ErrorCode, GraphError, QueryError, QueryPhase, Value};
 
 use comparison::{compare_to_value, literal_to_value, to_tribool, value_type_name, values_equal};
 use temporal_ops::{
@@ -36,6 +36,9 @@ pub fn eval_expr(expr: &Expr, record: &Record, conn: &Connection) -> crate::type
                     message: format!(
                         "DeletedEntityAccess: cannot access property `{prop}` on deleted entity `{var}`"
                     ),
+                    code: ErrorCode::Other,
+                    hint: None,
+                    span: None,
                 }));
             }
             // If the variable is explicitly bound to Null (e.g. from OPTIONAL MATCH),
@@ -420,6 +423,9 @@ fn invalid_argument_type(func_name: &str, value: &Value) -> GraphError {
             "{func_name}: invalid argument type {}",
             value_type_name(value)
         ),
+        code: ErrorCode::Other,
+        hint: None,
+        span: None,
     })
 }
 
@@ -457,6 +463,9 @@ fn eval_function_call(
                         message: format!(
                             "DeletedEntityAccess: cannot call {name}() on deleted entity `{var}`"
                         ),
+                        code: ErrorCode::Other,
+                        hint: None,
+                        span: None,
                     },
                 ));
             }
@@ -1112,6 +1121,9 @@ fn eval_function_call(
                             "InvalidArgumentType: range() {label} argument must be an integer, got {}",
                             value_type_name(val)
                         ),
+                        code: ErrorCode::Other,
+                        hint: None,
+                        span: None,
                     }));
                 }
             }
@@ -1125,6 +1137,9 @@ fn eval_function_call(
                                     message:
                                         "NumberOutOfRange: step argument to range() cannot be zero"
                                             .to_string(),
+                                    code: ErrorCode::Other,
+                                    hint: None,
+                                    span: None,
                                 }));
                             }
                             st
@@ -1384,13 +1399,19 @@ fn eval_function_call(
                     // IANA timezone name — resolve at the truncated datetime.
                     use chrono::TimeZone;
                     use chrono_tz::Tz;
-                    let tz: Tz = tz_s.parse().map_err(|_| {
-                        crate::types::GraphError::Serialization(format!("unknown timezone: {tz_s}"))
-                    })?;
+                    let tz: Tz =
+                        tz_s.parse()
+                            .map_err(|_| crate::types::GraphError::Serialization {
+                                context: String::new(),
+                                source: format!("unknown timezone: {tz_s}"),
+                                hint: None,
+                            })?;
                     let aware = tz.from_local_datetime(&ndt).earliest().ok_or_else(|| {
-                        crate::types::GraphError::Serialization(format!(
-                            "ambiguous or invalid datetime in timezone: {tz_s}"
-                        ))
+                        crate::types::GraphError::Serialization {
+                            context: String::new(),
+                            source: format!("ambiguous or invalid datetime in timezone: {tz_s}"),
+                            hint: None,
+                        }
                     })?;
                     let off = chrono::Offset::fix(aware.offset());
                     (off, Some(tz_s.clone()))
@@ -1466,9 +1487,11 @@ fn eval_list_comprehension(
         Value::List(items) => items,
         Value::Null => return Ok(Value::List(vec![])),
         _ => {
-            return Err(crate::types::GraphError::Serialization(
-                "list comprehension requires a list input".to_string(),
-            ))
+            return Err(crate::types::GraphError::Serialization {
+                context: String::new(),
+                source: "list comprehension requires a list input".to_string(),
+                hint: None,
+            })
         }
     };
 
@@ -1509,9 +1532,11 @@ fn eval_quantifier(
         Value::List(items) => items,
         Value::Null => return Ok(Value::Null),
         _ => {
-            return Err(crate::types::GraphError::Serialization(
-                "quantifier requires a list input".to_string(),
-            ))
+            return Err(crate::types::GraphError::Serialization {
+                context: String::new(),
+                source: "quantifier requires a list input".to_string(),
+                hint: None,
+            })
         }
     };
 

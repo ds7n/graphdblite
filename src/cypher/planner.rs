@@ -7,7 +7,7 @@ use crate::cypher::ast::*;
 use crate::cypher::ir::*;
 use crate::cypher::record::Record;
 use crate::index;
-use crate::types::{Direction, GraphError, Value};
+use crate::types::{Direction, ErrorCode, GraphError, Value};
 
 /// Global counter for unique anonymous variable aliases across all plan_single_pattern calls.
 static ANON_COUNTER: AtomicUsize = AtomicUsize::new(0);
@@ -335,6 +335,9 @@ fn plan_call(
         GraphError::Query(crate::types::QueryError::ProcedureError {
             phase: crate::types::QueryPhase::SemanticAnalysis,
             message: format!("ProcedureNotFound: unknown procedure `{procedure_name}`"),
+            code: ErrorCode::Other,
+            hint: None,
+            span: None,
         })
     })?;
 
@@ -620,6 +623,9 @@ fn plan_inner(
             crate::types::QueryError::ProcedureError {
                 phase: crate::types::QueryPhase::SemanticAnalysis,
                 message: format!("ProcedureNotFound: unknown procedure `{procedure_name}`"),
+                code: ErrorCode::Other,
+                hint: None,
+                span: None,
             },
         )),
         Statement::Explain(inner) => plan_inner(conn, inner, subquery),
@@ -2277,7 +2283,11 @@ pub fn plan_patterns(conn: &Connection, patterns: &[Pattern]) -> crate::types::R
         op = Some(right);
     }
 
-    op.ok_or_else(|| GraphError::Serialization("empty patterns".to_string()))
+    op.ok_or_else(|| GraphError::Serialization {
+        context: String::new(),
+        source: "empty patterns".to_string(),
+        hint: None,
+    })
 }
 
 /// Plan a shortestPath / allShortestPaths pattern.
@@ -2291,33 +2301,41 @@ fn plan_shortest_path_pattern(
 ) -> crate::types::Result<LogicalOp> {
     // Validate structure: must be exactly (node)-[rel]->(node).
     if pattern.elements.len() != 3 {
-        return Err(GraphError::Serialization(
-            "shortestPath pattern must be (a)-[*..N]->(b)".to_string(),
-        ));
+        return Err(GraphError::Serialization {
+            context: String::new(),
+            source: "shortestPath pattern must be (a)-[*..N]->(b)".to_string(),
+            hint: None,
+        });
     }
 
     let src_node = match &pattern.elements[0] {
         PatternElement::Node(n) => n,
         _ => {
-            return Err(GraphError::Serialization(
-                "shortestPath pattern must start with a node".to_string(),
-            ))
+            return Err(GraphError::Serialization {
+                context: String::new(),
+                source: "shortestPath pattern must start with a node".to_string(),
+                hint: None,
+            })
         }
     };
     let rel = match &pattern.elements[1] {
         PatternElement::Relationship(r) => r,
         _ => {
-            return Err(GraphError::Serialization(
-                "shortestPath pattern must have a relationship".to_string(),
-            ))
+            return Err(GraphError::Serialization {
+                context: String::new(),
+                source: "shortestPath pattern must have a relationship".to_string(),
+                hint: None,
+            })
         }
     };
     let dst_node = match &pattern.elements[2] {
         PatternElement::Node(n) => n,
         _ => {
-            return Err(GraphError::Serialization(
-                "shortestPath pattern must end with a node".to_string(),
-            ))
+            return Err(GraphError::Serialization {
+                context: String::new(),
+                source: "shortestPath pattern must end with a node".to_string(),
+                hint: None,
+            })
         }
     };
 
@@ -3377,6 +3395,9 @@ fn validate_variable_types_with_map(
                         message: format!(
                             "variable '{path_var}' already defined with a different type"
                         ),
+                        code: ErrorCode::Other,
+                        hint: None,
+                        span: None,
                     }));
                 }
             } else {
@@ -3396,6 +3417,9 @@ fn validate_variable_types_with_map(
                                         message: format!(
                                             "variable '{var}' already defined with a different type"
                                         ),
+                                        code: ErrorCode::Other,
+                                        hint: None,
+                                        span: None,
                                     },
                                 ));
                             }
@@ -3414,6 +3438,9 @@ fn validate_variable_types_with_map(
                                         message: format!(
                                             "variable '{var}' already defined with a different type"
                                         ),
+                                        code: ErrorCode::Other,
+                                        hint: None,
+                                        span: None,
                                     },
                                 ));
                             }
@@ -3509,9 +3536,11 @@ fn plan_single_pattern(conn: &Connection, pattern: &Pattern) -> crate::types::Re
                 let dst_node = match pattern.elements.get(i + 1) {
                     Some(PatternElement::Node(n)) => n,
                     _ => {
-                        return Err(GraphError::Serialization(
-                            "relationship must be followed by a node pattern".to_string(),
-                        ))
+                        return Err(GraphError::Serialization {
+                            context: String::new(),
+                            source: "relationship must be followed by a node pattern".to_string(),
+                            hint: None,
+                        })
                     }
                 };
 
@@ -3614,7 +3643,11 @@ fn plan_single_pattern(conn: &Connection, pattern: &Pattern) -> crate::types::Re
         }
     }
 
-    let mut result = op.ok_or_else(|| GraphError::Serialization("empty pattern".to_string()))?;
+    let mut result = op.ok_or_else(|| GraphError::Serialization {
+        context: String::new(),
+        source: "empty pattern".to_string(),
+        hint: None,
+    })?;
 
     // If this pattern has a path variable binding, wrap with MaterializePath.
     if let Some(ref path_var) = pattern.path_variable {
@@ -3817,9 +3850,11 @@ fn plan_create_pattern_with_counter(
                 let dst_node = match pattern.elements.get(i + 1) {
                     Some(PatternElement::Node(n)) => n,
                     _ => {
-                        return Err(GraphError::Serialization(
-                            "relationship must be followed by a node".to_string(),
-                        ))
+                        return Err(GraphError::Serialization {
+                            context: String::new(),
+                            source: "relationship must be followed by a node".to_string(),
+                            hint: None,
+                        })
                     }
                 };
 
@@ -3844,11 +3879,17 @@ fn plan_create_pattern_with_counter(
                     });
                 }
 
-                let left = last_alias.clone().ok_or_else(|| {
-                    GraphError::Serialization("edge without source node".to_string())
-                })?;
-                let right = dst_alias.clone().ok_or_else(|| {
-                    GraphError::Serialization("edge target must have a variable".to_string())
+                let left = last_alias
+                    .clone()
+                    .ok_or_else(|| GraphError::Serialization {
+                        context: String::new(),
+                        source: "edge without source node".to_string(),
+                        hint: None,
+                    })?;
+                let right = dst_alias.clone().ok_or_else(|| GraphError::Serialization {
+                    context: String::new(),
+                    source: "edge target must have a variable".to_string(),
+                    hint: None,
                 })?;
 
                 // Respect relationship direction: `(a)<-[:T]-(b)` means

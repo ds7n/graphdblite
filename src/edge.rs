@@ -86,8 +86,11 @@ pub fn create_edge(
 
     // Always store an edge_props row so relationship counting works correctly.
     let props_key = edge_props_key(src, dst, label, next_seq);
-    let data =
-        rmp_serde::to_vec(&properties).map_err(|e| GraphError::Serialization(e.to_string()))?;
+    let data = rmp_serde::to_vec(&properties).map_err(|e| GraphError::Serialization {
+        context: String::new(),
+        source: e.to_string(),
+        hint: None,
+    })?;
     kv::put(conn, kv::TABLE_EDGE_PROPS, &props_key, &data)?;
 
     Ok(())
@@ -151,8 +154,11 @@ pub fn batch_create_edges(
     for (src, dst, properties) in edges {
         let seq = crate::id::next_edge_seq(conn)?;
         let props_key = edge_props_key(*src, *dst, label, seq);
-        let data =
-            rmp_serde::to_vec(properties).map_err(|e| GraphError::Serialization(e.to_string()))?;
+        let data = rmp_serde::to_vec(properties).map_err(|e| GraphError::Serialization {
+            context: String::new(),
+            source: e.to_string(),
+            hint: None,
+        })?;
         kv::put(conn, kv::TABLE_EDGE_PROPS, &props_key, &data)?;
     }
 
@@ -289,8 +295,12 @@ pub fn get_edge_properties(
     let entries = kv::scan_prefix(conn, kv::TABLE_EDGE_PROPS, &prefix)?;
     match entries.into_iter().next() {
         Some((_, data)) => {
-            let props: Properties = rmp_serde::from_slice(&data)
-                .map_err(|e| GraphError::Serialization(e.to_string()))?;
+            let props: Properties =
+                rmp_serde::from_slice(&data).map_err(|e| GraphError::Serialization {
+                    context: String::new(),
+                    source: e.to_string(),
+                    hint: None,
+                })?;
             Ok(props)
         }
         None => Ok(Properties::new()),
@@ -308,8 +318,12 @@ pub fn get_edge_properties_at(
     let key = edge_props_key(src, dst, label, seq);
     match kv::get(conn, kv::TABLE_EDGE_PROPS, &key)? {
         Some(data) => {
-            let props: Properties = rmp_serde::from_slice(&data)
-                .map_err(|e| GraphError::Serialization(e.to_string()))?;
+            let props: Properties =
+                rmp_serde::from_slice(&data).map_err(|e| GraphError::Serialization {
+                    context: String::new(),
+                    source: e.to_string(),
+                    hint: None,
+                })?;
             Ok(props)
         }
         None => Ok(Properties::new()),
@@ -329,7 +343,11 @@ pub fn get_all_edge_props(
     for (key, data) in entries {
         let seq = edge_seq_from_key(&key, prefix.len());
         let props: Properties =
-            rmp_serde::from_slice(&data).map_err(|e| GraphError::Serialization(e.to_string()))?;
+            rmp_serde::from_slice(&data).map_err(|e| GraphError::Serialization {
+                context: String::new(),
+                source: e.to_string(),
+                hint: None,
+            })?;
         result.push((seq, props));
     }
     Ok(result)
@@ -380,7 +398,11 @@ pub fn set_edge_property_at(
         props.insert(key.to_string(), value);
     }
     let props_key = edge_props_key(src, dst, label, seq);
-    let data = rmp_serde::to_vec(&props).map_err(|e| GraphError::Serialization(e.to_string()))?;
+    let data = rmp_serde::to_vec(&props).map_err(|e| GraphError::Serialization {
+        context: String::new(),
+        source: e.to_string(),
+        hint: None,
+    })?;
     kv::put(conn, kv::TABLE_EDGE_PROPS, &props_key, &data)?;
     Ok(())
 }
@@ -905,9 +927,12 @@ pub fn get_all_edge_labels(
     let mut result = Vec::new();
     for (key, data) in entries {
         if key.len() > 8 {
-            let label = String::from_utf8(key[8..].to_vec()).map_err(|e| {
-                GraphError::Serialization(format!("invalid UTF-8 in edge label: {e}"))
-            })?;
+            let label =
+                String::from_utf8(key[8..].to_vec()).map_err(|e| GraphError::Serialization {
+                    context: String::new(),
+                    source: format!("invalid UTF-8 in edge label: {e}"),
+                    hint: None,
+                })?;
             let ids = decode_id_list(&data);
             result.push((label, ids));
         }

@@ -8,15 +8,20 @@ use crate::types::{GraphError, NodeId, Result};
 pub fn next_node_id(conn: &Connection) -> Result<NodeId> {
     let mut stmt = conn.prepare_cached("SELECT value FROM metadata WHERE key = 'next_node_id'")?;
     let raw: Vec<u8> = stmt.query_row([], |row| row.get(0))?;
-    let current = u64::from_be_bytes(
-        raw.get(..8)
-            .and_then(|s| s.try_into().ok())
-            .ok_or_else(|| GraphError::Serialization("corrupt node ID bytes".into()))?,
-    );
+    let current = u64::from_be_bytes(raw.get(..8).and_then(|s| s.try_into().ok()).ok_or_else(
+        || GraphError::Serialization {
+            context: String::new(),
+            source: "corrupt node ID bytes".into(),
+            hint: None,
+        },
+    )?);
 
     let next = current
         .checked_add(1)
-        .ok_or_else(|| GraphError::Transaction("node ID space exhausted".into()))?;
+        .ok_or_else(|| GraphError::Transaction {
+            message: "node ID space exhausted".into(),
+            hint: None,
+        })?;
 
     // Compare-and-swap: only update if the current value hasn't changed (H6).
     let rows = conn.execute(
@@ -24,9 +29,10 @@ pub fn next_node_id(conn: &Connection) -> Result<NodeId> {
         rusqlite::params![&next.to_be_bytes()[..], &raw],
     )?;
     if rows == 0 {
-        return Err(GraphError::Transaction(
-            "node ID conflict — concurrent writer".into(),
-        ));
+        return Err(GraphError::Transaction {
+            message: "node ID conflict — concurrent writer".into(),
+            hint: None,
+        });
     }
 
     Ok(NodeId(current))
@@ -51,15 +57,20 @@ pub fn next_edge_seq(conn: &Connection) -> Result<u64> {
             0u64.to_be_bytes().to_vec()
         }
     };
-    let current = u64::from_be_bytes(
-        raw.get(..8)
-            .and_then(|s| s.try_into().ok())
-            .ok_or_else(|| GraphError::Serialization("corrupt edge seq bytes".into()))?,
-    );
+    let current = u64::from_be_bytes(raw.get(..8).and_then(|s| s.try_into().ok()).ok_or_else(
+        || GraphError::Serialization {
+            context: String::new(),
+            source: "corrupt edge seq bytes".into(),
+            hint: None,
+        },
+    )?);
 
     let next = current
         .checked_add(1)
-        .ok_or_else(|| GraphError::Transaction("edge sequence space exhausted".into()))?;
+        .ok_or_else(|| GraphError::Transaction {
+            message: "edge sequence space exhausted".into(),
+            hint: None,
+        })?;
 
     conn.execute(
         "UPDATE metadata SET value = ?1 WHERE key = 'next_edge_seq' AND value = ?2",

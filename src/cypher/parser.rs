@@ -80,7 +80,11 @@ pub fn parse(input: &str) -> crate::types::Result<Statement> {
         .unwrap()
         .into_inner()
         .find(|p| p.as_rule() == Rule::union_stmt)
-        .ok_or_else(|| GraphError::Serialization("empty statement".to_string()))?;
+        .ok_or_else(|| GraphError::Serialization {
+            context: String::new(),
+            source: "empty statement".to_string(),
+            hint: None,
+        })?;
 
     parse_union_stmt(union_pair)
 }
@@ -139,10 +143,11 @@ fn parse_single_stmt(pair: pest::iterators::Pair<Rule>) -> crate::types::Result<
         Rule::with_stmt => parse_with_stmt(pair).map(Statement::Match),
         Rule::return_stmt => parse_return_stmt(pair).map(Statement::Return),
         Rule::call_stmt => parse_call(pair),
-        _ => Err(GraphError::Serialization(format!(
-            "unexpected rule: {:?}",
-            pair.as_rule()
-        ))),
+        _ => Err(GraphError::Serialization {
+            context: String::new(),
+            source: format!("unexpected rule: {:?}", pair.as_rule()),
+            hint: None,
+        }),
     }
 }
 
@@ -150,16 +155,21 @@ fn parse_explain(pair: pest::iterators::Pair<Rule>) -> crate::types::Result<Stat
     let inner = pair
         .into_inner()
         .next()
-        .ok_or_else(|| GraphError::Serialization("EXPLAIN requires a statement".to_string()))?;
+        .ok_or_else(|| GraphError::Serialization {
+            context: String::new(),
+            source: "EXPLAIN requires a statement".to_string(),
+            hint: None,
+        })?;
     let stmt = match inner.as_rule() {
         Rule::match_stmt => parse_match(inner).map(Statement::Match)?,
         Rule::match_create_stmt => parse_match_create(inner).map(Statement::MatchCreate)?,
         Rule::unwind_stmt => parse_unwind(inner).map(Statement::Unwind)?,
         _ => {
-            return Err(GraphError::Serialization(format!(
-                "EXPLAIN not supported for {:?}",
-                inner.as_rule()
-            )))
+            return Err(GraphError::Serialization {
+                context: String::new(),
+                source: format!("EXPLAIN not supported for {:?}", inner.as_rule()),
+                hint: None,
+            })
         }
     };
     Ok(Statement::Explain(Box::new(stmt)))
@@ -395,8 +405,11 @@ fn parse_match(pair: pest::iterators::Pair<Rule>) -> crate::types::Result<MatchS
         optional_patterns,
         where_clause,
         intermediate_clauses,
-        return_clause: return_clause
-            .ok_or_else(|| GraphError::Serialization("missing RETURN clause".to_string()))?,
+        return_clause: return_clause.ok_or_else(|| GraphError::Serialization {
+            context: String::new(),
+            source: "missing RETURN clause".to_string(),
+            hint: None,
+        })?,
         order_by,
         skip,
         limit,
@@ -443,8 +456,11 @@ fn parse_with_stmt(pair: pest::iterators::Pair<Rule>) -> crate::types::Result<Ma
         optional_patterns: Vec::new(),
         where_clause: None,
         intermediate_clauses,
-        return_clause: return_clause
-            .ok_or_else(|| GraphError::Serialization("missing RETURN clause".to_string()))?,
+        return_clause: return_clause.ok_or_else(|| GraphError::Serialization {
+            context: String::new(),
+            source: "missing RETURN clause".to_string(),
+            hint: None,
+        })?,
         order_by,
         skip,
         limit,
@@ -468,8 +484,11 @@ fn parse_return_stmt(pair: pest::iterators::Pair<Rule>) -> crate::types::Result<
     }
 
     Ok(ReturnStatement {
-        return_clause: return_clause
-            .ok_or_else(|| GraphError::Serialization("missing RETURN clause".to_string()))?,
+        return_clause: return_clause.ok_or_else(|| GraphError::Serialization {
+            context: String::new(),
+            source: "missing RETURN clause".to_string(),
+            hint: None,
+        })?,
         order_by,
         skip,
         limit,
@@ -722,8 +741,11 @@ fn parse_match_merge(
     Ok(MatchMergeStatement {
         patterns,
         where_clause,
-        merge_pattern: merge_pattern
-            .ok_or_else(|| GraphError::Serialization("missing MERGE pattern".to_string()))?,
+        merge_pattern: merge_pattern.ok_or_else(|| GraphError::Serialization {
+            context: String::new(),
+            source: "missing MERGE pattern".to_string(),
+            hint: None,
+        })?,
         on_create,
         on_match,
         return_clause,
@@ -921,10 +943,11 @@ fn parse_set_item_list(pair: pest::iterators::Pair<Rule>) -> crate::types::Resul
                     }
                 }
                 _ => {
-                    return Err(GraphError::Serialization(format!(
-                        "unexpected set item: {:?}",
-                        inner.as_rule()
-                    )));
+                    return Err(GraphError::Serialization {
+                        context: String::new(),
+                        source: format!("unexpected set item: {:?}", inner.as_rule()),
+                        hint: None,
+                    });
                 }
             }
         }
@@ -1015,10 +1038,11 @@ fn parse_remove_item(pair: pest::iterators::Pair<Rule>) -> crate::types::Result<
             }
             Ok(RemoveItem::Label { variable, labels })
         }
-        _ => Err(GraphError::Serialization(format!(
-            "unexpected remove item: {:?}",
-            inner.as_rule()
-        ))),
+        _ => Err(GraphError::Serialization {
+            context: String::new(),
+            source: format!("unexpected remove item: {:?}", inner.as_rule()),
+            hint: None,
+        }),
     }
 }
 
@@ -1057,8 +1081,11 @@ fn parse_merge(pair: pest::iterators::Pair<Rule>) -> crate::types::Result<MergeS
     }
 
     Ok(MergeStatement {
-        pattern: pattern
-            .ok_or_else(|| GraphError::Serialization("missing MERGE pattern".to_string()))?,
+        pattern: pattern.ok_or_else(|| GraphError::Serialization {
+            context: String::new(),
+            source: "missing MERGE pattern".to_string(),
+            hint: None,
+        })?,
         on_create,
         on_match,
         return_clause,
@@ -1082,10 +1109,11 @@ fn parse_pattern_item(pair: pest::iterators::Pair<Rule>) -> crate::types::Result
     match inner.as_rule() {
         Rule::path_pattern => parse_path_pattern(inner),
         Rule::pattern => parse_pattern(inner),
-        _ => Err(GraphError::Serialization(format!(
-            "unexpected pattern item: {:?}",
-            inner.as_rule()
-        ))),
+        _ => Err(GraphError::Serialization {
+            context: String::new(),
+            source: format!("unexpected pattern item: {:?}", inner.as_rule()),
+            hint: None,
+        }),
     }
 }
 
@@ -1120,8 +1148,10 @@ fn parse_path_pattern(pair: pest::iterators::Pair<Rule>) -> crate::types::Result
         }
     }
 
-    let mut pat = pattern.ok_or_else(|| {
-        GraphError::Serialization("missing pattern in path assignment".to_string())
+    let mut pat = pattern.ok_or_else(|| GraphError::Serialization {
+        context: String::new(),
+        source: "missing pattern in path assignment".to_string(),
+        hint: None,
     })?;
     pat.path_variable = path_variable;
     pat.shortest_path_mode = mode;
@@ -1404,8 +1434,10 @@ fn parse_unwind(pair: pest::iterators::Pair<Rule>) -> crate::types::Result<Unwin
                 body = Some(UnwindBody::Return {
                     where_clause,
                     intermediate_clauses,
-                    return_clause: return_clause.ok_or_else(|| {
-                        GraphError::Serialization("missing RETURN clause in UNWIND".to_string())
+                    return_clause: return_clause.ok_or_else(|| GraphError::Serialization {
+                        context: String::new(),
+                        source: "missing RETURN clause in UNWIND".to_string(),
+                        hint: None,
                     })?,
                     order_by,
                     skip,
@@ -1466,11 +1498,21 @@ fn parse_unwind(pair: pest::iterators::Pair<Rule>) -> crate::types::Result<Unwin
     }
 
     Ok(UnwindStatement {
-        expr: expr
-            .ok_or_else(|| GraphError::Serialization("missing UNWIND expression".to_string()))?,
-        alias: alias
-            .ok_or_else(|| GraphError::Serialization("missing UNWIND alias".to_string()))?,
-        body: body.ok_or_else(|| GraphError::Serialization("missing UNWIND body".to_string()))?,
+        expr: expr.ok_or_else(|| GraphError::Serialization {
+            context: String::new(),
+            source: "missing UNWIND expression".to_string(),
+            hint: None,
+        })?,
+        alias: alias.ok_or_else(|| GraphError::Serialization {
+            context: String::new(),
+            source: "missing UNWIND alias".to_string(),
+            hint: None,
+        })?,
+        body: body.ok_or_else(|| GraphError::Serialization {
+            context: String::new(),
+            source: "missing UNWIND body".to_string(),
+            hint: None,
+        })?,
     })
 }
 
@@ -1487,10 +1529,16 @@ fn parse_unwind_clause(pair: pest::iterators::Pair<Rule>) -> crate::types::Resul
     }
 
     Ok(UnwindClause {
-        expr: expr
-            .ok_or_else(|| GraphError::Serialization("missing UNWIND expression".to_string()))?,
-        alias: alias
-            .ok_or_else(|| GraphError::Serialization("missing UNWIND alias".to_string()))?,
+        expr: expr.ok_or_else(|| GraphError::Serialization {
+            context: String::new(),
+            source: "missing UNWIND expression".to_string(),
+            hint: None,
+        })?,
+        alias: alias.ok_or_else(|| GraphError::Serialization {
+            context: String::new(),
+            source: "missing UNWIND alias".to_string(),
+            hint: None,
+        })?,
     })
 }
 
@@ -1669,10 +1717,11 @@ fn parse_bool_primary(pair: pest::iterators::Pair<Rule>) -> crate::types::Result
     let inner = pair.into_inner().next().unwrap();
     match inner.as_rule() {
         Rule::cmp_or_value => parse_cmp_or_value(inner),
-        _ => Err(GraphError::Serialization(format!(
-            "unexpected bool primary: {:?}",
-            inner.as_rule()
-        ))),
+        _ => Err(GraphError::Serialization {
+            context: String::new(),
+            source: format!("unexpected bool primary: {:?}", inner.as_rule()),
+            hint: None,
+        }),
     }
 }
 
@@ -1732,10 +1781,11 @@ fn parse_cmp_primary(pair: pest::iterators::Pair<Rule>) -> crate::types::Result<
         }
         Rule::expr => parse_expr(inner),
         Rule::add_expr => parse_add_expr(inner),
-        _ => Err(GraphError::Serialization(format!(
-            "unexpected cmp_primary: {:?}",
-            inner.as_rule()
-        ))),
+        _ => Err(GraphError::Serialization {
+            context: String::new(),
+            source: format!("unexpected cmp_primary: {:?}", inner.as_rule()),
+            hint: None,
+        }),
     }
 }
 
@@ -1772,10 +1822,11 @@ fn parse_predicate_expr(pair: pest::iterators::Pair<Rule>) -> crate::types::Resu
                     right: Box::new(right),
                 })
             }
-            _ => Err(GraphError::Serialization(format!(
-                "unexpected predicate_expr suffix: {:?}",
-                suffix.as_rule()
-            ))),
+            _ => Err(GraphError::Serialization {
+                context: String::new(),
+                source: format!("unexpected predicate_expr suffix: {:?}", suffix.as_rule()),
+                hint: None,
+            }),
         },
     }
 }
@@ -1787,10 +1838,11 @@ fn parse_string_pred_op(pair: pest::iterators::Pair<Rule>) -> crate::types::Resu
         Rule::starts_with_op => Ok(BinOp::StartsWith),
         Rule::ends_with_op => Ok(BinOp::EndsWith),
         Rule::contains_op => Ok(BinOp::Contains),
-        _ => Err(GraphError::Serialization(format!(
-            "unexpected string pred op: {:?}",
-            inner.as_rule()
-        ))),
+        _ => Err(GraphError::Serialization {
+            context: String::new(),
+            source: format!("unexpected string pred op: {:?}", inner.as_rule()),
+            hint: None,
+        }),
     }
 }
 
@@ -1839,9 +1891,11 @@ fn parse_exists_subquery(pair: pest::iterators::Pair<Rule>) -> crate::types::Res
     }
 
     if patterns.is_empty() {
-        return Err(GraphError::Serialization(
-            "EXISTS subquery requires at least one pattern".to_string(),
-        ));
+        return Err(GraphError::Serialization {
+            context: String::new(),
+            source: "EXISTS subquery requires at least one pattern".to_string(),
+            hint: None,
+        });
     }
 
     Ok(Expr::Exists {
@@ -1917,9 +1971,11 @@ fn parse_exists_full_subquery(pair: pest::iterators::Pair<Rule>) -> crate::types
     }
 
     if patterns.is_empty() {
-        return Err(GraphError::Serialization(
-            "EXISTS subquery requires at least one MATCH pattern".to_string(),
-        ));
+        return Err(GraphError::Serialization {
+            context: String::new(),
+            source: "EXISTS subquery requires at least one MATCH pattern".to_string(),
+            hint: None,
+        });
     }
 
     // If there's no RETURN clause, synthesize one that returns true (the
@@ -1953,10 +2009,11 @@ fn parse_comp_op(pair: pest::iterators::Pair<Rule>) -> crate::types::Result<BinO
             Rule::starts_with_op => Ok(BinOp::StartsWith),
             Rule::ends_with_op => Ok(BinOp::EndsWith),
             Rule::contains_op => Ok(BinOp::Contains),
-            _ => Err(GraphError::Serialization(format!(
-                "unexpected comp_op sub-rule: {:?}",
-                sub.as_rule()
-            ))),
+            _ => Err(GraphError::Serialization {
+                context: String::new(),
+                source: format!("unexpected comp_op sub-rule: {:?}", sub.as_rule()),
+                hint: None,
+            }),
         };
     }
     // Single-character/two-character operators.
@@ -1967,9 +2024,11 @@ fn parse_comp_op(pair: pest::iterators::Pair<Rule>) -> crate::types::Result<BinO
         ">=" => Ok(BinOp::Gte),
         "<" => Ok(BinOp::Lt),
         ">" => Ok(BinOp::Gt),
-        _ => Err(GraphError::Serialization(format!(
-            "unknown comparison operator: {text}"
-        ))),
+        _ => Err(GraphError::Serialization {
+            context: String::new(),
+            source: format!("unknown comparison operator: {text}"),
+            hint: None,
+        }),
     }
 }
 
@@ -2030,10 +2089,11 @@ fn parse_add_expr(pair: pest::iterators::Pair<Rule>) -> crate::types::Result<Exp
             "+" => BinOp::Add,
             "-" => BinOp::Sub,
             _ => {
-                return Err(GraphError::Serialization(format!(
-                    "unexpected add op: {}",
-                    op_pair.as_str()
-                )))
+                return Err(GraphError::Serialization {
+                    context: String::new(),
+                    source: format!("unexpected add op: {}", op_pair.as_str()),
+                    hint: None,
+                })
             }
         };
         let right = parse_mul_expr(iter.next().unwrap())?;
@@ -2059,10 +2119,11 @@ fn parse_mul_expr(pair: pest::iterators::Pair<Rule>) -> crate::types::Result<Exp
             "/" => BinOp::Div,
             "%" => BinOp::Mod,
             _ => {
-                return Err(GraphError::Serialization(format!(
-                    "unexpected mul op: {}",
-                    op_pair.as_str()
-                )))
+                return Err(GraphError::Serialization {
+                    context: String::new(),
+                    source: format!("unexpected mul op: {}", op_pair.as_str()),
+                    hint: None,
+                })
             }
         };
         let right = parse_exp_expr(iter.next().unwrap())?;
@@ -2185,10 +2246,11 @@ fn parse_atom_expr(pair: pest::iterators::Pair<Rule>) -> crate::types::Result<Ex
                 right: Box::new(expr),
             })
         }
-        _ => Err(GraphError::Serialization(format!(
-            "unexpected expr: {:?}",
-            pair.as_rule()
-        ))),
+        _ => Err(GraphError::Serialization {
+            context: String::new(),
+            source: format!("unexpected expr: {:?}", pair.as_rule()),
+            hint: None,
+        }),
     }
 }
 
@@ -2237,10 +2299,11 @@ fn parse_subscript(base: Expr, pair: pest::iterators::Pair<Rule>) -> crate::type
             expr: Box::new(base),
             index: Box::new(parse_expr(inner)?),
         }),
-        _ => Err(GraphError::Serialization(format!(
-            "unexpected subscript: {:?}",
-            inner.as_rule()
-        ))),
+        _ => Err(GraphError::Serialization {
+            context: String::new(),
+            source: format!("unexpected subscript: {:?}", inner.as_rule()),
+            hint: None,
+        }),
     }
 }
 
@@ -2372,7 +2435,11 @@ fn parse_literal(pair: pest::iterators::Pair<Rule>) -> crate::types::Result<Expr
             let mut n: f64 = inner
                 .as_str()
                 .parse()
-                .map_err(|e| GraphError::Serialization(format!("invalid float: {e}")))?;
+                .map_err(|e| GraphError::Serialization {
+                    context: String::new(),
+                    source: format!("invalid float: {e}"),
+                    hint: None,
+                })?;
             if n.is_infinite() {
                 return Err(GraphError::syntax(
                     "floating point value overflow".to_string(),
@@ -2394,10 +2461,11 @@ fn parse_literal(pair: pest::iterators::Pair<Rule>) -> crate::types::Result<Expr
             Ok(Expr::Literal(LiteralValue::Bool(b)))
         }
         Rule::null_literal => Ok(Expr::Literal(LiteralValue::Null)),
-        _ => Err(GraphError::Serialization(format!(
-            "unexpected literal: {:?}",
-            inner.as_rule()
-        ))),
+        _ => Err(GraphError::Serialization {
+            context: String::new(),
+            source: format!("unexpected literal: {:?}", inner.as_rule()),
+            hint: None,
+        }),
     }
 }
 
@@ -2424,11 +2492,15 @@ fn parse_list_comprehension(pair: pest::iterators::Pair<Rule>) -> crate::types::
     }
 
     Ok(Expr::ListComprehension {
-        variable: variable.ok_or_else(|| {
-            GraphError::Serialization("missing variable in list comprehension".to_string())
+        variable: variable.ok_or_else(|| GraphError::Serialization {
+            context: String::new(),
+            source: "missing variable in list comprehension".to_string(),
+            hint: None,
         })?,
-        list_expr: list_expr.ok_or_else(|| {
-            GraphError::Serialization("missing list expression in list comprehension".to_string())
+        list_expr: list_expr.ok_or_else(|| GraphError::Serialization {
+            context: String::new(),
+            source: "missing list expression in list comprehension".to_string(),
+            hint: None,
         })?,
         filter,
         map_expr,
@@ -2475,12 +2547,16 @@ fn parse_pattern_comprehension(pair: pest::iterators::Pair<Rule>) -> crate::type
 
     Ok(Expr::PatternComprehension {
         path_variable,
-        pattern: pattern.ok_or_else(|| {
-            GraphError::Serialization("missing pattern in pattern comprehension".to_string())
+        pattern: pattern.ok_or_else(|| GraphError::Serialization {
+            context: String::new(),
+            source: "missing pattern in pattern comprehension".to_string(),
+            hint: None,
         })?,
         where_clause,
-        map_expr: map_expr.ok_or_else(|| {
-            GraphError::Serialization("missing map expression in pattern comprehension".to_string())
+        map_expr: map_expr.ok_or_else(|| GraphError::Serialization {
+            context: String::new(),
+            source: "missing map expression in pattern comprehension".to_string(),
+            hint: None,
         })?,
     })
 }
@@ -2501,9 +2577,11 @@ fn parse_quantifier_expr(pair: pest::iterators::Pair<Rule>) -> crate::types::Res
                     "any" => QuantifierKind::Any,
                     "all" => QuantifierKind::All,
                     other => {
-                        return Err(GraphError::Serialization(format!(
-                            "unknown quantifier: {other}"
-                        )))
+                        return Err(GraphError::Serialization {
+                            context: String::new(),
+                            source: format!("unknown quantifier: {other}"),
+                            hint: None,
+                        })
                     }
                 });
             }
@@ -2515,16 +2593,25 @@ fn parse_quantifier_expr(pair: pest::iterators::Pair<Rule>) -> crate::types::Res
     }
 
     Ok(Expr::Quantifier {
-        kind: kind
-            .ok_or_else(|| GraphError::Serialization("missing quantifier name".to_string()))?,
-        variable: variable.ok_or_else(|| {
-            GraphError::Serialization("missing variable in quantifier".to_string())
+        kind: kind.ok_or_else(|| GraphError::Serialization {
+            context: String::new(),
+            source: "missing quantifier name".to_string(),
+            hint: None,
         })?,
-        list_expr: list_expr.ok_or_else(|| {
-            GraphError::Serialization("missing list expression in quantifier".to_string())
+        variable: variable.ok_or_else(|| GraphError::Serialization {
+            context: String::new(),
+            source: "missing variable in quantifier".to_string(),
+            hint: None,
         })?,
-        predicate: predicate.ok_or_else(|| {
-            GraphError::Serialization("missing WHERE predicate in quantifier".to_string())
+        list_expr: list_expr.ok_or_else(|| GraphError::Serialization {
+            context: String::new(),
+            source: "missing list expression in quantifier".to_string(),
+            hint: None,
+        })?,
+        predicate: predicate.ok_or_else(|| GraphError::Serialization {
+            context: String::new(),
+            source: "missing WHERE predicate in quantifier".to_string(),
+            hint: None,
         })?,
     })
 }

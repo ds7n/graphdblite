@@ -3,7 +3,6 @@ use std::fmt;
 use std::hash::{Hash, Hasher};
 
 use serde::{Deserialize, Serialize};
-use thiserror::Error;
 
 /// Unique identifier for a node in the graph.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -414,51 +413,250 @@ impl fmt::Display for QueryPhase {
     }
 }
 
+/// A source-text span (zero-indexed byte offsets, 1-indexed line/column).
+///
+/// Lightweight and parser-library-agnostic — pest spans are converted to this
+/// shape at the parser/AST boundary so downstream code never sees pest types.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Span {
+    pub start: usize,
+    pub end: usize,
+    pub line: u32,
+    pub col: u32,
+}
+
+impl fmt::Display for Span {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "line {}:{}", self.line, self.col)
+    }
+}
+
+/// Structured openCypher error code.
+///
+/// Encodes the specific category beyond the broader `QueryError` variant
+/// (e.g. a `SemanticError` may have code `UndefinedVariable` or
+/// `VariableTypeConflict`). Keeping this typed prevents drift across call
+/// sites and lets the TCK harness match without parsing strings.
+///
+/// `#[non_exhaustive]` so adding new codes never breaks downstream `match`es.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum ErrorCode {
+    /// Generic / no specific code.
+    Other,
+    AmbiguousAggregationExpression,
+    CreatingVarLength,
+    DeleteConnectedNode,
+    DeletedEntityAccess,
+    DifferentColumnsInUnion,
+    InvalidAggregation,
+    InvalidArgumentPassingMode,
+    InvalidArgumentType,
+    InvalidArgumentValue,
+    InvalidClauseComposition,
+    InvalidDelete,
+    InvalidNumberOfArguments,
+    InvalidPropertyType,
+    InvalidUnicodeLiteral,
+    MapElementAccessByNonString,
+    MergeReadOwnWrites,
+    MissingParameter,
+    NegativeIntegerArgument,
+    NoExpressionAlias,
+    NoSingleRelationshipType,
+    NonConstantExpression,
+    NumberOutOfRange,
+    ProcedureNotFound,
+    RequiresDirectedRelationship,
+    UndefinedVariable,
+    UnexpectedSyntax,
+    VariableAlreadyBound,
+    VariableTypeConflict,
+}
+
+impl ErrorCode {
+    /// The exact openCypher code name (e.g. `"UndefinedVariable"`).
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            ErrorCode::Other => "Other",
+            ErrorCode::AmbiguousAggregationExpression => "AmbiguousAggregationExpression",
+            ErrorCode::CreatingVarLength => "CreatingVarLength",
+            ErrorCode::DeleteConnectedNode => "DeleteConnectedNode",
+            ErrorCode::DeletedEntityAccess => "DeletedEntityAccess",
+            ErrorCode::DifferentColumnsInUnion => "DifferentColumnsInUnion",
+            ErrorCode::InvalidAggregation => "InvalidAggregation",
+            ErrorCode::InvalidArgumentPassingMode => "InvalidArgumentPassingMode",
+            ErrorCode::InvalidArgumentType => "InvalidArgumentType",
+            ErrorCode::InvalidArgumentValue => "InvalidArgumentValue",
+            ErrorCode::InvalidClauseComposition => "InvalidClauseComposition",
+            ErrorCode::InvalidDelete => "InvalidDelete",
+            ErrorCode::InvalidNumberOfArguments => "InvalidNumberOfArguments",
+            ErrorCode::InvalidPropertyType => "InvalidPropertyType",
+            ErrorCode::InvalidUnicodeLiteral => "InvalidUnicodeLiteral",
+            ErrorCode::MapElementAccessByNonString => "MapElementAccessByNonString",
+            ErrorCode::MergeReadOwnWrites => "MergeReadOwnWrites",
+            ErrorCode::MissingParameter => "MissingParameter",
+            ErrorCode::NegativeIntegerArgument => "NegativeIntegerArgument",
+            ErrorCode::NoExpressionAlias => "NoExpressionAlias",
+            ErrorCode::NoSingleRelationshipType => "NoSingleRelationshipType",
+            ErrorCode::NonConstantExpression => "NonConstantExpression",
+            ErrorCode::NumberOutOfRange => "NumberOutOfRange",
+            ErrorCode::ProcedureNotFound => "ProcedureNotFound",
+            ErrorCode::RequiresDirectedRelationship => "RequiresDirectedRelationship",
+            ErrorCode::UndefinedVariable => "UndefinedVariable",
+            ErrorCode::UnexpectedSyntax => "UnexpectedSyntax",
+            ErrorCode::VariableAlreadyBound => "VariableAlreadyBound",
+            ErrorCode::VariableTypeConflict => "VariableTypeConflict",
+        }
+    }
+}
+
+impl fmt::Display for ErrorCode {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
 /// Errors raised while processing a Cypher query.
 ///
 /// Categorized along the openCypher error taxonomy (SyntaxError, TypeError,
 /// SemanticError, etc.) so that TCK conformance scenarios can distinguish
 /// error kinds without resorting to string matching.
-#[derive(Debug, Error)]
+///
+/// All variants carry the same shape: `phase`, `code`, `message`, `hint`,
+/// `span`. The variant tag itself is the broad openCypher kind; `code`
+/// narrows it further. `hint` and `span` are optional — populate when they
+/// add value (e.g. parser errors fill `span`; "did-you-mean" fills `hint`).
+#[derive(Debug)]
+#[non_exhaustive]
 pub enum QueryError {
-    #[error("syntax error at {phase}: {message}")]
-    SyntaxError { phase: QueryPhase, message: String },
+    SyntaxError {
+        phase: QueryPhase,
+        code: ErrorCode,
+        message: String,
+        hint: Option<String>,
+        span: Option<Span>,
+    },
+    TypeError {
+        phase: QueryPhase,
+        code: ErrorCode,
+        message: String,
+        hint: Option<String>,
+        span: Option<Span>,
+    },
+    SemanticError {
+        phase: QueryPhase,
+        code: ErrorCode,
+        message: String,
+        hint: Option<String>,
+        span: Option<Span>,
+    },
+    EntityNotFound {
+        phase: QueryPhase,
+        code: ErrorCode,
+        message: String,
+        hint: Option<String>,
+        span: Option<Span>,
+    },
+    ArgumentError {
+        phase: QueryPhase,
+        code: ErrorCode,
+        message: String,
+        hint: Option<String>,
+        span: Option<Span>,
+    },
+    ArithmeticError {
+        phase: QueryPhase,
+        code: ErrorCode,
+        message: String,
+        hint: Option<String>,
+        span: Option<Span>,
+    },
+    ConstraintViolation {
+        phase: QueryPhase,
+        code: ErrorCode,
+        message: String,
+        hint: Option<String>,
+        span: Option<Span>,
+    },
+    ProcedureError {
+        phase: QueryPhase,
+        code: ErrorCode,
+        message: String,
+        hint: Option<String>,
+        span: Option<Span>,
+    },
+}
 
-    #[error("type error at {phase}: {message}")]
-    TypeError { phase: QueryPhase, message: String },
-
-    #[error("semantic error at {phase}: {message}")]
-    SemanticError { phase: QueryPhase, message: String },
-
-    #[error("entity not found at {phase}: {message}")]
-    EntityNotFound { phase: QueryPhase, message: String },
-
-    #[error("argument error at {phase}: {message}")]
-    ArgumentError { phase: QueryPhase, message: String },
-
-    #[error("arithmetic error at {phase}: {message}")]
-    ArithmeticError { phase: QueryPhase, message: String },
-
-    #[error("constraint violation at {phase}: {message}")]
-    ConstraintViolation { phase: QueryPhase, message: String },
-
-    #[error("procedure error at {phase}: {message}")]
-    ProcedureError { phase: QueryPhase, message: String },
+/// Helper to extract the common fields shared by every `QueryError` variant.
+macro_rules! query_error_fields {
+    ($self:expr) => {
+        match $self {
+            QueryError::SyntaxError {
+                phase,
+                code,
+                message,
+                hint,
+                span,
+            }
+            | QueryError::TypeError {
+                phase,
+                code,
+                message,
+                hint,
+                span,
+            }
+            | QueryError::SemanticError {
+                phase,
+                code,
+                message,
+                hint,
+                span,
+            }
+            | QueryError::EntityNotFound {
+                phase,
+                code,
+                message,
+                hint,
+                span,
+            }
+            | QueryError::ArgumentError {
+                phase,
+                code,
+                message,
+                hint,
+                span,
+            }
+            | QueryError::ArithmeticError {
+                phase,
+                code,
+                message,
+                hint,
+                span,
+            }
+            | QueryError::ConstraintViolation {
+                phase,
+                code,
+                message,
+                hint,
+                span,
+            }
+            | QueryError::ProcedureError {
+                phase,
+                code,
+                message,
+                hint,
+                span,
+            } => (phase, code, message, hint, span),
+        }
+    };
 }
 
 impl QueryError {
     /// The phase at which this error was raised.
     pub fn phase(&self) -> QueryPhase {
-        match self {
-            QueryError::SyntaxError { phase, .. }
-            | QueryError::TypeError { phase, .. }
-            | QueryError::SemanticError { phase, .. }
-            | QueryError::EntityNotFound { phase, .. }
-            | QueryError::ArgumentError { phase, .. }
-            | QueryError::ArithmeticError { phase, .. }
-            | QueryError::ConstraintViolation { phase, .. }
-            | QueryError::ProcedureError { phase, .. } => *phase,
-        }
+        let (phase, _, _, _, _) = query_error_fields!(self);
+        *phase
     }
 
     /// Short tag identifying the error kind (matches openCypher category names).
@@ -474,58 +672,257 @@ impl QueryError {
             QueryError::ProcedureError { .. } => "ProcedureError",
         }
     }
+
+    /// Structured error code.
+    pub fn code(&self) -> ErrorCode {
+        let (_, code, _, _, _) = query_error_fields!(self);
+        *code
+    }
+
+    /// Free-form human message.
+    pub fn message(&self) -> &str {
+        let (_, _, message, _, _) = query_error_fields!(self);
+        message.as_str()
+    }
+
+    /// Actionable hint, if any.
+    pub fn hint(&self) -> Option<&str> {
+        let (_, _, _, hint, _) = query_error_fields!(self);
+        hint.as_deref()
+    }
+
+    /// Source-text span, if known.
+    pub fn span(&self) -> Option<Span> {
+        let (_, _, _, _, span) = query_error_fields!(self);
+        *span
+    }
+
+    /// Replace the hint on this error.
+    pub fn with_hint(mut self, hint: impl Into<String>) -> Self {
+        let (_, _, _, hint_field, _) = query_error_fields!(&mut self);
+        *hint_field = Some(hint.into());
+        self
+    }
+
+    /// Replace the span on this error.
+    pub fn with_span(mut self, new_span: Span) -> Self {
+        let (_, _, _, _, span_field) = query_error_fields!(&mut self);
+        *span_field = Some(new_span);
+        self
+    }
 }
 
+impl fmt::Display for QueryError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let (phase, code, message, hint, span) = query_error_fields!(self);
+        match span {
+            Some(s) => write!(f, "{}({}) at {}: {}", self.kind(), code, s, message)?,
+            None => write!(f, "{}({}) at {}: {}", self.kind(), code, phase, message)?,
+        }
+        if let Some(h) = hint {
+            write!(f, "\n  hint: {h}")?;
+        }
+        Ok(())
+    }
+}
+
+impl std::error::Error for QueryError {}
+
 /// All errors returned by graphdblite.
-#[derive(Debug, Error)]
+///
+/// Every variant (except `Query`, which delegates to `QueryError`'s own hint)
+/// carries a `hint: Option<String>` for actionable suggestions.
+#[derive(Debug)]
+#[non_exhaustive]
 pub enum GraphError {
-    #[error("storage error: {0}")]
-    Storage(#[from] rusqlite::Error),
-
-    #[error("serialization error: {0}")]
-    Serialization(String),
-
+    Storage {
+        source: rusqlite::Error,
+        hint: Option<String>,
+    },
+    Serialization {
+        context: String,
+        source: String,
+        hint: Option<String>,
+    },
     /// Cypher query processing error (parse/semantic/runtime).
-    #[error("{0}")]
-    Query(#[from] QueryError),
+    Query(QueryError),
+    NodeNotFound {
+        id: NodeId,
+        hint: Option<String>,
+    },
+    EdgeNotFound {
+        src: NodeId,
+        label: String,
+        dst: NodeId,
+        hint: Option<String>,
+    },
+    HasEdges {
+        id: NodeId,
+        hint: Option<String>,
+    },
+    /// Internal transaction / concurrency error.
+    Transaction {
+        message: String,
+        hint: Option<String>,
+    },
+    IndexAlreadyExists {
+        label: String,
+        property: String,
+        hint: Option<String>,
+    },
+    IndexNotFound {
+        label: String,
+        property: String,
+        hint: Option<String>,
+    },
+    InvalidName {
+        name: String,
+        hint: Option<String>,
+    },
+    SizeLimit {
+        what: String,
+        limit: usize,
+        actual: usize,
+        hint: Option<String>,
+    },
+    SchemaMismatch {
+        found: u64,
+        supported: u64,
+        hint: Option<String>,
+    },
+}
 
-    #[error("node not found")]
-    NodeNotFound(NodeId),
+impl fmt::Display for GraphError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            GraphError::Storage { source, hint } => {
+                write!(f, "storage error: {source}")?;
+                fmt_hint(f, hint.as_deref())
+            }
+            GraphError::Serialization {
+                context,
+                source,
+                hint,
+            } => {
+                write!(f, "serialization error ({context}): {source}")?;
+                fmt_hint(f, hint.as_deref())
+            }
+            GraphError::Query(q) => q.fmt(f),
+            GraphError::NodeNotFound { id, hint } => {
+                write!(f, "node not found: {id}")?;
+                fmt_hint(f, hint.as_deref())
+            }
+            GraphError::EdgeNotFound {
+                src,
+                label,
+                dst,
+                hint,
+            } => {
+                write!(f, "edge not found: {src} -[:{label}]-> {dst}")?;
+                fmt_hint(f, hint.as_deref())
+            }
+            GraphError::HasEdges { id, hint } => {
+                write!(
+                    f,
+                    "cannot delete node {id} because it still has edges; use DETACH DELETE to remove edges too"
+                )?;
+                fmt_hint(f, hint.as_deref())
+            }
+            GraphError::Transaction { message, hint } => {
+                write!(f, "transaction error: {message}")?;
+                fmt_hint(f, hint.as_deref())
+            }
+            GraphError::IndexAlreadyExists {
+                label,
+                property,
+                hint,
+            } => {
+                write!(f, "index already exists: {label}.{property}")?;
+                fmt_hint(f, hint.as_deref())
+            }
+            GraphError::IndexNotFound {
+                label,
+                property,
+                hint,
+            } => {
+                write!(f, "index not found: {label}.{property}")?;
+                fmt_hint(f, hint.as_deref())
+            }
+            GraphError::InvalidName { name, hint } => {
+                write!(
+                    f,
+                    "invalid name '{name}': must contain only ASCII letters, digits, or underscores"
+                )?;
+                fmt_hint(f, hint.as_deref())
+            }
+            GraphError::SizeLimit {
+                what,
+                limit,
+                actual,
+                hint,
+            } => {
+                write!(
+                    f,
+                    "{what} ({actual} bytes) exceeds maximum of {limit} bytes"
+                )?;
+                fmt_hint(f, hint.as_deref())
+            }
+            GraphError::SchemaMismatch {
+                found,
+                supported,
+                hint,
+            } => {
+                write!(
+                    f,
+                    "schema version mismatch: database is v{found}, this library supports up to v{supported}"
+                )?;
+                fmt_hint(f, hint.as_deref())
+            }
+        }
+    }
+}
 
-    #[error("edge not found")]
-    EdgeNotFound(NodeId, String, NodeId),
+fn fmt_hint(f: &mut fmt::Formatter<'_>, hint: Option<&str>) -> fmt::Result {
+    if let Some(h) = hint {
+        write!(f, "\n  hint: {h}")?;
+    }
+    Ok(())
+}
 
-    #[error(
-        "cannot delete node because it still has edges; use DETACH DELETE to remove edges too"
-    )]
-    HasEdges(NodeId),
+impl std::error::Error for GraphError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            GraphError::Storage { source, .. } => Some(source),
+            GraphError::Query(q) => Some(q),
+            _ => None,
+        }
+    }
+}
 
-    /// Internal transaction/concurrency errors (not Cypher query errors).
-    #[error("transaction error: {0}")]
-    Transaction(String),
+impl From<rusqlite::Error> for GraphError {
+    fn from(source: rusqlite::Error) -> Self {
+        GraphError::Storage { source, hint: None }
+    }
+}
 
-    #[error("index already exists: {0}.{1}")]
-    IndexAlreadyExists(String, String),
-
-    #[error("index not found: {0}.{1}")]
-    IndexNotFound(String, String),
-
-    #[error("invalid name '{0}': must contain only ASCII letters, digits, or underscores")]
-    InvalidName(String),
-
-    #[error("{0}")]
-    SizeLimit(String),
-
-    #[error("schema version mismatch: database is v{0}, this library supports up to v{1}")]
-    SchemaMismatch(u64, u64),
+impl From<QueryError> for GraphError {
+    fn from(error: QueryError) -> Self {
+        GraphError::Query(error)
+    }
 }
 
 impl GraphError {
+    // -- Simple, code-less constructors (kept for brevity at call sites
+    //    where no specific openCypher code applies).
+
     /// Convenience constructor for syntax errors at the parse phase.
     pub fn syntax(message: impl Into<String>) -> Self {
         GraphError::Query(QueryError::SyntaxError {
             phase: QueryPhase::Parse,
+            code: ErrorCode::Other,
             message: message.into(),
+            hint: None,
+            span: None,
         })
     }
 
@@ -533,7 +930,10 @@ impl GraphError {
     pub fn semantic(message: impl Into<String>) -> Self {
         GraphError::Query(QueryError::SemanticError {
             phase: QueryPhase::SemanticAnalysis,
+            code: ErrorCode::Other,
             message: message.into(),
+            hint: None,
+            span: None,
         })
     }
 
@@ -541,7 +941,10 @@ impl GraphError {
     pub fn constraint(message: impl Into<String>) -> Self {
         GraphError::Query(QueryError::ConstraintViolation {
             phase: QueryPhase::Runtime,
+            code: ErrorCode::Other,
             message: message.into(),
+            hint: None,
+            span: None,
         })
     }
 
@@ -549,7 +952,10 @@ impl GraphError {
     pub fn type_error(phase: QueryPhase, message: impl Into<String>) -> Self {
         GraphError::Query(QueryError::TypeError {
             phase,
+            code: ErrorCode::Other,
             message: message.into(),
+            hint: None,
+            span: None,
         })
     }
 
@@ -557,8 +963,225 @@ impl GraphError {
     pub fn argument(phase: QueryPhase, message: impl Into<String>) -> Self {
         GraphError::Query(QueryError::ArgumentError {
             phase,
+            code: ErrorCode::Other,
             message: message.into(),
+            hint: None,
+            span: None,
         })
+    }
+
+    // -- Structured helpers (preferred — pin down the openCypher code).
+
+    /// Reference to a name not bound in the current scope.
+    pub fn undefined_variable(name: impl fmt::Display) -> Self {
+        GraphError::Query(QueryError::SemanticError {
+            phase: QueryPhase::SemanticAnalysis,
+            code: ErrorCode::UndefinedVariable,
+            message: format!("variable `{name}` is not defined"),
+            hint: None,
+            span: None,
+        })
+    }
+
+    /// Procedure name not registered in the procedure registry.
+    pub fn procedure_not_found(name: impl fmt::Display) -> Self {
+        GraphError::Query(QueryError::ProcedureError {
+            phase: QueryPhase::SemanticAnalysis,
+            code: ErrorCode::ProcedureNotFound,
+            message: format!("unknown procedure `{name}`"),
+            hint: None,
+            span: None,
+        })
+    }
+
+    /// Function called with a value of an unsupported type.
+    pub fn invalid_argument_type(
+        phase: QueryPhase,
+        function: impl fmt::Display,
+        got: impl fmt::Display,
+    ) -> Self {
+        GraphError::Query(QueryError::TypeError {
+            phase,
+            code: ErrorCode::InvalidArgumentType,
+            message: format!("{got} is not a valid argument type for {function}"),
+            hint: None,
+            span: None,
+        })
+    }
+
+    /// Value passed to a function is out of the supported range.
+    pub fn invalid_argument_value(
+        phase: QueryPhase,
+        function: impl fmt::Display,
+        message: impl fmt::Display,
+    ) -> Self {
+        GraphError::Query(QueryError::ArgumentError {
+            phase,
+            code: ErrorCode::InvalidArgumentValue,
+            message: format!("{function}: {message}"),
+            hint: None,
+            span: None,
+        })
+    }
+
+    /// Numeric overflow / value outside the representable range.
+    pub fn number_out_of_range(phase: QueryPhase, message: impl Into<String>) -> Self {
+        GraphError::Query(QueryError::ArithmeticError {
+            phase,
+            code: ErrorCode::NumberOutOfRange,
+            message: message.into(),
+            hint: None,
+            span: None,
+        })
+    }
+
+    /// Lower-level builder for arbitrary query errors with a known code.
+    pub fn query(phase: QueryPhase, code: ErrorCode, message: impl Into<String>) -> Self {
+        let message = message.into();
+        let mk = |kind: fn(QueryPhase, ErrorCode, String) -> QueryError| -> Self {
+            GraphError::Query(kind(phase, code, message))
+        };
+        // Choose the variant from the code's natural openCypher kind.
+        match code {
+            ErrorCode::InvalidUnicodeLiteral
+            | ErrorCode::InvalidClauseComposition
+            | ErrorCode::UnexpectedSyntax => mk(QueryError::syntax_with),
+            ErrorCode::InvalidArgumentType
+            | ErrorCode::InvalidPropertyType
+            | ErrorCode::MapElementAccessByNonString
+            | ErrorCode::DeletedEntityAccess => mk(QueryError::type_with),
+            ErrorCode::UndefinedVariable
+            | ErrorCode::VariableAlreadyBound
+            | ErrorCode::VariableTypeConflict
+            | ErrorCode::AmbiguousAggregationExpression
+            | ErrorCode::CreatingVarLength
+            | ErrorCode::DifferentColumnsInUnion
+            | ErrorCode::InvalidAggregation
+            | ErrorCode::InvalidArgumentPassingMode
+            | ErrorCode::InvalidArgumentValue
+            | ErrorCode::InvalidDelete
+            | ErrorCode::InvalidNumberOfArguments
+            | ErrorCode::NegativeIntegerArgument
+            | ErrorCode::NoExpressionAlias
+            | ErrorCode::NoSingleRelationshipType
+            | ErrorCode::NonConstantExpression
+            | ErrorCode::RequiresDirectedRelationship => mk(QueryError::semantic_with),
+            ErrorCode::MissingParameter => mk(QueryError::argument_with),
+            ErrorCode::NumberOutOfRange => mk(QueryError::arithmetic_with),
+            ErrorCode::DeleteConnectedNode | ErrorCode::MergeReadOwnWrites => {
+                mk(QueryError::constraint_with)
+            }
+            ErrorCode::ProcedureNotFound => mk(QueryError::procedure_with),
+            ErrorCode::Other => mk(QueryError::semantic_with),
+        }
+    }
+
+    /// Attach a hint to a query error in place. No-op for non-Query variants
+    /// that already have a `hint` field — call the variant constructor with
+    /// the hint instead.
+    pub fn with_hint(mut self, hint: impl Into<String>) -> Self {
+        match &mut self {
+            GraphError::Query(q) => {
+                let (_, _, _, h, _) = query_error_fields!(q);
+                *h = Some(hint.into());
+            }
+            GraphError::Storage { hint: h, .. }
+            | GraphError::Serialization { hint: h, .. }
+            | GraphError::NodeNotFound { hint: h, .. }
+            | GraphError::EdgeNotFound { hint: h, .. }
+            | GraphError::HasEdges { hint: h, .. }
+            | GraphError::Transaction { hint: h, .. }
+            | GraphError::IndexAlreadyExists { hint: h, .. }
+            | GraphError::IndexNotFound { hint: h, .. }
+            | GraphError::InvalidName { hint: h, .. }
+            | GraphError::SizeLimit { hint: h, .. }
+            | GraphError::SchemaMismatch { hint: h, .. } => *h = Some(hint.into()),
+        }
+        self
+    }
+
+    /// Wrap an internal serialization failure with a context tag.
+    pub fn serialization(context: impl Into<String>, source: impl fmt::Display) -> Self {
+        GraphError::Serialization {
+            context: context.into(),
+            source: source.to_string(),
+            hint: None,
+        }
+    }
+
+    /// Wrap an internal transaction failure.
+    pub fn transaction(message: impl Into<String>) -> Self {
+        GraphError::Transaction {
+            message: message.into(),
+            hint: None,
+        }
+    }
+}
+
+// -- Internal QueryError constructors used by the dispatch table above. --
+impl QueryError {
+    fn syntax_with(phase: QueryPhase, code: ErrorCode, message: String) -> Self {
+        QueryError::SyntaxError {
+            phase,
+            code,
+            message,
+            hint: None,
+            span: None,
+        }
+    }
+    fn type_with(phase: QueryPhase, code: ErrorCode, message: String) -> Self {
+        QueryError::TypeError {
+            phase,
+            code,
+            message,
+            hint: None,
+            span: None,
+        }
+    }
+    fn semantic_with(phase: QueryPhase, code: ErrorCode, message: String) -> Self {
+        QueryError::SemanticError {
+            phase,
+            code,
+            message,
+            hint: None,
+            span: None,
+        }
+    }
+    fn argument_with(phase: QueryPhase, code: ErrorCode, message: String) -> Self {
+        QueryError::ArgumentError {
+            phase,
+            code,
+            message,
+            hint: None,
+            span: None,
+        }
+    }
+    fn arithmetic_with(phase: QueryPhase, code: ErrorCode, message: String) -> Self {
+        QueryError::ArithmeticError {
+            phase,
+            code,
+            message,
+            hint: None,
+            span: None,
+        }
+    }
+    fn constraint_with(phase: QueryPhase, code: ErrorCode, message: String) -> Self {
+        QueryError::ConstraintViolation {
+            phase,
+            code,
+            message,
+            hint: None,
+            span: None,
+        }
+    }
+    fn procedure_with(phase: QueryPhase, code: ErrorCode, message: String) -> Self {
+        QueryError::ProcedureError {
+            phase,
+            code,
+            message,
+            hint: None,
+            span: None,
+        }
     }
 }
 
@@ -567,7 +1190,10 @@ pub type Result<T> = std::result::Result<T, GraphError>;
 /// Validate that a name (label, property key) contains only `[A-Za-z0-9_]`.
 pub fn validate_name(name: &str) -> Result<()> {
     if name.is_empty() || !name.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_') {
-        return Err(GraphError::InvalidName(name.to_string()));
+        return Err(GraphError::InvalidName {
+            name: name.to_string(),
+            hint: None,
+        });
     }
     Ok(())
 }
@@ -575,10 +1201,12 @@ pub fn validate_name(name: &str) -> Result<()> {
 /// Validate name length against a configured maximum.
 pub fn validate_name_length(name: &str, max_bytes: usize) -> Result<()> {
     if name.len() > max_bytes {
-        return Err(GraphError::SizeLimit(format!(
-            "name '{}...' exceeds maximum length of {max_bytes} bytes",
-            &name[..max_bytes.min(32)]
-        )));
+        return Err(GraphError::SizeLimit {
+            what: format!("name '{}...'", &name[..max_bytes.min(32)]),
+            limit: max_bytes,
+            actual: name.len(),
+            hint: None,
+        });
     }
     Ok(())
 }
@@ -637,9 +1265,12 @@ pub fn validate_properties(
         validate_name_length(key, max_name_bytes)?;
         let size = value_byte_size(val);
         if size > max_value_bytes {
-            return Err(GraphError::SizeLimit(format!(
-                "property '{key}' value ({size} bytes) exceeds maximum of {max_value_bytes} bytes"
-            )));
+            return Err(GraphError::SizeLimit {
+                what: format!("property '{key}' value"),
+                limit: max_value_bytes,
+                actual: size,
+                hint: None,
+            });
         }
     }
     Ok(())

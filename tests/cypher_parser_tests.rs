@@ -9,7 +9,7 @@ use graphdblite::{GraphError, QueryError, QueryPhase};
 fn parse_error_is_structured_syntax_error_at_parse_phase() {
     let err = parse("MATCH (n) RETURN n.").expect_err("expected parse error");
     match err {
-        GraphError::Query(QueryError::SyntaxError { phase, message }) => {
+        GraphError::Query(QueryError::SyntaxError { phase, message, .. }) => {
             assert_eq!(phase, QueryPhase::Parse);
             assert!(!message.is_empty());
         }

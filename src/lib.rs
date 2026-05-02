@@ -16,5 +16,6 @@ pub use cypher::record::Record;
 pub use db::{Config, Database, SyncMode};
 pub use transaction::{ReadTransaction, WriteTransaction};
 pub use types::{
-    Direction, Edge, GraphError, Node, NodeId, PathValue, Properties, QueryError, QueryPhase, Value,
+    Direction, Edge, ErrorCode, GraphError, Node, NodeId, PathValue, Properties, QueryError,
+    QueryPhase, Span, Value,
 };

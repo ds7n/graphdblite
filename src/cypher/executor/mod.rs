@@ -1207,7 +1207,7 @@ fn compute_aggregate(agg: &AggregateExpr, records: &[Record], conn: &Connection)
                         other => {
                             return Err(GraphError::argument(
                                 crate::types::QueryPhase::Runtime,
-                                format!("NumberOutOfRange: expected number but got {other:?}"),
+                                format!("expected number but got {other:?}"),
                             )
                             .with_code(ErrorCode::NumberOutOfRange));
                         }
@@ -1216,8 +1216,7 @@ fn compute_aggregate(agg: &AggregateExpr, records: &[Record], conn: &Connection)
                 None => {
                     return Err(GraphError::argument(
                         crate::types::QueryPhase::Runtime,
-                        "NumberOutOfRange: percentile function requires a second argument"
-                            .to_string(),
+                        "percentile function requires a second argument".to_string(),
                     )
                     .with_code(ErrorCode::NumberOutOfRange));
                 }
@@ -1225,7 +1224,7 @@ fn compute_aggregate(agg: &AggregateExpr, records: &[Record], conn: &Connection)
             if !(0.0..=1.0).contains(&pct) {
                 return Err(GraphError::argument(
                     crate::types::QueryPhase::Runtime,
-                    format!("NumberOutOfRange: percentile must be between 0.0 and 1.0, got {pct}"),
+                    format!("percentile must be between 0.0 and 1.0, got {pct}"),
                 )
                 .with_code(ErrorCode::NumberOutOfRange));
             }
@@ -1594,9 +1593,10 @@ fn exec_delete(
     for node_id in &nodes_to_delete {
         if !detach && node::node_has_edges(conn, *node_id)? {
             return Err(GraphError::constraint(format!(
-                "DeleteConnectedNode: cannot delete node {} because it still has relationships. Use DETACH DELETE.",
+                "cannot delete node {} because it still has relationships. Use DETACH DELETE.",
                 node_id
-            )).with_code(ErrorCode::DeleteConnectedNode));
+            ))
+            .with_code(ErrorCode::DeleteConnectedNode));
         }
         let _ = node::delete_node(conn, *node_id);
     }
@@ -1753,8 +1753,9 @@ fn validate_property_value(val: &Value) -> Result<()> {
         Value::Map(_) | Value::Node(_) | Value::Edge(_) | Value::Path(_) => {
             return Err(GraphError::type_error(
                 crate::types::QueryPhase::Runtime,
-                "InvalidPropertyType: maps, nodes, relationships, and paths cannot be stored as properties".to_string(),
-            ).with_code(ErrorCode::InvalidPropertyType));
+                "maps, nodes, relationships, and paths cannot be stored as properties".to_string(),
+            )
+            .with_code(ErrorCode::InvalidPropertyType));
         }
         Value::List(items) => {
             for item in items {
@@ -2193,10 +2194,8 @@ fn exec_merge_node(
         let val = eval_expr(expr, &dummy_rec, conn)?;
         // Null property in MERGE is MergeReadOwnWrites.
         if val == Value::Null {
-            return Err(
-                GraphError::semantic("MergeReadOwnWrites: MERGE with null property value")
-                    .with_code(ErrorCode::MergeReadOwnWrites),
-            );
+            return Err(GraphError::semantic("MERGE with null property value")
+                .with_code(ErrorCode::MergeReadOwnWrites));
         }
         props.insert(key.clone(), val);
     }
@@ -2275,10 +2274,8 @@ fn exec_merge_relationship(
     for (key, expr) in &rel.properties {
         let val = eval_expr(expr, &dummy_rec, conn)?;
         if val == Value::Null {
-            return Err(
-                GraphError::semantic("MergeReadOwnWrites: MERGE with null property value")
-                    .with_code(ErrorCode::MergeReadOwnWrites),
-            );
+            return Err(GraphError::semantic("MERGE with null property value")
+                .with_code(ErrorCode::MergeReadOwnWrites));
         }
         edge_props.insert(key.clone(), val);
     }
@@ -2360,10 +2357,8 @@ fn find_or_create_merge_node(
     for (key, expr) in properties {
         let val = eval_expr(expr, &dummy_rec, conn)?;
         if val == Value::Null {
-            return Err(
-                GraphError::semantic("MergeReadOwnWrites: MERGE with null property value")
-                    .with_code(ErrorCode::MergeReadOwnWrites),
-            );
+            return Err(GraphError::semantic("MERGE with null property value")
+                .with_code(ErrorCode::MergeReadOwnWrites));
         }
         props.insert(key.clone(), val);
     }
@@ -2411,10 +2406,8 @@ fn exec_match_merge(
                 let val = eval_expr(expr, rec, conn)?;
                 // Null property in MERGE is MergeReadOwnWrites.
                 if val == Value::Null {
-                    return Err(GraphError::semantic(
-                        "MergeReadOwnWrites: MERGE with null property value",
-                    )
-                    .with_code(ErrorCode::MergeReadOwnWrites));
+                    return Err(GraphError::semantic("MERGE with null property value")
+                        .with_code(ErrorCode::MergeReadOwnWrites));
                 }
                 props.insert(key.clone(), val);
             }
@@ -2511,10 +2504,8 @@ fn exec_match_merge(
         for (key, expr) in &rel.properties {
             let val = eval_expr(expr, rec, conn)?;
             if val == Value::Null {
-                return Err(GraphError::semantic(
-                    "MergeReadOwnWrites: MERGE with null property value",
-                )
-                .with_code(ErrorCode::MergeReadOwnWrites));
+                return Err(GraphError::semantic("MERGE with null property value")
+                    .with_code(ErrorCode::MergeReadOwnWrites));
             }
             merge_edge_props.insert(key.clone(), val);
         }

@@ -104,10 +104,7 @@ pub fn eval_expr(expr: &Expr, record: &Record, conn: &Connection) -> crate::type
                         | Value::List(_) => {
                             return Err(GraphError::type_error(
                                 crate::types::QueryPhase::Runtime,
-                                format!(
-                                    "InvalidArgumentType: property access on {}",
-                                    value_type_name(val)
-                                ),
+                                format!("property access on {}", value_type_name(val)),
                             )
                             .with_code(ErrorCode::InvalidArgumentType));
                         }
@@ -182,20 +179,20 @@ pub fn eval_expr(expr: &Expr, record: &Record, conn: &Connection) -> crate::type
                 // Indexing a non-list/non-map/non-node/non-edge with an integer.
                 (_, Value::I64(_)) => Err(GraphError::type_error(
                     crate::types::QueryPhase::Runtime,
-                    "InvalidArgumentType: cannot index a non-list value".to_string(),
+                    "cannot index a non-list value".to_string(),
                 )
                 .with_code(ErrorCode::InvalidArgumentType)),
                 // Indexing a list with a non-integer.
                 (Value::List(_), _) => Err(GraphError::type_error(
                     crate::types::QueryPhase::Runtime,
-                    "InvalidArgumentType: list index must be an integer".to_string(),
+                    "list index must be an integer".to_string(),
                 )
                 .with_code(ErrorCode::InvalidArgumentType)),
                 // Indexing a map with a non-string.
                 (Value::Map(_), _) | (Value::Node(_), _) | (Value::Edge(_), _) => {
                     Err(GraphError::type_error(
                         crate::types::QueryPhase::Runtime,
-                        "MapElementAccessByNonString: map index must be a string".to_string(),
+                        "map index must be a string".to_string(),
                     )
                     .with_code(ErrorCode::MapElementAccessByNonString))
                 }
@@ -1820,7 +1817,7 @@ fn eval_binop(left: &Value, op: BinOp, right: &Value) -> crate::types::Result<Va
             (_, rhs) => Err(GraphError::type_error(
                 crate::types::QueryPhase::Runtime,
                 format!(
-                    "InvalidArgumentType: IN requires a list on the right side, got {}",
+                    "IN requires a list on the right side, got {}",
                     value_type_name(rhs)
                 ),
             )

@@ -35,15 +35,15 @@ Cypher string
   → pest grammar (grammar.pest, 451 rules)
   → Parser (parser.rs → AST)
   → Planner (planner.rs → LogicalOp IR)
-  → Executor (executor.rs — write ops)
+  → Executor (executor/ — write ops)
     / Iterator (iter.rs — pull-based streaming for reads)
   → Vec<Record>
 ```
 
 - **Parser:** Hand-rolled from pest PEG grammar. Handles the full openCypher expression language including temporal constructors, pattern comprehensions, list comprehensions, quantifier predicates, and EXISTS subqueries.
-- **Planner:** Translates AST → `LogicalOp` IR. Applies index lookups when available, handles multi-clause statement threading, correlated subqueries.
-- **Executor:** Two modes — pull-based `RecordIter` trait for read-only plans (streams without full materialization), push-based `exec()` for write operations.
-- **Eval:** Expression evaluator (`eval.rs`) with three-valued null logic, NaN handling, openCypher type coercion rules.
+- **Planner:** Translates AST → `LogicalOp` IR. Applies index lookups when available, handles multi-clause statement threading, correlated subqueries. Pushes `LIMIT N` caps into var-length `Expand` operators when the chain between them is row-preserving.
+- **Executor:** Two modes — pull-based `RecordIter` trait for read-only plans (streams without full materialization), push-based `exec()` for write operations. Correlated execution (subqueries, EXISTS, multi-MATCH) lives in `executor/correlated.rs`.
+- **Eval:** Expression evaluator (`eval/`) with three-valued null logic, NaN handling, openCypher type coercion rules.
 
 ### Module responsibilities
 
@@ -141,7 +141,7 @@ All bindings expose: `open`, `open_memory`, `begin_read`, `begin_write`, `query`
 ### Query engine
 - **Label scans fully materialize** — `MATCH (n:Label)` loads all matching nodes into memory before any downstream LIMIT can stop it. Multi-label queries (`[:A:B]`) fall back to `LIKE` scans that bypass the label index.
 - **Blocking operators** — `ORDER BY`, `DISTINCT`, and aggregation materialize the full input before proceeding. No streaming sort or top-N optimization.
-- **O(n²) dedup in places** — `DISTINCT`, `UNION`, and traversal result dedup use `Vec::contains` instead of `HashSet`.
+- **O(n²) dedup in places** — `DISTINCT` and `UNION` use `Vec::contains` instead of `HashSet`.
 - **No query cache** — every query is parsed and planned from scratch.
 - **Result row limit** — default 100K rows per query (configurable, 0 = unlimited).
 

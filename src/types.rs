@@ -710,6 +710,13 @@ impl QueryError {
         *span_field = Some(new_span);
         self
     }
+
+    /// Replace the structured code on this error.
+    pub fn with_code(mut self, new_code: ErrorCode) -> Self {
+        let (_, code_field, _, _, _) = query_error_fields!(&mut self);
+        *code_field = new_code;
+        self
+    }
 }
 
 impl fmt::Display for QueryError {
@@ -1096,6 +1103,15 @@ impl GraphError {
             | GraphError::InvalidName { hint: h, .. }
             | GraphError::SizeLimit { hint: h, .. }
             | GraphError::SchemaMismatch { hint: h, .. } => *h = Some(hint.into()),
+        }
+        self
+    }
+
+    /// Attach a structured code to a query error. No-op for non-Query variants.
+    pub fn with_code(mut self, code: ErrorCode) -> Self {
+        if let GraphError::Query(q) = &mut self {
+            let (_, c, _, _, _) = query_error_fields!(q);
+            *c = code;
         }
         self
     }

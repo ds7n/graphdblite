@@ -23,14 +23,16 @@ fn eval_skip_limit(expr: &Expr, conn: &Connection) -> crate::types::Result<u64> 
             if *n < 0 {
                 return Err(GraphError::syntax(
                     "NegativeIntegerArgument: SKIP/LIMIT must be a non-negative integer",
-                ));
+                )
+                .with_code(ErrorCode::NegativeIntegerArgument));
             }
             Ok(*n as u64)
         }
         Expr::Literal(LiteralValue::F64(_)) => Err(GraphError::type_error(
             crate::types::QueryPhase::Runtime,
             "InvalidArgumentType: SKIP/LIMIT does not accept a floating point value",
-        )),
+        )
+        .with_code(ErrorCode::InvalidArgumentType)),
         _ => {
             // Evaluate the expression at plan time with an empty record.
             let rec = Record::new();
@@ -40,22 +42,26 @@ fn eval_skip_limit(expr: &Expr, conn: &Connection) -> crate::types::Result<u64> 
                     if n < 0 {
                         return Err(GraphError::syntax(
                             "NegativeIntegerArgument: SKIP/LIMIT must be a non-negative integer",
-                        ));
+                        )
+                        .with_code(ErrorCode::NegativeIntegerArgument));
                     }
                     Ok(n as u64)
                 }
                 Value::F64(_) => Err(GraphError::type_error(
                     crate::types::QueryPhase::Runtime,
                     "InvalidArgumentType: SKIP/LIMIT does not accept a floating point value",
-                )),
+                )
+                .with_code(ErrorCode::InvalidArgumentType)),
                 Value::Null => Err(GraphError::type_error(
                     crate::types::QueryPhase::Runtime,
                     "InvalidArgumentType: SKIP/LIMIT does not accept NULL",
-                )),
+                )
+                .with_code(ErrorCode::InvalidArgumentType)),
                 _ => Err(GraphError::type_error(
                     crate::types::QueryPhase::Runtime,
                     "InvalidArgumentType: SKIP/LIMIT must evaluate to an integer",
-                )),
+                )
+                .with_code(ErrorCode::InvalidArgumentType)),
             }
         }
     }
@@ -335,7 +341,7 @@ fn plan_call(
         GraphError::Query(crate::types::QueryError::ProcedureError {
             phase: crate::types::QueryPhase::SemanticAnalysis,
             message: format!("ProcedureNotFound: unknown procedure `{procedure_name}`"),
-            code: ErrorCode::Other,
+            code: ErrorCode::ProcedureNotFound,
             hint: None,
             span: None,
         })
@@ -348,14 +354,16 @@ fn plan_call(
     if yield_star && is_in_query {
         return Err(GraphError::syntax(
             "UnexpectedSyntax: YIELD * is not allowed in an in-query CALL",
-        ));
+        )
+        .with_code(ErrorCode::UnexpectedSyntax));
     }
 
     // 3. InvalidArgumentPassingMode — implicit args with YIELD (in-query form).
     if implicit_args && (yield_items.is_some() || yield_star) {
         return Err(GraphError::syntax(
             "InvalidArgumentPassingMode: implicit argument passing is not allowed with YIELD",
-        ));
+        )
+        .with_code(ErrorCode::InvalidArgumentPassingMode));
     }
 
     // 7. MissingParameter — implicit args, missing required parameter.
@@ -372,7 +380,7 @@ fn plan_call(
             } else {
                 return Err(GraphError::syntax(
                     "MissingParameter: implicit argument passing requires all procedure parameters to be provided",
-                ));
+                ).with_code(ErrorCode::MissingParameter));
             }
         }
         built_args
@@ -388,7 +396,8 @@ fn plan_call(
                 "InvalidNumberOfArguments: expected {} argument(s) but got {}",
                 proc_def.inputs.len(),
                 args.len()
-            )));
+            ))
+            .with_code(ErrorCode::InvalidNumberOfArguments));
         }
 
         // 6. InvalidAggregation — aggregate function in CALL argument.
@@ -396,7 +405,8 @@ fn plan_call(
             if is_aggregate_fn(arg) {
                 return Err(GraphError::syntax(
                     "InvalidAggregation: aggregation functions are not allowed in CALL arguments",
-                ));
+                )
+                .with_code(ErrorCode::InvalidAggregation));
             }
         }
 
@@ -424,7 +434,8 @@ fn plan_call(
             if !bound_names.insert(bind_name.to_string()) {
                 return Err(GraphError::syntax(format!(
                     "VariableAlreadyBound: variable `{bind_name}` already declared",
-                )));
+                ))
+                .with_code(ErrorCode::VariableAlreadyBound));
             }
         }
         items.to_vec()
@@ -567,7 +578,8 @@ fn check_return_vars_in_scope(expr: &Expr, scope: &HashSet<String>) -> crate::ty
             if !scope.contains(name) {
                 return Err(GraphError::syntax(format!(
                     "UndefinedVariable: variable `{name}` not defined",
-                )));
+                ))
+                .with_code(ErrorCode::UndefinedVariable));
             }
             Ok(())
         }
@@ -575,7 +587,8 @@ fn check_return_vars_in_scope(expr: &Expr, scope: &HashSet<String>) -> crate::ty
             if !scope.contains(var) {
                 return Err(GraphError::syntax(format!(
                     "UndefinedVariable: variable `{var}` not defined",
-                )));
+                ))
+                .with_code(ErrorCode::UndefinedVariable));
             }
             Ok(())
         }
@@ -623,7 +636,7 @@ fn plan_inner(
             crate::types::QueryError::ProcedureError {
                 phase: crate::types::QueryPhase::SemanticAnalysis,
                 message: format!("ProcedureNotFound: unknown procedure `{procedure_name}`"),
-                code: ErrorCode::Other,
+                code: ErrorCode::ProcedureNotFound,
                 hint: None,
                 span: None,
             },
@@ -639,7 +652,7 @@ fn plan_inner(
                     if cols != first {
                         return Err(GraphError::syntax(
                             "DifferentColumnsInUnion: all sub queries in a UNION must have the same column names".to_string(),
-                        ));
+                        ).with_code(ErrorCode::DifferentColumnsInUnion));
                     }
                 }
             }
@@ -698,7 +711,8 @@ fn plan_match(
         if is_aggregate_fn(predicate) {
             return Err(GraphError::syntax(
                 "InvalidAggregation: aggregation functions are not allowed in WHERE".to_string(),
-            ));
+            )
+            .with_code(ErrorCode::InvalidAggregation));
         }
         // Reject using a node/relationship variable as a boolean predicate.
         if let Expr::Variable(var) = predicate {
@@ -708,7 +722,8 @@ fn plan_match(
                         crate::types::QueryPhase::SemanticAnalysis,
                         "InvalidArgumentType: a single node pattern is not a valid predicate"
                             .to_string(),
-                    ));
+                    )
+                    .with_code(ErrorCode::InvalidArgumentType));
                 }
             }
         }
@@ -800,7 +815,7 @@ fn plan_match(
                                         if kind == WithValueKind::Scalar {
                                             return Err(GraphError::syntax(format!(
                                                 "VariableTypeConflict: variable `{var}` already defined as a scalar value"
-                                            )));
+                                            )).with_code(ErrorCode::VariableTypeConflict));
                                         }
                                     }
                                 }
@@ -813,7 +828,7 @@ fn plan_match(
                                             if kind == WithValueKind::Scalar {
                                                 return Err(GraphError::syntax(format!(
                                                     "VariableTypeConflict: variable `{var}` already defined as a scalar value"
-                                                )));
+                                                )).with_code(ErrorCode::VariableTypeConflict));
                                             }
                                         }
                                     }
@@ -1445,7 +1460,7 @@ fn plan_merge(conn: &Connection, stmt: &MergeStatement) -> crate::types::Result<
                     if rel.var_length.is_some() {
                         return Err(GraphError::syntax(
                             "CreatingVarLength: variable-length relationships are not allowed in MERGE".to_string(),
-                        ));
+                        ).with_code(ErrorCode::CreatingVarLength));
                     }
                 }
                 _ => {
@@ -1544,7 +1559,8 @@ fn plan_multi_clause(
                             // Path variable re-assigned — VariableAlreadyBound.
                             return Err(GraphError::syntax(format!(
                                 "VariableAlreadyBound: variable `{path_var}` already bound"
-                            )));
+                            ))
+                            .with_code(ErrorCode::VariableAlreadyBound));
                         }
                     }
                     for elem in &pat.elements {
@@ -1555,7 +1571,7 @@ fn plan_multi_clause(
                                         if kind == WithValueKind::Scalar {
                                             return Err(GraphError::syntax(format!(
                                                 "VariableTypeConflict: variable `{var}` already defined as a scalar value"
-                                            )));
+                                            )).with_code(ErrorCode::VariableTypeConflict));
                                         }
                                     }
                                 }
@@ -1566,7 +1582,7 @@ fn plan_multi_clause(
                                         if kind == WithValueKind::Scalar {
                                             return Err(GraphError::syntax(format!(
                                                 "VariableTypeConflict: variable `{var}` already defined as a scalar value"
-                                            )));
+                                            )).with_code(ErrorCode::VariableTypeConflict));
                                         }
                                     }
                                 }
@@ -1655,7 +1671,8 @@ fn plan_multi_clause(
                                 if scope_vars.contains(var) || seen_create_vars.contains(var) {
                                     return Err(GraphError::syntax(format!(
                                         "VariableAlreadyBound: variable `{var}` already bound"
-                                    )));
+                                    ))
+                                    .with_code(ErrorCode::VariableAlreadyBound));
                                 }
                             }
                         }
@@ -1667,7 +1684,8 @@ fn plan_multi_clause(
                                 if scope_vars.contains(var) || seen_create_vars.contains(var) {
                                     return Err(GraphError::syntax(format!(
                                         "VariableAlreadyBound: variable `{var}` already bound"
-                                    )));
+                                    ))
+                                    .with_code(ErrorCode::VariableAlreadyBound));
                                 }
                             }
                         }
@@ -1711,7 +1729,7 @@ fn plan_multi_clause(
                         if rel.var_length.is_some() {
                             return Err(GraphError::syntax(
                                 "CreatingVarLength: variable-length relationships are not allowed in MERGE".to_string(),
-                            ));
+                            ).with_code(ErrorCode::CreatingVarLength));
                         }
                     }
                 }
@@ -1749,7 +1767,7 @@ fn plan_multi_clause(
                             check_expr_variables(&sort_item.expr, &order_scope).map_err(|_| {
                                 GraphError::syntax(
                                     "UndefinedVariable: ORDER BY references a variable not in scope"
-                                )
+                                ).with_code(ErrorCode::UndefinedVariable)
                             })?;
                         }
                     }
@@ -1861,12 +1879,14 @@ fn plan_multi_clause(
                         if scope_vars.contains(bind_name) {
                             return Err(GraphError::syntax(format!(
                                 "VariableAlreadyBound: variable `{bind_name}` already declared",
-                            )));
+                            ))
+                            .with_code(ErrorCode::VariableAlreadyBound));
                         }
                         if !bound_names.insert(bind_name.to_string()) {
                             return Err(GraphError::syntax(format!(
                                 "VariableAlreadyBound: variable `{bind_name}` already declared",
-                            )));
+                            ))
+                            .with_code(ErrorCode::VariableAlreadyBound));
                         }
                     }
                     items.clone()
@@ -1879,7 +1899,7 @@ fn plan_multi_clause(
                 if *implicit_args && (yield_items.is_some() || *yield_star) {
                     return Err(GraphError::syntax(
                         "InvalidArgumentPassingMode: implicit argument passing is not allowed with YIELD",
-                    ));
+                    ).with_code(ErrorCode::InvalidArgumentPassingMode));
                 }
 
                 // InvalidAggregation: aggregate function in CALL argument.
@@ -1887,7 +1907,7 @@ fn plan_multi_clause(
                     if is_aggregate_fn(arg) {
                         return Err(GraphError::syntax(
                             "InvalidAggregation: aggregation functions are not allowed in CALL arguments",
-                        ));
+                        ).with_code(ErrorCode::InvalidAggregation));
                     }
                 }
 
@@ -2001,7 +2021,8 @@ fn plan_with_scoped(
         {
             return Err(GraphError::syntax(
                 "NoExpressionAlias: expression in WITH must be aliased (use AS)".to_string(),
-            ));
+            )
+            .with_code(ErrorCode::NoExpressionAlias));
         }
     }
 
@@ -2041,7 +2062,7 @@ fn plan_with_scoped(
                     if !projected_agg_cols.contains(&agg_col) {
                         return Err(GraphError::syntax(
                             "UndefinedVariable: ORDER BY contains an aggregation that is not projected in WITH".to_string(),
-                        ));
+                        ).with_code(ErrorCode::UndefinedVariable));
                     }
                 }
             }
@@ -2164,7 +2185,8 @@ fn plan_intermediate_match_with_scope(
             if upstream_vars.contains(path_var) {
                 return Err(GraphError::syntax(format!(
                     "VariableAlreadyBound: variable `{path_var}` already defined"
-                )));
+                ))
+                .with_code(ErrorCode::VariableAlreadyBound));
             }
         }
     }
@@ -2283,11 +2305,7 @@ pub fn plan_patterns(conn: &Connection, patterns: &[Pattern]) -> crate::types::R
         op = Some(right);
     }
 
-    op.ok_or_else(|| GraphError::Serialization {
-        context: String::new(),
-        source: "empty patterns".to_string(),
-        hint: None,
-    })
+    op.ok_or_else(|| GraphError::semantic("empty patterns".to_string()))
 }
 
 /// Plan a shortestPath / allShortestPaths pattern.
@@ -2301,41 +2319,33 @@ fn plan_shortest_path_pattern(
 ) -> crate::types::Result<LogicalOp> {
     // Validate structure: must be exactly (node)-[rel]->(node).
     if pattern.elements.len() != 3 {
-        return Err(GraphError::Serialization {
-            context: String::new(),
-            source: "shortestPath pattern must be (a)-[*..N]->(b)".to_string(),
-            hint: None,
-        });
+        return Err(GraphError::semantic(
+            "shortestPath pattern must be (a)-[*..N]->(b)".to_string(),
+        ));
     }
 
     let src_node = match &pattern.elements[0] {
         PatternElement::Node(n) => n,
         _ => {
-            return Err(GraphError::Serialization {
-                context: String::new(),
-                source: "shortestPath pattern must start with a node".to_string(),
-                hint: None,
-            })
+            return Err(GraphError::semantic(
+                "shortestPath pattern must start with a node".to_string(),
+            ))
         }
     };
     let rel = match &pattern.elements[1] {
         PatternElement::Relationship(r) => r,
         _ => {
-            return Err(GraphError::Serialization {
-                context: String::new(),
-                source: "shortestPath pattern must have a relationship".to_string(),
-                hint: None,
-            })
+            return Err(GraphError::semantic(
+                "shortestPath pattern must have a relationship".to_string(),
+            ))
         }
     };
     let dst_node = match &pattern.elements[2] {
         PatternElement::Node(n) => n,
         _ => {
-            return Err(GraphError::Serialization {
-                context: String::new(),
-                source: "shortestPath pattern must end with a node".to_string(),
-                hint: None,
-            })
+            return Err(GraphError::semantic(
+                "shortestPath pattern must end with a node".to_string(),
+            ))
         }
     };
 
@@ -2442,20 +2452,23 @@ fn validate_expr_types(
                             return Err(GraphError::type_error(
                                 crate::types::QueryPhase::SemanticAnalysis,
                                 "InvalidArgumentType: type() requires a relationship".to_string(),
-                            ));
+                            )
+                            .with_code(ErrorCode::InvalidArgumentType));
                         }
                         "length" if *kind == VarKind::Node || *kind == VarKind::Relationship => {
                             return Err(GraphError::type_error(
                                 crate::types::QueryPhase::SemanticAnalysis,
                                 "InvalidArgumentType: length() requires a path, string, or list"
                                     .to_string(),
-                            ));
+                            )
+                            .with_code(ErrorCode::InvalidArgumentType));
                         }
                         "size" if *kind == VarKind::Path => {
                             return Err(GraphError::type_error(
                                 crate::types::QueryPhase::SemanticAnalysis,
                                 "InvalidArgumentType: size() requires a string or list".to_string(),
-                            ));
+                            )
+                            .with_code(ErrorCode::InvalidArgumentType));
                         }
                         "toboolean" | "tointeger" | "tofloat" | "tostring"
                             if *kind == VarKind::Node || *kind == VarKind::Relationship =>
@@ -2463,7 +2476,8 @@ fn validate_expr_types(
                             return Err(GraphError::type_error(
                                 crate::types::QueryPhase::SemanticAnalysis,
                                 format!("InvalidArgumentValue: {name}() cannot convert a {kind:?}"),
-                            ));
+                            )
+                            .with_code(ErrorCode::InvalidArgumentValue));
                         }
                         _ => {}
                     }
@@ -2479,7 +2493,8 @@ fn validate_expr_types(
                     return Err(GraphError::type_error(
                         crate::types::QueryPhase::SemanticAnalysis,
                         "InvalidArgumentType: property access on a path is not allowed".to_string(),
-                    ));
+                    )
+                    .with_code(ErrorCode::InvalidArgumentType));
                 }
             }
         }
@@ -2514,7 +2529,7 @@ fn validate_expr_types(
                         return Err(GraphError::type_error(
                             crate::types::QueryPhase::SemanticAnalysis,
                             format!("InvalidArgumentType: {elem_type} is not a valid argument type for arithmetic operations"),
-                        ));
+                        ).with_code(ErrorCode::InvalidArgumentType));
                     }
                 }
             }
@@ -2569,12 +2584,14 @@ fn check_expr_variables(expr: &Expr, scope: &HashSet<String>) -> crate::types::R
     match expr {
         Expr::Variable(var) => {
             if !scope.contains(var) {
-                return Err(GraphError::syntax(format!("UndefinedVariable: {var}")));
+                return Err(GraphError::syntax(format!("UndefinedVariable: {var}"))
+                    .with_code(ErrorCode::UndefinedVariable));
             }
         }
         Expr::Property(var, _) => {
             if !scope.contains(var) {
-                return Err(GraphError::syntax(format!("UndefinedVariable: {var}")));
+                return Err(GraphError::syntax(format!("UndefinedVariable: {var}"))
+                    .with_code(ErrorCode::UndefinedVariable));
             }
         }
         Expr::BinaryOp { left, right, .. } => {
@@ -2644,7 +2661,8 @@ fn check_expr_variables(expr: &Expr, scope: &HashSet<String>) -> crate::types::R
         }
         Expr::HasLabel(var, _) => {
             if !scope.contains(var) {
-                return Err(GraphError::syntax(format!("UndefinedVariable: {var}")));
+                return Err(GraphError::syntax(format!("UndefinedVariable: {var}"))
+                    .with_code(ErrorCode::UndefinedVariable));
             }
         }
     }
@@ -2668,7 +2686,8 @@ fn validate_pattern_predicate_vars(
                             crate::types::QueryPhase::SemanticAnalysis,
                             "InvalidArgumentType: a single node pattern is not a valid predicate"
                                 .to_string(),
-                        ));
+                        )
+                        .with_code(ErrorCode::InvalidArgumentType));
                     }
                 }
             }
@@ -2680,7 +2699,8 @@ fn validate_pattern_predicate_vars(
                             if !scope.contains(var) {
                                 return Err(GraphError::syntax(format!(
                                     "UndefinedVariable: {var}"
-                                )));
+                                ))
+                                .with_code(ErrorCode::UndefinedVariable));
                             }
                         }
                     }
@@ -2689,7 +2709,8 @@ fn validate_pattern_predicate_vars(
                             if !scope.contains(var) {
                                 return Err(GraphError::syntax(format!(
                                     "UndefinedVariable: {var}"
-                                )));
+                                ))
+                                .with_code(ErrorCode::UndefinedVariable));
                             }
                         }
                     }
@@ -2715,7 +2736,8 @@ fn reject_pattern_predicates(expr: &Expr) -> crate::types::Result<()> {
         Expr::PatternPredicate(_) => {
             return Err(GraphError::syntax(
                 "UnexpectedSyntax: pattern expressions are not allowed here".to_string(),
-            ));
+            )
+            .with_code(ErrorCode::UnexpectedSyntax));
         }
         Expr::FunctionCall { args, .. } => {
             for arg in args {
@@ -2812,18 +2834,18 @@ fn validate_create_patterns(
                     if rel.rel_types.is_empty() {
                         return Err(GraphError::syntax(
                             "NoSingleRelationshipType: a relationship must have exactly one type in CREATE"
-                        ));
+                        ).with_code(ErrorCode::NoSingleRelationshipType));
                     }
                     if rel.rel_types.len() > 1 {
                         return Err(GraphError::syntax(
                             "NoSingleRelationshipType: a relationship must have exactly one type in CREATE"
-                        ));
+                        ).with_code(ErrorCode::NoSingleRelationshipType));
                     }
                     // CREATE relationships must be directed.
                     if rel.direction == RelDirection::Undirected {
                         return Err(GraphError::syntax(
                             "RequiresDirectedRelationship: only directed relationships are supported in CREATE"
-                        ));
+                        ).with_code(ErrorCode::RequiresDirectedRelationship));
                     }
                     // Check property expressions for undefined variables.
                     for expr in rel.properties.values() {
@@ -2861,12 +2883,12 @@ fn validate_merge_pattern(
                 if rel.rel_types.is_empty() {
                     return Err(GraphError::syntax(
                         "NoSingleRelationshipType: a relationship must have exactly one type in MERGE"
-                    ));
+                    ).with_code(ErrorCode::NoSingleRelationshipType));
                 }
                 if rel.rel_types.len() > 1 {
                     return Err(GraphError::syntax(
                         "NoSingleRelationshipType: a relationship must have exactly one type in MERGE"
-                    ));
+                    ).with_code(ErrorCode::NoSingleRelationshipType));
                 }
                 if let Some(ref var) = rel.variable {
                     merge_vars.insert(var.clone());
@@ -2879,21 +2901,23 @@ fn validate_merge_pattern(
         match item {
             SetItem::Property(a) => {
                 if !merge_vars.contains(&a.variable) {
-                    return Err(GraphError::syntax(format!(
-                        "UndefinedVariable: {}",
-                        a.variable
-                    )));
+                    return Err(
+                        GraphError::syntax(format!("UndefinedVariable: {}", a.variable))
+                            .with_code(ErrorCode::UndefinedVariable),
+                    );
                 }
                 check_expr_variables(&a.value, &merge_vars)?;
             }
             SetItem::Label { variable, .. } => {
                 if !merge_vars.contains(variable) {
-                    return Err(GraphError::syntax(format!("UndefinedVariable: {variable}")));
+                    return Err(GraphError::syntax(format!("UndefinedVariable: {variable}"))
+                        .with_code(ErrorCode::UndefinedVariable));
                 }
             }
             SetItem::MapOverwrite { variable, value } | SetItem::MapMerge { variable, value } => {
                 if !merge_vars.contains(variable) {
-                    return Err(GraphError::syntax(format!("UndefinedVariable: {variable}")));
+                    return Err(GraphError::syntax(format!("UndefinedVariable: {variable}"))
+                        .with_code(ErrorCode::UndefinedVariable));
                 }
                 check_expr_variables(value, &merge_vars)?;
             }
@@ -2908,22 +2932,24 @@ fn validate_set_variables(items: &[SetItem], scope: &HashSet<String>) -> crate::
         match item {
             SetItem::Property(a) => {
                 if !scope.contains(&a.variable) {
-                    return Err(GraphError::syntax(format!(
-                        "UndefinedVariable: {}",
-                        a.variable
-                    )));
+                    return Err(
+                        GraphError::syntax(format!("UndefinedVariable: {}", a.variable))
+                            .with_code(ErrorCode::UndefinedVariable),
+                    );
                 }
                 check_expr_variables(&a.value, scope)?;
                 reject_pattern_predicates(&a.value)?;
             }
             SetItem::Label { variable, .. } => {
                 if !scope.contains(variable) {
-                    return Err(GraphError::syntax(format!("UndefinedVariable: {variable}")));
+                    return Err(GraphError::syntax(format!("UndefinedVariable: {variable}"))
+                        .with_code(ErrorCode::UndefinedVariable));
                 }
             }
             SetItem::MapOverwrite { variable, value } | SetItem::MapMerge { variable, value } => {
                 if !scope.contains(variable) {
-                    return Err(GraphError::syntax(format!("UndefinedVariable: {variable}")));
+                    return Err(GraphError::syntax(format!("UndefinedVariable: {variable}"))
+                        .with_code(ErrorCode::UndefinedVariable));
                 }
                 check_expr_variables(value, scope)?;
             }
@@ -2942,33 +2968,38 @@ fn validate_delete_exprs(
         match expr {
             Expr::Variable(var) => {
                 if !scope.contains(var) {
-                    return Err(GraphError::syntax(format!("UndefinedVariable: {var}")));
+                    return Err(GraphError::syntax(format!("UndefinedVariable: {var}"))
+                        .with_code(ErrorCode::UndefinedVariable));
                 }
             }
             // HasLabel expression (e.g. `n:Person`) is not a valid DELETE target.
             Expr::HasLabel(..) => {
                 return Err(GraphError::syntax(
                     "InvalidDelete: cannot delete a label predicate expression",
-                ));
+                )
+                .with_code(ErrorCode::InvalidDelete));
             }
             // Literal expressions are not valid DELETE targets.
             Expr::Literal(_) => {
                 return Err(GraphError::syntax(
                     "InvalidArgumentType: DELETE requires a node, relationship, or path",
-                ));
+                )
+                .with_code(ErrorCode::InvalidArgumentType));
             }
             // Binary/arithmetic expressions are not valid DELETE targets.
             Expr::BinaryOp { .. } => {
                 return Err(GraphError::syntax(
                     "InvalidArgumentType: DELETE requires a node, relationship, or path",
-                ));
+                )
+                .with_code(ErrorCode::InvalidArgumentType));
             }
             // Property access (e.g. nodes.key), index (e.g. friends[0]) — valid.
             // DotAccess (e.g. rels.key.key[0]) — valid.
             _ => {
                 if let Some(root) = extract_root_variable(expr) {
                     if !scope.contains(&root) {
-                        return Err(GraphError::syntax(format!("UndefinedVariable: {root}")));
+                        return Err(GraphError::syntax(format!("UndefinedVariable: {root}"))
+                            .with_code(ErrorCode::UndefinedVariable));
                     }
                 }
             }
@@ -2995,7 +3026,7 @@ fn validate_no_aggregation_in_order_by(order_by: &[SortItem]) -> crate::types::R
         if is_aggregate_fn(&item.expr) {
             return Err(GraphError::syntax(
                 "InvalidAggregation: aggregation functions are not allowed in ORDER BY when there is no aggregation in the preceding WITH/RETURN"
-            ));
+            ).with_code(ErrorCode::InvalidAggregation));
         }
     }
     Ok(())
@@ -3028,7 +3059,8 @@ fn validate_return_order_by_with_aggregates(
                 if !returned_cols.contains(&col) {
                     return Err(GraphError::syntax(
                         "UndefinedVariable: ORDER BY references a variable not in RETURN",
-                    ));
+                    )
+                    .with_code(ErrorCode::UndefinedVariable));
                 }
             }
         }
@@ -3071,7 +3103,8 @@ fn validate_distinct_order_by(
         }
         return Err(GraphError::syntax(
             "UndefinedVariable: ORDER BY references a variable not in RETURN DISTINCT",
-        ));
+        )
+        .with_code(ErrorCode::UndefinedVariable));
     }
     Ok(())
 }
@@ -3180,14 +3213,16 @@ fn validate_non_agg_leaves_in_scope(
             if !scope.contains(name) {
                 return Err(GraphError::syntax(format!(
                     "UndefinedVariable: variable `{name}` not defined"
-                )));
+                ))
+                .with_code(ErrorCode::UndefinedVariable));
             }
         }
         Expr::Property(var, _) => {
             if !scope.contains(var) {
                 return Err(GraphError::syntax(format!(
                     "UndefinedVariable: variable `{var}` not defined"
-                )));
+                ))
+                .with_code(ErrorCode::UndefinedVariable));
             }
         }
         Expr::BinaryOp { left, right, .. } => {
@@ -3209,14 +3244,16 @@ fn validate_expr_in_scope(expr: &Expr, scope: &HashSet<String>) -> crate::types:
             if !scope.contains(name) {
                 return Err(GraphError::syntax(format!(
                     "UndefinedVariable: variable `{name}` not defined"
-                )));
+                ))
+                .with_code(ErrorCode::UndefinedVariable));
             }
         }
         Expr::Property(var, _) => {
             if !scope.contains(var) {
                 return Err(GraphError::syntax(format!(
                     "UndefinedVariable: variable `{var}` not defined"
-                )));
+                ))
+                .with_code(ErrorCode::UndefinedVariable));
             }
         }
         Expr::BinaryOp { left, right, .. } => {
@@ -3254,7 +3291,7 @@ fn validate_no_aggregation_in_list_comp(expr: &Expr) -> crate::types::Result<()>
                 if is_aggregate_fn(me) {
                     return Err(GraphError::syntax(
                         "InvalidAggregation: aggregation functions are not allowed in list comprehension"
-                    ));
+                    ).with_code(ErrorCode::InvalidAggregation));
                 }
                 validate_no_aggregation_in_list_comp(me)?;
             }
@@ -3324,7 +3361,8 @@ fn validate_merge_variable_rebinding(
                 if scope.contains(var) {
                     return Err(GraphError::syntax(format!(
                         "VariableAlreadyBound: variable `{var}` already bound"
-                    )));
+                    ))
+                    .with_code(ErrorCode::VariableAlreadyBound));
                 }
             }
         }
@@ -3338,7 +3376,8 @@ fn validate_merge_variable_rebinding(
                     if scope.contains(var) {
                         return Err(GraphError::syntax(format!(
                             "VariableAlreadyBound: variable `{var}` already bound"
-                        )));
+                        ))
+                        .with_code(ErrorCode::VariableAlreadyBound));
                     }
                 }
             }
@@ -3347,7 +3386,8 @@ fn validate_merge_variable_rebinding(
                     if scope.contains(var) && !n.labels.is_empty() {
                         return Err(GraphError::syntax(format!(
                             "VariableAlreadyBound: variable `{var}` already bound"
-                        )));
+                        ))
+                        .with_code(ErrorCode::VariableAlreadyBound));
                     }
                 }
             }
@@ -3451,7 +3491,7 @@ fn validate_variable_types_with_map(
                             if !prior_rels.contains(var) {
                                 return Err(GraphError::syntax(format!(
                                     "VariableAlreadyBound: cannot use relationship variable '{var}' more than once in a pattern"
-                                )));
+                                )).with_code(ErrorCode::VariableAlreadyBound));
                             }
                         } else {
                             types.insert(var.clone(), VarKind::Relationship);
@@ -3536,11 +3576,9 @@ fn plan_single_pattern(conn: &Connection, pattern: &Pattern) -> crate::types::Re
                 let dst_node = match pattern.elements.get(i + 1) {
                     Some(PatternElement::Node(n)) => n,
                     _ => {
-                        return Err(GraphError::Serialization {
-                            context: String::new(),
-                            source: "relationship must be followed by a node pattern".to_string(),
-                            hint: None,
-                        })
+                        return Err(GraphError::semantic(
+                            "relationship must be followed by a node pattern".to_string(),
+                        ))
                     }
                 };
 
@@ -3643,11 +3681,7 @@ fn plan_single_pattern(conn: &Connection, pattern: &Pattern) -> crate::types::Re
         }
     }
 
-    let mut result = op.ok_or_else(|| GraphError::Serialization {
-        context: String::new(),
-        source: "empty pattern".to_string(),
-        hint: None,
-    })?;
+    let mut result = op.ok_or_else(|| GraphError::semantic("empty pattern".to_string()))?;
 
     // If this pattern has a path variable binding, wrap with MaterializePath.
     if let Some(ref path_var) = pattern.path_variable {
@@ -3827,7 +3861,8 @@ fn plan_create_pattern_with_counter(
                     return Err(GraphError::syntax(format!(
                         "VariableAlreadyBound: variable `{}` already bound",
                         alias.as_deref().unwrap_or("?")
-                    )));
+                    ))
+                    .with_code(ErrorCode::VariableAlreadyBound));
                 }
                 if !already_seen {
                     ops.push(LogicalOp::CreateNode {
@@ -3844,17 +3879,15 @@ fn plan_create_pattern_with_counter(
                 if rel.var_length.is_some() {
                     return Err(GraphError::syntax(
                         "CreatingVarLength: variable-length relationships are not allowed in CREATE".to_string(),
-                    ));
+                    ).with_code(ErrorCode::CreatingVarLength));
                 }
 
                 let dst_node = match pattern.elements.get(i + 1) {
                     Some(PatternElement::Node(n)) => n,
                     _ => {
-                        return Err(GraphError::Serialization {
-                            context: String::new(),
-                            source: "relationship must be followed by a node".to_string(),
-                            hint: None,
-                        })
+                        return Err(GraphError::semantic(
+                            "relationship must be followed by a node".to_string(),
+                        ))
                     }
                 };
 
@@ -3869,7 +3902,8 @@ fn plan_create_pattern_with_counter(
                     return Err(GraphError::syntax(format!(
                         "VariableAlreadyBound: variable `{}` already bound",
                         dst_alias.as_deref().unwrap_or("?")
-                    )));
+                    ))
+                    .with_code(ErrorCode::VariableAlreadyBound));
                 }
                 if !dst_already_seen {
                     ops.push(LogicalOp::CreateNode {
@@ -3881,15 +3915,9 @@ fn plan_create_pattern_with_counter(
 
                 let left = last_alias
                     .clone()
-                    .ok_or_else(|| GraphError::Serialization {
-                        context: String::new(),
-                        source: "edge without source node".to_string(),
-                        hint: None,
-                    })?;
-                let right = dst_alias.clone().ok_or_else(|| GraphError::Serialization {
-                    context: String::new(),
-                    source: "edge target must have a variable".to_string(),
-                    hint: None,
+                    .ok_or_else(|| GraphError::semantic("edge without source node".to_string()))?;
+                let right = dst_alias.clone().ok_or_else(|| {
+                    GraphError::semantic("edge target must have a variable".to_string())
                 })?;
 
                 // Respect relationship direction: `(a)<-[:T]-(b)` means
@@ -4089,7 +4117,8 @@ fn split_aggregates(items: &[ReturnItem]) -> crate::types::Result<(Vec<Expr>, Ve
                             crate::types::QueryPhase::SemanticAnalysis,
                             "NonConstantExpression: non-deterministic function inside aggregate"
                                 .to_string(),
-                        ));
+                        )
+                        .with_code(ErrorCode::NonConstantExpression));
                     }
                 }
                 let input = args.first().cloned().unwrap_or(Expr::Star);
@@ -4125,7 +4154,7 @@ fn split_aggregates(items: &[ReturnItem]) -> crate::types::Result<(Vec<Expr>, Ve
             if !group_keys.iter().any(|gk| gk == *leaf) {
                 return Err(GraphError::syntax(
                     "AmbiguousAggregationExpression: expression mixes aggregate and non-aggregate sub-expressions".to_string(),
-                ));
+                ).with_code(ErrorCode::AmbiguousAggregationExpression));
             }
         }
     }

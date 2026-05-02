@@ -2,8 +2,7 @@
 //!
 //! Three-valued equality (with null propagation), ordering, and type utilities.
 
-use crate::types::ErrorCode;
-use crate::types::Value;
+use crate::types::{ErrorCode, Value};
 
 /// Three-valued equality: returns Null if either operand is null.
 pub(super) fn values_equal(a: &Value, b: &Value) -> Value {

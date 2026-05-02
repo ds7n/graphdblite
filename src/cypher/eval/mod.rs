@@ -108,7 +108,8 @@ pub fn eval_expr(expr: &Expr, record: &Record, conn: &Connection) -> crate::type
                                     "InvalidArgumentType: property access on {}",
                                     value_type_name(val)
                                 ),
-                            ));
+                            )
+                            .with_code(ErrorCode::InvalidArgumentType));
                         }
                         _ => {}
                     }
@@ -182,18 +183,21 @@ pub fn eval_expr(expr: &Expr, record: &Record, conn: &Connection) -> crate::type
                 (_, Value::I64(_)) => Err(GraphError::type_error(
                     crate::types::QueryPhase::Runtime,
                     "InvalidArgumentType: cannot index a non-list value".to_string(),
-                )),
+                )
+                .with_code(ErrorCode::InvalidArgumentType)),
                 // Indexing a list with a non-integer.
                 (Value::List(_), _) => Err(GraphError::type_error(
                     crate::types::QueryPhase::Runtime,
                     "InvalidArgumentType: list index must be an integer".to_string(),
-                )),
+                )
+                .with_code(ErrorCode::InvalidArgumentType)),
                 // Indexing a map with a non-string.
                 (Value::Map(_), _) | (Value::Node(_), _) | (Value::Edge(_), _) => {
                     Err(GraphError::type_error(
                         crate::types::QueryPhase::Runtime,
                         "MapElementAccessByNonString: map index must be a string".to_string(),
-                    ))
+                    )
+                    .with_code(ErrorCode::MapElementAccessByNonString))
                 }
                 _ => Ok(Value::Null),
             }
@@ -1399,19 +1403,13 @@ fn eval_function_call(
                     // IANA timezone name — resolve at the truncated datetime.
                     use chrono::TimeZone;
                     use chrono_tz::Tz;
-                    let tz: Tz =
-                        tz_s.parse()
-                            .map_err(|_| crate::types::GraphError::Serialization {
-                                context: String::new(),
-                                source: format!("unknown timezone: {tz_s}"),
-                                hint: None,
-                            })?;
+                    let tz: Tz = tz_s
+                        .parse()
+                        .map_err(|_| GraphError::semantic(format!("unknown timezone: {tz_s}")))?;
                     let aware = tz.from_local_datetime(&ndt).earliest().ok_or_else(|| {
-                        crate::types::GraphError::Serialization {
-                            context: String::new(),
-                            source: format!("ambiguous or invalid datetime in timezone: {tz_s}"),
-                            hint: None,
-                        }
+                        GraphError::semantic(format!(
+                            "ambiguous or invalid datetime in timezone: {tz_s}"
+                        ))
                     })?;
                     let off = chrono::Offset::fix(aware.offset());
                     (off, Some(tz_s.clone()))
@@ -1487,11 +1485,9 @@ fn eval_list_comprehension(
         Value::List(items) => items,
         Value::Null => return Ok(Value::List(vec![])),
         _ => {
-            return Err(crate::types::GraphError::Serialization {
-                context: String::new(),
-                source: "list comprehension requires a list input".to_string(),
-                hint: None,
-            })
+            return Err(GraphError::semantic(
+                "list comprehension requires a list input".to_string(),
+            ))
         }
     };
 
@@ -1532,11 +1528,9 @@ fn eval_quantifier(
         Value::List(items) => items,
         Value::Null => return Ok(Value::Null),
         _ => {
-            return Err(crate::types::GraphError::Serialization {
-                context: String::new(),
-                source: "quantifier requires a list input".to_string(),
-                hint: None,
-            })
+            return Err(GraphError::semantic(
+                "quantifier requires a list input".to_string(),
+            ))
         }
     };
 
@@ -1829,7 +1823,8 @@ fn eval_binop(left: &Value, op: BinOp, right: &Value) -> crate::types::Result<Va
                     "InvalidArgumentType: IN requires a list on the right side, got {}",
                     value_type_name(rhs)
                 ),
-            )),
+            )
+            .with_code(ErrorCode::InvalidArgumentType)),
         },
         BinOp::Add => {
             if let Some(result) = eval_temporal_add(left, right) {

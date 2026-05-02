@@ -175,7 +175,98 @@ fn apply_return_projection(
 
 /// Compile a Cypher AST Statement into a LogicalOp plan.
 pub fn plan(conn: &Connection, stmt: &Statement) -> crate::types::Result<LogicalOp> {
-    plan_inner(conn, stmt, false)
+    let mut op = plan_inner(conn, stmt, false)?;
+    push_limit_into_var_length_expand(&mut op);
+    Ok(op)
+}
+
+/// Optimization: push a `LIMIT N` cap down into a var-length `Expand` when the
+/// chain between them is row-preserving.
+///
+/// Safe pattern: `Limit { count: N, input: chain }` where `chain` is zero or
+/// more `Project` (always 1:1) wrapping a single `Expand { var_length: true }`.
+/// Anything else (Sort, Distinct, Filter, Aggregate, CrossProduct, another
+/// Expand) breaks the equivalence — `LIMIT` and Expand row counts diverge.
+///
+/// Recurses into all child operators so nested patterns are still optimized.
+fn push_limit_into_var_length_expand(op: &mut LogicalOp) {
+    if let LogicalOp::Limit { input, count } = op {
+        if let Some(expand) = find_pushdown_target(input) {
+            if let LogicalOp::Expand { result_cap, .. } = expand {
+                // Take the tighter of any existing cap and the new one.
+                let new_cap = match *result_cap {
+                    Some(existing) => existing.min(*count),
+                    None => *count,
+                };
+                *result_cap = Some(new_cap);
+            }
+        }
+    }
+    // Recurse into children so nested Limit/Expand chains (e.g. inside a
+    // CorrelatedJoin's right side) also get the pushdown.
+    walk_children_mut(op, push_limit_into_var_length_expand);
+}
+
+/// Returns a mutable reference to the var-length Expand directly reachable from
+/// `op` through only Project (or empty) wrappers, or `None` if any disqualifying
+/// operator is in the chain.
+fn find_pushdown_target(op: &mut LogicalOp) -> Option<&mut LogicalOp> {
+    match op {
+        LogicalOp::Project { input, .. } => find_pushdown_target(input),
+        LogicalOp::Expand { var_length, .. } if *var_length => Some(op),
+        _ => None,
+    }
+}
+
+/// Apply `f` to each direct child operator (skipping non-LogicalOp fields).
+fn walk_children_mut(op: &mut LogicalOp, f: fn(&mut LogicalOp)) {
+    match op {
+        LogicalOp::Expand { input, .. }
+        | LogicalOp::Filter { input, .. }
+        | LogicalOp::Project { input, .. }
+        | LogicalOp::Aggregate { input, .. }
+        | LogicalOp::Sort { input, .. }
+        | LogicalOp::Distinct { input }
+        | LogicalOp::Skip { input, .. }
+        | LogicalOp::Limit { input, .. }
+        | LogicalOp::MatchCreate { input, .. }
+        | LogicalOp::Delete { input, .. }
+        | LogicalOp::SetProperty { input, .. }
+        | LogicalOp::SetLabel { input, .. }
+        | LogicalOp::SetProperties { input, .. }
+        | LogicalOp::Remove { input, .. }
+        | LogicalOp::MatchMerge { input, .. }
+        | LogicalOp::MaterializePath { input, .. }
+        | LogicalOp::Unwind { input, .. }
+        | LogicalOp::Call { input, .. }
+        | LogicalOp::ShortestPath { input, .. } => f(input),
+        LogicalOp::CrossProduct { left, right, .. } => {
+            f(left);
+            f(right);
+        }
+        LogicalOp::CorrelatedJoin { input, right, .. }
+        | LogicalOp::LeftOuterJoin { input, right, .. } => {
+            f(input);
+            f(right);
+        }
+        LogicalOp::Union { inputs, .. } => {
+            for inp in inputs {
+                f(inp);
+            }
+        }
+        LogicalOp::CreateSequence { ops } => {
+            for inner in ops {
+                f(inner);
+            }
+        }
+        LogicalOp::SingleRow
+        | LogicalOp::Scan { .. }
+        | LogicalOp::IndexLookup { .. }
+        | LogicalOp::CreateNode { .. }
+        | LogicalOp::CreateEdge { .. }
+        | LogicalOp::Merge { .. }
+        | LogicalOp::EmptyRow => {}
+    }
 }
 
 /// Plan a statement that may be inside a subquery (EXISTS).
@@ -219,6 +310,10 @@ pub fn plan_with_procedures(
         Statement::Explain(inner) => plan_with_procedures(conn, inner, procedures, params),
         _ => plan(conn, stmt),
     }
+    .map(|mut op| {
+        push_limit_into_var_length_expand(&mut op);
+        op
+    })
 }
 
 /// Plan a CALL procedure statement with validation.
@@ -4323,3 +4418,78 @@ fn statement_return_columns(stmt: &Statement) -> Vec<String> {
     }
 }
 
+#[cfg(test)]
+mod limit_pushdown_tests {
+    use super::*;
+    use crate::cypher::parser;
+    use rusqlite::Connection;
+
+    fn plan_query(query: &str) -> LogicalOp {
+        let conn = Connection::open_in_memory().unwrap();
+        crate::schema::init_schema(&conn).unwrap();
+        let stmt = parser::parse(query).unwrap();
+        plan(&conn, &stmt).unwrap()
+    }
+
+    fn find_var_length_expand(op: &LogicalOp) -> Option<&LogicalOp> {
+        match op {
+            LogicalOp::Expand {
+                var_length: true, ..
+            } => Some(op),
+            LogicalOp::Limit { input, .. }
+            | LogicalOp::Project { input, .. }
+            | LogicalOp::Filter { input, .. }
+            | LogicalOp::Sort { input, .. }
+            | LogicalOp::Distinct { input } => find_var_length_expand(input),
+            _ => None,
+        }
+    }
+
+    #[test]
+    fn pushdown_applies_to_simple_var_length_with_limit() {
+        let plan = plan_query("MATCH (a)-[*1..3]->(b) RETURN b LIMIT 10");
+        let expand = find_var_length_expand(&plan).expect("expected var-length Expand");
+        let LogicalOp::Expand { result_cap, .. } = expand else {
+            unreachable!()
+        };
+        assert_eq!(*result_cap, Some(10));
+    }
+
+    #[test]
+    fn pushdown_skipped_when_sort_intervenes() {
+        let plan = plan_query("MATCH (a)-[*1..3]->(b) RETURN b ORDER BY b LIMIT 10");
+        let expand = find_var_length_expand(&plan).expect("expected var-length Expand");
+        let LogicalOp::Expand { result_cap, .. } = expand else {
+            unreachable!()
+        };
+        assert_eq!(
+            *result_cap, None,
+            "Sort between Limit and Expand should block pushdown"
+        );
+    }
+
+    #[test]
+    fn pushdown_skipped_for_fixed_length_expand() {
+        let plan = plan_query("MATCH (a)-[r]->(b) RETURN b LIMIT 10");
+        // Fixed-length Expand is not a pushdown target; just verify no crash.
+        match &plan {
+            LogicalOp::Limit { input, count } => {
+                assert_eq!(*count, 10);
+                // Walk down — any Expand we find should have result_cap=None.
+                fn check(op: &LogicalOp) {
+                    if let LogicalOp::Expand { result_cap, .. } = op {
+                        assert_eq!(*result_cap, None);
+                    }
+                    match op {
+                        LogicalOp::Project { input, .. }
+                        | LogicalOp::Expand { input, .. }
+                        | LogicalOp::Filter { input, .. } => check(input),
+                        _ => {}
+                    }
+                }
+                check(input);
+            }
+            _ => panic!("expected Limit at top, got {:?}", plan.op_name()),
+        }
+    }
+}

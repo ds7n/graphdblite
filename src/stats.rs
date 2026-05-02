@@ -54,4 +54,3 @@ fn set_label_count(conn: &Connection, label: &str, count: u64) -> Result<()> {
     )?;
     Ok(())
 }
-

@@ -166,6 +166,7 @@ fn parse_explain(pair: pest::iterators::Pair<Rule>) -> crate::types::Result<Stat
 }
 
 /// Parse YIELD clause items from a yield_clause rule pair.
+#[allow(clippy::type_complexity)]
 fn parse_yield_clause(
     pair: pest::iterators::Pair<Rule>,
 ) -> (Option<Vec<(String, Option<String>)>>, bool) {

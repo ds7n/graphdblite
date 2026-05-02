@@ -1942,6 +1942,59 @@ fn e2e_large_integers() {
 }
 
 #[test]
+fn e2e_integer_overflow_errors() {
+    let mut db = Database::open_memory().unwrap();
+    let tx = db.begin_read().unwrap();
+
+    // Each of these should error rather than panic or wrap silently.
+    let cases = [
+        "RETURN 9223372036854775807 + 1",
+        "RETURN -9223372036854775808 - 1",
+        "RETURN 9223372036854775807 * 2",
+        "RETURN -9223372036854775808 / -1",
+        "RETURN -9223372036854775808 % -1",
+        "RETURN abs(-9223372036854775808)",
+        "RETURN -(-9223372036854775808)",
+    ];
+    for q in cases {
+        let err = tx
+            .query(q)
+            .expect_err(&format!("expected overflow for: {q}"));
+        let msg = format!("{err}");
+        assert!(
+            msg.contains("overflow") || msg.contains("out of range"),
+            "expected overflow error for {q}, got: {msg}"
+        );
+    }
+    tx.commit().unwrap();
+}
+
+#[test]
+fn e2e_division_by_zero_returns_null() {
+    let mut db = Database::open_memory().unwrap();
+    let tx = db.begin_read().unwrap();
+    let rows = tx.query("RETURN 1 / 0 AS x, 1 % 0 AS y").unwrap();
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].get("x").unwrap(), &Value::Null);
+    assert_eq!(rows[0].get("y").unwrap(), &Value::Null);
+    tx.commit().unwrap();
+}
+
+#[test]
+fn e2e_null_propagation_arithmetic() {
+    let mut db = Database::open_memory().unwrap();
+    let tx = db.begin_read().unwrap();
+    let rows = tx
+        .query("RETURN null + 1 AS a, 1 - null AS b, null * 2 AS c, null / 2 AS d, null % 2 AS e")
+        .unwrap();
+    assert_eq!(rows.len(), 1);
+    for col in ["a", "b", "c", "d", "e"] {
+        assert_eq!(rows[0].get(col).unwrap(), &Value::Null, "col {col}");
+    }
+    tx.commit().unwrap();
+}
+
+#[test]
 fn e2e_float_property() {
     let mut db = Database::open_memory().unwrap();
     let tx = db.begin_write().unwrap();

@@ -843,7 +843,12 @@ fn eval_function_call(
         "abs" => {
             let arg = eval_single_arg(args, record, conn)?;
             match arg {
-                Value::I64(n) => Ok(Value::I64(n.abs())),
+                Value::I64(n) => n.checked_abs().map(Value::I64).ok_or_else(|| {
+                    GraphError::number_out_of_range(
+                        QueryPhase::Runtime,
+                        format!("integer overflow: abs({n})"),
+                    )
+                }),
                 Value::F64(n) => Ok(Value::F64(n.abs())),
                 _ => Ok(Value::Null),
             }
@@ -1844,7 +1849,7 @@ fn eval_binop(left: &Value, op: BinOp, right: &Value) -> crate::types::Result<Va
                         result.extend(b.iter().cloned());
                         Ok(Value::List(result))
                     }
-                    _ => eval_arithmetic(left, right, |a, b| a + b, |a, b| a + b),
+                    _ => eval_arithmetic(left, right, "+", i64::checked_add, |a, b| a + b),
                 }
             }
         }
@@ -1852,7 +1857,7 @@ fn eval_binop(left: &Value, op: BinOp, right: &Value) -> crate::types::Result<Va
             if let Some(result) = eval_temporal_sub(left, right) {
                 result
             } else {
-                eval_arithmetic(left, right, |a, b| a - b, |a, b| a - b)
+                eval_arithmetic(left, right, "-", i64::checked_sub, |a, b| a - b)
             }
         }
         BinOp::Mul => {
@@ -1860,7 +1865,7 @@ fn eval_binop(left: &Value, op: BinOp, right: &Value) -> crate::types::Result<Va
             if let Some(result) = eval_duration_mul(left, right) {
                 result
             } else {
-                eval_arithmetic(left, right, |a, b| a * b, |a, b| a * b)
+                eval_arithmetic(left, right, "*", i64::checked_mul, |a, b| a * b)
             }
         }
         BinOp::Div => {
@@ -1875,7 +1880,12 @@ fn eval_binop(left: &Value, op: BinOp, right: &Value) -> crate::types::Result<Va
                     if *b == 0 {
                         Ok(Value::Null)
                     } else {
-                        Ok(Value::I64(a / b))
+                        a.checked_div(*b).map(Value::I64).ok_or_else(|| {
+                            GraphError::number_out_of_range(
+                                QueryPhase::Runtime,
+                                format!("integer overflow: {a} / {b}"),
+                            )
+                        })
                     }
                 }
                 (Value::F64(a), Value::F64(b)) => {
@@ -1909,7 +1919,12 @@ fn eval_binop(left: &Value, op: BinOp, right: &Value) -> crate::types::Result<Va
                     if *b == 0 {
                         Ok(Value::Null)
                     } else {
-                        Ok(Value::I64(a % b))
+                        a.checked_rem(*b).map(Value::I64).ok_or_else(|| {
+                            GraphError::number_out_of_range(
+                                QueryPhase::Runtime,
+                                format!("integer overflow: {a} % {b}"),
+                            )
+                        })
                     }
                 }
                 (Value::F64(a), Value::F64(b)) => {
@@ -1951,15 +1966,23 @@ fn eval_binop(left: &Value, op: BinOp, right: &Value) -> crate::types::Result<Va
 }
 
 /// Evaluate an arithmetic binary operation with numeric coercion.
+///
+/// Integer ops use checked arithmetic and return `NumberOutOfRange` on overflow.
 fn eval_arithmetic(
     left: &Value,
     right: &Value,
-    int_op: impl Fn(i64, i64) -> i64,
+    op_name: &str,
+    int_op: impl Fn(i64, i64) -> Option<i64>,
     float_op: impl Fn(f64, f64) -> f64,
 ) -> crate::types::Result<Value> {
     match (left, right) {
         (Value::Null, _) | (_, Value::Null) => Ok(Value::Null),
-        (Value::I64(a), Value::I64(b)) => Ok(Value::I64(int_op(*a, *b))),
+        (Value::I64(a), Value::I64(b)) => int_op(*a, *b).map(Value::I64).ok_or_else(|| {
+            GraphError::number_out_of_range(
+                QueryPhase::Runtime,
+                format!("integer overflow: {a} {op_name} {b}"),
+            )
+        }),
         (Value::F64(a), Value::F64(b)) => Ok(Value::F64(float_op(*a, *b))),
         (Value::I64(a), Value::F64(b)) => Ok(Value::F64(float_op(*a as f64, *b))),
         (Value::F64(a), Value::I64(b)) => Ok(Value::F64(float_op(*a, *b as f64))),

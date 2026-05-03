@@ -603,17 +603,10 @@ pub fn traverse_paths(
     }
 
     // DFS stack: (current_node, path_so_far, visited_edges)
-    // Edge key uses a hash of (src, dst, label, seq) to avoid string allocation.
-    use std::hash::{Hash, Hasher};
-    fn edge_hash(src: u64, dst: u64, label: &str, seq: u64) -> u64 {
-        let mut h = std::hash::DefaultHasher::new();
-        src.hash(&mut h);
-        dst.hash(&mut h);
-        label.hash(&mut h);
-        seq.hash(&mut h);
-        h.finish()
-    }
-    type DfsFrame = (NodeId, Vec<PathStep>, std::collections::HashSet<u64>);
+    // Edge key is the tuple (src, dst, label, seq) — collision-free, unlike a
+    // u64 hash digest. The HashSet is small (bounded by hop depth per frame).
+    type EdgeKey = (NodeId, NodeId, String, u64);
+    type DfsFrame = (NodeId, Vec<PathStep>, std::collections::HashSet<EdgeKey>);
     let mut stack: Vec<DfsFrame> = Vec::new();
     stack.push((start, Vec::new(), std::collections::HashSet::new()));
 
@@ -707,7 +700,7 @@ pub fn traverse_paths(
                         }
                         fuel -= 1;
                     }
-                    let edge_key = edge_hash(edge_src.0, edge_dst.0, label, seq);
+                    let edge_key: EdgeKey = (edge_src, edge_dst, label.to_string(), seq);
                     if visited_edges.contains(&edge_key) {
                         continue; // Relationship uniqueness.
                     }

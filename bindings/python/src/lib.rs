@@ -32,15 +32,18 @@ fn to_py_err(e: GraphError) -> PyErr {
 }
 
 /// Convert a graphdblite Value to a Python object.
-fn value_to_py(py: Python, val: &Value) -> PyObject {
-    match val {
+fn value_to_py(py: Python, val: &Value) -> PyResult<PyObject> {
+    Ok(match val {
         Value::Null => py.None(),
         Value::Bool(b) => b.to_object(py),
         Value::I64(n) => n.to_object(py),
         Value::F64(n) => n.to_object(py),
         Value::String(s) => s.to_object(py),
         Value::List(items) => {
-            let py_items: Vec<PyObject> = items.iter().map(|v| value_to_py(py, v)).collect();
+            let py_items: Vec<PyObject> = items
+                .iter()
+                .map(|v| value_to_py(py, v))
+                .collect::<PyResult<_>>()?;
             py_items.to_object(py)
         }
         Value::Path(p) => {
@@ -49,33 +52,33 @@ fn value_to_py(py: Python, val: &Value) -> PyObject {
         }
         Value::Node(n) => {
             let dict = PyDict::new_bound(py);
-            dict.set_item("__id", n.id.0).unwrap();
-            dict.set_item("__labels", &n.labels).unwrap();
+            dict.set_item("__id", n.id.0)?;
+            dict.set_item("__labels", &n.labels)?;
             for (k, v) in &n.properties {
-                dict.set_item(k, value_to_py(py, v)).unwrap();
+                dict.set_item(k, value_to_py(py, v)?)?;
             }
             dict.to_object(py)
         }
         Value::Edge(e) => {
             let dict = PyDict::new_bound(py);
-            dict.set_item("__src", e.src.0).unwrap();
-            dict.set_item("__dst", e.dst.0).unwrap();
-            dict.set_item("__label", &e.label).unwrap();
+            dict.set_item("__src", e.src.0)?;
+            dict.set_item("__dst", e.dst.0)?;
+            dict.set_item("__label", &e.label)?;
             for (k, v) in &e.properties {
-                dict.set_item(k, value_to_py(py, v)).unwrap();
+                dict.set_item(k, value_to_py(py, v)?)?;
             }
             dict.to_object(py)
         }
         Value::Map(map) => {
             let dict = PyDict::new_bound(py);
             for (k, v) in map {
-                dict.set_item(k, value_to_py(py, v)).unwrap();
+                dict.set_item(k, value_to_py(py, v)?)?;
             }
             dict.to_object(py)
         }
         // Temporal types — expose as ISO string.
         other => format!("{other}").to_object(py),
-    }
+    })
 }
 
 fn records_to_py(
@@ -86,7 +89,7 @@ fn records_to_py(
     for rec in records {
         let dict = PyDict::new_bound(py);
         for (key, val) in &rec.fields {
-            dict.set_item(key, value_to_py(py, val))?;
+            dict.set_item(key, value_to_py(py, val)?)?;
         }
         result.push(dict.to_object(py));
     }

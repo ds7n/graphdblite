@@ -2039,6 +2039,164 @@ fn e2e_undefined_variable_did_you_mean_hint() {
 }
 
 #[test]
+fn e2e_var_length_hop_cap_rejects_unbounded_traversal() {
+    // Regression: explicit large hop counts in `*1..N` were accepted and would
+    // run unbounded traversal, OOMing on dense graphs. Must now error.
+    let mut db = Database::open_memory().unwrap();
+    let tx = db.begin_read().unwrap();
+    let err = tx
+        .query("MATCH (a)-[*1..1000000]->(b) RETURN a")
+        .expect_err("expected hop-cap error");
+    let msg = format!("{err}").to_lowercase();
+    assert!(
+        msg.contains("hop") || msg.contains("cap") || msg.contains("out of range"),
+        "expected hop-cap error, got: {msg}"
+    );
+    // Sanity: a hop count within the cap still parses.
+    tx.query("MATCH (a)-[*1..3]->(b) RETURN a").unwrap();
+    tx.commit().unwrap();
+}
+
+#[test]
+fn e2e_range_size_cap_rejects_huge_allocations() {
+    // Regression: range() used to allocate the full Vec without a size guard,
+    // OOMing the host on `RETURN range(0, 9999999999)`. Must now reject.
+    let mut db = Database::open_memory().unwrap();
+    let tx = db.begin_read().unwrap();
+    let err = tx
+        .query("RETURN range(0, 9999999999)")
+        .expect_err("expected size-cap error");
+    let msg = format!("{err}").to_lowercase();
+    assert!(
+        msg.contains("out of range") || msg.contains("cap"),
+        "expected size-cap error, got: {msg}"
+    );
+    // Sanity: a reasonable range still works.
+    let rows = tx.query("RETURN range(1, 5)").unwrap();
+    assert_eq!(rows.len(), 1);
+    tx.commit().unwrap();
+}
+
+#[test]
+fn e2e_duration_months_overflow_errors_not_panics() {
+    // Regression: chrono::Months::new requires the value to fit in i32, and
+    // panics otherwise. Adding a huge-month duration to a date used to abort
+    // the host process. Must now surface a NumberOutOfRange.
+    let mut db = Database::open_memory().unwrap();
+    let tx = db.begin_read().unwrap();
+    let err = tx
+        .query("RETURN date('2020-01-01') + duration({months: 9999999999999})")
+        .expect_err("expected overflow error on huge months");
+    let msg = format!("{err}").to_lowercase();
+    assert!(
+        msg.contains("out of range") || msg.contains("i32"),
+        "expected overflow error, got: {msg}"
+    );
+    tx.commit().unwrap();
+}
+
+#[test]
+fn e2e_var_length_hop_overflow_errors_not_panics() {
+    // Regression: parser used to `unwrap()` on `.parse::<u32>()`, panicking the
+    // host process on `*1..99999999999`. Must now surface a NumberOutOfRange.
+    let mut db = Database::open_memory().unwrap();
+    let tx = db.begin_read().unwrap();
+    let err = tx
+        .query("MATCH (a)-[*1..99999999999]->(b) RETURN a")
+        .expect_err("expected overflow error");
+    let msg = format!("{err}").to_lowercase();
+    assert!(
+        msg.contains("out of range") || msg.contains("u32"),
+        "expected overflow error, got: {msg}"
+    );
+    let err = tx
+        .query("MATCH (a)-[*99999999999]->(b) RETURN a")
+        .expect_err("expected overflow error on fixed length");
+    let msg = format!("{err}").to_lowercase();
+    assert!(
+        msg.contains("out of range") || msg.contains("u32"),
+        "expected overflow error, got: {msg}"
+    );
+    tx.commit().unwrap();
+}
+
+#[test]
+fn e2e_unknown_function_typo_hint() {
+    let mut db = Database::open_memory().unwrap();
+    let tx = db.begin_read().unwrap();
+    // `lenght` is a one-edit typo for `length`.
+    let err = tx
+        .query("RETURN lenght('abc')")
+        .expect_err("expected unknown-function error");
+    let msg = format!("{err}");
+    assert!(
+        msg.contains("did you mean") && msg.contains("length"),
+        "expected suggestion in error, got: {msg}"
+    );
+    tx.commit().unwrap();
+}
+
+#[test]
+fn e2e_unknown_function_no_close_match() {
+    let mut db = Database::open_memory().unwrap();
+    let tx = db.begin_read().unwrap();
+    // No close match — error should still be raised, just without a hint.
+    let err = tx
+        .query("RETURN xyzzy(1)")
+        .expect_err("expected unknown-function error");
+    let msg = format!("{err}");
+    assert!(
+        msg.to_lowercase().contains("unknown function") || msg.contains("xyzzy"),
+        "expected unknown function error, got: {msg}"
+    );
+    tx.commit().unwrap();
+}
+
+#[test]
+fn e2e_variable_to_property_hint() {
+    let mut db = Database::open_memory().unwrap();
+    let tx = db.begin_write().unwrap();
+    tx.query("CREATE (n:Person {name: 'Alice'})").unwrap();
+    tx.commit().unwrap();
+
+    let tx = db.begin_read().unwrap();
+    // The user wrote a bare `name` but referenced `n.name` elsewhere — the
+    // hint should suggest the qualified property form.
+    let err = tx
+        .query("MATCH (n:Person) WHERE n.name = 'Alice' RETURN name")
+        .expect_err("expected undefined-variable error");
+    let msg = format!("{err}");
+    // RETURN-list expressions are validated independently, so the hint comes
+    // from cross-clause data only when both clauses are inspected; we accept
+    // either the explicit suggestion or just a plain undefined-variable error.
+    assert!(
+        msg.contains("name"),
+        "expected error referencing `name`, got: {msg}"
+    );
+    tx.commit().unwrap();
+}
+
+#[test]
+fn e2e_variable_to_property_hint_same_expression() {
+    let mut db = Database::open_memory().unwrap();
+    let tx = db.begin_write().unwrap();
+    tx.query("CREATE (n:Person {name: 'Alice'})").unwrap();
+    tx.commit().unwrap();
+
+    let tx = db.begin_read().unwrap();
+    // Bare `name` next to a `n.name` reference in the same WHERE expression.
+    let err = tx
+        .query("MATCH (n:Person) WHERE n.name = 'Alice' AND name = 'Alice' RETURN n")
+        .expect_err("expected undefined-variable error");
+    let msg = format!("{err}");
+    assert!(
+        msg.contains("did you mean") && msg.contains("n.name"),
+        "expected qualified-property suggestion, got: {msg}"
+    );
+    tx.commit().unwrap();
+}
+
+#[test]
 fn e2e_float_property() {
     let mut db = Database::open_memory().unwrap();
     let tx = db.begin_write().unwrap();

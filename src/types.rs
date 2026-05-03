@@ -486,6 +486,7 @@ pub enum ErrorCode {
     ProcedureNotFound,
     RequiresDirectedRelationship,
     UndefinedVariable,
+    UnknownFunction,
     UnexpectedSyntax,
     VariableAlreadyBound,
     VariableTypeConflict,
@@ -521,6 +522,7 @@ impl ErrorCode {
             ErrorCode::ProcedureNotFound => "ProcedureNotFound",
             ErrorCode::RequiresDirectedRelationship => "RequiresDirectedRelationship",
             ErrorCode::UndefinedVariable => "UndefinedVariable",
+            ErrorCode::UnknownFunction => "UnknownFunction",
             ErrorCode::UnexpectedSyntax => "UnexpectedSyntax",
             ErrorCode::VariableAlreadyBound => "VariableAlreadyBound",
             ErrorCode::VariableTypeConflict => "VariableTypeConflict",
@@ -1100,6 +1102,7 @@ impl GraphError {
                 mk(QueryError::constraint_with)
             }
             ErrorCode::ProcedureNotFound => mk(QueryError::procedure_with),
+            ErrorCode::UnknownFunction => mk(QueryError::syntax_with),
             ErrorCode::Other => mk(QueryError::semantic_with),
         }
     }

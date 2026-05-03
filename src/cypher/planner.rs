@@ -38,11 +38,114 @@ fn suggest_close_name<'a>(
 /// Build an `UndefinedVariable` error with a `did you mean X?` hint when a
 /// close in-scope name exists.
 fn undefined_variable_error(name: &str, scope: &HashSet<String>, span: Span) -> GraphError {
+    undefined_variable_error_with_props(name, scope, &[], span)
+}
+
+/// Like `undefined_variable_error`, but also considers `var.<name>` property
+/// references already seen in the surrounding expression. When the user wrote
+/// a bare identifier that shadows or matches a property accessed via some
+/// in-scope variable, suggest the qualified form.
+fn undefined_variable_error_with_props(
+    name: &str,
+    scope: &HashSet<String>,
+    seen_props: &[(String, String)],
+    span: Span,
+) -> GraphError {
     let mut err = GraphError::syntax(name.to_string())
         .with_code(ErrorCode::UndefinedVariable)
         .with_span(span);
     if let Some(suggestion) = suggest_close_name(name, scope) {
         err = err.with_hint(format!("did you mean `{suggestion}`?"));
+        return err;
+    }
+    // Variable→Property hint: if the same expression already references
+    // `<v>.<name>` as a property (case-insensitive on the property part) for
+    // some in-scope variable `v`, the user likely forgot to qualify.
+    let name_lc = name.to_ascii_lowercase();
+    if let Some((var, prop)) = seen_props
+        .iter()
+        .find(|(v, p)| scope.contains(v) && p.to_ascii_lowercase() == name_lc)
+    {
+        err = err.with_hint(format!("did you mean `{var}.{prop}`?"));
+    }
+    err
+}
+
+/// Collect every `Property(var, prop)` access in an expression tree.
+fn collect_property_refs(expr: &Expr, out: &mut Vec<(String, String)>) {
+    match &expr.kind {
+        ExprKind::Property(v, p) => out.push((v.clone(), p.clone())),
+        ExprKind::BinaryOp { left, right, .. } => {
+            collect_property_refs(left, out);
+            collect_property_refs(right, out);
+        }
+        ExprKind::Not(inner) | ExprKind::IsNull(inner) | ExprKind::IsNotNull(inner) => {
+            collect_property_refs(inner, out);
+        }
+        ExprKind::FunctionCall { args, .. } => {
+            for a in args {
+                collect_property_refs(a, out);
+            }
+        }
+        ExprKind::Case {
+            operand,
+            alternatives,
+            default,
+        } => {
+            if let Some(o) = operand {
+                collect_property_refs(o, out);
+            }
+            for (c, r) in alternatives {
+                collect_property_refs(c, out);
+                collect_property_refs(r, out);
+            }
+            if let Some(d) = default {
+                collect_property_refs(d, out);
+            }
+        }
+        ExprKind::List(items) => {
+            for i in items {
+                collect_property_refs(i, out);
+            }
+        }
+        ExprKind::MapLiteral(pairs) => {
+            for (_, v) in pairs {
+                collect_property_refs(v, out);
+            }
+        }
+        ExprKind::Index { expr, index } => {
+            collect_property_refs(expr, out);
+            collect_property_refs(index, out);
+        }
+        ExprKind::Slice { expr, start, end } => {
+            collect_property_refs(expr, out);
+            if let Some(s) = start {
+                collect_property_refs(s, out);
+            }
+            if let Some(e) = end {
+                collect_property_refs(e, out);
+            }
+        }
+        ExprKind::ListComprehension { list_expr, .. } | ExprKind::Quantifier { list_expr, .. } => {
+            collect_property_refs(list_expr, out)
+        }
+        ExprKind::DotAccess { expr, .. } => collect_property_refs(expr, out),
+        _ => {}
+    }
+}
+
+/// Build an `UnknownFunction` error with a `did you mean X()?` hint when a
+/// known function name is close (Levenshtein) to the misspelled one.
+fn unknown_function_error(name: &str, span: Span) -> GraphError {
+    let candidates: Vec<String> = crate::cypher::eval::KNOWN_FUNCTION_NAMES
+        .iter()
+        .map(|s| s.to_string())
+        .collect();
+    let mut err = GraphError::syntax(format!("unknown function `{name}`"))
+        .with_code(ErrorCode::UnknownFunction)
+        .with_span(span);
+    if let Some(suggestion) = suggest_close_name(name, &candidates) {
+        err = err.with_hint(format!("did you mean `{suggestion}()`?"));
     }
     err
 }
@@ -2521,6 +2624,9 @@ fn validate_expr_types(
     match &expr.kind {
         ExprKind::FunctionCall { name, args, .. } => {
             let name_lower = name.to_ascii_lowercase();
+            if !crate::cypher::eval::is_known_function(&name_lower) {
+                return Err(unknown_function_error(name, expr.span));
+            }
             if let Some(Expr {
                 kind: ExprKind::Variable(var),
                 ..
@@ -2663,27 +2769,41 @@ fn expr_references_var(expr: &Expr, var: &str) -> bool {
 
 /// Check that every variable reference in an expression is present in `scope`.
 fn check_expr_variables(expr: &Expr, scope: &HashSet<String>) -> crate::types::Result<()> {
+    let mut props = Vec::new();
+    collect_property_refs(expr, &mut props);
+    check_expr_variables_inner(expr, scope, &props)
+}
+
+fn check_expr_variables_inner(
+    expr: &Expr,
+    scope: &HashSet<String>,
+    seen_props: &[(String, String)],
+) -> crate::types::Result<()> {
     match &expr.kind {
         ExprKind::Variable(var) => {
             if !scope.contains(var) {
-                return Err(undefined_variable_error(var, scope, expr.span));
+                return Err(undefined_variable_error_with_props(
+                    var, scope, seen_props, expr.span,
+                ));
             }
         }
         ExprKind::Property(var, _) => {
             if !scope.contains(var) {
-                return Err(undefined_variable_error(var, scope, expr.span));
+                return Err(undefined_variable_error_with_props(
+                    var, scope, seen_props, expr.span,
+                ));
             }
         }
         ExprKind::BinaryOp { left, right, .. } => {
-            check_expr_variables(left, scope)?;
-            check_expr_variables(right, scope)?;
+            check_expr_variables_inner(left, scope, seen_props)?;
+            check_expr_variables_inner(right, scope, seen_props)?;
         }
         ExprKind::Not(inner) | ExprKind::IsNull(inner) | ExprKind::IsNotNull(inner) => {
-            check_expr_variables(inner, scope)?;
+            check_expr_variables_inner(inner, scope, seen_props)?;
         }
         ExprKind::FunctionCall { args, .. } => {
             for arg in args {
-                check_expr_variables(arg, scope)?;
+                check_expr_variables_inner(arg, scope, seen_props)?;
             }
         }
         ExprKind::Case {
@@ -2692,52 +2812,52 @@ fn check_expr_variables(expr: &Expr, scope: &HashSet<String>) -> crate::types::R
             default,
         } => {
             if let Some(o) = operand {
-                check_expr_variables(o, scope)?;
+                check_expr_variables_inner(o, scope, seen_props)?;
             }
             for (cond, result) in alternatives {
-                check_expr_variables(cond, scope)?;
-                check_expr_variables(result, scope)?;
+                check_expr_variables_inner(cond, scope, seen_props)?;
+                check_expr_variables_inner(result, scope, seen_props)?;
             }
             if let Some(d) = default {
-                check_expr_variables(d, scope)?;
+                check_expr_variables_inner(d, scope, seen_props)?;
             }
         }
         ExprKind::List(items) => {
             for item in items {
-                check_expr_variables(item, scope)?;
+                check_expr_variables_inner(item, scope, seen_props)?;
             }
         }
         ExprKind::MapLiteral(pairs) => {
             for (_, v) in pairs {
-                check_expr_variables(v, scope)?;
+                check_expr_variables_inner(v, scope, seen_props)?;
             }
         }
         ExprKind::Index { expr, index } => {
-            check_expr_variables(expr, scope)?;
-            check_expr_variables(index, scope)?;
+            check_expr_variables_inner(expr, scope, seen_props)?;
+            check_expr_variables_inner(index, scope, seen_props)?;
         }
         ExprKind::Slice { expr, start, end } => {
-            check_expr_variables(expr, scope)?;
+            check_expr_variables_inner(expr, scope, seen_props)?;
             if let Some(s) = start {
-                check_expr_variables(s, scope)?;
+                check_expr_variables_inner(s, scope, seen_props)?;
             }
             if let Some(e) = end {
-                check_expr_variables(e, scope)?;
+                check_expr_variables_inner(e, scope, seen_props)?;
             }
         }
         ExprKind::Literal(_) | ExprKind::Parameter(_) | ExprKind::Star => {}
         ExprKind::ListComprehension { list_expr, .. } => {
-            check_expr_variables(list_expr, scope)?;
+            check_expr_variables_inner(list_expr, scope, seen_props)?;
         }
         ExprKind::Quantifier { list_expr, .. } => {
-            check_expr_variables(list_expr, scope)?;
+            check_expr_variables_inner(list_expr, scope, seen_props)?;
         }
         ExprKind::Exists { .. }
         | ExprKind::ExistsSubquery(_)
         | ExprKind::PatternPredicate(_)
         | ExprKind::PatternComprehension { .. } => {}
         ExprKind::DotAccess { expr, .. } => {
-            check_expr_variables(expr, scope)?;
+            check_expr_variables_inner(expr, scope, seen_props)?;
         }
         ExprKind::HasLabel(var, _) => {
             if !scope.contains(var) {

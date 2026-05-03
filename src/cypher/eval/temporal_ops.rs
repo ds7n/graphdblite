@@ -6,11 +6,30 @@
 use crate::temporal::{
     CypherDate, CypherDateTime, CypherDuration, CypherLocalDateTime, CypherLocalTime, CypherTime,
 };
-use crate::types::Value;
+use crate::types::{ErrorCode, GraphError, QueryPhase, Value};
 use chrono::{Months, NaiveDateTime};
 
 /// Average seconds per month used for duration arithmetic (365.2425 * 86400 / 12).
 const AVG_SECONDS_PER_MONTH: i64 = 2_629_746;
+
+/// `chrono::Months::new` requires its argument to fit in `i32`; values above
+/// `i32::MAX` make the underlying chrono ops panic. Validate up front so a
+/// malicious `duration({months: 9999999999999})` returns a structured error
+/// rather than aborting the host process. See security finding H4.
+fn months_abs_to_u32(months: i64) -> crate::types::Result<u32> {
+    let abs = months.unsigned_abs();
+    if abs > i32::MAX as u64 {
+        return Err(GraphError::query(
+            QueryPhase::Runtime,
+            ErrorCode::NumberOutOfRange,
+            format!(
+                "duration months component `{months}` is out of range \
+                 (must fit in i32 to apply to a date/datetime)"
+            ),
+        ));
+    }
+    Ok(abs as u32)
+}
 
 /// Temporal + Duration arithmetic. Returns Some if handled, None to fall through.
 pub(super) fn eval_temporal_add(
@@ -43,13 +62,17 @@ pub(super) fn eval_temporal_add(
         (Value::Date(d), Value::Duration(dur)) | (Value::Duration(dur), Value::Date(d)) => {
             let mut date = d.0;
             if dur.months != 0 {
+                let months_u32 = match months_abs_to_u32(dur.months) {
+                    Ok(n) => n,
+                    Err(e) => return Some(Err(e)),
+                };
                 if dur.months > 0 {
                     date = date
-                        .checked_add_months(Months::new(dur.months as u32))
+                        .checked_add_months(Months::new(months_u32))
                         .unwrap_or(date);
                 } else {
                     date = date
-                        .checked_sub_months(Months::new((-dur.months) as u32))
+                        .checked_sub_months(Months::new(months_u32))
                         .unwrap_or(date);
                 }
             }
@@ -76,13 +99,17 @@ pub(super) fn eval_temporal_add(
         | (Value::Duration(dur), Value::LocalDateTime(dt)) => {
             let mut date = dt.0.date();
             if dur.months != 0 {
+                let months_u32 = match months_abs_to_u32(dur.months) {
+                    Ok(n) => n,
+                    Err(e) => return Some(Err(e)),
+                };
                 if dur.months > 0 {
                     date = date
-                        .checked_add_months(Months::new(dur.months as u32))
+                        .checked_add_months(Months::new(months_u32))
                         .unwrap_or(date);
                 } else {
                     date = date
-                        .checked_sub_months(Months::new((-dur.months) as u32))
+                        .checked_sub_months(Months::new(months_u32))
                         .unwrap_or(date);
                 }
             }
@@ -96,13 +123,17 @@ pub(super) fn eval_temporal_add(
         | (Value::Duration(dur), Value::DateTime(dt)) => {
             let mut date = dt.0.date();
             if dur.months != 0 {
+                let months_u32 = match months_abs_to_u32(dur.months) {
+                    Ok(n) => n,
+                    Err(e) => return Some(Err(e)),
+                };
                 if dur.months > 0 {
                     date = date
-                        .checked_add_months(Months::new(dur.months as u32))
+                        .checked_add_months(Months::new(months_u32))
                         .unwrap_or(date);
                 } else {
                     date = date
-                        .checked_sub_months(Months::new((-dur.months) as u32))
+                        .checked_sub_months(Months::new(months_u32))
                         .unwrap_or(date);
                 }
             }

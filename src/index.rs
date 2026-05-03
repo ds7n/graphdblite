@@ -5,8 +5,17 @@ use crate::storage::kv;
 use crate::types::{validate_name, GraphError, NodeId, Properties, Result, Value};
 
 /// Build the index table name for a (label, property) pair.
-fn index_table_name(label: &str, property: &str) -> String {
-    format!("node_idx_{label}_{property}")
+///
+/// Validates both components so that the returned name is safe to interpolate
+/// into raw SQL identifiers (`"{table}"`). Defense-in-depth: callers (the
+/// planner, the public `create_index` API) already validate their inputs, but
+/// re-validating here ensures any future caller can't accidentally smuggle a
+/// `"` through into the SQL identifier and corrupt the query. See security
+/// finding M1.
+fn index_table_name(label: &str, property: &str) -> Result<String> {
+    validate_name(label)?;
+    validate_name(property)?;
+    Ok(format!("node_idx_{label}_{property}"))
 }
 
 /// Build the index key: [msgpack(value)][node_id: 8 bytes BE].
@@ -23,9 +32,7 @@ fn index_key(value: &Value, node_id: NodeId) -> Result<Vec<u8>> {
 /// Create a secondary index on a (label, property) pair.
 /// Backfills the index with all existing matching nodes.
 pub fn create_index(conn: &Connection, label: &str, property: &str) -> Result<()> {
-    validate_name(label)?;
-    validate_name(property)?;
-    let table = index_table_name(label, property);
+    let table = index_table_name(label, property)?;
 
     // Check if index table already exists.
     let exists: bool = conn.query_row(
@@ -63,7 +70,7 @@ pub fn create_index(conn: &Connection, label: &str, property: &str) -> Result<()
 
 /// Drop a secondary index.
 pub fn drop_index(conn: &Connection, label: &str, property: &str) -> Result<()> {
-    let table = index_table_name(label, property);
+    let table = index_table_name(label, property)?;
     let exists: bool = conn.query_row(
         "SELECT COUNT(*) > 0 FROM sqlite_master WHERE type='table' AND name=?1",
         [&table],
@@ -87,7 +94,7 @@ pub fn index_lookup(
     property: &str,
     value: &Value,
 ) -> Result<Vec<NodeId>> {
-    let table = index_table_name(label, property);
+    let table = index_table_name(label, property)?;
 
     // Build prefix from the serialized value.
     let prefix = rmp_serde::to_vec(value).map_err(|e| GraphError::Serialization {
@@ -141,7 +148,7 @@ pub fn update_indexes_for_node(
     let tables = list_indexes_for_label(conn, label)?;
 
     for (_, property) in &tables {
-        let table = index_table_name(label, property);
+        let table = index_table_name(label, property)?;
         let old_val = old_properties.and_then(|p| p.get(property.as_str()));
         let new_val = new_properties.get(property.as_str());
 
@@ -174,7 +181,7 @@ pub fn remove_indexes_for_node(
     let tables = list_indexes_for_label(conn, label)?;
     for (_, property) in &tables {
         if let Some(val) = properties.get(property.as_str()) {
-            let table = index_table_name(label, property);
+            let table = index_table_name(label, property)?;
             let key = index_key(val, node_id)?;
             kv::delete(conn, &table, &key)?;
         }
@@ -192,7 +199,7 @@ pub fn index_count_for_value(
     property: &str,
     value: &Value,
 ) -> Result<usize> {
-    let table = index_table_name(label, property);
+    let table = index_table_name(label, property)?;
     let prefix = rmp_serde::to_vec(value).map_err(|e| GraphError::Serialization {
         context: String::new(),
         source: e.to_string(),

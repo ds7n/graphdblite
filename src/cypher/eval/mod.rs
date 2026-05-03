@@ -12,6 +12,107 @@ use temporal_ops::{
     eval_duration_div, eval_duration_mul, eval_temporal_add, eval_temporal_sub, temporal_accessor,
 };
 
+/// All scalar and aggregate function names dispatched by the Cypher evaluator,
+/// in lower-case. Used for compile-time typo detection in the planner.
+pub const KNOWN_FUNCTION_NAMES: &[&str] = &[
+    // Scalar functions (eval_function_call match arms)
+    "length",
+    "nodes",
+    "tolower",
+    "toupper",
+    "tostring",
+    "toboolean",
+    "tointeger",
+    "tofloat",
+    "keys",
+    "labels",
+    "id",
+    "type",
+    "properties",
+    "relationships",
+    "coalesce",
+    "head",
+    "last",
+    "tail",
+    "size",
+    "abs",
+    "sqrt",
+    "sign",
+    "ceil",
+    "floor",
+    "round",
+    "log",
+    "log10",
+    "exp",
+    "e",
+    "pi",
+    "substring",
+    "replace",
+    "split",
+    "trim",
+    "ltrim",
+    "rtrim",
+    "left",
+    "right",
+    "startnode",
+    "endnode",
+    "exists",
+    "reverse",
+    "range",
+    "rand",
+    // Temporal constructors and statement-time variants
+    "date",
+    "date.transaction",
+    "date.statement",
+    "date.realtime",
+    "localtime",
+    "localtime.transaction",
+    "localtime.statement",
+    "localtime.realtime",
+    "time",
+    "time.transaction",
+    "time.statement",
+    "time.realtime",
+    "localdatetime",
+    "localdatetime.transaction",
+    "localdatetime.statement",
+    "localdatetime.realtime",
+    "datetime",
+    "datetime.transaction",
+    "datetime.statement",
+    "datetime.realtime",
+    "duration",
+    "datetime.fromepoch",
+    "datetime.fromepochmillis",
+    "duration.between",
+    "duration.inmonths",
+    "duration.indays",
+    "duration.inseconds",
+    "date.truncate",
+    "localtime.truncate",
+    "time.truncate",
+    "localdatetime.truncate",
+    "datetime.truncate",
+    // Aggregate functions (handled by Aggregate operator, but recognized here)
+    "count",
+    "sum",
+    "avg",
+    "min",
+    "max",
+    "collect",
+    "percentiledisc",
+    "percentilecont",
+    "stdev",
+    "stdevp",
+];
+
+/// Returns true if `name` is a recognized Cypher function (scalar or aggregate).
+/// Comparison is case-insensitive.
+pub fn is_known_function(name: &str) -> bool {
+    let lc = name.to_ascii_lowercase();
+    KNOWN_FUNCTION_NAMES.iter().any(|n| *n == lc)
+}
+
 /// Evaluate an expression against a record, producing a Value.
 ///
 /// The `conn` parameter is needed for EXISTS subquery evaluation.
@@ -1184,18 +1285,47 @@ fn eval_function_call(
                         }
                         _ => 1,
                     };
-                    let mut result = Vec::new();
+                    // Pre-compute expected length in i128 to reject huge
+                    // allocations up front (security finding H2). Cap at a
+                    // generous 10M entries — a real query producing more is
+                    // almost certainly a mistake or an attack.
+                    const MAX_RANGE_LEN: i128 = 10_000_000;
+                    let len: i128 = if (step > 0 && s <= e) || (step < 0 && s >= e) {
+                        let span = (e as i128) - (s as i128);
+                        span / (step as i128) + 1
+                    } else {
+                        0
+                    };
+                    if len > MAX_RANGE_LEN {
+                        return Err(GraphError::Query(QueryError::ArgumentError {
+                            phase: QueryPhase::Runtime,
+                            message: format!(
+                                "NumberOutOfRange: range({s}, {e}, {step}) would produce \
+                                 {len} elements, exceeding the {MAX_RANGE_LEN}-element cap"
+                            ),
+                            code: ErrorCode::NumberOutOfRange,
+                            hint: None,
+                            span: None,
+                        }));
+                    }
+                    let mut result = Vec::with_capacity(len as usize);
                     let mut i = s;
                     if (step > 0 && s <= e) || (step < 0 && s >= e) {
                         if step > 0 {
                             while i <= e {
                                 result.push(Value::I64(i));
-                                i += step;
+                                match i.checked_add(step) {
+                                    Some(n) => i = n,
+                                    None => break,
+                                }
                             }
                         } else {
                             while i >= e {
                                 result.push(Value::I64(i));
-                                i += step;
+                                match i.checked_add(step) {
+                                    Some(n) => i = n,
+                                    None => break,
+                                }
                             }
                         }
                     }

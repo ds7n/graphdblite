@@ -10,6 +10,23 @@ fn props(pairs: &[(&str, Value)]) -> HashMap<String, Value> {
 }
 
 #[test]
+fn invalid_label_or_property_rejected_at_every_index_entry() {
+    // Defense-in-depth: if a future caller bypasses planner-side validation,
+    // every public `index::*` helper still rejects unsafe identifiers via
+    // `index_table_name`. See security finding M1.
+    let mut db = Database::open_memory().unwrap();
+    let tx = db.begin_write().unwrap();
+    // Bad property name with a quote that would break SQL identifier escaping.
+    let bad = "name\";DROP";
+    assert!(tx.create_index("Person", bad).is_err());
+    assert!(tx.drop_index("Person", bad).is_err());
+    assert!(tx
+        .index_lookup("Person", bad, &Value::String("x".into()))
+        .is_err());
+    tx.commit().unwrap();
+}
+
+#[test]
 fn create_index_and_lookup() {
     let mut db = Database::open_memory().unwrap();
     let tx = db.begin_write().unwrap();

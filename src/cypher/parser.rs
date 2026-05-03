@@ -1299,6 +1299,38 @@ fn parse_rel_pattern(pair: pest::iterators::Pair<Rule>) -> crate::types::Result<
     })
 }
 
+/// Hard cap on var-length / fixed-length hop counts in patterns.
+///
+/// Var-length traversal (`src/edge.rs::traverse_paths`) clones the path and
+/// visited-edge set per branch, so cost grows roughly as
+/// `O(branching_factor ^ max_hops)`. Even on small graphs an explicit
+/// `MATCH ()-[*1..1000000000]->()` will OOM the host. We refuse to plan such
+/// queries up front rather than letting them run unbounded — see security
+/// finding H1.
+const MAX_VAR_LENGTH_HOPS: u32 = 256;
+
+/// Parse a `u32` hop bound from a var-length pattern (e.g. the `4` in `*1..4`).
+/// Rejects values that overflow `u32` (security finding H3) or exceed
+/// `MAX_VAR_LENGTH_HOPS` (security finding H1) with a structured error rather
+/// than panicking or running an unbounded traversal.
+fn parse_var_length_bound(s: &str) -> crate::types::Result<u32> {
+    let n = s.parse::<u32>().map_err(|_| {
+        GraphError::query(
+            QueryPhase::Parse,
+            ErrorCode::NumberOutOfRange,
+            format!("var-length hop count `{s}` is out of range (must fit in u32)"),
+        )
+    })?;
+    if n > MAX_VAR_LENGTH_HOPS {
+        return Err(GraphError::query(
+            QueryPhase::Parse,
+            ErrorCode::NumberOutOfRange,
+            format!("var-length hop count `{n}` exceeds the {MAX_VAR_LENGTH_HOPS}-hop cap"),
+        ));
+    }
+    Ok(n)
+}
+
 fn parse_var_length(
     pair: pest::iterators::Pair<Rule>,
 ) -> crate::types::Result<((u32, u32), HashMap<String, Expr>)> {
@@ -1313,8 +1345,8 @@ fn parse_var_length(
                 let nums: Vec<u32> = inner
                     .into_inner()
                     .filter(|p| p.as_rule() == Rule::integer)
-                    .map(|p| p.as_str().parse::<u32>().unwrap())
-                    .collect();
+                    .map(|p| parse_var_length_bound(p.as_str()))
+                    .collect::<crate::types::Result<_>>()?;
                 range = Some(match nums.len() {
                     2 => (nums[0], nums[1]),
                     1 if raw.starts_with("..") => (1, nums[0]),
@@ -1323,7 +1355,7 @@ fn parse_var_length(
                 });
             }
             Rule::fixed_length => {
-                let n = inner.as_str().parse::<u32>().unwrap();
+                let n = parse_var_length_bound(inner.as_str())?;
                 range = Some((n, n));
             }
             Rule::property_map => {
@@ -2250,6 +2282,7 @@ fn parse_atom_expr(pair: pest::iterators::Pair<Rule>) -> crate::types::Result<Ex
         Rule::quantifier_expr => parse_quantifier_expr(pair),
         Rule::dotted_function_call => parse_dotted_function_call(pair),
         Rule::function_call => parse_function_call(pair),
+        Rule::unknown_function_call => parse_unknown_function_call(pair),
         Rule::property_access => {
             let span = span_from_pair(&pair);
             let mut parts = pair.into_inner();
@@ -2448,6 +2481,51 @@ fn parse_function_call(pair: pest::iterators::Pair<Rule>) -> crate::types::Resul
     for inner in pair.into_inner() {
         match inner.as_rule() {
             Rule::function_name => name = inner.as_str().to_string(),
+            Rule::function_args => {
+                for arg in inner.into_inner() {
+                    match arg.as_rule() {
+                        Rule::star => args.push(Expr::new(ExprKind::Star, span_from_pair(&arg))),
+                        Rule::distinct_keyword => distinct = true,
+                        Rule::expr_list => {
+                            for expr_pair in arg.into_inner() {
+                                if expr_pair.as_rule() == Rule::expr {
+                                    args.push(parse_expr(expr_pair)?);
+                                }
+                            }
+                        }
+                        Rule::expr => args.push(parse_expr(arg)?),
+                        _ => {}
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+
+    Ok(Expr::new(
+        ExprKind::FunctionCall {
+            name,
+            args,
+            distinct,
+            original_text: Some(original_text),
+        },
+        span,
+    ))
+}
+
+/// Parse `ident(args)` where the ident is not a recognized function name.
+/// Builds a FunctionCall AST node so the planner can raise `UnknownFunction`
+/// with a `did you mean ...?` hint.
+fn parse_unknown_function_call(pair: pest::iterators::Pair<Rule>) -> crate::types::Result<Expr> {
+    let original_text = pair.as_str().to_string();
+    let span = span_from_pair(&pair);
+    let mut name = String::new();
+    let mut args = Vec::new();
+    let mut distinct = false;
+
+    for inner in pair.into_inner() {
+        match inner.as_rule() {
+            Rule::plain_ident => name = inner.as_str().to_string(),
             Rule::function_args => {
                 for arg in inner.into_inner() {
                     match arg.as_rule() {

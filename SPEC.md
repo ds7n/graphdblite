@@ -125,7 +125,9 @@ All bindings expose: `open`, `open_memory`, `begin_read`, `begin_write`, `query`
 - openCypher-aligned error taxonomy: `SyntaxError`, `TypeError`, `SemanticError`, `EntityNotFound`, `ArgumentError`, `ArithmeticError`, `ConstraintViolation`, `ProcedureError`
 - Each error carries `phase: QueryPhase`, `code: ErrorCode` (~30 structured openCypher codes), `message`, optional `hint`, optional `span` (source position)
 - Display format: `Kind(Code) at <span|phase>: msg` with optional `hint:` line
-- Parser-phase errors carry source spans (line:col) via pest; full span threading through AST/planner is a future task
+- Parser and planner errors carry source spans (line:col): `Expr` is `{ kind: ExprKind, span: Span }`, with parser populating spans for variable/property/function-call leaves and planner attaching them at scope-validation sites
+- `UndefinedVariable` errors include `did you mean X?` hints from a Levenshtein search over the in-scope names
+- Integer arithmetic uses checked operations — overflow raises `ArithmeticError(NumberOutOfRange)` rather than wrapping
 - Compile-time validation: undefined variables, duplicate aliases, type mismatches, invalid aggregation nesting
 
 ### TCK conformance

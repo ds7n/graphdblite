@@ -110,6 +110,7 @@ macro_rules! impl_read_ops {
                 }
                 let ctx = ExecContext {
                     max_result_rows: self.max_result_rows,
+                    max_traversal_depth: self.max_traversal_depth,
                     ..Default::default()
                 };
                 executor::execute_with_ctx(&self.tx, &plan, &ctx)
@@ -132,6 +133,7 @@ macro_rules! impl_read_ops {
                 }
                 let ctx = ExecContext {
                     max_result_rows: self.max_result_rows,
+                    max_traversal_depth: self.max_traversal_depth,
                     procedures: procedures.clone(),
                 };
                 executor::execute_with_ctx(&self.tx, &plan, &ctx)
@@ -144,13 +146,19 @@ macro_rules! impl_read_ops {
 pub struct ReadTransaction<'a> {
     tx: rusqlite::Transaction<'a>,
     max_result_rows: usize,
+    max_traversal_depth: u32,
 }
 
 impl<'a> ReadTransaction<'a> {
-    pub(crate) fn new(tx: rusqlite::Transaction<'a>, max_result_rows: usize) -> Self {
+    pub(crate) fn new(
+        tx: rusqlite::Transaction<'a>,
+        max_result_rows: usize,
+        max_traversal_depth: u32,
+    ) -> Self {
         Self {
             tx,
             max_result_rows,
+            max_traversal_depth,
         }
     }
 
@@ -169,6 +177,7 @@ pub struct WriteTransaction<'a> {
     max_property_value_bytes: usize,
     max_name_bytes: usize,
     max_result_rows: usize,
+    max_traversal_depth: u32,
 }
 
 impl<'a> WriteTransaction<'a> {
@@ -177,12 +186,14 @@ impl<'a> WriteTransaction<'a> {
         max_property_value_bytes: usize,
         max_name_bytes: usize,
         max_result_rows: usize,
+        max_traversal_depth: u32,
     ) -> Self {
         Self {
             tx,
             max_property_value_bytes,
             max_name_bytes,
             max_result_rows,
+            max_traversal_depth,
         }
     }
 

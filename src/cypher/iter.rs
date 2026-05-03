@@ -257,6 +257,7 @@ pub struct ExpandIter<'a> {
     max_hops: u32,
     var_length: bool,
     var_length_prop_filters: HashMap<String, Value>,
+    max_traversal_work: u64,
     /// Buffer of expanded records from the current input record.
     buffer: std::vec::IntoIter<Record>,
 }
@@ -309,6 +310,7 @@ impl<'a> RecordIter for ExpandIter<'a> {
                     self.max_hops,
                     &self.var_length_prop_filters,
                     None,
+                    self.max_traversal_work,
                 )?;
                 for (dst_id, steps) in paths {
                     if let Some(required) = bound_dst {
@@ -434,6 +436,7 @@ impl<'a> RecordIter for ExpandIter<'a> {
 pub fn build_iter<'a>(
     conn: &'a Connection,
     plan: &'a LogicalOp,
+    max_traversal_work: u64,
 ) -> Result<Box<dyn RecordIter + 'a>> {
     match plan {
         LogicalOp::EmptyRow => Ok(Box::new(EmptyRowIter::new())),
@@ -469,7 +472,7 @@ pub fn build_iter<'a>(
         }
 
         LogicalOp::Filter { input, predicate } => {
-            let input_iter = build_iter(conn, input)?;
+            let input_iter = build_iter(conn, input, max_traversal_work)?;
             Ok(Box::new(FilterIter {
                 input: input_iter,
                 predicate: predicate.clone(),
@@ -478,7 +481,7 @@ pub fn build_iter<'a>(
         }
 
         LogicalOp::Skip { input, count } => {
-            let input_iter = build_iter(conn, input)?;
+            let input_iter = build_iter(conn, input, max_traversal_work)?;
             Ok(Box::new(SkipIter {
                 input: input_iter,
                 remaining_to_skip: *count,
@@ -486,7 +489,7 @@ pub fn build_iter<'a>(
         }
 
         LogicalOp::Limit { input, count } => {
-            let input_iter = build_iter(conn, input)?;
+            let input_iter = build_iter(conn, input, max_traversal_work)?;
             Ok(Box::new(LimitIter {
                 input: input_iter,
                 remaining: *count,
@@ -498,7 +501,7 @@ pub fn build_iter<'a>(
             items,
             emit_compound,
         } => {
-            let input_iter = build_iter(conn, input)?;
+            let input_iter = build_iter(conn, input, max_traversal_work)?;
             Ok(Box::new(ProjectIter {
                 input: input_iter,
                 items: items.clone(),
@@ -520,7 +523,7 @@ pub fn build_iter<'a>(
             var_length_prop_filters,
             result_cap: _,
         } => {
-            let input_iter = build_iter(conn, input)?;
+            let input_iter = build_iter(conn, input, max_traversal_work)?;
             let prop_filter_values: HashMap<String, Value> = var_length_prop_filters
                 .iter()
                 .filter_map(|(k, expr)| match &expr.kind {
@@ -540,13 +543,14 @@ pub fn build_iter<'a>(
                 max_hops: *max_hops,
                 var_length: *var_length,
                 var_length_prop_filters: prop_filter_values,
+                max_traversal_work,
                 buffer: Vec::new().into_iter(),
             }))
         }
 
         LogicalOp::Distinct { input } => {
             // Blocking: must materialize to deduplicate.
-            let mut input_iter = build_iter(conn, input)?;
+            let mut input_iter = build_iter(conn, input, max_traversal_work)?;
             let records = collect_all(&mut *input_iter)?;
             let mut seen = Vec::new();
             let mut deduped = Vec::new();
@@ -561,7 +565,7 @@ pub fn build_iter<'a>(
 
         LogicalOp::Sort { input, items } => {
             // Blocking: must materialize all input before sorting.
-            let mut input_iter = build_iter(conn, input)?;
+            let mut input_iter = build_iter(conn, input, max_traversal_work)?;
             let mut records = collect_all(&mut *input_iter)?;
             records.sort_by(|a, b| {
                 for item in items {

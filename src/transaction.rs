@@ -111,6 +111,7 @@ macro_rules! impl_read_ops {
                 let ctx = ExecContext {
                     max_result_rows: self.max_result_rows,
                     max_traversal_depth: self.max_traversal_depth,
+                    max_traversal_work: self.max_traversal_work,
                     ..Default::default()
                 };
                 executor::execute_with_ctx(&self.tx, &plan, &ctx)
@@ -134,6 +135,7 @@ macro_rules! impl_read_ops {
                 let ctx = ExecContext {
                     max_result_rows: self.max_result_rows,
                     max_traversal_depth: self.max_traversal_depth,
+                    max_traversal_work: self.max_traversal_work,
                     procedures: procedures.clone(),
                 };
                 executor::execute_with_ctx(&self.tx, &plan, &ctx)
@@ -147,6 +149,7 @@ pub struct ReadTransaction<'a> {
     tx: rusqlite::Transaction<'a>,
     max_result_rows: usize,
     max_traversal_depth: u32,
+    max_traversal_work: u64,
 }
 
 impl<'a> ReadTransaction<'a> {
@@ -154,11 +157,13 @@ impl<'a> ReadTransaction<'a> {
         tx: rusqlite::Transaction<'a>,
         max_result_rows: usize,
         max_traversal_depth: u32,
+        max_traversal_work: u64,
     ) -> Self {
         Self {
             tx,
             max_result_rows,
             max_traversal_depth,
+            max_traversal_work,
         }
     }
 
@@ -178,6 +183,7 @@ pub struct WriteTransaction<'a> {
     max_name_bytes: usize,
     max_result_rows: usize,
     max_traversal_depth: u32,
+    max_traversal_work: u64,
 }
 
 impl<'a> WriteTransaction<'a> {
@@ -187,6 +193,7 @@ impl<'a> WriteTransaction<'a> {
         max_name_bytes: usize,
         max_result_rows: usize,
         max_traversal_depth: u32,
+        max_traversal_work: u64,
     ) -> Self {
         Self {
             tx,
@@ -194,6 +201,7 @@ impl<'a> WriteTransaction<'a> {
             max_name_bytes,
             max_result_rows,
             max_traversal_depth,
+            max_traversal_work,
         }
     }
 

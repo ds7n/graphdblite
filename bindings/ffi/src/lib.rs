@@ -342,6 +342,7 @@ pub unsafe extern "C" fn graphdb_tx_query(
         let ctx = executor::ExecContext {
             max_result_rows: guard.max_result_rows,
             max_traversal_depth: guard.max_traversal_depth,
+            max_traversal_work: guard.max_traversal_work,
             ..Default::default()
         };
         executor::execute_with_ctx(conn, &plan, &ctx)

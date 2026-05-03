@@ -20,15 +20,28 @@ mod correlated;
 use correlated::{exec_correlated, exec_correlated_join, exec_left_outer_join, value_to_node_id};
 
 /// Execution context carrying runtime limits.
-#[derive(Default)]
 pub struct ExecContext {
     /// Maximum rows any operator may produce. 0 = unlimited.
     pub max_result_rows: usize,
     /// Maximum hop count for any pattern traversal (`Expand` / `ShortestPath`).
     /// Enforced before execution. 0 = unlimited.
     pub max_traversal_depth: u32,
+    /// Maximum total edge-visit budget for a single var-length traversal.
+    /// Enforced inside `traverse_paths`. 0 = unlimited.
+    pub max_traversal_work: u64,
     /// Test procedure registry for CALL statements.
     pub procedures: ProcedureRegistry,
+}
+
+impl Default for ExecContext {
+    fn default() -> Self {
+        Self {
+            max_result_rows: 0,
+            max_traversal_depth: 0,
+            max_traversal_work: 10_000_000,
+            procedures: ProcedureRegistry::default(),
+        }
+    }
 }
 
 /// Walk the plan tree and reject any traversal whose hop count exceeds the
@@ -136,12 +149,13 @@ pub(super) fn check_row_limit(results: &[Record], ctx: &ExecContext) -> Result<(
 /// operators (Filter, Limit, Project) stream without full materialization.
 #[instrument(skip_all, level = "debug")]
 pub fn execute(conn: &Connection, plan: &LogicalOp) -> Result<Vec<Record>> {
-    validate_traversal_depth(plan, &ExecContext::default())?;
+    let ctx = ExecContext::default();
+    validate_traversal_depth(plan, &ctx)?;
     if is_read_only(plan) {
-        let mut iter = crate::cypher::iter::build_iter(conn, plan)?;
+        let mut iter = crate::cypher::iter::build_iter(conn, plan, ctx.max_traversal_work)?;
         crate::cypher::iter::collect_all(&mut *iter)
     } else {
-        let result = exec(conn, plan, &ExecContext::default())?;
+        let result = exec(conn, plan, &ctx)?;
         // Write-only queries (no RETURN clause) should return empty results.
         // When a RETURN is present, the planner wraps the write op in a Project,
         // so the top-level op will be Project/Sort/Skip/Limit/etc., not a bare write.
@@ -575,6 +589,7 @@ fn exec_expand(
                 max_hops,
                 &prop_filter_values,
                 per_call_cap,
+                ctx.max_traversal_work,
             )?;
             for (dst_id, steps) in paths {
                 if let Some(required) = bound_dst_id {

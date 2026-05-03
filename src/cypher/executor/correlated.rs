@@ -344,6 +344,7 @@ pub(super) fn exec_correlated(
                             *max_hops,
                             &prop_filter_values,
                             None,
+                            ctx.max_traversal_work,
                         )?;
                         // Collect edges already bound by prior Expand steps in
                         // this pattern chain so we can enforce cross-segment

@@ -47,6 +47,11 @@ pub struct Config {
     pub cache_size: i32,
     /// SQLite mmap_size in bytes. Default: 268435456 (256 MiB).
     /// Memory-mapped I/O improves read-heavy workloads. Set to 0 to disable.
+    ///
+    /// **Note**: the default reserves 256 MiB of address space per open
+    /// `Database` handle. On 32-bit targets, sandboxed environments with
+    /// strict address-space limits (e.g. seccomp/RLIMIT_AS), or hosts running
+    /// many concurrent handles, consider lowering or disabling this.
     pub mmap_size: i64,
 }
 
@@ -88,7 +93,35 @@ impl Database {
     /// Open a database with custom configuration.
     pub fn open_with_config<P: AsRef<Path>>(path: P, config: Config) -> Result<Self> {
         let p = path.as_ref();
-        let is_new = !p.exists();
+        // Atomically pre-create the database file with owner-only permissions
+        // before SQLite opens it. Without this, SQLITE_OPEN_CREATE would create
+        // the file with the process umask (often 0o644), leaving a TOCTOU
+        // window where the file is world-readable until our `set_permissions`
+        // call ran. `create_new(true)` uses O_CREAT|O_EXCL so this is a no-op
+        // (and harmless EEXIST) when the file already exists.
+        #[cfg(unix)]
+        {
+            use std::fs::OpenOptions;
+            use std::os::unix::fs::OpenOptionsExt;
+            match OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .mode(0o600)
+                .open(p)
+            {
+                Ok(_) => {}
+                Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {}
+                Err(e) => {
+                    return Err(crate::types::GraphError::Storage {
+                        source: rusqlite::Error::SqliteFailure(
+                            rusqlite::ffi::Error::new(rusqlite::ffi::SQLITE_CANTOPEN),
+                            Some(format!("failed to pre-create database file: {e}")),
+                        ),
+                        hint: None,
+                    });
+                }
+            }
+        }
         let conn = Connection::open_with_flags(
             p,
             OpenFlags::SQLITE_OPEN_READ_WRITE
@@ -97,14 +130,6 @@ impl Database {
                 // so concurrent access from multiple threads is prevented at compile time.
                 | OpenFlags::SQLITE_OPEN_NO_MUTEX,
         )?;
-        // Restrict file permissions to owner-only on newly created databases.
-        #[cfg(unix)]
-        if is_new {
-            use std::os::unix::fs::PermissionsExt;
-            let _ = std::fs::set_permissions(p, std::fs::Permissions::from_mode(0o600));
-        }
-        #[cfg(not(unix))]
-        let _ = is_new;
         Self::init(conn, &config)
     }
 

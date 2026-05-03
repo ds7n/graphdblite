@@ -567,6 +567,13 @@ pub struct PathStep {
 /// match are pruned immediately rather than filtering results after traversal.
 ///
 /// Zero-length paths (min_hops=0) include the start node with empty step list.
+///
+/// # Fuel cap
+/// DFS work is bounded by `MAX_TRAVERSAL_FUEL` edge visits. Without this,
+/// dense graphs combined with high hop counts (e.g. K15 with `*1..14`)
+/// produce factorial path enumeration that pegs CPU and memory long before
+/// `max_results` would stop it. Exceeding the cap returns
+/// `GraphError::SizeLimit { what: "variable-length traversal work", .. }`.
 #[allow(clippy::too_many_arguments)]
 pub fn traverse_paths(
     conn: &Connection,
@@ -608,6 +615,13 @@ pub fn traverse_paths(
     type DfsFrame = (NodeId, Vec<PathStep>, std::collections::HashSet<u64>);
     let mut stack: Vec<DfsFrame> = Vec::new();
     stack.push((start, Vec::new(), std::collections::HashSet::new()));
+
+    // Bound total DFS work. Each iteration of the inner edge-visit loop
+    // decrements `fuel`; exhaustion returns SizeLimit so a malicious or
+    // pathological pattern can't burn the host. 10M edge visits is several
+    // orders of magnitude above any realistic legitimate workload.
+    const MAX_TRAVERSAL_FUEL: u64 = 10_000_000;
+    let mut fuel: u64 = MAX_TRAVERSAL_FUEL;
 
     while let Some((current, path, visited_edges)) = stack.pop() {
         let depth = path.len() as u32;
@@ -678,6 +692,18 @@ pub fn traverse_paths(
                 }
 
                 for (edge_src, edge_dst, seq, props) in directed_edges {
+                    if fuel == 0 {
+                        return Err(crate::types::GraphError::SizeLimit {
+                            what: "variable-length traversal work".to_string(),
+                            limit: MAX_TRAVERSAL_FUEL as usize,
+                            actual: MAX_TRAVERSAL_FUEL as usize,
+                            hint: Some(
+                                "narrow the hop range, add property predicates, or LIMIT the result"
+                                    .to_string(),
+                            ),
+                        });
+                    }
+                    fuel -= 1;
                     let edge_key = edge_hash(edge_src.0, edge_dst.0, label, seq);
                     if visited_edges.contains(&edge_key) {
                         continue; // Relationship uniqueness.

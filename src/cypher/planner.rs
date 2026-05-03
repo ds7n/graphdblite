@@ -3933,21 +3933,36 @@ fn plan_node_scan(
         // Pick the most selective index: lowest cardinality, ties broken
         // alphabetically for determinism.
         if candidates.len() > 1 {
-            candidates.sort_by(|(key_a, expr_a), (key_b, expr_b)| {
-                let val_a = match &expr_a.kind {
-                    ExprKind::Literal(l) => crate::cypher::executor::literal_to_value(l),
-                    _ => unreachable!(),
+            // Pre-compute literal values up front so the sort comparator can be
+            // infallible; if any candidate is somehow not a literal (would
+            // indicate a planner/grammar bug), fall back to lexicographic
+            // ordering rather than panic.
+            let mut indexed: Vec<(&String, &Expr, Option<crate::types::Value>)> = candidates
+                .iter()
+                .map(|(k, e)| {
+                    let v = match &e.kind {
+                        ExprKind::Literal(l) => Some(crate::cypher::executor::literal_to_value(l)),
+                        _ => None,
+                    };
+                    (*k, *e, v)
+                })
+                .collect();
+            indexed.sort_by(|(key_a, _, val_a), (key_b, _, val_b)| {
+                let count_a = match val_a {
+                    Some(v) => {
+                        index::index_count_for_value(conn, &label, key_a, v).unwrap_or(usize::MAX)
+                    }
+                    None => usize::MAX,
                 };
-                let val_b = match &expr_b.kind {
-                    ExprKind::Literal(l) => crate::cypher::executor::literal_to_value(l),
-                    _ => unreachable!(),
+                let count_b = match val_b {
+                    Some(v) => {
+                        index::index_count_for_value(conn, &label, key_b, v).unwrap_or(usize::MAX)
+                    }
+                    None => usize::MAX,
                 };
-                let count_a =
-                    index::index_count_for_value(conn, &label, key_a, &val_a).unwrap_or(usize::MAX);
-                let count_b =
-                    index::index_count_for_value(conn, &label, key_b, &val_b).unwrap_or(usize::MAX);
                 count_a.cmp(&count_b).then_with(|| key_a.cmp(key_b))
             });
+            candidates = indexed.into_iter().map(|(k, e, _)| (k, e)).collect();
         }
 
         let indexed_match = candidates.into_iter().next();
@@ -3955,7 +3970,15 @@ fn plan_node_scan(
         if let Some((prop, expr)) = indexed_match {
             let lit = match &expr.kind {
                 ExprKind::Literal(l) => l.clone(),
-                _ => unreachable!(),
+                // Defensive: candidates were filtered to literals upstream;
+                // surface a planner-internal error rather than aborting.
+                _ => {
+                    return Err(GraphError::query(
+                        crate::types::QueryPhase::SemanticAnalysis,
+                        ErrorCode::Other,
+                        "internal: indexed match candidate is not a literal".to_string(),
+                    ));
+                }
             };
 
             // Build remaining filters from non-indexed properties.

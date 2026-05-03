@@ -173,6 +173,7 @@ impl WriteTransaction {
         let ctx = executor::ExecContext {
             max_result_rows: db.max_result_rows,
             max_traversal_depth: db.max_traversal_depth,
+            max_traversal_work: db.max_traversal_work,
             ..Default::default()
         };
         let records = executor::execute_with_ctx(conn, &plan, &ctx).map_err(to_napi_err)?;
@@ -233,6 +234,7 @@ impl ReadTransaction {
         let ctx = executor::ExecContext {
             max_result_rows: db.max_result_rows,
             max_traversal_depth: db.max_traversal_depth,
+            max_traversal_work: db.max_traversal_work,
             ..Default::default()
         };
         let records = executor::execute_with_ctx(conn, &plan, &ctx).map_err(to_napi_err)?;

@@ -38,6 +38,13 @@ pub struct Config {
     /// roughly as `O(branching_factor ^ max_hops)`, so a too-large value can
     /// OOM the host on dense graphs.
     pub max_traversal_depth: u32,
+    /// Maximum total edge-visit budget (DFS "fuel") for a single var-length
+    /// traversal. Default: 10,000,000. Set to 0 to disable. This is the
+    /// runtime sibling to `max_traversal_depth`: even within the hop cap,
+    /// dense graphs can produce factorial path enumeration that pegs CPU
+    /// long before result limits would stop it. Exceeding this returns
+    /// `GraphError::SizeLimit`.
+    pub max_traversal_work: u64,
     /// Maximum byte length for a single property value. Default: 1 MiB.
     pub max_property_value_bytes: usize,
     /// Maximum byte length for label and property key names. Default: 256.
@@ -64,6 +71,7 @@ impl Default for Config {
             busy_timeout_ms: 5000,
             synchronous: SyncMode::Normal,
             max_traversal_depth: 64,
+            max_traversal_work: 10_000_000,
             max_property_value_bytes: 1024 * 1024,
             max_name_bytes: 256,
             max_result_rows: 100_000,
@@ -88,6 +96,9 @@ pub struct Database {
     /// Maximum hop count for variable-length / fixed-length pattern traversal.
     /// Enforced at plan validation time. 0 = unlimited.
     pub max_traversal_depth: u32,
+    /// Maximum total edge-visit budget for a single var-length traversal.
+    /// Enforced inside `traverse_paths`. 0 = unlimited.
+    pub max_traversal_work: u64,
 }
 
 impl Database {
@@ -162,6 +173,7 @@ impl Database {
             max_name_bytes: config.max_name_bytes,
             max_result_rows: config.max_result_rows,
             max_traversal_depth: config.max_traversal_depth,
+            max_traversal_work: config.max_traversal_work,
         })
     }
 
@@ -182,6 +194,7 @@ impl Database {
             tx,
             self.max_result_rows,
             self.max_traversal_depth,
+            self.max_traversal_work,
         ))
     }
 
@@ -196,6 +209,7 @@ impl Database {
             self.max_name_bytes,
             self.max_result_rows,
             self.max_traversal_depth,
+            self.max_traversal_work,
         ))
     }
 }

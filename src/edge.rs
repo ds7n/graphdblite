@@ -569,8 +569,8 @@ pub struct PathStep {
 /// Zero-length paths (min_hops=0) include the start node with empty step list.
 ///
 /// # Fuel cap
-/// DFS work is bounded by `MAX_TRAVERSAL_FUEL` edge visits. Without this,
-/// dense graphs combined with high hop counts (e.g. K15 with `*1..14`)
+/// DFS work is bounded by `max_work` edge visits (0 = unlimited). Without
+/// this, dense graphs combined with high hop counts (e.g. K15 with `*1..14`)
 /// produce factorial path enumeration that pegs CPU and memory long before
 /// `max_results` would stop it. Exceeding the cap returns
 /// `GraphError::SizeLimit { what: "variable-length traversal work", .. }`.
@@ -584,6 +584,7 @@ pub fn traverse_paths(
     max_hops: u32,
     prop_filters: &HashMap<String, crate::types::Value>,
     max_results: Option<usize>,
+    max_work: u64,
 ) -> Result<Vec<(NodeId, Vec<PathStep>)>> {
     let mut results: Vec<(NodeId, Vec<PathStep>)> = Vec::new();
 
@@ -618,10 +619,10 @@ pub fn traverse_paths(
 
     // Bound total DFS work. Each iteration of the inner edge-visit loop
     // decrements `fuel`; exhaustion returns SizeLimit so a malicious or
-    // pathological pattern can't burn the host. 10M edge visits is several
-    // orders of magnitude above any realistic legitimate workload.
-    const MAX_TRAVERSAL_FUEL: u64 = 10_000_000;
-    let mut fuel: u64 = MAX_TRAVERSAL_FUEL;
+    // pathological pattern can't burn the host. The cap is supplied by the
+    // caller (from `Config::max_traversal_work`); 0 disables it.
+    let unlimited_work = max_work == 0;
+    let mut fuel: u64 = max_work;
 
     while let Some((current, path, visited_edges)) = stack.pop() {
         let depth = path.len() as u32;
@@ -692,18 +693,20 @@ pub fn traverse_paths(
                 }
 
                 for (edge_src, edge_dst, seq, props) in directed_edges {
-                    if fuel == 0 {
-                        return Err(crate::types::GraphError::SizeLimit {
-                            what: "variable-length traversal work".to_string(),
-                            limit: MAX_TRAVERSAL_FUEL as usize,
-                            actual: MAX_TRAVERSAL_FUEL as usize,
-                            hint: Some(
-                                "narrow the hop range, add property predicates, or LIMIT the result"
-                                    .to_string(),
-                            ),
-                        });
+                    if !unlimited_work {
+                        if fuel == 0 {
+                            return Err(crate::types::GraphError::SizeLimit {
+                                what: "variable-length traversal work".to_string(),
+                                limit: max_work as usize,
+                                actual: max_work as usize,
+                                hint: Some(
+                                    "narrow the hop range, add property predicates, LIMIT the result, or raise Config::max_traversal_work"
+                                        .to_string(),
+                                ),
+                            });
+                        }
+                        fuel -= 1;
                     }
-                    fuel -= 1;
                     let edge_key = edge_hash(edge_src.0, edge_dst.0, label, seq);
                     if visited_edges.contains(&edge_key) {
                         continue; // Relationship uniqueness.

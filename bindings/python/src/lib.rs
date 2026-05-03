@@ -373,6 +373,7 @@ impl PyWriteTransaction {
         let ctx = graphdblite::cypher::executor::ExecContext {
             max_result_rows: db.max_result_rows,
             max_traversal_depth: db.max_traversal_depth,
+            max_traversal_work: db.max_traversal_work,
             ..Default::default()
         };
         let records = graphdblite::cypher::executor::execute_with_ctx(conn, &plan, &ctx)
@@ -542,6 +543,7 @@ impl PyReadTransaction {
         let ctx = graphdblite::cypher::executor::ExecContext {
             max_result_rows: db.max_result_rows,
             max_traversal_depth: db.max_traversal_depth,
+            max_traversal_work: db.max_traversal_work,
             ..Default::default()
         };
         let records = graphdblite::cypher::executor::execute_with_ctx(conn, &plan, &ctx)

@@ -152,6 +152,15 @@ All bindings expose: `open`, `open_memory`, `begin_read`, `begin_write`, `query`
 ### Concurrency
 - **Single-writer** — WAL allows concurrent readers but only one writer at a time (SQLite limitation).
 
+### Resource limits (defensive caps)
+- Query input: 1 MiB (`MAX_QUERY_BYTES` in `parser.rs`)
+- Expression nesting depth: 256 (`MAX_EXPR_DEPTH`, pre-pest bracket scan)
+- Variable-length hop count: 256 (`MAX_VAR_LENGTH_HOPS`)
+- Variable-length traversal work: 10M edge visits (`MAX_TRAVERSAL_FUEL` in `edge.rs`)
+- `range()` list size: 10M elements
+- Result rows: 100K default (configurable via `Config::max_result_rows`, 0 = unlimited)
+- Newly-created DB files have mode `0o600` atomically (no umask race)
+
 ### Scale
 Designed for datasets in the **low millions of nodes** with moderate edge density. 10M nodes is achievable for indexed point-lookups; full label scans at that scale will be slow. 100M+ nodes would require rearchitecting the scan layer (streaming from SQLite instead of materializing), replacing linear-scan dedup with `HashSet`, and making adjacency lists appendable without full rewrite.
 

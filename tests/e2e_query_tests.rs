@@ -2058,6 +2058,35 @@ fn e2e_var_length_hop_cap_rejects_unbounded_traversal() {
 }
 
 #[test]
+fn e2e_var_length_hop_cap_is_configurable_via_config() {
+    // Regression: `Config::max_traversal_depth` must actually be enforced.
+    // A query within the default cap but above a custom cap must error; the
+    // same query must succeed when the cap is raised.
+    use graphdblite::Config;
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("depth.db");
+    let mut db = Database::open_with_config(
+        &path,
+        Config {
+            max_traversal_depth: 5,
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    let tx = db.begin_read().unwrap();
+    let err = tx
+        .query("MATCH (a)-[*1..10]->(b) RETURN a")
+        .expect_err("expected configured-depth error");
+    let msg = format!("{err}").to_lowercase();
+    assert!(
+        msg.contains("traversal depth") && msg.contains("5"),
+        "expected error to cite the configured cap, got: {msg}"
+    );
+    tx.query("MATCH (a)-[*1..5]->(b) RETURN a").unwrap();
+    tx.commit().unwrap();
+}
+
+#[test]
 fn e2e_range_size_cap_rejects_huge_allocations() {
     // Regression: range() used to allocate the full Vec without a size guard,
     // OOMing the host on `RETURN range(0, 9999999999)`. Must now reject.

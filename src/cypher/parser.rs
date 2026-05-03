@@ -1414,36 +1414,24 @@ fn parse_rel_pattern(pair: pest::iterators::Pair<Rule>) -> crate::types::Result<
     })
 }
 
-/// Hard cap on var-length / fixed-length hop counts in patterns.
-///
-/// Var-length traversal (`src/edge.rs::traverse_paths`) clones the path and
-/// visited-edge set per branch, so cost grows roughly as
-/// `O(branching_factor ^ max_hops)`. Even on small graphs an explicit
-/// `MATCH ()-[*1..1000000000]->()` will OOM the host. We refuse to plan such
-/// queries up front rather than letting them run unbounded — see security
-/// finding H1.
-const MAX_VAR_LENGTH_HOPS: u32 = 256;
-
 /// Parse a `u32` hop bound from a var-length pattern (e.g. the `4` in `*1..4`).
-/// Rejects values that overflow `u32` (security finding H3) or exceed
-/// `MAX_VAR_LENGTH_HOPS` (security finding H1) with a structured error rather
-/// than panicking or running an unbounded traversal.
+///
+/// Rejects values that overflow `u32` (security finding H3) so a malformed
+/// pattern can't panic the parser. The hop-count *cap* (security finding H1)
+/// is enforced at plan-validation time against `Config::max_traversal_depth`,
+/// not here — that lets the limit be configurable rather than baked into the
+/// grammar. Var-length traversal (`src/edge.rs::traverse_paths`) clones the
+/// path and visited-edge set per branch, so cost grows roughly as
+/// `O(branching_factor ^ max_hops)`; an unbounded depth lets `*1..1000000000`
+/// OOM the host, hence the per-database cap.
 fn parse_var_length_bound(s: &str) -> crate::types::Result<u32> {
-    let n = s.parse::<u32>().map_err(|_| {
+    s.parse::<u32>().map_err(|_| {
         GraphError::query(
             QueryPhase::Parse,
             ErrorCode::NumberOutOfRange,
             format!("var-length hop count `{s}` is out of range (must fit in u32)"),
         )
-    })?;
-    if n > MAX_VAR_LENGTH_HOPS {
-        return Err(GraphError::query(
-            QueryPhase::Parse,
-            ErrorCode::NumberOutOfRange,
-            format!("var-length hop count `{n}` exceeds the {MAX_VAR_LENGTH_HOPS}-hop cap"),
-        ));
-    }
-    Ok(n)
+    })
 }
 
 fn parse_var_length(

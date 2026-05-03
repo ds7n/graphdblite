@@ -24,8 +24,99 @@ use correlated::{exec_correlated, exec_correlated_join, exec_left_outer_join, va
 pub struct ExecContext {
     /// Maximum rows any operator may produce. 0 = unlimited.
     pub max_result_rows: usize,
+    /// Maximum hop count for any pattern traversal (`Expand` / `ShortestPath`).
+    /// Enforced before execution. 0 = unlimited.
+    pub max_traversal_depth: u32,
     /// Test procedure registry for CALL statements.
     pub procedures: ProcedureRegistry,
+}
+
+/// Walk the plan tree and reject any traversal whose hop count exceeds the
+/// configured `max_traversal_depth`. Returns early when the cap is 0
+/// (unlimited).
+pub(super) fn validate_traversal_depth(plan: &LogicalOp, ctx: &ExecContext) -> Result<()> {
+    if ctx.max_traversal_depth == 0 {
+        return Ok(());
+    }
+    check_depth_recursive(plan, ctx.max_traversal_depth)
+}
+
+fn check_depth_recursive(op: &LogicalOp, cap: u32) -> Result<()> {
+    match op {
+        LogicalOp::Expand {
+            input, max_hops, ..
+        } => {
+            if *max_hops > cap {
+                return Err(GraphError::query(
+                    crate::types::QueryPhase::SemanticAnalysis,
+                    crate::types::ErrorCode::NumberOutOfRange,
+                    format!(
+                        "var-length hop count `{max_hops}` exceeds the configured max traversal depth of `{cap}`"
+                    ),
+                ));
+            }
+            check_depth_recursive(input, cap)
+        }
+        LogicalOp::ShortestPath {
+            input, max_hops, ..
+        } => {
+            if *max_hops > cap {
+                return Err(GraphError::query(
+                    crate::types::QueryPhase::SemanticAnalysis,
+                    crate::types::ErrorCode::NumberOutOfRange,
+                    format!(
+                        "shortestPath hop count `{max_hops}` exceeds the configured max traversal depth of `{cap}`"
+                    ),
+                ));
+            }
+            check_depth_recursive(input, cap)
+        }
+        LogicalOp::Filter { input, .. }
+        | LogicalOp::Project { input, .. }
+        | LogicalOp::Aggregate { input, .. }
+        | LogicalOp::Sort { input, .. }
+        | LogicalOp::Distinct { input }
+        | LogicalOp::Skip { input, .. }
+        | LogicalOp::Limit { input, .. }
+        | LogicalOp::MatchCreate { input, .. }
+        | LogicalOp::Delete { input, .. }
+        | LogicalOp::SetProperty { input, .. }
+        | LogicalOp::SetLabel { input, .. }
+        | LogicalOp::SetProperties { input, .. }
+        | LogicalOp::Remove { input, .. }
+        | LogicalOp::MatchMerge { input, .. }
+        | LogicalOp::MaterializePath { input, .. }
+        | LogicalOp::Unwind { input, .. }
+        | LogicalOp::Call { input, .. } => check_depth_recursive(input, cap),
+        LogicalOp::CrossProduct { left, right, .. } => {
+            check_depth_recursive(left, cap)?;
+            check_depth_recursive(right, cap)
+        }
+        LogicalOp::CorrelatedJoin { input, right, .. }
+        | LogicalOp::LeftOuterJoin { input, right, .. } => {
+            check_depth_recursive(input, cap)?;
+            check_depth_recursive(right, cap)
+        }
+        LogicalOp::Union { inputs, .. } => {
+            for inp in inputs {
+                check_depth_recursive(inp, cap)?;
+            }
+            Ok(())
+        }
+        LogicalOp::CreateSequence { ops } => {
+            for inner in ops {
+                check_depth_recursive(inner, cap)?;
+            }
+            Ok(())
+        }
+        LogicalOp::SingleRow
+        | LogicalOp::Scan { .. }
+        | LogicalOp::IndexLookup { .. }
+        | LogicalOp::CreateNode { .. }
+        | LogicalOp::CreateEdge { .. }
+        | LogicalOp::Merge { .. }
+        | LogicalOp::EmptyRow => Ok(()),
+    }
 }
 
 /// Check that a result set hasn't exceeded the row cap.
@@ -45,6 +136,7 @@ pub(super) fn check_row_limit(results: &[Record], ctx: &ExecContext) -> Result<(
 /// operators (Filter, Limit, Project) stream without full materialization.
 #[instrument(skip_all, level = "debug")]
 pub fn execute(conn: &Connection, plan: &LogicalOp) -> Result<Vec<Record>> {
+    validate_traversal_depth(plan, &ExecContext::default())?;
     if is_read_only(plan) {
         let mut iter = crate::cypher::iter::build_iter(conn, plan)?;
         crate::cypher::iter::collect_all(&mut *iter)
@@ -85,6 +177,7 @@ pub fn execute_with_ctx(
     plan: &LogicalOp,
     ctx: &ExecContext,
 ) -> Result<Vec<Record>> {
+    validate_traversal_depth(plan, ctx)?;
     let result = exec(conn, plan, ctx)?;
     if is_bare_write(plan) {
         Ok(vec![])

@@ -33,7 +33,10 @@ pub struct Config {
     pub busy_timeout_ms: u32,
     /// SQLite synchronous mode. Default: Normal (WAL-safe).
     pub synchronous: SyncMode,
-    /// Maximum traversal depth for variable-length paths. Default: 15.
+    /// Maximum hop count for variable-length / fixed-length pattern traversal.
+    /// Default: 64. Set to 0 to disable. Var-length traversal cost grows
+    /// roughly as `O(branching_factor ^ max_hops)`, so a too-large value can
+    /// OOM the host on dense graphs.
     pub max_traversal_depth: u32,
     /// Maximum byte length for a single property value. Default: 1 MiB.
     pub max_property_value_bytes: usize,
@@ -60,7 +63,7 @@ impl Default for Config {
         Self {
             busy_timeout_ms: 5000,
             synchronous: SyncMode::Normal,
-            max_traversal_depth: 15,
+            max_traversal_depth: 64,
             max_property_value_bytes: 1024 * 1024,
             max_name_bytes: 256,
             max_result_rows: 100_000,
@@ -82,6 +85,9 @@ pub struct Database {
     pub max_name_bytes: usize,
     /// Maximum number of result rows before the executor aborts.
     pub max_result_rows: usize,
+    /// Maximum hop count for variable-length / fixed-length pattern traversal.
+    /// Enforced at plan validation time. 0 = unlimited.
+    pub max_traversal_depth: u32,
 }
 
 impl Database {
@@ -155,6 +161,7 @@ impl Database {
             max_property_value_bytes: config.max_property_value_bytes,
             max_name_bytes: config.max_name_bytes,
             max_result_rows: config.max_result_rows,
+            max_traversal_depth: config.max_traversal_depth,
         })
     }
 
@@ -171,7 +178,11 @@ impl Database {
         let tx = self
             .conn
             .transaction_with_behavior(TransactionBehavior::Deferred)?;
-        Ok(ReadTransaction::new(tx, self.max_result_rows))
+        Ok(ReadTransaction::new(
+            tx,
+            self.max_result_rows,
+            self.max_traversal_depth,
+        ))
     }
 
     /// Begin a read-write transaction (acquires write lock via BEGIN IMMEDIATE).
@@ -184,6 +195,7 @@ impl Database {
             self.max_property_value_bytes,
             self.max_name_bytes,
             self.max_result_rows,
+            self.max_traversal_depth,
         ))
     }
 }

@@ -156,7 +156,7 @@ All bindings expose: `open`, `open_memory`, `begin_read`, `begin_write`, `query`
 - Query input: 1 MiB (`MAX_QUERY_BYTES` in `parser.rs`)
 - Expression nesting depth: 256 (`MAX_EXPR_DEPTH`, pre-pest bracket scan)
 - Variable-length / fixed-length hop count: 64 default, configurable via `Config::max_traversal_depth` (0 = unlimited). Enforced at plan validation, before execution.
-- Variable-length traversal work: 10M edge visits (`MAX_TRAVERSAL_FUEL` in `edge.rs`)
+- Variable-length traversal work: 10M edge visits default, configurable via `Config::max_traversal_work` (0 = unlimited)
 - `range()` list size: 10M elements
 - Result rows: 100K default (configurable via `Config::max_result_rows`, 0 = unlimited)
 - Newly-created DB files have mode `0o600` atomically (no umask race)

@@ -442,7 +442,7 @@ pub unsafe extern "C" fn graphdb_result_column_name(
     result: *mut GraphResult,
     col: i64,
 ) -> *const c_char {
-    if result.is_null() {
+    if result.is_null() || col < 0 {
         return ptr::null();
     }
     let r = unsafe { &mut *result };
@@ -458,8 +458,9 @@ pub unsafe extern "C" fn graphdb_result_column_name(
         }
     }
 
-    let idx = col as usize;
-    r.columns.get(idx).map_or(ptr::null(), |s| s.as_ptr())
+    r.columns
+        .get(col as usize)
+        .map_or(ptr::null(), |s| s.as_ptr())
 }
 
 /// Get a value as a string representation. Returns NULL if out of bounds.
@@ -472,7 +473,7 @@ pub unsafe extern "C" fn graphdb_result_value_str(
     row: i64,
     col: i64,
 ) -> *const c_char {
-    if result.is_null() {
+    if result.is_null() || row < 0 || col < 0 {
         return ptr::null();
     }
     let r = unsafe { &*result };
@@ -519,7 +520,7 @@ pub unsafe extern "C" fn graphdb_result_value_type(
     row: i64,
     col: i64,
 ) -> i32 {
-    if result.is_null() {
+    if result.is_null() || row < 0 || col < 0 {
         return 0;
     }
     let r = unsafe { &*result };
@@ -554,7 +555,7 @@ pub unsafe extern "C" fn graphdb_result_value_i64(
     row: i64,
     col: i64,
 ) -> i64 {
-    if result.is_null() {
+    if result.is_null() || row < 0 || col < 0 {
         return 0;
     }
     let r = unsafe { &*result };
@@ -575,7 +576,7 @@ pub unsafe extern "C" fn graphdb_result_value_f64(
     row: i64,
     col: i64,
 ) -> f64 {
-    if result.is_null() {
+    if result.is_null() || row < 0 || col < 0 {
         return 0.0;
     }
     let r = unsafe { &*result };
@@ -596,7 +597,7 @@ pub unsafe extern "C" fn graphdb_result_value_bool(
     row: i64,
     col: i64,
 ) -> i32 {
-    if result.is_null() {
+    if result.is_null() || row < 0 || col < 0 {
         return 0;
     }
     let r = unsafe { &*result };

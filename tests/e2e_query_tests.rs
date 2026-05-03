@@ -2120,6 +2120,93 @@ fn e2e_var_length_hop_overflow_errors_not_panics() {
     tx.commit().unwrap();
 }
 
+// Slow (~2 min in debug): exercises the full 10M-edge-visit fuel budget.
+// Run on demand with `cargo test -- --ignored`.
+#[test]
+#[ignore]
+fn e2e_var_length_traversal_fuel_cap_rejects_factorial_blowup() {
+    // Regression: even with hop counts within MAX_VAR_LENGTH_HOPS, a small
+    // dense graph could enumerate factorially many paths and burn host
+    // resources. Must now hit the fuel cap and return a SizeLimit error.
+    let mut db = Database::open_memory().unwrap();
+    {
+        let tx = db.begin_write().unwrap();
+        // Build K12 (complete directed graph): 12 nodes, every ordered pair
+        // connected. *1..11 from any node enumerates ~11! ≈ 4e7 paths, each
+        // visiting up to 11 neighbors per hop — far above the 10M fuel cap.
+        tx.query("UNWIND range(1, 12) AS i CREATE (:N {id: i})")
+            .unwrap();
+        tx.query("MATCH (a:N), (b:N) WHERE a.id <> b.id CREATE (a)-[:R]->(b)")
+            .unwrap();
+        tx.commit().unwrap();
+    }
+    let tx = db.begin_read().unwrap();
+    let err = tx
+        .query("MATCH (a:N {id: 1})-[*1..11]->(b) RETURN b")
+        .expect_err("expected fuel-cap error on K12 traversal");
+    let msg = format!("{err}").to_lowercase();
+    assert!(
+        msg.contains("traversal work") && msg.contains("exceeds"),
+        "expected traversal fuel-cap error, got: {msg}"
+    );
+    // Sanity: a small hop range on the same graph still works.
+    let _ = tx
+        .query("MATCH (a:N {id: 1})-[*1..2]->(b) RETURN b LIMIT 5")
+        .unwrap();
+    tx.commit().unwrap();
+}
+
+#[cfg(unix)]
+#[test]
+fn e2e_new_db_file_created_with_owner_only_perms() {
+    // Regression: DB file used to be created with the process umask (often
+    // 0o644) and chmod'd to 0o600 afterward — TOCTOU window. Must now be
+    // 0o600 atomically from creation.
+    use std::os::unix::fs::PermissionsExt;
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("perms_test.db");
+    {
+        let _db = Database::open(&path).unwrap();
+    }
+    let mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+    assert_eq!(mode, 0o600, "expected 0o600, got {mode:o}");
+}
+
+#[test]
+fn e2e_input_size_cap_rejects_huge_query() {
+    // Regression: parser/eval recursion was unbounded by input size, so a
+    // pathologically large query could exhaust memory. Must now reject up
+    // front with a SizeLimit error.
+    let mut db = Database::open_memory().unwrap();
+    let tx = db.begin_read().unwrap();
+    let big = format!("RETURN {}", "1+".repeat(600_000));
+    let err = tx.query(&big).expect_err("expected size-cap error");
+    let msg = format!("{err}").to_lowercase();
+    assert!(
+        msg.contains("cypher query") && msg.contains("exceeds"),
+        "expected query-size-cap error, got: {msg}"
+    );
+    tx.commit().unwrap();
+}
+
+#[test]
+fn e2e_expr_depth_cap_rejects_deep_nesting() {
+    // Regression: deeply nested parentheses overflowed the parser's recursion
+    // stack and aborted the host. Must now reject before pest descends.
+    let mut db = Database::open_memory().unwrap();
+    let tx = db.begin_read().unwrap();
+    let q = format!("RETURN {}1{}", "(".repeat(10_000), ")".repeat(10_000));
+    let err = tx.query(&q).expect_err("expected depth-cap error");
+    let msg = format!("{err}").to_lowercase();
+    assert!(
+        msg.contains("nesting depth") && msg.contains("exceeds"),
+        "expected depth-cap error, got: {msg}"
+    );
+    // Sanity: modestly nested expressions still parse.
+    tx.query("RETURN ((((1 + 2)) * 3))").unwrap();
+    tx.commit().unwrap();
+}
+
 #[test]
 fn e2e_unknown_function_typo_hint() {
     let mut db = Database::open_memory().unwrap();

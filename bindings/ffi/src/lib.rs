@@ -14,6 +14,7 @@ use std::cell::RefCell;
 use std::ffi::{CStr, CString};
 use std::os::raw::c_char;
 use std::ptr;
+use std::sync::Mutex;
 
 use graphdblite::cypher::{executor, parser, planner, record::Record};
 use graphdblite::{Config, Database, GraphError, Value};
@@ -57,8 +58,21 @@ fn wrap_result<T>(result: Result<T, GraphError>, out: impl FnOnce(T)) -> i32 {
 // ---------------------------------------------------------------------------
 
 /// Opaque database handle.
+///
+/// The inner `Database` is wrapped in a `Mutex` so concurrent FFI calls on the
+/// same handle from multiple threads serialize safely instead of producing
+/// aliased `&mut` references (UB). Callers may still share a `*mut GraphDB`
+/// across threads; per-call locking enforces exclusion internally.
 pub struct GraphDB {
-    db: Database,
+    db: Mutex<Database>,
+}
+
+/// Lock the inner Database, mapping poisoning to a recoverable error.
+fn lock_db(handle: &GraphDB) -> Result<std::sync::MutexGuard<'_, Database>, GraphError> {
+    handle.db.lock().map_err(|_| GraphError::Transaction {
+        message: "database mutex poisoned".into(),
+        hint: None,
+    })
 }
 
 /// Opaque query result handle.
@@ -104,7 +118,7 @@ pub unsafe extern "C" fn graphdb_open(path: *const c_char, out: *mut *mut GraphD
         }
     };
     wrap_result(Database::open(path_str), |db| unsafe {
-        *out = Box::into_raw(Box::new(GraphDB { db }));
+        *out = Box::into_raw(Box::new(GraphDB { db: Mutex::new(db) }));
     })
 }
 
@@ -131,7 +145,7 @@ pub unsafe extern "C" fn graphdb_open_with_timeout(
         ..Config::default()
     };
     wrap_result(Database::open_with_config(path_str, config), |db| unsafe {
-        *out = Box::into_raw(Box::new(GraphDB { db }));
+        *out = Box::into_raw(Box::new(GraphDB { db: Mutex::new(db) }));
     })
 }
 
@@ -143,7 +157,7 @@ pub unsafe extern "C" fn graphdb_open_memory(out: *mut *mut GraphDB) -> i32 {
         return -1;
     }
     wrap_result(Database::open_memory(), |db| unsafe {
-        *out = Box::into_raw(Box::new(GraphDB { db }));
+        *out = Box::into_raw(Box::new(GraphDB { db: Mutex::new(db) }));
     })
 }
 
@@ -175,7 +189,7 @@ pub unsafe extern "C" fn graphdb_query(
         set_error("null pointer argument");
         return -1;
     }
-    let handle = unsafe { &mut *db };
+    let handle = unsafe { &*db };
     let cypher_str = match unsafe { CStr::from_ptr(cypher) }.to_str() {
         Ok(s) => s,
         Err(e) => {
@@ -185,7 +199,8 @@ pub unsafe extern "C" fn graphdb_query(
     };
 
     let result = (|| -> Result<Vec<Record>, GraphError> {
-        let tx = handle.db.begin_read()?;
+        let mut guard = lock_db(handle)?;
+        let tx = guard.begin_read()?;
         let records = tx.query(cypher_str)?;
         tx.commit()?;
         Ok(records)
@@ -214,7 +229,7 @@ pub unsafe extern "C" fn graphdb_execute(
         set_error("null pointer argument");
         return -1;
     }
-    let handle = unsafe { &mut *db };
+    let handle = unsafe { &*db };
     let cypher_str = match unsafe { CStr::from_ptr(cypher) }.to_str() {
         Ok(s) => s,
         Err(e) => {
@@ -224,7 +239,8 @@ pub unsafe extern "C" fn graphdb_execute(
     };
 
     let result = (|| -> Result<Vec<Record>, GraphError> {
-        let tx = handle.db.begin_write()?;
+        let mut guard = lock_db(handle)?;
+        let tx = guard.begin_write()?;
         let records = tx.query(cypher_str)?;
         tx.commit()?;
         Ok(records)
@@ -252,7 +268,14 @@ pub unsafe extern "C" fn graphdb_tx_begin_write(db: *mut GraphDB) -> i32 {
         return -1;
     }
     let handle = unsafe { &*db };
-    match handle.db.connection().execute_batch("BEGIN IMMEDIATE") {
+    let guard = match lock_db(handle) {
+        Ok(g) => g,
+        Err(e) => {
+            set_error(&e.to_string());
+            return -1;
+        }
+    };
+    match guard.connection().execute_batch("BEGIN IMMEDIATE") {
         Ok(()) => {
             clear_error();
             0
@@ -272,7 +295,14 @@ pub unsafe extern "C" fn graphdb_tx_begin_read(db: *mut GraphDB) -> i32 {
         return -1;
     }
     let handle = unsafe { &*db };
-    match handle.db.connection().execute_batch("BEGIN DEFERRED") {
+    let guard = match lock_db(handle) {
+        Ok(g) => g,
+        Err(e) => {
+            set_error(&e.to_string());
+            return -1;
+        }
+    };
+    match guard.connection().execute_batch("BEGIN DEFERRED") {
         Ok(()) => {
             clear_error();
             0
@@ -304,12 +334,13 @@ pub unsafe extern "C" fn graphdb_tx_query(
         }
     };
 
-    let conn = handle.db.connection();
     let result = (|| -> Result<Vec<Record>, GraphError> {
+        let guard = lock_db(handle)?;
+        let conn = guard.connection();
         let stmt = parser::parse(cypher_str)?;
         let plan = planner::plan(conn, &stmt)?;
         let ctx = executor::ExecContext {
-            max_result_rows: handle.db.max_result_rows,
+            max_result_rows: guard.max_result_rows,
             ..Default::default()
         };
         executor::execute_with_ctx(conn, &plan, &ctx)
@@ -332,7 +363,14 @@ pub unsafe extern "C" fn graphdb_tx_commit(db: *mut GraphDB) -> i32 {
         return -1;
     }
     let handle = unsafe { &*db };
-    match handle.db.connection().execute_batch("COMMIT") {
+    let guard = match lock_db(handle) {
+        Ok(g) => g,
+        Err(e) => {
+            set_error(&e.to_string());
+            return -1;
+        }
+    };
+    match guard.connection().execute_batch("COMMIT") {
         Ok(()) => {
             clear_error();
             0
@@ -352,7 +390,14 @@ pub unsafe extern "C" fn graphdb_tx_rollback(db: *mut GraphDB) -> i32 {
         return -1;
     }
     let handle = unsafe { &*db };
-    match handle.db.connection().execute_batch("ROLLBACK") {
+    let guard = match lock_db(handle) {
+        Ok(g) => g,
+        Err(e) => {
+            set_error(&e.to_string());
+            return -1;
+        }
+    };
+    match guard.connection().execute_batch("ROLLBACK") {
         Ok(()) => {
             clear_error();
             0
@@ -447,8 +492,17 @@ pub unsafe extern "C" fn graphdb_result_value_str(
         static VALUE_BUF: RefCell<Option<CString>> = const { RefCell::new(None) };
     }
     let s = format_value(val);
+    // Interior NULs would silently truncate via `unwrap_or_default()`, leaving
+    // the caller with an empty string and no signal. Surface as set_error and
+    // return NULL so the failure is observable.
+    let cstr = match CString::new(s) {
+        Ok(c) => c,
+        Err(e) => {
+            set_error(&format!("value contains interior NUL byte: {e}"));
+            return ptr::null();
+        }
+    };
     VALUE_BUF.with(|buf| {
-        let cstr = CString::new(s).unwrap_or_default();
         let ptr = cstr.as_ptr();
         *buf.borrow_mut() = Some(cstr);
         ptr

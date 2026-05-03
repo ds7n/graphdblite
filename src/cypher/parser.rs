@@ -125,8 +125,123 @@ fn pest_span(e: &pest::error::Error<Rule>) -> Span {
     }
 }
 
+/// Maximum byte length of a single Cypher query accepted by the parser.
+/// Defends against memory/stack exhaustion from pathologically large inputs.
+pub const MAX_QUERY_BYTES: usize = 1 << 20; // 1 MiB
+
+/// Maximum nesting depth for parsed expressions (recursion guard for
+/// `parse_expr`, which descends through parens). 256 comfortably handles any
+/// human-written query while preventing thread-stack overflow on adversarial
+/// inputs like `(((((...)))))`.
+pub const MAX_EXPR_DEPTH: usize = 256;
+
+thread_local! {
+    static EXPR_DEPTH: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+/// RAII guard that increments the thread-local expression-depth counter on
+/// construction and decrements it on drop. Returns an error if the cap is
+/// exceeded.
+struct DepthGuard;
+
+impl DepthGuard {
+    fn enter() -> crate::types::Result<Self> {
+        let depth = EXPR_DEPTH.with(|c| {
+            let d = c.get() + 1;
+            c.set(d);
+            d
+        });
+        if depth > MAX_EXPR_DEPTH {
+            EXPR_DEPTH.with(|c| c.set(c.get() - 1));
+            return Err(GraphError::SizeLimit {
+                what: "expression nesting depth".to_string(),
+                limit: MAX_EXPR_DEPTH,
+                actual: depth,
+                hint: Some("simplify the query or split it into multiple statements".to_string()),
+            });
+        }
+        Ok(DepthGuard)
+    }
+}
+
+impl Drop for DepthGuard {
+    fn drop(&mut self) {
+        EXPR_DEPTH.with(|c| c.set(c.get().saturating_sub(1)));
+    }
+}
+
+/// Pre-scan the raw input for the maximum nesting depth of `(`, `[`, `{`
+/// brackets (string literals and `//` line comments excluded). This guards
+/// against pest's own recursive-descent stack overflow on adversarial inputs
+/// like `RETURN ((((...))))` — pest would otherwise blow the stack before our
+/// `parse_expr` depth guard could run.
+fn check_bracket_depth(input: &str) -> crate::types::Result<()> {
+    let bytes = input.as_bytes();
+    let mut i = 0;
+    let mut depth: usize = 0;
+    let mut max_depth: usize = 0;
+    while i < bytes.len() {
+        let b = bytes[i];
+        match b {
+            b'\'' | b'"' => {
+                let quote = b;
+                i += 1;
+                while i < bytes.len() && bytes[i] != quote {
+                    if bytes[i] == b'\\' && i + 1 < bytes.len() {
+                        i += 2;
+                    } else {
+                        i += 1;
+                    }
+                }
+                if i < bytes.len() {
+                    i += 1;
+                }
+            }
+            b'/' if i + 1 < bytes.len() && bytes[i + 1] == b'/' => {
+                while i < bytes.len() && bytes[i] != b'\n' {
+                    i += 1;
+                }
+            }
+            b'(' | b'[' | b'{' => {
+                depth += 1;
+                if depth > max_depth {
+                    max_depth = depth;
+                }
+                if max_depth > MAX_EXPR_DEPTH {
+                    return Err(GraphError::SizeLimit {
+                        what: "bracket nesting depth".to_string(),
+                        limit: MAX_EXPR_DEPTH,
+                        actual: max_depth,
+                        hint: Some(
+                            "simplify the query or split it into multiple statements".to_string(),
+                        ),
+                    });
+                }
+                i += 1;
+            }
+            b')' | b']' | b'}' => {
+                depth = depth.saturating_sub(1);
+                i += 1;
+            }
+            _ => i += 1,
+        }
+    }
+    Ok(())
+}
+
 /// Parse a Cypher query string into a Statement AST.
 pub fn parse(input: &str) -> crate::types::Result<Statement> {
+    if input.len() > MAX_QUERY_BYTES {
+        return Err(GraphError::SizeLimit {
+            what: "Cypher query".to_string(),
+            limit: MAX_QUERY_BYTES,
+            actual: input.len(),
+            hint: Some("split the query into smaller statements".to_string()),
+        });
+    }
+    check_bracket_depth(input)?;
+    // Reset depth counter in case a prior parse on this thread aborted mid-recursion.
+    EXPR_DEPTH.with(|c| c.set(0));
     let pairs = CypherParser::parse(Rule::statement, input).map_err(|e| {
         let span = pest_span(&e);
         GraphError::Query(QueryError::SyntaxError {
@@ -2108,6 +2223,7 @@ fn parse_comp_op(pair: pest::iterators::Pair<Rule>) -> crate::types::Result<BinO
 }
 
 fn parse_expr(pair: pest::iterators::Pair<Rule>) -> crate::types::Result<Expr> {
+    let _guard = DepthGuard::enter()?;
     // expr = { xor_term ~ (or_op ~ xor_term)* }
     let mut children: Vec<pest::iterators::Pair<Rule>> = pair.into_inner().collect();
 

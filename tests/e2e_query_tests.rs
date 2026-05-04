@@ -41,7 +41,7 @@ fn node_label(val: &Value) -> &str {
 fn setup_social_graph() -> Database {
     let mut db = Database::open_memory().unwrap();
     {
-        let tx = db.begin_write().unwrap();
+        let tx = db.write_tx().unwrap();
         tx.query("CREATE (a:Person {name: 'Alice', age: 30})")
             .unwrap();
         tx.query("CREATE (b:Person {name: 'Bob', age: 25})")
@@ -53,7 +53,7 @@ fn setup_social_graph() -> Database {
     }
     {
         // Create edges via the typed API since CREATE with edges needs existing nodes.
-        let tx = db.begin_write().unwrap();
+        let tx = db.write_tx().unwrap();
         tx.create_edge(NodeId(1), NodeId(2), "KNOWS", HashMap::new())
             .unwrap();
         tx.create_edge(NodeId(2), NodeId(3), "KNOWS", HashMap::new())
@@ -68,7 +68,7 @@ fn setup_social_graph() -> Database {
 #[test]
 fn e2e_match_all_by_label() {
     let mut db = setup_social_graph();
-    let tx = db.begin_read().unwrap();
+    let tx = db.read_tx().unwrap();
     let results = tx.query("MATCH (n:Person) RETURN n.name").unwrap();
     assert_eq!(results.len(), 3);
     tx.commit().unwrap();
@@ -77,7 +77,7 @@ fn e2e_match_all_by_label() {
 #[test]
 fn e2e_match_with_where_filter() {
     let mut db = setup_social_graph();
-    let tx = db.begin_read().unwrap();
+    let tx = db.read_tx().unwrap();
     let results = tx
         .query("MATCH (n:Person) WHERE n.age > 28 RETURN n.name")
         .unwrap();
@@ -89,7 +89,7 @@ fn e2e_match_with_where_filter() {
 #[test]
 fn e2e_match_with_string_filter() {
     let mut db = setup_social_graph();
-    let tx = db.begin_read().unwrap();
+    let tx = db.read_tx().unwrap();
     let results = tx
         .query("MATCH (n:Person) WHERE n.name = 'Bob' RETURN n.name")
         .unwrap();
@@ -101,7 +101,7 @@ fn e2e_match_with_string_filter() {
 #[test]
 fn e2e_match_with_relationship() {
     let mut db = setup_social_graph();
-    let tx = db.begin_read().unwrap();
+    let tx = db.read_tx().unwrap();
     let results = tx
         .query("MATCH (a:Person)-[:KNOWS]->(b:Person) RETURN a.name, b.name")
         .unwrap();
@@ -113,7 +113,7 @@ fn e2e_match_with_relationship() {
 #[test]
 fn e2e_match_variable_length_path() {
     let mut db = setup_social_graph();
-    let tx = db.begin_read().unwrap();
+    let tx = db.read_tx().unwrap();
     // Alice knows Bob (1 hop), and Bob knows Charlie (2 hops from Alice).
     let results = tx
         .query("MATCH (a:Person {name: 'Alice'})-[:KNOWS*1..2]->(b) RETURN b.name")
@@ -125,7 +125,7 @@ fn e2e_match_variable_length_path() {
 #[test]
 fn e2e_count_aggregate() {
     let mut db = setup_social_graph();
-    let tx = db.begin_read().unwrap();
+    let tx = db.read_tx().unwrap();
     let results = tx.query("MATCH (n:Person) RETURN count(*) AS cnt").unwrap();
     assert_eq!(results.len(), 1);
     assert_eq!(results[0].get("cnt"), Some(&Value::I64(3)));
@@ -135,7 +135,7 @@ fn e2e_count_aggregate() {
 #[test]
 fn e2e_order_by_and_limit() {
     let mut db = setup_social_graph();
-    let tx = db.begin_read().unwrap();
+    let tx = db.read_tx().unwrap();
     let results = tx
         .query("MATCH (n:Person) RETURN n.name ORDER BY n.name LIMIT 2")
         .unwrap();
@@ -152,7 +152,7 @@ fn e2e_order_by_and_limit() {
 #[test]
 fn e2e_order_by_desc() {
     let mut db = setup_social_graph();
-    let tx = db.begin_read().unwrap();
+    let tx = db.read_tx().unwrap();
     let results = tx
         .query("MATCH (n:Person) RETURN n.age ORDER BY n.age DESC LIMIT 1")
         .unwrap();
@@ -165,13 +165,13 @@ fn e2e_order_by_desc() {
 fn e2e_create_node() {
     let mut db = Database::open_memory().unwrap();
     {
-        let tx = db.begin_write().unwrap();
+        let tx = db.write_tx().unwrap();
         tx.query("CREATE (n:Person {name: 'Dave', age: 40})")
             .unwrap();
         tx.commit().unwrap();
     }
     {
-        let tx = db.begin_read().unwrap();
+        let tx = db.read_tx().unwrap();
         let results = tx
             .query("MATCH (n:Person) WHERE n.name = 'Dave' RETURN n.age")
             .unwrap();
@@ -185,13 +185,13 @@ fn e2e_create_node() {
 fn e2e_create_edge() {
     let mut db = Database::open_memory().unwrap();
     {
-        let tx = db.begin_write().unwrap();
+        let tx = db.write_tx().unwrap();
         tx.query("CREATE (a:Person {name: 'Alice'})-[:KNOWS]->(b:Person {name: 'Bob'})")
             .unwrap();
         tx.commit().unwrap();
     }
     {
-        let tx = db.begin_read().unwrap();
+        let tx = db.read_tx().unwrap();
         let results = tx
             .query("MATCH (a:Person)-[:KNOWS]->(b:Person) RETURN a.name, b.name")
             .unwrap();
@@ -209,13 +209,13 @@ fn e2e_create_edge() {
 fn e2e_delete_node() {
     let mut db = setup_social_graph();
     {
-        let tx = db.begin_write().unwrap();
+        let tx = db.write_tx().unwrap();
         tx.query("MATCH (n:Person) WHERE n.name = 'Charlie' DETACH DELETE n")
             .unwrap();
         tx.commit().unwrap();
     }
     {
-        let tx = db.begin_read().unwrap();
+        let tx = db.read_tx().unwrap();
         let results = tx.query("MATCH (n:Person) RETURN n.name").unwrap();
         assert_eq!(results.len(), 2); // Alice and Bob remain
         tx.commit().unwrap();
@@ -226,13 +226,13 @@ fn e2e_delete_node() {
 fn e2e_set_property() {
     let mut db = setup_social_graph();
     {
-        let tx = db.begin_write().unwrap();
+        let tx = db.write_tx().unwrap();
         tx.query("MATCH (n:Person) WHERE n.name = 'Alice' SET n.age = 31")
             .unwrap();
         tx.commit().unwrap();
     }
     {
-        let tx = db.begin_read().unwrap();
+        let tx = db.read_tx().unwrap();
         let results = tx
             .query("MATCH (n:Person) WHERE n.name = 'Alice' RETURN n.age")
             .unwrap();
@@ -245,13 +245,13 @@ fn e2e_set_property() {
 fn e2e_merge_creates_when_not_found() {
     let mut db = Database::open_memory().unwrap();
     {
-        let tx = db.begin_write().unwrap();
+        let tx = db.write_tx().unwrap();
         tx.query("MERGE (n:Person {name: 'Alice'}) ON CREATE SET n.source = 'created'")
             .unwrap();
         tx.commit().unwrap();
     }
     {
-        let tx = db.begin_read().unwrap();
+        let tx = db.read_tx().unwrap();
         let results = tx
             .query("MATCH (n:Person) WHERE n.name = 'Alice' RETURN n.source")
             .unwrap();
@@ -268,18 +268,18 @@ fn e2e_merge_creates_when_not_found() {
 fn e2e_merge_matches_when_found() {
     let mut db = Database::open_memory().unwrap();
     {
-        let tx = db.begin_write().unwrap();
+        let tx = db.write_tx().unwrap();
         tx.query("CREATE (n:Person {name: 'Alice'})").unwrap();
         tx.commit().unwrap();
     }
     {
-        let tx = db.begin_write().unwrap();
+        let tx = db.write_tx().unwrap();
         tx.query("MERGE (n:Person {name: 'Alice'}) ON MATCH SET n.seen = true")
             .unwrap();
         tx.commit().unwrap();
     }
     {
-        let tx = db.begin_read().unwrap();
+        let tx = db.read_tx().unwrap();
         let results = tx
             .query("MATCH (n:Person) WHERE n.name = 'Alice' RETURN n.seen")
             .unwrap();
@@ -293,14 +293,14 @@ fn e2e_merge_matches_when_found() {
 fn e2e_merge_idempotent() {
     let mut db = Database::open_memory().unwrap();
     {
-        let tx = db.begin_write().unwrap();
+        let tx = db.write_tx().unwrap();
         tx.query("MERGE (n:Person {name: 'Alice'})").unwrap();
         tx.query("MERGE (n:Person {name: 'Alice'})").unwrap();
         tx.query("MERGE (n:Person {name: 'Alice'})").unwrap();
         tx.commit().unwrap();
     }
     {
-        let tx = db.begin_read().unwrap();
+        let tx = db.read_tx().unwrap();
         let results = tx.query("MATCH (n:Person) RETURN count(*) AS cnt").unwrap();
         assert_eq!(results[0].get("cnt"), Some(&Value::I64(1))); // only 1 Alice
         tx.commit().unwrap();
@@ -310,7 +310,7 @@ fn e2e_merge_idempotent() {
 #[test]
 fn e2e_return_star() {
     let mut db = setup_social_graph();
-    let tx = db.begin_read().unwrap();
+    let tx = db.read_tx().unwrap();
     let results = tx
         .query("MATCH (n:Person) WHERE n.name = 'Alice' RETURN *")
         .unwrap();
@@ -330,7 +330,7 @@ fn e2e_return_star() {
 #[test]
 fn e2e_return_bare_variable() {
     let mut db = setup_social_graph();
-    let tx = db.begin_read().unwrap();
+    let tx = db.read_tx().unwrap();
     let results = tx
         .query("MATCH (n:Person) WHERE n.name = 'Bob' RETURN n")
         .unwrap();
@@ -352,7 +352,7 @@ fn e2e_return_bare_variable() {
 #[test]
 fn e2e_return_node_is_compound_value() {
     let mut db = setup_social_graph();
-    let tx = db.begin_read().unwrap();
+    let tx = db.read_tx().unwrap();
     let results = tx
         .query("MATCH (n:Person) WHERE n.name = 'Alice' RETURN n")
         .unwrap();
@@ -376,7 +376,7 @@ fn e2e_return_node_is_compound_value() {
 #[test]
 fn e2e_no_internal_fields_in_property_return() {
     let mut db = setup_social_graph();
-    let tx = db.begin_read().unwrap();
+    let tx = db.read_tx().unwrap();
     let results = tx
         .query("MATCH (n:Person) WHERE n.name = 'Alice' RETURN n.name, n.age")
         .unwrap();
@@ -396,7 +396,7 @@ fn e2e_no_internal_fields_in_property_return() {
 #[test]
 fn e2e_return_star_with_relationship() {
     let mut db = setup_social_graph();
-    let tx = db.begin_read().unwrap();
+    let tx = db.read_tx().unwrap();
     let results = tx
         .query("MATCH (a:Person {name: 'Alice'})-[:KNOWS]->(b:Person) RETURN *")
         .unwrap();
@@ -417,13 +417,13 @@ fn e2e_return_star_with_relationship() {
 fn e2e_match_create_edge_between_existing_nodes() {
     let mut db = Database::open_memory().unwrap();
     {
-        let tx = db.begin_write().unwrap();
+        let tx = db.write_tx().unwrap();
         tx.query("CREATE (a:Person {name: 'Alice'})").unwrap();
         tx.query("CREATE (b:Person {name: 'Bob'})").unwrap();
         tx.commit().unwrap();
     }
     {
-        let tx = db.begin_write().unwrap();
+        let tx = db.write_tx().unwrap();
         tx.query(
             "MATCH (a:Person {name: 'Alice'}), (b:Person {name: 'Bob'}) CREATE (a)-[:KNOWS]->(b)",
         )
@@ -431,7 +431,7 @@ fn e2e_match_create_edge_between_existing_nodes() {
         tx.commit().unwrap();
     }
     {
-        let tx = db.begin_read().unwrap();
+        let tx = db.read_tx().unwrap();
         let results = tx
             .query("MATCH (a:Person)-[:KNOWS]->(b:Person) RETURN a.name, b.name")
             .unwrap();
@@ -451,13 +451,13 @@ fn e2e_match_create_bidirectional_edges() {
     // setup_social_graph creates Alice->Bob and Bob->Charlie via KNOWS.
     // Make the reverse edges too.
     {
-        let tx = db.begin_write().unwrap();
+        let tx = db.write_tx().unwrap();
         tx.query("MATCH (a:Person)-[:KNOWS]->(b:Person) CREATE (b)-[:KNOWS]->(a)")
             .unwrap();
         tx.commit().unwrap();
     }
     {
-        let tx = db.begin_read().unwrap();
+        let tx = db.read_tx().unwrap();
         let results = tx
             .query("MATCH (a:Person)-[:KNOWS]->(b:Person) RETURN a.name, b.name")
             .unwrap();
@@ -471,12 +471,12 @@ fn e2e_match_create_bidirectional_edges() {
 fn e2e_match_create_with_new_node() {
     let mut db = Database::open_memory().unwrap();
     {
-        let tx = db.begin_write().unwrap();
+        let tx = db.write_tx().unwrap();
         tx.query("CREATE (a:Person {name: 'Alice'})").unwrap();
         tx.commit().unwrap();
     }
     {
-        let tx = db.begin_write().unwrap();
+        let tx = db.write_tx().unwrap();
         tx.query(
             "MATCH (a:Person {name: 'Alice'}) CREATE (a)-[:WORKS_AT]->(c:Company {name: 'Acme'})",
         )
@@ -484,7 +484,7 @@ fn e2e_match_create_with_new_node() {
         tx.commit().unwrap();
     }
     {
-        let tx = db.begin_read().unwrap();
+        let tx = db.read_tx().unwrap();
         let results = tx
             .query("MATCH (p:Person)-[:WORKS_AT]->(c:Company) RETURN p.name, c.name")
             .unwrap();
@@ -505,7 +505,7 @@ fn e2e_match_create_with_new_node() {
 fn e2e_is_null() {
     let mut db = setup_social_graph();
     // Company node has no 'age' property → age IS NULL.
-    let tx = db.begin_read().unwrap();
+    let tx = db.read_tx().unwrap();
     let results = tx
         .query("MATCH (n) WHERE n.age IS NULL RETURN n.name")
         .unwrap();
@@ -520,7 +520,7 @@ fn e2e_is_null() {
 #[test]
 fn e2e_collect_aggregate() {
     let mut db = setup_social_graph();
-    let tx = db.begin_read().unwrap();
+    let tx = db.read_tx().unwrap();
     let results = tx
         .query("MATCH (n:Person) RETURN collect(n.name) AS names")
         .unwrap();
@@ -548,7 +548,7 @@ fn e2e_collect_aggregate() {
 fn e2e_grouped_count_aggregate() {
     let mut db = Database::open_memory().unwrap();
     {
-        let tx = db.begin_write().unwrap();
+        let tx = db.write_tx().unwrap();
         tx.query("CREATE (a:Person {name: 'Alice', dept: 'eng'})")
             .unwrap();
         tx.query("CREATE (b:Person {name: 'Bob', dept: 'eng'})")
@@ -557,7 +557,7 @@ fn e2e_grouped_count_aggregate() {
             .unwrap();
         tx.commit().unwrap();
     }
-    let tx = db.begin_read().unwrap();
+    let tx = db.read_tx().unwrap();
     let results = tx
         .query("MATCH (n:Person) RETURN n.dept, count(*) AS cnt ORDER BY n.dept")
         .unwrap();
@@ -576,7 +576,7 @@ fn e2e_grouped_count_aggregate() {
 fn e2e_grouped_collect_aggregate() {
     let mut db = setup_social_graph();
     // Alice->Bob via KNOWS, Bob->Charlie via KNOWS
-    let tx = db.begin_read().unwrap();
+    let tx = db.read_tx().unwrap();
     let results = tx
         .query("MATCH (a:Person)-[:KNOWS]->(b:Person) RETURN a.name, collect(b.name) AS friends ORDER BY a.name")
         .unwrap();
@@ -606,7 +606,7 @@ fn e2e_grouped_collect_aggregate() {
 #[test]
 fn e2e_is_not_null() {
     let mut db = setup_social_graph();
-    let tx = db.begin_read().unwrap();
+    let tx = db.read_tx().unwrap();
     let results = tx
         .query("MATCH (n) WHERE n.age IS NOT NULL RETURN n.name ORDER BY n.name")
         .unwrap();
@@ -623,7 +623,7 @@ fn e2e_is_not_null() {
 fn e2e_optional_match_with_results() {
     let mut db = setup_social_graph();
     // Alice WORKS_AT Acme. Query OPTIONAL MATCH for WORKS_AT.
-    let tx = db.begin_read().unwrap();
+    let tx = db.read_tx().unwrap();
     let results = tx
         .query("MATCH (a:Person) OPTIONAL MATCH (a)-[:WORKS_AT]->(c:Company) RETURN a.name, c.name ORDER BY a.name")
         .unwrap();
@@ -651,7 +651,7 @@ fn e2e_optional_match_with_results() {
 fn e2e_optional_match_all_matched() {
     let mut db = setup_social_graph();
     // Alice->Bob via KNOWS.
-    let tx = db.begin_read().unwrap();
+    let tx = db.read_tx().unwrap();
     let results = tx
         .query("MATCH (a:Person {name: 'Alice'}) OPTIONAL MATCH (a)-[:KNOWS]->(b:Person) RETURN a.name, b.name")
         .unwrap();
@@ -669,7 +669,7 @@ fn e2e_optional_match_all_matched() {
 fn e2e_optional_match_no_matches() {
     let mut db = setup_social_graph();
     // Charlie has no outgoing WORKS_AT edges.
-    let tx = db.begin_read().unwrap();
+    let tx = db.read_tx().unwrap();
     let results = tx
         .query("MATCH (a:Person {name: 'Charlie'}) OPTIONAL MATCH (a)-[:WORKS_AT]->(c:Company) RETURN a.name, c.name")
         .unwrap();
@@ -688,7 +688,7 @@ fn e2e_optional_match_no_matches() {
 fn e2e_index_lookup_single_property() {
     let mut db = Database::open_memory().unwrap();
     {
-        let tx = db.begin_write().unwrap();
+        let tx = db.write_tx().unwrap();
         tx.query("CREATE (a:Person {name: 'Alice', age: 30})")
             .unwrap();
         tx.query("CREATE (b:Person {name: 'Bob', age: 25})")
@@ -698,7 +698,7 @@ fn e2e_index_lookup_single_property() {
         tx.create_index("Person", "name").unwrap();
         tx.commit().unwrap();
     }
-    let tx = db.begin_read().unwrap();
+    let tx = db.read_tx().unwrap();
     // This should use IndexLookup instead of Scan+Filter.
     let results = tx
         .query("MATCH (n:Person {name: 'Alice'}) RETURN n.name, n.age")
@@ -716,12 +716,12 @@ fn e2e_index_lookup_single_property() {
 fn e2e_index_lookup_no_match() {
     let mut db = Database::open_memory().unwrap();
     {
-        let tx = db.begin_write().unwrap();
+        let tx = db.write_tx().unwrap();
         tx.query("CREATE (a:Person {name: 'Alice'})").unwrap();
         tx.create_index("Person", "name").unwrap();
         tx.commit().unwrap();
     }
-    let tx = db.begin_read().unwrap();
+    let tx = db.read_tx().unwrap();
     let results = tx
         .query("MATCH (n:Person {name: 'Nobody'}) RETURN n.name")
         .unwrap();
@@ -733,7 +733,7 @@ fn e2e_index_lookup_no_match() {
 fn e2e_index_lookup_with_remaining_filter() {
     let mut db = Database::open_memory().unwrap();
     {
-        let tx = db.begin_write().unwrap();
+        let tx = db.write_tx().unwrap();
         tx.query("CREATE (a:Person {name: 'Alice', age: 30})")
             .unwrap();
         tx.query("CREATE (b:Person {name: 'Alice', age: 25})")
@@ -743,7 +743,7 @@ fn e2e_index_lookup_with_remaining_filter() {
         tx.create_index("Person", "name").unwrap();
         tx.commit().unwrap();
     }
-    let tx = db.begin_read().unwrap();
+    let tx = db.read_tx().unwrap();
     // Index narrows to the two Alices, remaining filter picks age=30.
     let results = tx
         .query("MATCH (n:Person {name: 'Alice', age: 30}) RETURN n.name, n.age")
@@ -761,7 +761,7 @@ fn e2e_index_lookup_with_remaining_filter() {
 fn e2e_index_lookup_in_relationship_pattern() {
     let mut db = Database::open_memory().unwrap();
     {
-        let tx = db.begin_write().unwrap();
+        let tx = db.write_tx().unwrap();
         tx.query("CREATE (a:Person {name: 'Alice'})").unwrap();
         tx.query("CREATE (b:Person {name: 'Bob'})").unwrap();
         tx.create_edge(NodeId(1), NodeId(2), "KNOWS", HashMap::new())
@@ -769,7 +769,7 @@ fn e2e_index_lookup_in_relationship_pattern() {
         tx.create_index("Person", "name").unwrap();
         tx.commit().unwrap();
     }
-    let tx = db.begin_read().unwrap();
+    let tx = db.read_tx().unwrap();
     // Start node uses index lookup, then expand.
     let results = tx
         .query("MATCH (a:Person {name: 'Alice'})-[:KNOWS]->(b:Person) RETURN a.name, b.name")
@@ -788,14 +788,14 @@ fn e2e_no_index_falls_back_to_scan() {
     // Same query without an index — should still work via Scan+Filter.
     let mut db = Database::open_memory().unwrap();
     {
-        let tx = db.begin_write().unwrap();
+        let tx = db.write_tx().unwrap();
         tx.query("CREATE (a:Person {name: 'Alice', age: 30})")
             .unwrap();
         tx.query("CREATE (b:Person {name: 'Bob', age: 25})")
             .unwrap();
         tx.commit().unwrap();
     }
-    let tx = db.begin_read().unwrap();
+    let tx = db.read_tx().unwrap();
     let results = tx
         .query("MATCH (n:Person {name: 'Alice'}) RETURN n.name, n.age")
         .unwrap();
@@ -813,7 +813,7 @@ fn e2e_no_index_falls_back_to_scan() {
 #[test]
 fn e2e_with_simple_projection() {
     let mut db = setup_social_graph();
-    let tx = db.begin_read().unwrap();
+    let tx = db.read_tx().unwrap();
     let results = tx
         .query("MATCH (n:Person) WITH n.name AS name RETURN name ORDER BY name")
         .unwrap();
@@ -830,7 +830,7 @@ fn e2e_with_simple_projection() {
 #[test]
 fn e2e_with_where_filter() {
     let mut db = setup_social_graph();
-    let tx = db.begin_read().unwrap();
+    let tx = db.read_tx().unwrap();
     let results = tx
         .query("MATCH (n:Person) WITH n.name AS name, n.age AS age WHERE age > 25 RETURN name ORDER BY name")
         .unwrap();
@@ -847,7 +847,7 @@ fn e2e_with_where_filter() {
 fn e2e_with_aggregation() {
     let mut db = Database::open_memory().unwrap();
     {
-        let tx = db.begin_write().unwrap();
+        let tx = db.write_tx().unwrap();
         tx.query("CREATE (a:Person {name: 'Alice', dept: 'eng'})")
             .unwrap();
         tx.query("CREATE (b:Person {name: 'Bob', dept: 'eng'})")
@@ -858,7 +858,7 @@ fn e2e_with_aggregation() {
             .unwrap();
         tx.commit().unwrap();
     }
-    let tx = db.begin_read().unwrap();
+    let tx = db.read_tx().unwrap();
     // Aggregate in WITH, then filter on the aggregate result.
     let results = tx
         .query("MATCH (n:Person) WITH n.dept AS dept, count(*) AS cnt WHERE cnt > 1 RETURN dept, cnt ORDER BY dept")
@@ -872,7 +872,7 @@ fn e2e_with_aggregation() {
 #[test]
 fn e2e_with_passthrough_variable() {
     let mut db = setup_social_graph();
-    let tx = db.begin_read().unwrap();
+    let tx = db.read_tx().unwrap();
     let results = tx
         .query("MATCH (n:Person) WITH n RETURN n.name ORDER BY n.name")
         .unwrap();
@@ -893,7 +893,7 @@ fn e2e_with_passthrough_variable() {
 #[test]
 fn e2e_chained_with_arithmetic_on_aggregate() {
     let mut db = Database::open_memory().unwrap();
-    let tx = db.begin_write().unwrap();
+    let tx = db.write_tx().unwrap();
     tx.query("CREATE (:Person {name: 'Alice', dept: 'eng'})")
         .unwrap();
     tx.query("CREATE (:Person {name: 'Bob', dept: 'eng'})")
@@ -904,7 +904,7 @@ fn e2e_chained_with_arithmetic_on_aggregate() {
         .unwrap();
     tx.commit().unwrap();
 
-    let tx = db.begin_read().unwrap();
+    let tx = db.read_tx().unwrap();
     let results = tx
         .query(
             "MATCH (n:Person) \
@@ -925,7 +925,7 @@ fn e2e_chained_with_arithmetic_on_aggregate() {
 #[test]
 fn e2e_map_literal_basic() {
     let mut db = setup_social_graph();
-    let tx = db.begin_read().unwrap();
+    let tx = db.read_tx().unwrap();
     let rows = tx
         .query("MATCH (a:Person {name: 'Alice'}) RETURN {name: a.name, age: a.age} AS info")
         .unwrap();
@@ -945,7 +945,7 @@ fn e2e_map_literal_basic() {
 #[test]
 fn e2e_collect_map_literal() {
     let mut db = setup_social_graph();
-    let tx = db.begin_read().unwrap();
+    let tx = db.read_tx().unwrap();
     // Alice KNOWS Bob, Bob KNOWS Charlie from setup_social_graph.
     let rows = tx
         .query(
@@ -981,7 +981,7 @@ fn e2e_collect_map_literal() {
 #[test]
 fn e2e_map_literal_nested() {
     let mut db = setup_social_graph();
-    let tx = db.begin_read().unwrap();
+    let tx = db.read_tx().unwrap();
     let rows = tx
         .query(
             "MATCH (a:Person {name: 'Alice'}) \
@@ -1007,7 +1007,7 @@ fn e2e_map_literal_nested() {
 #[test]
 fn e2e_map_literal_empty() {
     let mut db = setup_social_graph();
-    let tx = db.begin_read().unwrap();
+    let tx = db.read_tx().unwrap();
     let rows = tx
         .query("MATCH (a:Person {name: 'Alice'}) RETURN {} AS m")
         .unwrap();
@@ -1023,7 +1023,7 @@ fn e2e_map_literal_empty() {
 #[test]
 fn e2e_map_literal_equality() {
     let mut db = setup_social_graph();
-    let tx = db.begin_read().unwrap();
+    let tx = db.read_tx().unwrap();
     let rows = tx
         .query(
             "MATCH (a:Person {name: 'Alice'}) \
@@ -1040,14 +1040,14 @@ fn e2e_map_literal_equality() {
 #[test]
 fn e2e_chained_with_aggregate_of_aggregate() {
     let mut db = Database::open_memory().unwrap();
-    let tx = db.begin_write().unwrap();
+    let tx = db.write_tx().unwrap();
     tx.query("CREATE (:Person {dept: 'eng'})").unwrap();
     tx.query("CREATE (:Person {dept: 'eng'})").unwrap();
     tx.query("CREATE (:Person {dept: 'sales'})").unwrap();
     tx.query("CREATE (:Person {dept: 'ops'})").unwrap();
     tx.commit().unwrap();
 
-    let tx = db.begin_read().unwrap();
+    let tx = db.read_tx().unwrap();
     let results = tx
         .query(
             "MATCH (n:Person) \
@@ -1067,7 +1067,7 @@ fn e2e_chained_with_aggregate_of_aggregate() {
 #[test]
 fn e2e_case_expression_with_else() {
     let mut db = setup_social_graph();
-    let tx = db.begin_read().unwrap();
+    let tx = db.read_tx().unwrap();
     let results = tx
         .query(
             "MATCH (n:Person) RETURN n.name, CASE WHEN n.age > 30 THEN 'senior' ELSE 'junior' END AS category ORDER BY n.name",
@@ -1093,7 +1093,7 @@ fn e2e_case_expression_with_else() {
 #[test]
 fn e2e_case_expression_multiple_when() {
     let mut db = setup_social_graph();
-    let tx = db.begin_read().unwrap();
+    let tx = db.read_tx().unwrap();
     let results = tx
         .query(
             "MATCH (n:Person) RETURN n.name, CASE WHEN n.age < 26 THEN 'young' WHEN n.age < 31 THEN 'mid' ELSE 'senior' END AS tier ORDER BY n.name",
@@ -1113,7 +1113,7 @@ fn e2e_case_expression_multiple_when() {
 #[test]
 fn e2e_case_expression_no_else_returns_null() {
     let mut db = setup_social_graph();
-    let tx = db.begin_read().unwrap();
+    let tx = db.read_tx().unwrap();
     let results = tx
         .query(
             "MATCH (n:Person) WHERE n.name = 'Bob' RETURN CASE WHEN n.age > 30 THEN 'senior' END AS category",
@@ -1130,7 +1130,7 @@ fn e2e_case_expression_no_else_returns_null() {
 #[test]
 fn e2e_plain_delete_fails_on_node_with_edges() {
     let mut db = setup_social_graph();
-    let tx = db.begin_write().unwrap();
+    let tx = db.write_tx().unwrap();
     // Charlie has incoming KNOWS edge from Bob — plain DELETE should fail.
     let result = tx.query("MATCH (n:Person) WHERE n.name = 'Charlie' DELETE n");
     assert!(result.is_err());
@@ -1143,19 +1143,19 @@ fn e2e_plain_delete_fails_on_node_with_edges() {
 fn e2e_plain_delete_succeeds_on_isolated_node() {
     let mut db = Database::open_memory().unwrap();
     {
-        let tx = db.begin_write().unwrap();
+        let tx = db.write_tx().unwrap();
         tx.query("CREATE (a:Person {name: 'Alice'})").unwrap();
         tx.commit().unwrap();
     }
     {
-        let tx = db.begin_write().unwrap();
+        let tx = db.write_tx().unwrap();
         // Alice has no edges — plain DELETE should work.
         tx.query("MATCH (n:Person) WHERE n.name = 'Alice' DELETE n")
             .unwrap();
         tx.commit().unwrap();
     }
     {
-        let tx = db.begin_read().unwrap();
+        let tx = db.read_tx().unwrap();
         let results = tx.query("MATCH (n:Person) RETURN n.name").unwrap();
         assert_eq!(results.len(), 0);
         tx.commit().unwrap();
@@ -1166,14 +1166,14 @@ fn e2e_plain_delete_succeeds_on_isolated_node() {
 fn e2e_detach_delete_cascades_edges() {
     let mut db = setup_social_graph();
     {
-        let tx = db.begin_write().unwrap();
+        let tx = db.write_tx().unwrap();
         // Bob has edges (Alice->Bob KNOWS, Bob->Charlie KNOWS) — DETACH DELETE cascades.
         tx.query("MATCH (n:Person) WHERE n.name = 'Bob' DETACH DELETE n")
             .unwrap();
         tx.commit().unwrap();
     }
     {
-        let tx = db.begin_read().unwrap();
+        let tx = db.read_tx().unwrap();
         let results = tx
             .query("MATCH (n:Person) RETURN n.name ORDER BY n.name")
             .unwrap();
@@ -1198,7 +1198,7 @@ fn e2e_detach_delete_cascades_edges() {
 #[test]
 fn e2e_parse_error_is_human_readable() {
     let mut db = Database::open_memory().unwrap();
-    let tx = db.begin_read().unwrap();
+    let tx = db.read_tx().unwrap();
     let err = tx.query("GIBBERISH").unwrap_err();
     let msg = err.to_string();
     // Should not contain "serialization error" prefix.
@@ -1213,7 +1213,7 @@ fn e2e_parse_error_is_human_readable() {
 #[test]
 fn e2e_parse_error_missing_return_expression() {
     let mut db = Database::open_memory().unwrap();
-    let tx = db.begin_read().unwrap();
+    let tx = db.read_tx().unwrap();
     let err = tx.query("MATCH (n) RETURN").unwrap_err();
     let msg = err.to_string();
     assert!(!msg.contains("serialization error"), "got: {msg}");
@@ -1233,13 +1233,13 @@ fn e2e_parse_error_missing_return_expression() {
 #[test]
 fn e2e_starts_with() {
     let mut db = Database::open_memory().unwrap();
-    let tx = db.begin_write().unwrap();
+    let tx = db.write_tx().unwrap();
     tx.query("CREATE (a:Person {name: 'Alice'})").unwrap();
     tx.query("CREATE (b:Person {name: 'Bob'})").unwrap();
     tx.query("CREATE (c:Person {name: 'Anna'})").unwrap();
     tx.commit().unwrap();
 
-    let tx = db.begin_read().unwrap();
+    let tx = db.read_tx().unwrap();
     let rows = tx
         .query("MATCH (n:Person) WHERE n.name STARTS WITH 'A' RETURN n.name ORDER BY n.name")
         .unwrap();
@@ -1257,13 +1257,13 @@ fn e2e_starts_with() {
 #[test]
 fn e2e_ends_with() {
     let mut db = Database::open_memory().unwrap();
-    let tx = db.begin_write().unwrap();
+    let tx = db.write_tx().unwrap();
     tx.query("CREATE (a:Person {name: 'Alice'})").unwrap();
     tx.query("CREATE (b:Person {name: 'Bob'})").unwrap();
     tx.query("CREATE (c:Person {name: 'Grace'})").unwrap();
     tx.commit().unwrap();
 
-    let tx = db.begin_read().unwrap();
+    let tx = db.read_tx().unwrap();
     let rows = tx
         .query("MATCH (n:Person) WHERE n.name ENDS WITH 'ce' RETURN n.name ORDER BY n.name")
         .unwrap();
@@ -1281,11 +1281,11 @@ fn e2e_ends_with() {
 #[test]
 fn e2e_ends_with_no_match() {
     let mut db = Database::open_memory().unwrap();
-    let tx = db.begin_write().unwrap();
+    let tx = db.write_tx().unwrap();
     tx.query("CREATE (a:Person {name: 'Alice'})").unwrap();
     tx.commit().unwrap();
 
-    let tx = db.begin_read().unwrap();
+    let tx = db.read_tx().unwrap();
     let rows = tx
         .query("MATCH (n:Person) WHERE n.name ENDS WITH 'zzz' RETURN n.name")
         .unwrap();
@@ -1296,13 +1296,13 @@ fn e2e_ends_with_no_match() {
 #[test]
 fn e2e_contains_string() {
     let mut db = Database::open_memory().unwrap();
-    let tx = db.begin_write().unwrap();
+    let tx = db.write_tx().unwrap();
     tx.query("CREATE (a:Person {name: 'Alice'})").unwrap();
     tx.query("CREATE (b:Person {name: 'Bob'})").unwrap();
     tx.query("CREATE (c:Person {name: 'Lick'})").unwrap();
     tx.commit().unwrap();
 
-    let tx = db.begin_read().unwrap();
+    let tx = db.read_tx().unwrap();
     let rows = tx
         .query("MATCH (n:Person) WHERE n.name CONTAINS 'lic' RETURN n.name ORDER BY n.name")
         .unwrap();
@@ -1317,12 +1317,12 @@ fn e2e_contains_string() {
 #[test]
 fn e2e_ends_with_null_property() {
     let mut db = Database::open_memory().unwrap();
-    let tx = db.begin_write().unwrap();
+    let tx = db.write_tx().unwrap();
     tx.query("CREATE (a:Person {name: 'Alice'})").unwrap();
     tx.query("CREATE (b:Person)").unwrap();
     tx.commit().unwrap();
 
-    let tx = db.begin_read().unwrap();
+    let tx = db.read_tx().unwrap();
     let rows = tx
         .query("MATCH (n:Person) WHERE n.name ENDS WITH 'ce' RETURN n.name")
         .unwrap();
@@ -1336,7 +1336,7 @@ fn e2e_ends_with_null_property() {
 #[test]
 fn e2e_grouped_aggregate_many_groups() {
     let mut db = Database::open_memory().unwrap();
-    let tx = db.begin_write().unwrap();
+    let tx = db.write_tx().unwrap();
     // Create 100 distinct departments with 3 people each.
     for dept in 0..100 {
         for person in 0..3 {
@@ -1348,7 +1348,7 @@ fn e2e_grouped_aggregate_many_groups() {
     }
     tx.commit().unwrap();
 
-    let tx = db.begin_read().unwrap();
+    let tx = db.read_tx().unwrap();
     let rows = tx
         .query("MATCH (n:Person) RETURN n.dept, count(*) AS cnt")
         .unwrap();
@@ -1363,7 +1363,7 @@ fn e2e_grouped_aggregate_many_groups() {
 #[test]
 fn e2e_grouped_aggregate_order_by_count() {
     let mut db = Database::open_memory().unwrap();
-    let tx = db.begin_write().unwrap();
+    let tx = db.write_tx().unwrap();
     tx.query("CREATE (n:Person {dept: 'eng'})").unwrap();
     tx.query("CREATE (n:Person {dept: 'eng'})").unwrap();
     tx.query("CREATE (n:Person {dept: 'eng'})").unwrap();
@@ -1372,7 +1372,7 @@ fn e2e_grouped_aggregate_order_by_count() {
     tx.query("CREATE (n:Person {dept: 'hr'})").unwrap();
     tx.commit().unwrap();
 
-    let tx = db.begin_read().unwrap();
+    let tx = db.read_tx().unwrap();
     let rows = tx
         .query("MATCH (n:Person) RETURN n.dept, count(*) AS cnt ORDER BY cnt DESC")
         .unwrap();
@@ -1392,7 +1392,7 @@ fn e2e_grouped_aggregate_order_by_count() {
 #[test]
 fn e2e_multiple_aggregates_in_return() {
     let mut db = Database::open_memory().unwrap();
-    let tx = db.begin_write().unwrap();
+    let tx = db.write_tx().unwrap();
     tx.query("CREATE (n:Person {dept: 'eng', age: 30})")
         .unwrap();
     tx.query("CREATE (n:Person {dept: 'eng', age: 40})")
@@ -1401,7 +1401,7 @@ fn e2e_multiple_aggregates_in_return() {
         .unwrap();
     tx.commit().unwrap();
 
-    let tx = db.begin_read().unwrap();
+    let tx = db.read_tx().unwrap();
     let rows = tx
         .query("MATCH (n:Person) RETURN n.dept, count(*) AS cnt, sum(n.age) AS total, avg(n.age) AS average ORDER BY n.dept")
         .unwrap();
@@ -1422,7 +1422,7 @@ fn e2e_multiple_aggregates_in_return() {
 #[test]
 fn e2e_match_on_empty_database() {
     let mut db = Database::open_memory().unwrap();
-    let tx = db.begin_read().unwrap();
+    let tx = db.read_tx().unwrap();
     let rows = tx.query("MATCH (n:Person) RETURN n.name").unwrap();
     assert!(rows.is_empty());
     tx.commit().unwrap();
@@ -1431,7 +1431,7 @@ fn e2e_match_on_empty_database() {
 #[test]
 fn e2e_match_no_label_on_empty_database() {
     let mut db = Database::open_memory().unwrap();
-    let tx = db.begin_read().unwrap();
+    let tx = db.read_tx().unwrap();
     let rows = tx.query("MATCH (n) RETURN n").unwrap();
     assert!(rows.is_empty());
     tx.commit().unwrap();
@@ -1440,7 +1440,7 @@ fn e2e_match_no_label_on_empty_database() {
 #[test]
 fn e2e_count_on_empty_database() {
     let mut db = Database::open_memory().unwrap();
-    let tx = db.begin_read().unwrap();
+    let tx = db.read_tx().unwrap();
     let rows = tx.query("MATCH (n:Person) RETURN count(*) AS cnt").unwrap();
     assert_eq!(rows.len(), 1);
     assert_eq!(rows[0].get("cnt").unwrap(), &Value::I64(0));
@@ -1450,13 +1450,13 @@ fn e2e_count_on_empty_database() {
 #[test]
 fn e2e_where_on_missing_property() {
     let mut db = Database::open_memory().unwrap();
-    let tx = db.begin_write().unwrap();
+    let tx = db.write_tx().unwrap();
     tx.query("CREATE (a:Person {name: 'Alice'})").unwrap();
     tx.query("CREATE (b:Person {name: 'Bob', email: 'bob@test.com'})")
         .unwrap();
     tx.commit().unwrap();
 
-    let tx = db.begin_read().unwrap();
+    let tx = db.read_tx().unwrap();
     // Alice has no email — comparison with missing prop should not match.
     let rows = tx
         .query("MATCH (n:Person) WHERE n.email = 'bob@test.com' RETURN n.name")
@@ -1469,17 +1469,17 @@ fn e2e_where_on_missing_property() {
 #[test]
 fn e2e_set_property_to_null_removes_it() {
     let mut db = Database::open_memory().unwrap();
-    let tx = db.begin_write().unwrap();
+    let tx = db.write_tx().unwrap();
     tx.query("CREATE (n:Person {name: 'Alice', age: 30})")
         .unwrap();
     tx.commit().unwrap();
 
-    let tx = db.begin_write().unwrap();
+    let tx = db.write_tx().unwrap();
     tx.query("MATCH (n:Person) WHERE n.name = 'Alice' SET n.age = null")
         .unwrap();
     tx.commit().unwrap();
 
-    let tx = db.begin_read().unwrap();
+    let tx = db.read_tx().unwrap();
     let rows = tx
         .query("MATCH (n:Person) WHERE n.name = 'Alice' RETURN n.age")
         .unwrap();
@@ -1491,14 +1491,14 @@ fn e2e_set_property_to_null_removes_it() {
 #[test]
 fn e2e_unicode_property_values() {
     let mut db = Database::open_memory().unwrap();
-    let tx = db.begin_write().unwrap();
+    let tx = db.write_tx().unwrap();
     tx.query("CREATE (n:Person {name: '日本語テスト'})")
         .unwrap();
     tx.query("CREATE (n:Person {name: 'émojis 🎉🚀'})").unwrap();
     tx.query("CREATE (n:Person {name: 'Ñoño'})").unwrap();
     tx.commit().unwrap();
 
-    let tx = db.begin_read().unwrap();
+    let tx = db.read_tx().unwrap();
     let rows = tx
         .query("MATCH (n:Person) RETURN n.name ORDER BY n.name")
         .unwrap();
@@ -1519,13 +1519,13 @@ fn e2e_unicode_property_values() {
 #[test]
 fn e2e_large_dataset_smoke_test() {
     let mut db = Database::open_memory().unwrap();
-    let tx = db.begin_write().unwrap();
+    let tx = db.write_tx().unwrap();
     for i in 0..1000 {
         tx.query(&format!("CREATE (n:Item {{id: {i}}})")).unwrap();
     }
     tx.commit().unwrap();
 
-    let tx = db.begin_read().unwrap();
+    let tx = db.read_tx().unwrap();
     let rows = tx.query("MATCH (n:Item) RETURN count(*) AS cnt").unwrap();
     assert_eq!(rows[0].get("cnt").unwrap(), &Value::I64(1000));
 
@@ -1541,7 +1541,7 @@ fn e2e_large_dataset_smoke_test() {
 #[test]
 fn e2e_aggregate_with_null_group_keys() {
     let mut db = Database::open_memory().unwrap();
-    let tx = db.begin_write().unwrap();
+    let tx = db.write_tx().unwrap();
     tx.query("CREATE (n:Person {dept: 'eng'})").unwrap();
     tx.query("CREATE (n:Person {dept: 'eng'})").unwrap();
     tx.query("CREATE (n:Person)").unwrap(); // no dept
@@ -1549,7 +1549,7 @@ fn e2e_aggregate_with_null_group_keys() {
     tx.query("CREATE (n:Person)").unwrap(); // no dept
     tx.commit().unwrap();
 
-    let tx = db.begin_read().unwrap();
+    let tx = db.read_tx().unwrap();
     let rows = tx
         .query("MATCH (n:Person) RETURN n.dept, count(*) AS cnt ORDER BY cnt DESC")
         .unwrap();
@@ -1572,7 +1572,7 @@ fn e2e_aggregate_with_null_group_keys() {
 #[test]
 fn e2e_collect_on_empty_result() {
     let mut db = Database::open_memory().unwrap();
-    let tx = db.begin_read().unwrap();
+    let tx = db.read_tx().unwrap();
     let rows = tx
         .query("MATCH (n:Nonexistent) RETURN collect(n.name) AS names")
         .unwrap();
@@ -1586,13 +1586,13 @@ fn e2e_collect_on_empty_result() {
 #[test]
 fn e2e_with_where_return_chaining() {
     let mut db = Database::open_memory().unwrap();
-    let tx = db.begin_write().unwrap();
+    let tx = db.write_tx().unwrap();
     for i in 1..=10 {
         tx.query(&format!("CREATE (n:Num {{val: {i}}})")).unwrap();
     }
     tx.commit().unwrap();
 
-    let tx = db.begin_read().unwrap();
+    let tx = db.read_tx().unwrap();
     let rows = tx
         .query("MATCH (n:Num) WITH n.val AS v WHERE v > 5 RETURN v ORDER BY v")
         .unwrap();
@@ -1605,13 +1605,13 @@ fn e2e_with_where_return_chaining() {
 #[test]
 fn e2e_optional_match_with_aggregation() {
     let mut db = Database::open_memory().unwrap();
-    let tx = db.begin_write().unwrap();
+    let tx = db.write_tx().unwrap();
     tx.query("CREATE (a:Person {name: 'Alice'})").unwrap();
     tx.query("CREATE (b:Person {name: 'Bob'})").unwrap();
     tx.query("CREATE (c:Person {name: 'Charlie'})").unwrap();
     tx.commit().unwrap();
 
-    let tx = db.begin_write().unwrap();
+    let tx = db.write_tx().unwrap();
     // Only Alice knows people.
     tx.create_edge(NodeId(1), NodeId(2), "KNOWS", HashMap::new())
         .unwrap();
@@ -1619,7 +1619,7 @@ fn e2e_optional_match_with_aggregation() {
         .unwrap();
     tx.commit().unwrap();
 
-    let tx = db.begin_read().unwrap();
+    let tx = db.read_tx().unwrap();
     let rows = tx
         .query("MATCH (a:Person) OPTIONAL MATCH (a)-[:KNOWS]->(b) RETURN a.name, count(b.name) AS friends ORDER BY a.name")
         .unwrap();
@@ -1642,14 +1642,14 @@ fn e2e_optional_match_with_aggregation() {
 #[test]
 fn e2e_optional_match_shared_destination_count() {
     let mut db = Database::open_memory().unwrap();
-    let tx = db.begin_write().unwrap();
+    let tx = db.write_tx().unwrap();
     // Three functions; two callers.
     tx.query("CREATE (fn1:Function {name: 'main'})").unwrap();
     tx.query("CREATE (fn2:Function {name: 'helper'})").unwrap();
     tx.query("CREATE (fn3:Function {name: 'unused'})").unwrap();
     tx.commit().unwrap();
 
-    let tx = db.begin_write().unwrap();
+    let tx = db.write_tx().unwrap();
     // main is called by helper and unused; helper is called by main; unused is called by nobody.
     tx.create_edge(NodeId(2), NodeId(1), "CALLS", HashMap::new())
         .unwrap(); // helper -> main
@@ -1659,7 +1659,7 @@ fn e2e_optional_match_shared_destination_count() {
         .unwrap(); // main -> helper
     tx.commit().unwrap();
 
-    let tx = db.begin_read().unwrap();
+    let tx = db.read_tx().unwrap();
     let rows = tx
         .query(
             "MATCH (fn:Function) \
@@ -1694,17 +1694,17 @@ fn e2e_optional_match_shared_destination_count() {
 #[test]
 fn e2e_optional_match_dead_code_detection() {
     let mut db = Database::open_memory().unwrap();
-    let tx = db.begin_write().unwrap();
+    let tx = db.write_tx().unwrap();
     tx.query("CREATE (fn1:Function {name: 'used'})").unwrap();
     tx.query("CREATE (fn2:Function {name: 'dead'})").unwrap();
     tx.commit().unwrap();
 
-    let tx = db.begin_write().unwrap();
+    let tx = db.write_tx().unwrap();
     tx.create_edge(NodeId(1), NodeId(1), "CALLS", HashMap::new())
         .unwrap(); // used calls itself (recursive)
     tx.commit().unwrap();
 
-    let tx = db.begin_read().unwrap();
+    let tx = db.read_tx().unwrap();
     let rows = tx
         .query(
             "MATCH (fn:Function) \
@@ -1726,21 +1726,21 @@ fn e2e_optional_match_dead_code_detection() {
 #[test]
 fn e2e_with_node_reference_preserves_properties() {
     let mut db = Database::open_memory().unwrap();
-    let tx = db.begin_write().unwrap();
+    let tx = db.write_tx().unwrap();
     tx.query("CREATE (a:Person {name: 'Alice', age: 30})")
         .unwrap();
     tx.query("CREATE (b:Person {name: 'Bob', age: 25})")
         .unwrap();
     tx.commit().unwrap();
 
-    let tx = db.begin_write().unwrap();
+    let tx = db.write_tx().unwrap();
     tx.create_edge(NodeId(1), NodeId(2), "KNOWS", HashMap::new())
         .unwrap();
     tx.create_edge(NodeId(1), NodeId(1), "KNOWS", HashMap::new())
         .unwrap(); // Alice self-loop so she has 2 KNOWS
     tx.commit().unwrap();
 
-    let tx = db.begin_read().unwrap();
+    let tx = db.read_tx().unwrap();
     // WITH a node reference + aggregate, then access .name on the node.
     let rows = tx
         .query(
@@ -1764,13 +1764,13 @@ fn e2e_with_node_reference_preserves_properties() {
 #[test]
 fn e2e_optional_match_multiple_edge_types() {
     let mut db = Database::open_memory().unwrap();
-    let tx = db.begin_write().unwrap();
+    let tx = db.write_tx().unwrap();
     tx.query("CREATE (a:Person {name: 'Alice'})").unwrap();
     tx.query("CREATE (b:Person {name: 'Bob'})").unwrap();
     tx.query("CREATE (c:Person {name: 'Charlie'})").unwrap();
     tx.commit().unwrap();
 
-    let tx = db.begin_write().unwrap();
+    let tx = db.write_tx().unwrap();
     // Alice KNOWS Bob; Alice FOLLOWS Charlie. No outgoing edges for Bob/Charlie.
     tx.create_edge(NodeId(1), NodeId(2), "KNOWS", HashMap::new())
         .unwrap();
@@ -1778,7 +1778,7 @@ fn e2e_optional_match_multiple_edge_types() {
         .unwrap();
     tx.commit().unwrap();
 
-    let tx = db.begin_read().unwrap();
+    let tx = db.read_tx().unwrap();
     let rows = tx
         .query(
             "MATCH (a:Person) \
@@ -1802,7 +1802,7 @@ fn e2e_optional_match_multiple_edge_types() {
 #[test]
 fn e2e_variable_length_path_with_where() {
     let mut db = setup_social_graph();
-    let tx = db.begin_read().unwrap();
+    let tx = db.read_tx().unwrap();
     // Alice -> Bob -> Charlie via KNOWS, variable-length 1..2 hops.
     let rows = tx
         .query("MATCH (a:Person {name: 'Alice'})-[:KNOWS*1..2]->(b:Person) WHERE b.age > 30 RETURN b.name")
@@ -1821,14 +1821,14 @@ fn e2e_merge_on_create_and_on_match_set() {
     let mut db = Database::open_memory().unwrap();
     // First MERGE — creates.
     {
-        let tx = db.begin_write().unwrap();
+        let tx = db.write_tx().unwrap();
         tx.query("MERGE (n:Person {name: 'Alice'}) ON CREATE SET n.created = true ON MATCH SET n.updated = true")
             .unwrap();
         tx.commit().unwrap();
     }
     // Verify created.
     {
-        let tx = db.begin_read().unwrap();
+        let tx = db.read_tx().unwrap();
         let rows = tx
             .query("MATCH (n:Person {name: 'Alice'}) RETURN n.created, n.updated")
             .unwrap();
@@ -1839,14 +1839,14 @@ fn e2e_merge_on_create_and_on_match_set() {
     }
     // Second MERGE — matches.
     {
-        let tx = db.begin_write().unwrap();
+        let tx = db.write_tx().unwrap();
         tx.query("MERGE (n:Person {name: 'Alice'}) ON CREATE SET n.created = true ON MATCH SET n.updated = true")
             .unwrap();
         tx.commit().unwrap();
     }
     // Verify updated.
     {
-        let tx = db.begin_read().unwrap();
+        let tx = db.read_tx().unwrap();
         let rows = tx
             .query("MATCH (n:Person {name: 'Alice'}) RETURN n.created, n.updated")
             .unwrap();
@@ -1862,7 +1862,7 @@ fn e2e_merge_on_create_and_on_match_set() {
 #[test]
 fn e2e_parse_error_has_position() {
     let mut db = Database::open_memory().unwrap();
-    let tx = db.begin_read().unwrap();
+    let tx = db.read_tx().unwrap();
     let err = tx.query("METCH (n) RETURN n").unwrap_err();
     let msg = err.to_string();
     // Should be human-readable, not a raw pest error.
@@ -1875,11 +1875,11 @@ fn e2e_parse_error_has_position() {
 #[test]
 fn e2e_unbound_variable_in_return() {
     let mut db = Database::open_memory().unwrap();
-    let tx = db.begin_write().unwrap();
+    let tx = db.write_tx().unwrap();
     tx.query("CREATE (n:Person {name: 'Alice'})").unwrap();
     tx.commit().unwrap();
 
-    let tx = db.begin_read().unwrap();
+    let tx = db.read_tx().unwrap();
     // 'x' is not bound by MATCH — should return null, not crash.
     let rows = tx.query("MATCH (n:Person) RETURN x.name");
     // Either returns nulls or errors — both are acceptable, just no panic.
@@ -1891,7 +1891,7 @@ fn e2e_unbound_variable_in_return() {
 fn e2e_delete_node_with_edges_fails() {
     let mut db = setup_social_graph();
     // Alice (NodeId 1) has edges — plain DELETE should fail.
-    let tx = db.begin_write().unwrap();
+    let tx = db.write_tx().unwrap();
     let err = tx
         .query("MATCH (n:Person {name: 'Alice'}) DELETE n")
         .unwrap_err();
@@ -1906,12 +1906,12 @@ fn e2e_delete_node_with_edges_fails() {
 #[test]
 fn e2e_detach_delete_node_with_edges_succeeds() {
     let mut db = setup_social_graph();
-    let tx = db.begin_write().unwrap();
+    let tx = db.write_tx().unwrap();
     tx.query("MATCH (n:Person {name: 'Alice'}) DETACH DELETE n")
         .unwrap();
     tx.commit().unwrap();
 
-    let tx = db.begin_read().unwrap();
+    let tx = db.read_tx().unwrap();
     let rows = tx
         .query("MATCH (n:Person {name: 'Alice'}) RETURN n")
         .unwrap();
@@ -1924,14 +1924,14 @@ fn e2e_detach_delete_node_with_edges_succeeds() {
 #[test]
 fn e2e_large_integers() {
     let mut db = Database::open_memory().unwrap();
-    let tx = db.begin_write().unwrap();
+    let tx = db.write_tx().unwrap();
     tx.query("CREATE (n:Num {val: 9223372036854775807})")
         .unwrap(); // i64::MAX
     tx.query("CREATE (n:Num {val: -9223372036854775808})")
         .unwrap(); // i64::MIN
     tx.commit().unwrap();
 
-    let tx = db.begin_read().unwrap();
+    let tx = db.read_tx().unwrap();
     let rows = tx
         .query("MATCH (n:Num) RETURN n.val ORDER BY n.val")
         .unwrap();
@@ -1944,7 +1944,7 @@ fn e2e_large_integers() {
 #[test]
 fn e2e_integer_overflow_errors() {
     let mut db = Database::open_memory().unwrap();
-    let tx = db.begin_read().unwrap();
+    let tx = db.read_tx().unwrap();
 
     // Each of these should error rather than panic or wrap silently.
     let cases = [
@@ -1972,7 +1972,7 @@ fn e2e_integer_overflow_errors() {
 #[test]
 fn e2e_division_by_zero_returns_null() {
     let mut db = Database::open_memory().unwrap();
-    let tx = db.begin_read().unwrap();
+    let tx = db.read_tx().unwrap();
     let rows = tx.query("RETURN 1 / 0 AS x, 1 % 0 AS y").unwrap();
     assert_eq!(rows.len(), 1);
     assert_eq!(rows[0].get("x").unwrap(), &Value::Null);
@@ -1983,7 +1983,7 @@ fn e2e_division_by_zero_returns_null() {
 #[test]
 fn e2e_null_propagation_arithmetic() {
     let mut db = Database::open_memory().unwrap();
-    let tx = db.begin_read().unwrap();
+    let tx = db.read_tx().unwrap();
     let rows = tx
         .query("RETURN null + 1 AS a, 1 - null AS b, null * 2 AS c, null / 2 AS d, null % 2 AS e")
         .unwrap();
@@ -1997,7 +1997,7 @@ fn e2e_null_propagation_arithmetic() {
 #[test]
 fn e2e_undefined_variable_carries_source_span() {
     let mut db = Database::open_memory().unwrap();
-    let tx = db.begin_read().unwrap();
+    let tx = db.read_tx().unwrap();
     // Probe a few query shapes — at least one should reach the planner's
     // scope check and surface a line:col location.
     let queries = [
@@ -2025,7 +2025,7 @@ fn e2e_undefined_variable_carries_source_span() {
 #[test]
 fn e2e_undefined_variable_did_you_mean_hint() {
     let mut db = Database::open_memory().unwrap();
-    let tx = db.begin_read().unwrap();
+    let tx = db.read_tx().unwrap();
     // `nmae` is one transposition away from the in-scope `name`.
     let err = tx
         .query("WITH 'Alice' AS name RETURN nmae")
@@ -2043,7 +2043,7 @@ fn e2e_var_length_hop_cap_rejects_unbounded_traversal() {
     // Regression: explicit large hop counts in `*1..N` were accepted and would
     // run unbounded traversal, OOMing on dense graphs. Must now error.
     let mut db = Database::open_memory().unwrap();
-    let tx = db.begin_read().unwrap();
+    let tx = db.read_tx().unwrap();
     let err = tx
         .query("MATCH (a)-[*1..1000000]->(b) RETURN a")
         .expect_err("expected hop-cap error");
@@ -2073,7 +2073,7 @@ fn e2e_var_length_hop_cap_is_configurable_via_config() {
         },
     )
     .unwrap();
-    let tx = db.begin_read().unwrap();
+    let tx = db.read_tx().unwrap();
     let err = tx
         .query("MATCH (a)-[*1..10]->(b) RETURN a")
         .expect_err("expected configured-depth error");
@@ -2091,7 +2091,7 @@ fn e2e_range_size_cap_rejects_huge_allocations() {
     // Regression: range() used to allocate the full Vec without a size guard,
     // OOMing the host on `RETURN range(0, 9999999999)`. Must now reject.
     let mut db = Database::open_memory().unwrap();
-    let tx = db.begin_read().unwrap();
+    let tx = db.read_tx().unwrap();
     let err = tx
         .query("RETURN range(0, 9999999999)")
         .expect_err("expected size-cap error");
@@ -2112,7 +2112,7 @@ fn e2e_duration_months_overflow_errors_not_panics() {
     // panics otherwise. Adding a huge-month duration to a date used to abort
     // the host process. Must now surface a NumberOutOfRange.
     let mut db = Database::open_memory().unwrap();
-    let tx = db.begin_read().unwrap();
+    let tx = db.read_tx().unwrap();
     let err = tx
         .query("RETURN date('2020-01-01') + duration({months: 9999999999999})")
         .expect_err("expected overflow error on huge months");
@@ -2129,7 +2129,7 @@ fn e2e_var_length_hop_overflow_errors_not_panics() {
     // Regression: parser used to `unwrap()` on `.parse::<u32>()`, panicking the
     // host process on `*1..99999999999`. Must now surface a NumberOutOfRange.
     let mut db = Database::open_memory().unwrap();
-    let tx = db.begin_read().unwrap();
+    let tx = db.read_tx().unwrap();
     let err = tx
         .query("MATCH (a)-[*1..99999999999]->(b) RETURN a")
         .expect_err("expected overflow error");
@@ -2159,7 +2159,7 @@ fn e2e_var_length_traversal_fuel_cap_rejects_factorial_blowup() {
     // resources. Must now hit the fuel cap and return a SizeLimit error.
     let mut db = Database::open_memory().unwrap();
     {
-        let tx = db.begin_write().unwrap();
+        let tx = db.write_tx().unwrap();
         // Build K12 (complete directed graph): 12 nodes, every ordered pair
         // connected. *1..11 from any node enumerates ~11! ≈ 4e7 paths, each
         // visiting up to 11 neighbors per hop — far above the 10M fuel cap.
@@ -2169,7 +2169,7 @@ fn e2e_var_length_traversal_fuel_cap_rejects_factorial_blowup() {
             .unwrap();
         tx.commit().unwrap();
     }
-    let tx = db.begin_read().unwrap();
+    let tx = db.read_tx().unwrap();
     let err = tx
         .query("MATCH (a:N {id: 1})-[*1..11]->(b) RETURN b")
         .expect_err("expected fuel-cap error on K12 traversal");
@@ -2207,7 +2207,7 @@ fn e2e_input_size_cap_rejects_huge_query() {
     // pathologically large query could exhaust memory. Must now reject up
     // front with a SizeLimit error.
     let mut db = Database::open_memory().unwrap();
-    let tx = db.begin_read().unwrap();
+    let tx = db.read_tx().unwrap();
     let big = format!("RETURN {}", "1+".repeat(600_000));
     let err = tx.query(&big).expect_err("expected size-cap error");
     let msg = format!("{err}").to_lowercase();
@@ -2223,7 +2223,7 @@ fn e2e_expr_depth_cap_rejects_deep_nesting() {
     // Regression: deeply nested parentheses overflowed the parser's recursion
     // stack and aborted the host. Must now reject before pest descends.
     let mut db = Database::open_memory().unwrap();
-    let tx = db.begin_read().unwrap();
+    let tx = db.read_tx().unwrap();
     let q = format!("RETURN {}1{}", "(".repeat(10_000), ")".repeat(10_000));
     let err = tx.query(&q).expect_err("expected depth-cap error");
     let msg = format!("{err}").to_lowercase();
@@ -2239,7 +2239,7 @@ fn e2e_expr_depth_cap_rejects_deep_nesting() {
 #[test]
 fn e2e_unknown_function_typo_hint() {
     let mut db = Database::open_memory().unwrap();
-    let tx = db.begin_read().unwrap();
+    let tx = db.read_tx().unwrap();
     // `lenght` is a one-edit typo for `length`.
     let err = tx
         .query("RETURN lenght('abc')")
@@ -2255,7 +2255,7 @@ fn e2e_unknown_function_typo_hint() {
 #[test]
 fn e2e_unknown_function_no_close_match() {
     let mut db = Database::open_memory().unwrap();
-    let tx = db.begin_read().unwrap();
+    let tx = db.read_tx().unwrap();
     // No close match — error should still be raised, just without a hint.
     let err = tx
         .query("RETURN xyzzy(1)")
@@ -2271,11 +2271,11 @@ fn e2e_unknown_function_no_close_match() {
 #[test]
 fn e2e_variable_to_property_hint() {
     let mut db = Database::open_memory().unwrap();
-    let tx = db.begin_write().unwrap();
+    let tx = db.write_tx().unwrap();
     tx.query("CREATE (n:Person {name: 'Alice'})").unwrap();
     tx.commit().unwrap();
 
-    let tx = db.begin_read().unwrap();
+    let tx = db.read_tx().unwrap();
     // The user wrote a bare `name` but referenced `n.name` elsewhere — the
     // hint should suggest the qualified property form.
     let err = tx
@@ -2295,11 +2295,11 @@ fn e2e_variable_to_property_hint() {
 #[test]
 fn e2e_variable_to_property_hint_same_expression() {
     let mut db = Database::open_memory().unwrap();
-    let tx = db.begin_write().unwrap();
+    let tx = db.write_tx().unwrap();
     tx.query("CREATE (n:Person {name: 'Alice'})").unwrap();
     tx.commit().unwrap();
 
-    let tx = db.begin_read().unwrap();
+    let tx = db.read_tx().unwrap();
     // Bare `name` next to a `n.name` reference in the same WHERE expression.
     let err = tx
         .query("MATCH (n:Person) WHERE n.name = 'Alice' AND name = 'Alice' RETURN n")
@@ -2315,11 +2315,11 @@ fn e2e_variable_to_property_hint_same_expression() {
 #[test]
 fn e2e_float_property() {
     let mut db = Database::open_memory().unwrap();
-    let tx = db.begin_write().unwrap();
+    let tx = db.write_tx().unwrap();
     tx.query("CREATE (n:Num {val: 3.14159})").unwrap();
     tx.commit().unwrap();
 
-    let tx = db.begin_read().unwrap();
+    let tx = db.read_tx().unwrap();
     let rows = tx.query("MATCH (n:Num) RETURN n.val").unwrap();
     assert_eq!(rows.len(), 1);
     if let Value::F64(v) = rows[0].get("n.val").unwrap() {
@@ -2335,12 +2335,12 @@ fn e2e_float_property() {
 #[test]
 fn e2e_boolean_properties() {
     let mut db = Database::open_memory().unwrap();
-    let tx = db.begin_write().unwrap();
+    let tx = db.write_tx().unwrap();
     tx.query("CREATE (n:Flag {active: true, deleted: false})")
         .unwrap();
     tx.commit().unwrap();
 
-    let tx = db.begin_read().unwrap();
+    let tx = db.read_tx().unwrap();
     let rows = tx
         .query("MATCH (n:Flag) WHERE n.active = true RETURN n.deleted")
         .unwrap();
@@ -2354,7 +2354,7 @@ fn e2e_boolean_properties() {
 #[test]
 fn e2e_unwind_list_literal() {
     let mut db = Database::open_memory().unwrap();
-    let tx = db.begin_read().unwrap();
+    let tx = db.read_tx().unwrap();
     let rows = tx.query("UNWIND [1, 2, 3] AS x RETURN x").unwrap();
     assert_eq!(rows.len(), 3);
     assert_eq!(rows[0].get("x").unwrap(), &Value::I64(1));
@@ -2366,7 +2366,7 @@ fn e2e_unwind_list_literal() {
 #[test]
 fn e2e_unwind_empty_list() {
     let mut db = Database::open_memory().unwrap();
-    let tx = db.begin_read().unwrap();
+    let tx = db.read_tx().unwrap();
     let rows = tx.query("UNWIND [] AS x RETURN x").unwrap();
     assert!(rows.is_empty());
     tx.commit().unwrap();
@@ -2375,7 +2375,7 @@ fn e2e_unwind_empty_list() {
 #[test]
 fn e2e_unwind_string_list() {
     let mut db = Database::open_memory().unwrap();
-    let tx = db.begin_read().unwrap();
+    let tx = db.read_tx().unwrap();
     let rows = tx
         .query("UNWIND ['Alice', 'Bob', 'Charlie'] AS name RETURN name ORDER BY name")
         .unwrap();
@@ -2392,7 +2392,7 @@ fn e2e_unwind_string_list() {
 #[test]
 fn e2e_unwind_with_where_filter() {
     let mut db = Database::open_memory().unwrap();
-    let tx = db.begin_read().unwrap();
+    let tx = db.read_tx().unwrap();
     let rows = tx
         .query("UNWIND [1, 2, 3, 4, 5] AS x WHERE x > 3 RETURN x")
         .unwrap();
@@ -2405,12 +2405,12 @@ fn e2e_unwind_with_where_filter() {
 #[test]
 fn e2e_unwind_create_nodes() {
     let mut db = Database::open_memory().unwrap();
-    let tx = db.begin_write().unwrap();
+    let tx = db.write_tx().unwrap();
     tx.query("UNWIND ['Alice', 'Bob', 'Charlie'] AS name CREATE (n:Person {name: name})")
         .unwrap();
     tx.commit().unwrap();
 
-    let tx = db.begin_read().unwrap();
+    let tx = db.read_tx().unwrap();
     let rows = tx
         .query("MATCH (n:Person) RETURN n.name ORDER BY n.name")
         .unwrap();
@@ -2430,7 +2430,7 @@ fn e2e_unwind_create_nodes() {
 #[test]
 fn e2e_unwind_with_aggregation() {
     let mut db = Database::open_memory().unwrap();
-    let tx = db.begin_read().unwrap();
+    let tx = db.read_tx().unwrap();
     let rows = tx
         .query("UNWIND [1, 2, 3, 4, 5] AS x RETURN sum(x) AS total, count(*) AS cnt")
         .unwrap();
@@ -2443,13 +2443,13 @@ fn e2e_unwind_with_aggregation() {
 #[test]
 fn e2e_match_with_unwind() {
     let mut db = Database::open_memory().unwrap();
-    let tx = db.begin_write().unwrap();
+    let tx = db.write_tx().unwrap();
     tx.query("CREATE (n:Person {name: 'Alice', tags: 'dev,lead'})")
         .unwrap();
     tx.commit().unwrap();
 
     // Use UNWIND within a MATCH via collect + UNWIND in WITH chain.
-    let tx = db.begin_read().unwrap();
+    let tx = db.read_tx().unwrap();
     let rows = tx
         .query("MATCH (n:Person) UNWIND [1, 2] AS x RETURN n.name, x ORDER BY x")
         .unwrap();
@@ -2467,11 +2467,11 @@ fn e2e_match_with_unwind() {
 #[test]
 fn e2e_list_literal_in_return() {
     let mut db = Database::open_memory().unwrap();
-    let tx = db.begin_write().unwrap();
+    let tx = db.write_tx().unwrap();
     tx.query("CREATE (n:Person {name: 'Alice'})").unwrap();
     tx.commit().unwrap();
 
-    let tx = db.begin_read().unwrap();
+    let tx = db.read_tx().unwrap();
     let rows = tx
         .query("MATCH (n:Person) RETURN [1, 2, 3] AS nums")
         .unwrap();
@@ -2489,7 +2489,7 @@ fn e2e_list_literal_in_return() {
 fn e2e_exists_simple_pattern() {
     // Alice KNOWS Bob, Bob KNOWS Charlie, Charlie knows nobody.
     let mut db = setup_social_graph();
-    let tx = db.begin_read().unwrap();
+    let tx = db.read_tx().unwrap();
     let results = tx
         .query("MATCH (n:Person) WHERE EXISTS { (n)-[:KNOWS]->(:Person) } RETURN n.name ORDER BY n.name")
         .unwrap();
@@ -2508,7 +2508,7 @@ fn e2e_exists_simple_pattern() {
 #[test]
 fn e2e_exists_with_where_filter() {
     let mut db = setup_social_graph();
-    let tx = db.begin_read().unwrap();
+    let tx = db.read_tx().unwrap();
     // Find people who know someone older than 30.
     let results = tx
         .query(
@@ -2527,7 +2527,7 @@ fn e2e_exists_with_where_filter() {
 #[test]
 fn e2e_not_exists() {
     let mut db = setup_social_graph();
-    let tx = db.begin_read().unwrap();
+    let tx = db.read_tx().unwrap();
     // Find people who do NOT know anyone.
     let results = tx
         .query("MATCH (n:Person) WHERE NOT EXISTS { (n)-[:KNOWS]->(:Person) } RETURN n.name")
@@ -2545,7 +2545,7 @@ fn e2e_not_exists() {
 fn e2e_exists_correlated_variable() {
     // Tests that the EXISTS subquery correctly correlates with the outer MATCH.
     let mut db = setup_social_graph();
-    let tx = db.begin_read().unwrap();
+    let tx = db.read_tx().unwrap();
     // Find people who work at any company.
     let results = tx
         .query("MATCH (n:Person) WHERE EXISTS { (n)-[:WORKS_AT]->(:Company) } RETURN n.name")
@@ -2562,7 +2562,7 @@ fn e2e_exists_correlated_variable() {
 #[test]
 fn e2e_exists_with_property_match() {
     let mut db = setup_social_graph();
-    let tx = db.begin_read().unwrap();
+    let tx = db.read_tx().unwrap();
     // Find people who know someone named 'Bob' (using WHERE in the subquery).
     let results = tx
         .query(
@@ -2581,7 +2581,7 @@ fn e2e_exists_with_property_match() {
 #[test]
 fn e2e_exists_combined_with_and() {
     let mut db = setup_social_graph();
-    let tx = db.begin_read().unwrap();
+    let tx = db.read_tx().unwrap();
     // People older than 28 who also know someone.
     let results = tx
         .query(
@@ -2603,11 +2603,11 @@ fn e2e_exists_combined_with_and() {
 fn e2e_list_comprehension_identity() {
     let mut db = Database::open_memory().unwrap();
     {
-        let tx = db.begin_write().unwrap();
+        let tx = db.write_tx().unwrap();
         tx.query("CREATE (n:X {name: 'a'})").unwrap();
         tx.commit().unwrap();
     }
-    let tx = db.begin_read().unwrap();
+    let tx = db.read_tx().unwrap();
     let results = tx
         .query("MATCH (n:X) RETURN [x IN [1, 2, 3] | x] AS nums")
         .unwrap();
@@ -2623,11 +2623,11 @@ fn e2e_list_comprehension_identity() {
 fn e2e_list_comprehension_with_filter() {
     let mut db = Database::open_memory().unwrap();
     {
-        let tx = db.begin_write().unwrap();
+        let tx = db.write_tx().unwrap();
         tx.query("CREATE (n:X {name: 'a'})").unwrap();
         tx.commit().unwrap();
     }
-    let tx = db.begin_read().unwrap();
+    let tx = db.read_tx().unwrap();
     let results = tx
         .query("MATCH (n:X) RETURN [x IN [1, 2, 3, 4, 5] WHERE x > 3] AS big")
         .unwrap();
@@ -2643,11 +2643,11 @@ fn e2e_list_comprehension_with_filter() {
 fn e2e_list_comprehension_empty_input() {
     let mut db = Database::open_memory().unwrap();
     {
-        let tx = db.begin_write().unwrap();
+        let tx = db.write_tx().unwrap();
         tx.query("CREATE (n:X {name: 'a'})").unwrap();
         tx.commit().unwrap();
     }
-    let tx = db.begin_read().unwrap();
+    let tx = db.read_tx().unwrap();
     let results = tx
         .query("MATCH (n:X) RETURN [x IN [] | x] AS empty")
         .unwrap();
@@ -2661,11 +2661,11 @@ fn e2e_list_comprehension_filter_all() {
     // Filter removes all elements.
     let mut db = Database::open_memory().unwrap();
     {
-        let tx = db.begin_write().unwrap();
+        let tx = db.write_tx().unwrap();
         tx.query("CREATE (n:X {name: 'a'})").unwrap();
         tx.commit().unwrap();
     }
-    let tx = db.begin_read().unwrap();
+    let tx = db.read_tx().unwrap();
     let results = tx
         .query("MATCH (n:X) RETURN [x IN [1, 2, 3] WHERE x > 100] AS empty_list")
         .unwrap();
@@ -2679,7 +2679,7 @@ fn e2e_list_comprehension_with_unwind_source() {
     // Use UNWIND to create a list, then comprehension to filter it.
     let mut db = Database::open_memory().unwrap();
     {
-        let tx = db.begin_write().unwrap();
+        let tx = db.write_tx().unwrap();
         tx.query("CREATE (n:Person {name: 'Alice', age: 30})")
             .unwrap();
         tx.query("CREATE (n:Person {name: 'Bob', age: 25})")
@@ -2688,7 +2688,7 @@ fn e2e_list_comprehension_with_unwind_source() {
             .unwrap();
         tx.commit().unwrap();
     }
-    let tx = db.begin_read().unwrap();
+    let tx = db.read_tx().unwrap();
     // Collect ages into a list, then filter with comprehension.
     let results = tx
         .query(
@@ -2716,7 +2716,7 @@ fn e2e_list_comprehension_with_unwind_source() {
 fn setup_path_graph() -> Database {
     let mut db = Database::open_memory().unwrap();
     {
-        let tx = db.begin_write().unwrap();
+        let tx = db.write_tx().unwrap();
         tx.query("CREATE (a:Person {name: 'A'})").unwrap(); // NodeId(1)
         tx.query("CREATE (b:Person {name: 'B'})").unwrap(); // NodeId(2)
         tx.query("CREATE (c:Person {name: 'C'})").unwrap(); // NodeId(3)
@@ -2724,7 +2724,7 @@ fn setup_path_graph() -> Database {
         tx.commit().unwrap();
     }
     {
-        let tx = db.begin_write().unwrap();
+        let tx = db.write_tx().unwrap();
         // Chain: A -> B -> C -> D
         tx.create_edge(NodeId(1), NodeId(2), "KNOWS", HashMap::new())
             .unwrap();
@@ -2746,7 +2746,7 @@ fn setup_path_graph() -> Database {
 fn e2e_shortest_path_direct() {
     // A -> D exists directly (1 hop). Also A->B->C->D (3 hops).
     let mut db = setup_path_graph();
-    let tx = db.begin_read().unwrap();
+    let tx = db.read_tx().unwrap();
     let results = tx
         .query(
             "MATCH (a:Person {name: 'A'}), (d:Person {name: 'D'}), \
@@ -2765,7 +2765,7 @@ fn e2e_shortest_path_direct() {
 fn e2e_shortest_path_multi_hop() {
     // A -> B is 1 hop (direct).
     let mut db = setup_path_graph();
-    let tx = db.begin_read().unwrap();
+    let tx = db.read_tx().unwrap();
     let results = tx
         .query(
             "MATCH (a:Person {name: 'A'}), (b:Person {name: 'B'}), \
@@ -2783,7 +2783,7 @@ fn e2e_shortest_path_multi_hop() {
 fn e2e_shortest_path_no_path() {
     // B -> A has no path (edges are directed A->B only).
     let mut db = setup_path_graph();
-    let tx = db.begin_read().unwrap();
+    let tx = db.read_tx().unwrap();
     let results = tx
         .query(
             "MATCH (b:Person {name: 'B'}), (a:Person {name: 'A'}), \
@@ -2800,7 +2800,7 @@ fn e2e_shortest_path_no_path() {
 fn e2e_shortest_path_length_function() {
     // A -> C: direct (1 hop) and A->B->C (2 hops). Shortest is 1.
     let mut db = setup_path_graph();
-    let tx = db.begin_read().unwrap();
+    let tx = db.read_tx().unwrap();
     let results = tx
         .query(
             "MATCH (a:Person {name: 'A'}), (c:Person {name: 'C'}), \
@@ -2827,7 +2827,7 @@ fn e2e_all_shortest_paths() {
     // A->C (1 hop): only one path of length 1.
     // So allShortestPaths should return just that one.
     let mut db = setup_path_graph();
-    let tx = db.begin_read().unwrap();
+    let tx = db.read_tx().unwrap();
     let results = tx
         .query(
             "MATCH (a:Person {name: 'A'}), (c:Person {name: 'C'}), \
@@ -2846,7 +2846,7 @@ fn e2e_all_shortest_paths_multiple() {
     // Build a diamond graph: A->B->D, A->C->D (both length 2).
     let mut db = Database::open_memory().unwrap();
     {
-        let tx = db.begin_write().unwrap();
+        let tx = db.write_tx().unwrap();
         tx.query("CREATE (a:N {name: 'A'})").unwrap(); // 1
         tx.query("CREATE (b:N {name: 'B'})").unwrap(); // 2
         tx.query("CREATE (c:N {name: 'C'})").unwrap(); // 3
@@ -2854,7 +2854,7 @@ fn e2e_all_shortest_paths_multiple() {
         tx.commit().unwrap();
     }
     {
-        let tx = db.begin_write().unwrap();
+        let tx = db.write_tx().unwrap();
         tx.create_edge(NodeId(1), NodeId(2), "E", HashMap::new())
             .unwrap();
         tx.create_edge(NodeId(1), NodeId(3), "E", HashMap::new())
@@ -2865,7 +2865,7 @@ fn e2e_all_shortest_paths_multiple() {
             .unwrap();
         tx.commit().unwrap();
     }
-    let tx = db.begin_read().unwrap();
+    let tx = db.read_tx().unwrap();
     let results = tx
         .query(
             "MATCH (a:N {name: 'A'}), (d:N {name: 'D'}), \
@@ -2889,7 +2889,7 @@ fn e2e_all_shortest_paths_multiple() {
 fn e2e_shortest_path_respects_direction() {
     // A -> B exists, but B -> A does not.
     let mut db = setup_path_graph();
-    let tx = db.begin_read().unwrap();
+    let tx = db.read_tx().unwrap();
     let results = tx
         .query(
             "MATCH (b:Person {name: 'B'}), (a:Person {name: 'A'}), \
@@ -2906,7 +2906,7 @@ fn e2e_shortest_path_respects_direction() {
 fn e2e_shortest_path_same_node() {
     // Path from A to A should be a single-node path.
     let mut db = setup_path_graph();
-    let tx = db.begin_read().unwrap();
+    let tx = db.read_tx().unwrap();
     let results = tx
         .query(
             "MATCH (a:Person {name: 'A'}), (a2:Person {name: 'A'}), \
@@ -2925,7 +2925,7 @@ fn e2e_shortest_path_same_node() {
 #[test]
 fn e2e_explain_returns_plan_not_data() {
     let mut db = setup_social_graph();
-    let tx = db.begin_read().unwrap();
+    let tx = db.read_tx().unwrap();
     let results = tx
         .query("EXPLAIN MATCH (n:Person) WHERE n.age > 30 RETURN n.name")
         .unwrap();
@@ -2950,7 +2950,7 @@ fn e2e_explain_returns_plan_not_data() {
 fn e2e_explain_shows_estimated_rows() {
     let mut db = Database::open_memory().unwrap();
     {
-        let tx = db.begin_write().unwrap();
+        let tx = db.write_tx().unwrap();
         // Create 10 Person nodes — stats should track this.
         for i in 0..10 {
             tx.query(&format!("CREATE (n:Person {{name: 'P{i}'}})"))
@@ -2963,7 +2963,7 @@ fn e2e_explain_shows_estimated_rows() {
         }
         tx.commit().unwrap();
     }
-    let tx = db.begin_read().unwrap();
+    let tx = db.read_tx().unwrap();
     let results = tx.query("EXPLAIN MATCH (n:Person) RETURN n.name").unwrap();
     let plan = match results[0].get("plan").unwrap() {
         Value::String(s) => s.clone(),
@@ -2981,7 +2981,7 @@ fn e2e_explain_shows_estimated_rows() {
 fn e2e_stats_maintained_on_create_delete() {
     let mut db = Database::open_memory().unwrap();
     {
-        let tx = db.begin_write().unwrap();
+        let tx = db.write_tx().unwrap();
         tx.query("CREATE (a:Animal {name: 'Dog'})").unwrap();
         tx.query("CREATE (b:Animal {name: 'Cat'})").unwrap();
         tx.query("CREATE (c:Animal {name: 'Bird'})").unwrap();
@@ -2989,7 +2989,7 @@ fn e2e_stats_maintained_on_create_delete() {
     }
     // Check: EXPLAIN should show est. 3 rows for Animal.
     {
-        let tx = db.begin_read().unwrap();
+        let tx = db.read_tx().unwrap();
         let results = tx.query("EXPLAIN MATCH (n:Animal) RETURN n").unwrap();
         let plan = match results[0].get("plan").unwrap() {
             Value::String(s) => s.clone(),
@@ -3003,14 +3003,14 @@ fn e2e_stats_maintained_on_create_delete() {
     }
     // Delete one Animal.
     {
-        let tx = db.begin_write().unwrap();
+        let tx = db.write_tx().unwrap();
         tx.query("MATCH (n:Animal {name: 'Bird'}) DELETE n")
             .unwrap();
         tx.commit().unwrap();
     }
     // Check: should now show est. 2 rows.
     {
-        let tx = db.begin_read().unwrap();
+        let tx = db.read_tx().unwrap();
         let results = tx.query("EXPLAIN MATCH (n:Animal) RETURN n").unwrap();
         let plan = match results[0].get("plan").unwrap() {
             Value::String(s) => s.clone(),
@@ -3027,7 +3027,7 @@ fn e2e_stats_maintained_on_create_delete() {
 #[test]
 fn e2e_explain_cross_product() {
     let mut db = setup_social_graph();
-    let tx = db.begin_read().unwrap();
+    let tx = db.read_tx().unwrap();
     let results = tx
         .query("EXPLAIN MATCH (a:Person), (b:Company) RETURN a.name, b.name")
         .unwrap();
@@ -3047,11 +3047,11 @@ fn e2e_length_function_on_string() {
     // length() also works on strings and lists.
     let mut db = Database::open_memory().unwrap();
     {
-        let tx = db.begin_write().unwrap();
+        let tx = db.write_tx().unwrap();
         tx.query("CREATE (n:X {name: 'hello'})").unwrap();
         tx.commit().unwrap();
     }
-    let tx = db.begin_read().unwrap();
+    let tx = db.read_tx().unwrap();
     let results = tx
         .query("MATCH (n:X) RETURN length(n.name) AS len")
         .unwrap();
@@ -3065,12 +3065,12 @@ fn e2e_length_function_on_string() {
 fn e2e_create_edge_with_properties() {
     let mut db = Database::open_memory().unwrap();
     {
-        let tx = db.begin_write().unwrap();
+        let tx = db.write_tx().unwrap();
         tx.query("CREATE (a:File {name: 'main.py'})-[:IMPORTS {line_number: 1, alias: 'os'}]->(b:Module {name: 'os'})")
             .unwrap();
         tx.commit().unwrap();
     }
-    let tx = db.begin_read().unwrap();
+    let tx = db.read_tx().unwrap();
     let results = tx
         .query("MATCH (a:File)-[r:IMPORTS]->(b:Module) RETURN r.line_number, r.alias")
         .unwrap();
@@ -3089,18 +3089,18 @@ fn e2e_create_edge_with_properties() {
 fn e2e_set_relationship_property() {
     let mut db = Database::open_memory().unwrap();
     {
-        let tx = db.begin_write().unwrap();
+        let tx = db.write_tx().unwrap();
         tx.query("CREATE (a:File {name: 'main.py'})-[:IMPORTS {line_number: 1}]->(b:Module {name: 'os'})")
             .unwrap();
         tx.commit().unwrap();
     }
     {
-        let tx = db.begin_write().unwrap();
+        let tx = db.write_tx().unwrap();
         tx.query("MATCH (a:File)-[r:IMPORTS]->(b:Module) SET r.line_number = 5")
             .unwrap();
         tx.commit().unwrap();
     }
-    let tx = db.begin_read().unwrap();
+    let tx = db.read_tx().unwrap();
     let results = tx
         .query("MATCH (a:File)-[r:IMPORTS]->(b:Module) RETURN r.line_number")
         .unwrap();
@@ -3114,13 +3114,13 @@ fn e2e_set_relationship_property() {
 fn e2e_return_relationship_properties() {
     let mut db = Database::open_memory().unwrap();
     {
-        let tx = db.begin_write().unwrap();
+        let tx = db.write_tx().unwrap();
         tx.query("CREATE (a:Person {name: 'Alice'})").unwrap();
         tx.query("CREATE (b:Person {name: 'Bob'})").unwrap();
         tx.commit().unwrap();
     }
     {
-        let tx = db.begin_write().unwrap();
+        let tx = db.write_tx().unwrap();
         tx.create_edge(
             NodeId(1),
             NodeId(2),
@@ -3132,7 +3132,7 @@ fn e2e_return_relationship_properties() {
         .unwrap();
         tx.commit().unwrap();
     }
-    let tx = db.begin_read().unwrap();
+    let tx = db.read_tx().unwrap();
     let results = tx
         .query("MATCH (a:Person)-[r:KNOWS]->(b:Person) RETURN a.name, r.since, b.name")
         .unwrap();
@@ -3147,20 +3147,20 @@ fn e2e_return_relationship_properties() {
 fn e2e_match_merge_creates_edge() {
     let mut db = Database::open_memory().unwrap();
     {
-        let tx = db.begin_write().unwrap();
+        let tx = db.write_tx().unwrap();
         tx.query("CREATE (a:File {key: 'main.py'})").unwrap();
         tx.query("CREATE (b:Module {key: 'os'})").unwrap();
         tx.commit().unwrap();
     }
     {
-        let tx = db.begin_write().unwrap();
+        let tx = db.write_tx().unwrap();
         tx.query(
             "MATCH (a:File {key: 'main.py'}), (b:Module {key: 'os'}) MERGE (a)-[:IMPORTS]->(b)",
         )
         .unwrap();
         tx.commit().unwrap();
     }
-    let tx = db.begin_read().unwrap();
+    let tx = db.read_tx().unwrap();
     let results = tx
         .query("MATCH (a:File)-[:IMPORTS]->(b:Module) RETURN a.key, b.key")
         .unwrap();
@@ -3172,21 +3172,21 @@ fn e2e_match_merge_creates_edge() {
 fn e2e_match_merge_idempotent_edge() {
     let mut db = Database::open_memory().unwrap();
     {
-        let tx = db.begin_write().unwrap();
+        let tx = db.write_tx().unwrap();
         tx.query("CREATE (a:File {key: 'main.py'})").unwrap();
         tx.query("CREATE (b:Module {key: 'os'})").unwrap();
         tx.commit().unwrap();
     }
     // Run MERGE twice — should create the edge only once.
     for _ in 0..2 {
-        let tx = db.begin_write().unwrap();
+        let tx = db.write_tx().unwrap();
         tx.query(
             "MATCH (a:File {key: 'main.py'}), (b:Module {key: 'os'}) MERGE (a)-[:IMPORTS]->(b)",
         )
         .unwrap();
         tx.commit().unwrap();
     }
-    let tx = db.begin_read().unwrap();
+    let tx = db.read_tx().unwrap();
     let results = tx
         .query("MATCH (a:File)-[:IMPORTS]->(b:Module) RETURN a.key")
         .unwrap();
@@ -3200,18 +3200,18 @@ fn e2e_match_merge_idempotent_edge() {
 fn e2e_delete_after_optional_match_with_edge() {
     let mut db = Database::open_memory().unwrap();
     {
-        let tx = db.begin_write().unwrap();
+        let tx = db.write_tx().unwrap();
         tx.query("CREATE (a:File {key: 'main.py'})-[:IMPORTS {line: 1}]->(b:Module {key: 'os'})")
             .unwrap();
         tx.commit().unwrap();
     }
     {
-        let tx = db.begin_write().unwrap();
+        let tx = db.write_tx().unwrap();
         tx.query("MATCH (a:File {key: 'main.py'}) OPTIONAL MATCH (a)-[r:IMPORTS]->(b) DELETE r")
             .unwrap();
         tx.commit().unwrap();
     }
-    let tx = db.begin_read().unwrap();
+    let tx = db.read_tx().unwrap();
     let results = tx
         .query("MATCH (a:File)-[:IMPORTS]->(b:Module) RETURN a.key")
         .unwrap();
@@ -3226,18 +3226,18 @@ fn e2e_delete_after_optional_match_with_edge() {
 fn e2e_delete_after_optional_match_no_edge() {
     let mut db = Database::open_memory().unwrap();
     {
-        let tx = db.begin_write().unwrap();
+        let tx = db.write_tx().unwrap();
         tx.query("CREATE (a:File {key: 'main.py'})").unwrap();
         tx.commit().unwrap();
     }
     // OPTIONAL MATCH finds nothing — DELETE should be a no-op.
     {
-        let tx = db.begin_write().unwrap();
+        let tx = db.write_tx().unwrap();
         tx.query("MATCH (a:File {key: 'main.py'}) OPTIONAL MATCH (a)-[r:IMPORTS]->(b) DELETE r")
             .unwrap();
         tx.commit().unwrap();
     }
-    let tx = db.begin_read().unwrap();
+    let tx = db.read_tx().unwrap();
     let nodes = tx.query("MATCH (n:File) RETURN n.key").unwrap();
     assert_eq!(nodes.len(), 1);
     tx.commit().unwrap();
@@ -3254,7 +3254,7 @@ fn e2e_delete_after_optional_match_no_edge() {
 fn regression_return_alias_collision_with_match_variable() {
     let mut db = Database::open_memory().unwrap();
     {
-        let tx = db.begin_write().unwrap();
+        let tx = db.write_tx().unwrap();
         tx.query("CREATE (a:Function {key: 'f1', name: 'main'})")
             .unwrap();
         tx.query("CREATE (b:Function {key: 'f2', name: 'helper'})")
@@ -3265,7 +3265,7 @@ fn regression_return_alias_collision_with_match_variable() {
         .unwrap();
         tx.commit().unwrap();
     }
-    let tx = db.begin_read().unwrap();
+    let tx = db.read_tx().unwrap();
     // Alias "caller" collides with MATCH variable "caller" — should still return property value.
     let results = tx
         .query(
@@ -3287,7 +3287,7 @@ fn regression_return_alias_collision_with_match_variable() {
 fn regression_delete_matched_relationship_preserves_others() {
     let mut db = Database::open_memory().unwrap();
     {
-        let tx = db.begin_write().unwrap();
+        let tx = db.write_tx().unwrap();
         tx.query("CREATE (f:File {key: 'f1'})").unwrap();
         tx.query("CREATE (m1:Module {key: 'm1'})").unwrap();
         tx.query("CREATE (m2:Module {key: 'm2'})").unwrap();
@@ -3316,7 +3316,7 @@ fn regression_delete_matched_relationship_preserves_others() {
 fn regression_target_node_filter_in_relationship_match() {
     let mut db = Database::open_memory().unwrap();
     {
-        let tx = db.begin_write().unwrap();
+        let tx = db.write_tx().unwrap();
         tx.query("CREATE (f:File {key: 'f1'})").unwrap();
         tx.query("CREATE (m1:Module {key: 'm1'})").unwrap();
         tx.query("CREATE (m2:Module {key: 'm2'})").unwrap();
@@ -3351,7 +3351,7 @@ fn regression_target_node_filter_in_relationship_match() {
 fn regression_open_ended_variable_length_path() {
     let mut db = Database::open_memory().unwrap();
     {
-        let tx = db.begin_write().unwrap();
+        let tx = db.write_tx().unwrap();
         tx.query("CREATE (a:Class {name: 'Base'})").unwrap();
         tx.query("CREATE (b:Class {name: 'Mid'})").unwrap();
         tx.query("CREATE (c:Class {name: 'Leaf'})").unwrap();
@@ -3365,7 +3365,7 @@ fn regression_open_ended_variable_length_path() {
         .unwrap();
         tx.commit().unwrap();
     }
-    let tx = db.begin_read().unwrap();
+    let tx = db.read_tx().unwrap();
     // Open-ended range *1.. should now parse and find transitive ancestors.
     let results = tx
         .query("MATCH (a:Class {name: 'Leaf'})-[:INHERITS*1..]->(b:Class) RETURN b.name")
@@ -3387,7 +3387,7 @@ fn regression_open_ended_variable_length_path() {
 #[test]
 fn e2e_tolower_toupper() {
     let mut db = setup_social_graph();
-    let tx = db.begin_read().unwrap();
+    let tx = db.read_tx().unwrap();
     let results = tx
         .query("MATCH (n:Person) WHERE toLower(n.name) = 'alice' RETURN toUpper(n.name) AS upper")
         .unwrap();
@@ -3402,7 +3402,7 @@ fn e2e_tolower_toupper() {
 #[test]
 fn e2e_tostring_tointeger_tofloat() {
     let mut db = setup_social_graph();
-    let tx = db.begin_read().unwrap();
+    let tx = db.read_tx().unwrap();
     let results = tx
         .query("MATCH (n:Person {name: 'Alice'}) RETURN toString(n.age) AS s, toFloat(n.age) AS f")
         .unwrap();
@@ -3415,7 +3415,7 @@ fn e2e_tostring_tointeger_tofloat() {
 #[test]
 fn e2e_coalesce() {
     let mut db = setup_social_graph();
-    let tx = db.begin_read().unwrap();
+    let tx = db.read_tx().unwrap();
     let results = tx
         .query("MATCH (n:Person {name: 'Alice'}) RETURN coalesce(n.missing, n.name) AS val")
         .unwrap();
@@ -3427,7 +3427,7 @@ fn e2e_coalesce() {
 #[test]
 fn e2e_substring() {
     let mut db = setup_social_graph();
-    let tx = db.begin_read().unwrap();
+    let tx = db.read_tx().unwrap();
     let results = tx
         .query("MATCH (n:Person {name: 'Charlie'}) RETURN substring(n.name, 0, 4) AS sub")
         .unwrap();
@@ -3439,7 +3439,7 @@ fn e2e_substring() {
 #[test]
 fn e2e_replace_function() {
     let mut db = setup_social_graph();
-    let tx = db.begin_read().unwrap();
+    let tx = db.read_tx().unwrap();
     let results = tx
         .query("MATCH (n:Person {name: 'Alice'}) RETURN replace(n.name, 'ice', 'an') AS r")
         .unwrap();
@@ -3452,12 +3452,12 @@ fn e2e_replace_function() {
 fn e2e_split_function() {
     let mut db = Database::open_memory().unwrap();
     {
-        let tx = db.begin_write().unwrap();
+        let tx = db.write_tx().unwrap();
         tx.query("CREATE (n:Data {path: 'src/foo/bar.rs'})")
             .unwrap();
         tx.commit().unwrap();
     }
-    let tx = db.begin_read().unwrap();
+    let tx = db.read_tx().unwrap();
     let results = tx
         .query("MATCH (n:Data) RETURN split(n.path, '/') AS parts")
         .unwrap();
@@ -3477,11 +3477,11 @@ fn e2e_split_function() {
 fn e2e_trim_function() {
     let mut db = Database::open_memory().unwrap();
     {
-        let tx = db.begin_write().unwrap();
+        let tx = db.write_tx().unwrap();
         tx.query("CREATE (n:Data {val: '  hello  '})").unwrap();
         tx.commit().unwrap();
     }
-    let tx = db.begin_read().unwrap();
+    let tx = db.read_tx().unwrap();
     let results = tx.query("MATCH (n:Data) RETURN trim(n.val) AS t").unwrap();
     assert_eq!(results.len(), 1);
     assert_eq!(results[0].get("t"), Some(&Value::String("hello".into())));
@@ -3491,7 +3491,7 @@ fn e2e_trim_function() {
 #[test]
 fn e2e_reverse_function() {
     let mut db = setup_social_graph();
-    let tx = db.begin_read().unwrap();
+    let tx = db.read_tx().unwrap();
     let results = tx
         .query("MATCH (n:Person {name: 'Bob'}) RETURN reverse(n.name) AS r")
         .unwrap();
@@ -3503,7 +3503,7 @@ fn e2e_reverse_function() {
 #[test]
 fn e2e_size_function() {
     let mut db = setup_social_graph();
-    let tx = db.begin_read().unwrap();
+    let tx = db.read_tx().unwrap();
     let results = tx
         .query("MATCH (n:Person {name: 'Alice'}) RETURN size(n.name) AS s")
         .unwrap();
@@ -3516,11 +3516,11 @@ fn e2e_size_function() {
 fn e2e_abs_function() {
     let mut db = Database::open_memory().unwrap();
     {
-        let tx = db.begin_write().unwrap();
+        let tx = db.write_tx().unwrap();
         tx.query("CREATE (n:Data {val: -42})").unwrap();
         tx.commit().unwrap();
     }
-    let tx = db.begin_read().unwrap();
+    let tx = db.read_tx().unwrap();
     let results = tx.query("MATCH (n:Data) RETURN abs(n.val) AS a").unwrap();
     assert_eq!(results.len(), 1);
     assert_eq!(results[0].get("a"), Some(&Value::I64(42)));
@@ -3530,7 +3530,7 @@ fn e2e_abs_function() {
 #[test]
 fn e2e_range_function() {
     let mut db = Database::open_memory().unwrap();
-    let tx = db.begin_read().unwrap();
+    let tx = db.read_tx().unwrap();
     let results = tx
         .query("UNWIND range(1, 5) AS i RETURN collect(i) AS nums")
         .unwrap();
@@ -3551,7 +3551,7 @@ fn e2e_range_function() {
 #[test]
 fn e2e_head_tail_last() {
     let mut db = Database::open_memory().unwrap();
-    let tx = db.begin_read().unwrap();
+    let tx = db.read_tx().unwrap();
     let results = tx
         .query(
             "UNWIND [[1, 2, 3]] AS list RETURN head(list) AS h, last(list) AS l, tail(list) AS t",
@@ -3572,12 +3572,12 @@ fn e2e_id_as_property_name_still_works() {
     // Regression: adding id() as a function must not break {id: X} property maps.
     let mut db = Database::open_memory().unwrap();
     {
-        let tx = db.begin_write().unwrap();
+        let tx = db.write_tx().unwrap();
         tx.query("CREATE (n:Item {id: 42, name: 'widget'})")
             .unwrap();
         tx.commit().unwrap();
     }
-    let tx = db.begin_read().unwrap();
+    let tx = db.read_tx().unwrap();
     let results = tx.query("MATCH (n:Item {id: 42}) RETURN n.name").unwrap();
     assert_eq!(results.len(), 1);
     assert_eq!(
@@ -3595,12 +3595,12 @@ fn e2e_id_as_property_name_still_works() {
 fn merge_relationship_creates_nodes_and_edge() {
     let mut db = Database::open_memory().unwrap();
     {
-        let tx = db.begin_write().unwrap();
+        let tx = db.write_tx().unwrap();
         tx.query("MERGE (a:Person {name: 'Alice'})-[:KNOWS]->(b:Person {name: 'Bob'})")
             .unwrap();
         tx.commit().unwrap();
     }
-    let tx = db.begin_read().unwrap();
+    let tx = db.read_tx().unwrap();
     // Both nodes should exist.
     let people = tx.query("MATCH (n:Person) RETURN n.name").unwrap();
     assert_eq!(people.len(), 2);
@@ -3616,7 +3616,7 @@ fn merge_relationship_creates_nodes_and_edge() {
 fn merge_relationship_is_idempotent() {
     let mut db = Database::open_memory().unwrap();
     {
-        let tx = db.begin_write().unwrap();
+        let tx = db.write_tx().unwrap();
         tx.query("MERGE (a:Person {name: 'Alice'})-[:KNOWS]->(b:Person {name: 'Bob'})")
             .unwrap();
         // Run it again — should not create duplicates.
@@ -3624,7 +3624,7 @@ fn merge_relationship_is_idempotent() {
             .unwrap();
         tx.commit().unwrap();
     }
-    let tx = db.begin_read().unwrap();
+    let tx = db.read_tx().unwrap();
     let people = tx.query("MATCH (n:Person) RETURN n.name").unwrap();
     assert_eq!(people.len(), 2);
     tx.commit().unwrap();
@@ -3634,18 +3634,18 @@ fn merge_relationship_is_idempotent() {
 fn merge_relationship_reuses_existing_nodes() {
     let mut db = Database::open_memory().unwrap();
     {
-        let tx = db.begin_write().unwrap();
+        let tx = db.write_tx().unwrap();
         tx.query("CREATE (a:Person {name: 'Alice'})").unwrap();
         tx.commit().unwrap();
     }
     {
-        let tx = db.begin_write().unwrap();
+        let tx = db.write_tx().unwrap();
         // Alice already exists — should reuse her.
         tx.query("MERGE (a:Person {name: 'Alice'})-[:KNOWS]->(b:Person {name: 'Bob'})")
             .unwrap();
         tx.commit().unwrap();
     }
-    let tx = db.begin_read().unwrap();
+    let tx = db.read_tx().unwrap();
     let people = tx.query("MATCH (n:Person) RETURN n.name").unwrap();
     assert_eq!(people.len(), 2); // Not 3!
     tx.commit().unwrap();
@@ -3655,14 +3655,14 @@ fn merge_relationship_reuses_existing_nodes() {
 fn merge_relationship_with_edge_properties() {
     let mut db = Database::open_memory().unwrap();
     {
-        let tx = db.begin_write().unwrap();
+        let tx = db.write_tx().unwrap();
         tx.query(
             "MERGE (a:Person {name: 'Alice'})-[:KNOWS {since: 2020}]->(b:Person {name: 'Bob'})",
         )
         .unwrap();
         tx.commit().unwrap();
     }
-    let tx = db.begin_read().unwrap();
+    let tx = db.read_tx().unwrap();
     let results = tx
         .query("MATCH (a:Person {name: 'Alice'})-[r:KNOWS]->(b) RETURN r.since")
         .unwrap();
@@ -3679,14 +3679,14 @@ fn merge_relationship_with_edge_properties() {
 fn parameterized_match_with_literal() {
     let mut db = Database::open_memory().unwrap();
     {
-        let tx = db.begin_write().unwrap();
+        let tx = db.write_tx().unwrap();
         tx.query("CREATE (n:Person {name: 'Alice', age: 30})")
             .unwrap();
         tx.query("CREATE (n:Person {name: 'Bob', age: 25})")
             .unwrap();
         tx.commit().unwrap();
     }
-    let tx = db.begin_read().unwrap();
+    let tx = db.read_tx().unwrap();
     let params: HashMap<String, Value> =
         [("name".to_string(), Value::String("Alice".into()))].into();
     let results = tx
@@ -3701,7 +3701,7 @@ fn parameterized_match_with_literal() {
 fn parameterized_create() {
     let mut db = Database::open_memory().unwrap();
     {
-        let tx = db.begin_write().unwrap();
+        let tx = db.write_tx().unwrap();
         let params: HashMap<String, Value> = [
             ("name".to_string(), Value::String("Charlie".into())),
             ("age".to_string(), Value::I64(40)),
@@ -3711,7 +3711,7 @@ fn parameterized_create() {
             .unwrap();
         tx.commit().unwrap();
     }
-    let tx = db.begin_read().unwrap();
+    let tx = db.read_tx().unwrap();
     let results = tx
         .query("MATCH (n:Person {name: 'Charlie'}) RETURN n.age")
         .unwrap();
@@ -3724,14 +3724,14 @@ fn parameterized_create() {
 fn parameterized_where_clause() {
     let mut db = Database::open_memory().unwrap();
     {
-        let tx = db.begin_write().unwrap();
+        let tx = db.write_tx().unwrap();
         tx.query("CREATE (n:Person {name: 'Alice', age: 30})")
             .unwrap();
         tx.query("CREATE (n:Person {name: 'Bob', age: 25})")
             .unwrap();
         tx.commit().unwrap();
     }
-    let tx = db.begin_read().unwrap();
+    let tx = db.read_tx().unwrap();
     let params: HashMap<String, Value> = [("min_age".to_string(), Value::I64(28))].into();
     let results = tx
         .query_with_params(
@@ -3751,7 +3751,7 @@ fn parameterized_where_clause() {
 fn parameterized_merge() {
     let mut db = Database::open_memory().unwrap();
     {
-        let tx = db.begin_write().unwrap();
+        let tx = db.write_tx().unwrap();
         let params: HashMap<String, Value> =
             [("key".to_string(), Value::String("fn:main".into()))].into();
         tx.query_with_params("MERGE (n:Function {key: $key})", Some(&params))
@@ -3761,7 +3761,7 @@ fn parameterized_merge() {
             .unwrap();
         tx.commit().unwrap();
     }
-    let tx = db.begin_read().unwrap();
+    let tx = db.read_tx().unwrap();
     let results = tx.query("MATCH (n:Function) RETURN n.key").unwrap();
     assert_eq!(results.len(), 1);
     tx.commit().unwrap();
@@ -3770,7 +3770,7 @@ fn parameterized_merge() {
 #[test]
 fn parameterized_missing_param_errors() {
     let mut db = Database::open_memory().unwrap();
-    let tx = db.begin_write().unwrap();
+    let tx = db.write_tx().unwrap();
     let params: HashMap<String, Value> = HashMap::new();
     let result = tx.query_with_params("MATCH (n:Person {name: $name}) RETURN n", Some(&params));
     assert!(result.is_err());
@@ -3783,7 +3783,7 @@ fn parameterized_missing_param_errors() {
 fn parameterized_with_index() {
     let mut db = Database::open_memory().unwrap();
     {
-        let tx = db.begin_write().unwrap();
+        let tx = db.write_tx().unwrap();
         tx.create_index("Function", "key").unwrap();
         tx.query("CREATE (n:Function {key: 'fn:main', name: 'main'})")
             .unwrap();
@@ -3791,7 +3791,7 @@ fn parameterized_with_index() {
             .unwrap();
         tx.commit().unwrap();
     }
-    let tx = db.begin_read().unwrap();
+    let tx = db.read_tx().unwrap();
     let params: HashMap<String, Value> =
         [("key".to_string(), Value::String("fn:main".into()))].into();
     let results = tx
@@ -3812,7 +3812,7 @@ fn parameterized_with_index() {
 fn e2e_with_order_by() {
     let mut db = Database::open_memory().unwrap();
     {
-        let tx = db.begin_write().unwrap();
+        let tx = db.write_tx().unwrap();
         tx.query("CREATE (:Function {name: 'foo', path: 'a.py'})")
             .unwrap();
         tx.query("CREATE (:Function {name: 'bar', path: 'a.py'})")
@@ -3840,7 +3840,7 @@ fn e2e_with_order_by() {
         .unwrap();
         tx.commit().unwrap();
     }
-    let tx = db.begin_read().unwrap();
+    let tx = db.read_tx().unwrap();
     let results = tx
         .query(
             "MATCH (a:Function)-[:CALLS]->(b:Function) \
@@ -3866,7 +3866,7 @@ fn e2e_with_order_by() {
 #[test]
 fn e2e_with_order_by_and_limit() {
     let mut db = setup_social_graph();
-    let tx = db.begin_read().unwrap();
+    let tx = db.read_tx().unwrap();
     // ORDER BY + LIMIT on WITH: keep only the youngest person
     let results = tx
         .query(
@@ -3887,7 +3887,7 @@ fn e2e_with_order_by_and_limit() {
 fn test_pattern_comprehension_nested_in_list_comprehension() {
     let mut db = Database::open_memory().unwrap();
     {
-        let tx = db.begin_write().unwrap();
+        let tx = db.write_tx().unwrap();
         tx.query(
             "CREATE (n1:X {n: 1}), (m1:Y), (i1:Y), (i2:Y) CREATE (n1)-[:T]->(m1), (m1)-[:T]->(i1), (m1)-[:T]->(i2)",
         ).unwrap();
@@ -3896,7 +3896,7 @@ fn test_pattern_comprehension_nested_in_list_comprehension() {
         ).unwrap();
         tx.commit().unwrap();
     }
-    let reader = db.begin_read().unwrap();
+    let reader = db.read_tx().unwrap();
 
     let result = reader.query(
         "MATCH p = (n:X)-->() RETURN n.n AS nn, [x IN nodes(p) | size([(x)-->(:Y) | 1])] AS list",
@@ -3924,7 +3924,7 @@ fn test_pattern_comprehension_nested_in_list_comprehension() {
 fn large_duration_between() {
     // Analogous to TCK Temporal10[9] but within chrono's year range.
     let mut db = Database::open_memory().unwrap();
-    let tx = db.begin_read().unwrap();
+    let tx = db.read_tx().unwrap();
     let rows = tx
         .query("RETURN duration.between(date('0001-01-01'), date('9999-12-31')) AS duration")
         .unwrap();
@@ -3938,7 +3938,7 @@ fn large_duration_in_seconds() {
     // Analogous to TCK Temporal10[10] but within chrono's year range
     // (original uses ±999999999 years; chrono caps at ~±262,143).
     let mut db = Database::open_memory().unwrap();
-    let tx = db.begin_read().unwrap();
+    let tx = db.read_tx().unwrap();
     let rows = tx
         .query("RETURN duration.inSeconds(localdatetime('1000-01-01T00:00:00'), localdatetime('1200-12-31T23:59:59')) AS duration")
         .unwrap();

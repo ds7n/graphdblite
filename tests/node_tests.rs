@@ -12,7 +12,7 @@ fn props(pairs: &[(&str, Value)]) -> HashMap<String, Value> {
 #[test]
 fn create_and_get_node() {
     let mut db = Database::open_memory().unwrap();
-    let tx = db.begin_write().unwrap();
+    let tx = db.write_tx().unwrap();
     let id = tx
         .create_node("Person", props(&[("name", Value::String("Alice".into()))]))
         .unwrap();
@@ -28,7 +28,7 @@ fn create_and_get_node() {
 #[test]
 fn node_ids_are_sequential() {
     let mut db = Database::open_memory().unwrap();
-    let tx = db.begin_write().unwrap();
+    let tx = db.write_tx().unwrap();
     let id1 = tx.create_node("A", HashMap::new()).unwrap();
     let id2 = tx.create_node("B", HashMap::new()).unwrap();
     let id3 = tx.create_node("C", HashMap::new()).unwrap();
@@ -41,7 +41,7 @@ fn node_ids_are_sequential() {
 #[test]
 fn get_nonexistent_node() {
     let mut db = Database::open_memory().unwrap();
-    let tx = db.begin_read().unwrap();
+    let tx = db.read_tx().unwrap();
     let result = tx.get_node(NodeId(999));
     assert!(result.is_err());
     tx.commit().unwrap();
@@ -50,7 +50,7 @@ fn get_nonexistent_node() {
 #[test]
 fn delete_node() {
     let mut db = Database::open_memory().unwrap();
-    let tx = db.begin_write().unwrap();
+    let tx = db.write_tx().unwrap();
     let id = tx.create_node("Person", HashMap::new()).unwrap();
     assert!(tx.node_exists(id).unwrap());
     tx.delete_node(id).unwrap();
@@ -61,7 +61,7 @@ fn delete_node() {
 #[test]
 fn set_and_remove_property() {
     let mut db = Database::open_memory().unwrap();
-    let tx = db.begin_write().unwrap();
+    let tx = db.write_tx().unwrap();
     let id = tx.create_node("Person", HashMap::new()).unwrap();
 
     tx.set_node_property(id, "age", Value::I64(30)).unwrap();
@@ -78,7 +78,7 @@ fn set_and_remove_property() {
 #[test]
 fn find_nodes_by_label() {
     let mut db = Database::open_memory().unwrap();
-    let tx = db.begin_write().unwrap();
+    let tx = db.write_tx().unwrap();
     tx.create_node("Person", props(&[("name", Value::String("Alice".into()))]))
         .unwrap();
     tx.create_node("Person", props(&[("name", Value::String("Bob".into()))]))

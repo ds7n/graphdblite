@@ -15,7 +15,7 @@ fn invalid_label_or_property_rejected_at_every_index_entry() {
     // every public `index::*` helper still rejects unsafe identifiers via
     // `index_table_name`. See security finding M1.
     let mut db = Database::open_memory().unwrap();
-    let tx = db.begin_write().unwrap();
+    let tx = db.write_tx().unwrap();
     // Bad property name with a quote that would break SQL identifier escaping.
     let bad = "name\";DROP";
     assert!(tx.create_index("Person", bad).is_err());
@@ -29,7 +29,7 @@ fn invalid_label_or_property_rejected_at_every_index_entry() {
 #[test]
 fn create_index_and_lookup() {
     let mut db = Database::open_memory().unwrap();
-    let tx = db.begin_write().unwrap();
+    let tx = db.write_tx().unwrap();
 
     tx.create_node("Person", props(&[("name", Value::String("Alice".into()))]))
         .unwrap();
@@ -61,7 +61,7 @@ fn create_index_and_lookup() {
 #[test]
 fn index_updated_on_property_change() {
     let mut db = Database::open_memory().unwrap();
-    let tx = db.begin_write().unwrap();
+    let tx = db.write_tx().unwrap();
 
     tx.create_index("Person", "name").unwrap();
 
@@ -96,7 +96,7 @@ fn index_updated_on_property_change() {
 #[test]
 fn index_updated_on_node_delete() {
     let mut db = Database::open_memory().unwrap();
-    let tx = db.begin_write().unwrap();
+    let tx = db.write_tx().unwrap();
 
     tx.create_index("Person", "name").unwrap();
 
@@ -122,7 +122,7 @@ fn index_updated_on_node_delete() {
 #[test]
 fn duplicate_index_creation_fails() {
     let mut db = Database::open_memory().unwrap();
-    let tx = db.begin_write().unwrap();
+    let tx = db.write_tx().unwrap();
     tx.create_index("Person", "name").unwrap();
     let result = tx.create_index("Person", "name");
     assert!(result.is_err());
@@ -132,7 +132,7 @@ fn duplicate_index_creation_fails() {
 #[test]
 fn drop_index() {
     let mut db = Database::open_memory().unwrap();
-    let tx = db.begin_write().unwrap();
+    let tx = db.write_tx().unwrap();
     tx.create_index("Person", "name").unwrap();
     tx.drop_index("Person", "name").unwrap();
 

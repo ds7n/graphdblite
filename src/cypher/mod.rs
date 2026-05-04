@@ -8,3 +8,29 @@ pub mod parser;
 pub mod planner;
 pub mod procedure;
 pub mod record;
+
+use crate::types::{Result, Value};
+use rusqlite::Connection;
+use std::collections::HashMap;
+
+/// Single shared parse → plan → execute pipeline.
+///
+/// Used by both the typed `ReadTransaction`/`WriteTransaction::query` methods
+/// and the stateful `Database::execute` method, ensuring no behavioral drift
+/// between the two paths.
+pub(crate) fn execute_cypher(
+    conn: &Connection,
+    cypher: &str,
+    params: Option<&HashMap<String, Value>>,
+    ctx: executor::ExecContext,
+) -> Result<Vec<record::Record>> {
+    let mut stmt = parser::parse(cypher)?;
+    if let Some(p) = params {
+        stmt = parser::resolve_params(&stmt, p)?;
+    }
+    let plan = planner::plan_with_procedures(conn, &stmt, &ctx.procedures, params)?;
+    if matches!(stmt, ast::Statement::Explain(_)) {
+        return Ok(cost::format_explain(conn, &plan));
+    }
+    executor::execute_with_ctx(conn, &plan, &ctx)
+}

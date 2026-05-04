@@ -11,7 +11,7 @@
 use std::collections::HashMap;
 
 use cucumber::{gherkin::Step, given, then, when};
-use graphdblite::cypher::procedure::{ProcParam, ProcedureDef};
+use graphdblite::procedures::{Def as ProcedureDef, Param as ProcParam};
 use graphdblite::{Database, Value};
 
 use super::compare;
@@ -44,7 +44,7 @@ fn having_executed(world: &mut World, step: &Step) {
         .expect("having executed requires a docstring")
         .trim();
     let db = world.db.as_mut().expect("database not initialized");
-    let tx = db.begin_write().expect("begin_write");
+    let tx = db.write_tx().expect("begin_write");
 
     // TCK setup scripts may contain multiple sequential statements separated
     // by a newline followed by a Cypher keyword at the start of a line
@@ -197,7 +197,7 @@ fn when_executing_query(world: &mut World, step: &Step) {
     };
 
     if is_write {
-        let tx = db.begin_write().expect("begin_write");
+        let tx = db.write_tx().expect("begin_write");
         match if world.procedures.is_empty() {
             tx.query_with_params(query, params.as_ref())
         } else {
@@ -215,7 +215,7 @@ fn when_executing_query(world: &mut World, step: &Step) {
             }
         }
     } else {
-        let tx = db.begin_read().expect("begin_read");
+        let tx = db.read_tx().expect("begin_read");
         match if world.procedures.is_empty() {
             tx.query_with_params(query, params.as_ref())
         } else {
@@ -245,7 +245,7 @@ fn when_executing_control_query(world: &mut World, step: &Step) {
     let db = world.db.as_mut().expect("database not initialized");
 
     // Control queries verify side effects — always read-only.
-    let tx = db.begin_read().expect("begin_read");
+    let tx = db.read_tx().expect("begin_read");
     match tx.query(query) {
         Ok(records) => {
             world.last_result = Some(records);

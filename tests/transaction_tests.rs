@@ -8,14 +8,14 @@ fn write_transaction_commit() {
 
     // Create a node in a write tx, commit it.
     {
-        let tx = db.begin_write().unwrap();
+        let tx = db.write_tx().unwrap();
         tx.create_node("A", HashMap::new()).unwrap();
         tx.commit().unwrap();
     }
 
     // Should be visible in a new read tx.
     {
-        let tx = db.begin_read().unwrap();
+        let tx = db.read_tx().unwrap();
         assert!(tx.node_exists(NodeId(1)).unwrap());
         tx.commit().unwrap();
     }
@@ -27,14 +27,14 @@ fn write_transaction_rollback() {
 
     // Create a node but rollback.
     {
-        let tx = db.begin_write().unwrap();
+        let tx = db.write_tx().unwrap();
         tx.create_node("A", HashMap::new()).unwrap();
         tx.rollback().unwrap();
     }
 
     // Should NOT be visible.
     {
-        let tx = db.begin_read().unwrap();
+        let tx = db.read_tx().unwrap();
         assert!(!tx.node_exists(NodeId(1)).unwrap());
         tx.commit().unwrap();
     }
@@ -46,14 +46,14 @@ fn write_transaction_drop_rollsback() {
 
     // Create a node but drop the tx without commit.
     {
-        let tx = db.begin_write().unwrap();
+        let tx = db.write_tx().unwrap();
         tx.create_node("A", HashMap::new()).unwrap();
         // tx dropped here — implicit rollback
     }
 
     // Should NOT be visible.
     {
-        let tx = db.begin_read().unwrap();
+        let tx = db.read_tx().unwrap();
         assert!(!tx.node_exists(NodeId(1)).unwrap());
         tx.commit().unwrap();
     }
@@ -67,7 +67,7 @@ fn persistent_across_reopen() {
     // Create and commit.
     {
         let mut db = Database::open(&path).unwrap();
-        let tx = db.begin_write().unwrap();
+        let tx = db.write_tx().unwrap();
         tx.create_node("Person", {
             let mut m = HashMap::new();
             m.insert("name".to_string(), Value::String("Alice".into()));
@@ -80,7 +80,7 @@ fn persistent_across_reopen() {
     // Reopen and verify.
     {
         let mut db = Database::open(&path).unwrap();
-        let tx = db.begin_read().unwrap();
+        let tx = db.read_tx().unwrap();
         let node = tx.get_node(NodeId(1)).unwrap();
         assert_eq!(node.labels, vec!["Person".to_string()]);
         assert_eq!(

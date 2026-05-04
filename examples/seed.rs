@@ -5,7 +5,7 @@ fn main() {
     let mut db = Database::open("sample.db").expect("failed to open db");
 
     // Create nodes.
-    let tx = db.begin_write().unwrap();
+    let tx = db.write_tx().unwrap();
     tx.query("CREATE (a:Person {name: 'Alice', age: 30})")
         .unwrap();
     tx.query("CREATE (b:Person {name: 'Bob', age: 25})")

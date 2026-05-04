@@ -89,35 +89,24 @@ fn print_usage() {
 }
 
 fn run_query(db: &mut Database, cypher: &str) {
-    let is_read_only = is_read_query(cypher);
-
-    if is_read_only {
-        let tx = db.begin_read().unwrap_or_else(|e| {
-            eprintln!("error: {e}");
-            std::process::exit(1);
-        });
-        match tx.query(cypher) {
-            Ok(records) => print_records(&records),
-            Err(e) => eprintln!("error: {e}"),
+    // Always use a write transaction. The CLI is single-threaded and runs one
+    // query per invocation, so any "read-only" optimization to acquire a
+    // deferred txn is not worth dragging the parser into this binary.
+    let tx = db.write_tx().unwrap_or_else(|e| {
+        eprintln!("error: {e}");
+        std::process::exit(1);
+    });
+    match tx.query(cypher) {
+        Ok(records) => {
+            print_records(&records);
+            tx.commit().unwrap_or_else(|e| {
+                eprintln!("error committing: {e}");
+                std::process::exit(1);
+            });
         }
-        let _ = tx.commit();
-    } else {
-        let tx = db.begin_write().unwrap_or_else(|e| {
+        Err(e) => {
             eprintln!("error: {e}");
-            std::process::exit(1);
-        });
-        match tx.query(cypher) {
-            Ok(records) => {
-                print_records(&records);
-                tx.commit().unwrap_or_else(|e| {
-                    eprintln!("error committing: {e}");
-                    std::process::exit(1);
-                });
-            }
-            Err(e) => {
-                eprintln!("error: {e}");
-                let _ = tx.rollback();
-            }
+            let _ = tx.rollback();
         }
     }
 }
@@ -164,18 +153,6 @@ fn run_repl(db: &mut Database) {
         }
 
         run_query(db, trimmed);
-    }
-}
-
-fn is_read_query(cypher: &str) -> bool {
-    use graphdblite::cypher::ast::Statement;
-    use graphdblite::cypher::parser;
-    match parser::parse(cypher) {
-        Ok(Statement::Match(_) | Statement::Explain(_)) => true,
-        Ok(Statement::Unwind(u)) => {
-            matches!(u.body, graphdblite::cypher::ast::UnwindBody::Return { .. })
-        }
-        _ => false,
     }
 }
 

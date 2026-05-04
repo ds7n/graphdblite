@@ -5,8 +5,8 @@
 use std::fs;
 use std::path::Path;
 
+use crate::Database;
 use anyhow::{Context, Result};
-use graphdblite::Database;
 
 /// Open a fresh in-memory database seeded with the named graph definition.
 pub fn load_named_graph(name: &str) -> Result<Database> {

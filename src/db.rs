@@ -5,7 +5,7 @@ use rusqlite::{Connection, OpenFlags, TransactionBehavior};
 
 use crate::cypher::{execute_cypher, executor::ExecContext, record::Record};
 use crate::schema;
-use crate::transaction::{ReadTransaction, TxGuard, WriteTransaction};
+use crate::transaction::{ReadTransaction, ReadTxGuard, WriteTransaction, WriteTxGuard};
 use crate::types::{GraphError, Result, Value};
 
 /// State of the stateful transaction lifecycle on a `Database` handle.
@@ -191,28 +191,28 @@ impl Database {
         })
     }
 
-    /// Access the underlying SQLite connection.
+    /// Internal access to the underlying SQLite connection.
     ///
-    /// Used by language bindings (Python, Node.js, etc.) for manual transaction
-    /// management across separate method calls.
-    pub fn connection(&self) -> &Connection {
+    /// Crate-internal: used by `tck_support` for storage-table introspection.
+    /// Not part of the public API — bindings use the stateful `execute`/
+    /// `begin_*`/`commit` methods instead.
+    #[cfg(feature = "tck-support")]
+    pub(crate) fn connection(&self) -> &Connection {
         &self.conn
     }
 
-    /// Begin a read-only transaction (snapshot isolation via WAL), wrapped
-    /// in a `TxGuard` that auto-rolls-back on drop.
+    /// Begin a read-only transaction (snapshot isolation via WAL).
     ///
-    /// `TxGuard<ReadTransaction>` implements `Deref`/`DerefMut` to
-    /// `ReadTransaction`, so existing methods (`query`, `query_with_params`,
-    /// `get_node`, …) are accessible directly on the guard. Use
-    /// `tx.commit()` / `tx.rollback()` to finalize explicitly; otherwise the
-    /// guard's `Drop` rolls back with a `tracing::warn!`.
-    pub fn read_tx(&mut self) -> Result<TxGuard<ReadTransaction<'_>>> {
+    /// Returns a [`ReadTxGuard`] — an RAII guard that releases the snapshot
+    /// on drop. Methods on the wrapped transaction (`query`,
+    /// `query_with_params`, `get_node`, …) are accessible directly via
+    /// `Deref`. Call `tx.commit()` or `tx.rollback()` to finalize explicitly.
+    pub fn read_tx(&mut self) -> Result<ReadTxGuard<'_>> {
         self.ensure_no_active_tx("read_tx")?;
         let tx = self
             .conn
             .transaction_with_behavior(TransactionBehavior::Deferred)?;
-        Ok(TxGuard::new(ReadTransaction::new(
+        Ok(ReadTxGuard::new(ReadTransaction::new(
             tx,
             self.max_result_rows,
             self.max_traversal_depth,
@@ -220,18 +220,18 @@ impl Database {
         )))
     }
 
-    /// Begin a read-write transaction (BEGIN IMMEDIATE), wrapped in a
-    /// `TxGuard` that auto-rolls-back on drop.
+    /// Begin a read-write transaction (BEGIN IMMEDIATE).
     ///
-    /// `TxGuard<WriteTransaction>` implements `Deref`/`DerefMut` to
-    /// `WriteTransaction`. Use `tx.commit()` to persist writes; otherwise
-    /// `Drop` rolls them back with a `tracing::warn!`.
-    pub fn write_tx(&mut self) -> Result<TxGuard<WriteTransaction<'_>>> {
+    /// Returns a [`WriteTxGuard`] — an RAII guard that auto-rolls-back on
+    /// drop with a `tracing::warn!`. Methods on the wrapped transaction
+    /// (`create_node`, `create_edge`, `query`, …) are accessible directly via
+    /// `Deref`. Call `tx.commit()` to persist writes.
+    pub fn write_tx(&mut self) -> Result<WriteTxGuard<'_>> {
         self.ensure_no_active_tx("write_tx")?;
         let tx = self
             .conn
             .transaction_with_behavior(TransactionBehavior::Immediate)?;
-        Ok(TxGuard::new(WriteTransaction::new(
+        Ok(WriteTxGuard::new(WriteTransaction::new(
             tx,
             self.max_property_value_bytes,
             self.max_name_bytes,

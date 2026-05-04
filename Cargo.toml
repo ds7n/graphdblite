@@ -28,11 +28,18 @@ pest_derive = "2"
 chrono = { version = "0.4.44", features = ["serde"] }
 chrono-tz = "0.10.4"
 tracing = "0.1"
+# Optional, only pulled in by the `tck-support` feature.
+cucumber = { version = "0.21", optional = true }
+anyhow = { version = "1", optional = true }
+
+[features]
+# Compiles `graphdblite::tck_support`, the openCypher TCK conformance harness's
+# step definitions and Gherkin world. Internal — used only by `tests/tck.rs`.
+# Enable with: cargo test --test tck --features tck-support
+tck-support = ["dep:cucumber", "dep:anyhow"]
 
 [dev-dependencies]
 tempfile = "3"
-cucumber = "0.21"
-anyhow = "1"
 pollster = "0.3"
 
 [[bin]]
@@ -44,3 +51,4 @@ path = "src/bin/cli.rs"
 [[test]]
 name = "tck"
 harness = false
+required-features = ["tck-support"]

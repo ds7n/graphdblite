@@ -50,7 +50,7 @@ Cypher string
 | Module | Purpose |
 |--------|---------|
 | `db.rs` | `Database` struct, connection init, stateful txn API (`begin_*`/`execute`/`commit`/`rollback`), typed-tx factory (`read_tx`/`write_tx`) |
-| `transaction.rs` | `ReadTransaction` / `WriteTransaction` typed wrappers + `TxGuard<T>` RAII wrapper returned by `Database::{read,write}_tx` |
+| `transaction.rs` | Crate-internal `ReadTransaction` / `WriteTransaction` typed wrappers + `WriteTxGuard` / `ReadTxGuard` RAII guards returned by `Database::{read,write}_tx` |
 | `node.rs` | Node CRUD against the `nodes` KV table |
 | `edge.rs` | Edge CRUD, adjacency lists, BFS traversal |
 | `index.rs` | Secondary index creation, lookup, maintenance |
@@ -66,13 +66,13 @@ Cypher string
 
 | Binding | Location | Interface |
 |---------|----------|-----------|
-| **Rust** | `src/` (core crate) | `Database` (stateful: `begin_*`/`execute`/`commit`/`rollback`), `TxGuard` (RAII via `read_tx`/`write_tx`) |
+| **Rust** | `src/` (core crate) | `Database` (stateful: `begin_*`/`execute`/`commit`/`rollback`), `WriteTxGuard`/`ReadTxGuard` (RAII via `read_tx`/`write_tx`) |
 | **Python** | `bindings/python/` | PyO3-based, `PyDatabase` / `PyWriteTransaction` / `PyReadTransaction` |
 | **Node.js** | `bindings/node/` | NAPI-RS, `Database` / `WriteTransaction` / `ReadTransaction` |
 | **Go** | `bindings/go/` | CGo via FFI, `Database` / `WriteTransaction` / `ReadTransaction` |
 | **C** | `bindings/ffi/` | cbindgen-generated header, `GraphDB` / `GraphResult` opaque handles |
 
-All language bindings (Python/Node/Go/C) drive the underlying database via the stateful API on `Database` (`begin_read`, `begin_write`, `execute`, `commit`, `rollback`). The Rust core additionally exposes `TxGuard` via `read_tx`/`write_tx` for compile-time RAII safety.
+All language bindings (Python/Node/Go/C) drive the underlying database via the stateful API on `Database` (`begin_read`, `begin_write`, `execute`, `commit`, `rollback`). The Rust core additionally exposes `WriteTxGuard`/`ReadTxGuard` via `read_tx`/`write_tx` for compile-time RAII safety.
 
 ## Supported Features
 

@@ -6,7 +6,8 @@ use std::collections::{HashMap, HashSet};
 use std::hash::{Hash, Hasher};
 
 use cucumber::World as CucumberWorld;
-use graphdblite::{Database, GraphError, ProcedureRegistry, Record, Value};
+use graphdblite::procedures::Registry as ProcedureRegistry;
+use graphdblite::{Database, GraphError, Record, Value};
 use rusqlite::Connection;
 
 /// Hash a Value for property fingerprinting (used in side-effect diffing).

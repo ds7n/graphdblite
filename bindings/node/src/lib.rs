@@ -4,8 +4,7 @@ use napi::bindgen_prelude::*;
 use napi::{NapiRaw, NapiValue};
 use napi_derive::napi;
 
-use graphdblite::cypher::{executor, parser, planner, record::Record};
-use graphdblite::{Config, Database as RustDatabase, GraphError, Value};
+use graphdblite::{Config, Database as RustDatabase, GraphError, Record, Value};
 
 fn to_napi_err(e: GraphError) -> napi::Error {
     napi::Error::from_reason(e.to_string())
@@ -126,7 +125,7 @@ impl Database {
             .inner
             .as_mut()
             .ok_or_else(|| napi::Error::from_reason("database is closed"))?;
-        let tx = db.begin_read().map_err(to_napi_err)?;
+        let tx = db.read_tx().map_err(to_napi_err)?;
         let records = tx.query(&cypher).map_err(to_napi_err)?;
         tx.commit().map_err(to_napi_err)?;
         records_to_napi(&env, &records)
@@ -139,7 +138,7 @@ impl Database {
             .inner
             .as_mut()
             .ok_or_else(|| napi::Error::from_reason("database is closed"))?;
-        let tx = db.begin_write().map_err(to_napi_err)?;
+        let tx = db.write_tx().map_err(to_napi_err)?;
         let records = tx.query(&cypher).map_err(to_napi_err)?;
         tx.commit().map_err(to_napi_err)?;
         records_to_napi(&env, &records)
@@ -162,27 +161,18 @@ pub struct WriteTransaction {
 impl WriteTransaction {
     /// Execute a Cypher query within this transaction.
     #[napi]
-    pub fn execute(&self, env: Env, cypher: String) -> Result<Vec<napi::JsObject>> {
+    pub fn execute(&mut self, env: Env, cypher: String) -> Result<Vec<napi::JsObject>> {
         let db = self
             .db
-            .as_ref()
+            .as_mut()
             .ok_or_else(|| napi::Error::from_reason("transaction is finished"))?;
-        let conn = db.connection();
-        let stmt = parser::parse(&cypher).map_err(to_napi_err)?;
-        let plan = planner::plan(conn, &stmt).map_err(to_napi_err)?;
-        let ctx = executor::ExecContext {
-            max_result_rows: db.max_result_rows,
-            max_traversal_depth: db.max_traversal_depth,
-            max_traversal_work: db.max_traversal_work,
-            ..Default::default()
-        };
-        let records = executor::execute_with_ctx(conn, &plan, &ctx).map_err(to_napi_err)?;
+        let records = db.execute(&cypher).map_err(to_napi_err)?;
         records_to_napi(&env, &records)
     }
 
     /// Execute a read-only Cypher query within this transaction.
     #[napi]
-    pub fn query(&self, env: Env, cypher: String) -> Result<Vec<napi::JsObject>> {
+    pub fn query(&mut self, env: Env, cypher: String) -> Result<Vec<napi::JsObject>> {
         self.execute(env, cypher)
     }
 
@@ -191,11 +181,9 @@ impl WriteTransaction {
     pub fn commit(&mut self) -> Result<()> {
         let db = self
             .db
-            .as_ref()
+            .as_mut()
             .ok_or_else(|| napi::Error::from_reason("transaction is finished"))?;
-        db.connection()
-            .execute_batch("COMMIT")
-            .map_err(|e| napi::Error::from_reason(format!("commit failed: {e}")))?;
+        db.commit().map_err(to_napi_err)?;
         self.db = None;
         Ok(())
     }
@@ -205,9 +193,9 @@ impl WriteTransaction {
     pub fn rollback(&mut self) -> Result<()> {
         let db = self
             .db
-            .as_ref()
+            .as_mut()
             .ok_or_else(|| napi::Error::from_reason("transaction is finished"))?;
-        let _ = db.connection().execute_batch("ROLLBACK");
+        let _ = db.rollback();
         self.db = None;
         Ok(())
     }
@@ -223,21 +211,12 @@ pub struct ReadTransaction {
 impl ReadTransaction {
     /// Execute a read-only Cypher query within this transaction.
     #[napi]
-    pub fn query(&self, env: Env, cypher: String) -> Result<Vec<napi::JsObject>> {
+    pub fn query(&mut self, env: Env, cypher: String) -> Result<Vec<napi::JsObject>> {
         let db = self
             .db
-            .as_ref()
+            .as_mut()
             .ok_or_else(|| napi::Error::from_reason("transaction is finished"))?;
-        let conn = db.connection();
-        let stmt = parser::parse(&cypher).map_err(to_napi_err)?;
-        let plan = planner::plan(conn, &stmt).map_err(to_napi_err)?;
-        let ctx = executor::ExecContext {
-            max_result_rows: db.max_result_rows,
-            max_traversal_depth: db.max_traversal_depth,
-            max_traversal_work: db.max_traversal_work,
-            ..Default::default()
-        };
-        let records = executor::execute_with_ctx(conn, &plan, &ctx).map_err(to_napi_err)?;
+        let records = db.execute(&cypher).map_err(to_napi_err)?;
         records_to_napi(&env, &records)
     }
 
@@ -246,11 +225,9 @@ impl ReadTransaction {
     pub fn commit(&mut self) -> Result<()> {
         let db = self
             .db
-            .as_ref()
+            .as_mut()
             .ok_or_else(|| napi::Error::from_reason("transaction is finished"))?;
-        db.connection()
-            .execute_batch("COMMIT")
-            .map_err(|e| napi::Error::from_reason(format!("commit failed: {e}")))?;
+        db.commit().map_err(to_napi_err)?;
         self.db = None;
         Ok(())
     }

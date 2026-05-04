@@ -190,7 +190,7 @@ func (tx *WriteTransaction) Query(cypher string) (*Result, error) {
 	defer C.free(unsafe.Pointer(ccypher))
 
 	var ptr *C.GraphResult
-	rc := C.graphdb_tx_query(tx.db.ptr, ccypher, &ptr)
+	rc := C.graphdb_tx_execute(tx.db.ptr, ccypher, &ptr)
 	if rc != 0 {
 		return nil, fmt.Errorf("graphdblite tx query: %w", lastError())
 	}
@@ -237,7 +237,7 @@ func (tx *ReadTransaction) Query(cypher string) (*Result, error) {
 	defer C.free(unsafe.Pointer(ccypher))
 
 	var ptr *C.GraphResult
-	rc := C.graphdb_tx_query(tx.db.ptr, ccypher, &ptr)
+	rc := C.graphdb_tx_execute(tx.db.ptr, ccypher, &ptr)
 	if rc != 0 {
 		return nil, fmt.Errorf("graphdblite tx query: %w", lastError())
 	}

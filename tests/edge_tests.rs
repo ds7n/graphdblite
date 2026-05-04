@@ -12,7 +12,7 @@ fn props(pairs: &[(&str, Value)]) -> HashMap<String, Value> {
 #[test]
 fn create_edge_and_get_neighbors() {
     let mut db = Database::open_memory().unwrap();
-    let tx = db.begin_write().unwrap();
+    let tx = db.write_tx().unwrap();
 
     let alice = tx
         .create_node("Person", props(&[("name", Value::String("Alice".into()))]))
@@ -41,7 +41,7 @@ fn create_edge_and_get_neighbors() {
 #[test]
 fn edge_with_properties() {
     let mut db = Database::open_memory().unwrap();
-    let tx = db.begin_write().unwrap();
+    let tx = db.write_tx().unwrap();
 
     let a = tx.create_node("A", HashMap::new()).unwrap();
     let b = tx.create_node("B", HashMap::new()).unwrap();
@@ -58,7 +58,7 @@ fn edge_with_properties() {
 #[test]
 fn delete_edge() {
     let mut db = Database::open_memory().unwrap();
-    let tx = db.begin_write().unwrap();
+    let tx = db.write_tx().unwrap();
 
     let a = tx.create_node("A", HashMap::new()).unwrap();
     let b = tx.create_node("B", HashMap::new()).unwrap();
@@ -87,7 +87,7 @@ fn delete_edge() {
 #[test]
 fn cascading_delete_on_node_removal() {
     let mut db = Database::open_memory().unwrap();
-    let tx = db.begin_write().unwrap();
+    let tx = db.write_tx().unwrap();
 
     let a = tx.create_node("A", HashMap::new()).unwrap();
     let b = tx.create_node("B", HashMap::new()).unwrap();
@@ -114,7 +114,7 @@ fn cascading_delete_on_node_removal() {
 #[test]
 fn multiple_edge_labels() {
     let mut db = Database::open_memory().unwrap();
-    let tx = db.begin_write().unwrap();
+    let tx = db.write_tx().unwrap();
 
     let a = tx.create_node("Person", HashMap::new()).unwrap();
     let b = tx.create_node("Person", HashMap::new()).unwrap();
@@ -136,7 +136,7 @@ fn multiple_edge_labels() {
 #[test]
 fn both_direction() {
     let mut db = Database::open_memory().unwrap();
-    let tx = db.begin_write().unwrap();
+    let tx = db.write_tx().unwrap();
 
     let a = tx.create_node("A", HashMap::new()).unwrap();
     let b = tx.create_node("B", HashMap::new()).unwrap();
@@ -156,7 +156,7 @@ fn both_direction() {
 #[test]
 fn edge_to_nonexistent_node_fails() {
     let mut db = Database::open_memory().unwrap();
-    let tx = db.begin_write().unwrap();
+    let tx = db.write_tx().unwrap();
 
     let a = tx.create_node("A", HashMap::new()).unwrap();
     let result = tx.create_edge(a, graphdblite::NodeId(999), "E", HashMap::new());
@@ -169,7 +169,7 @@ fn edge_to_nonexistent_node_fails() {
 fn traverse_variable_length_path() {
     // Build a chain: a -> b -> c -> d
     let mut db = Database::open_memory().unwrap();
-    let tx = db.begin_write().unwrap();
+    let tx = db.write_tx().unwrap();
 
     let a = tx.create_node("N", HashMap::new()).unwrap();
     let b = tx.create_node("N", HashMap::new()).unwrap();
@@ -207,7 +207,7 @@ fn traverse_variable_length_path() {
 fn traverse_with_cycle() {
     // a -> b -> c -> a (cycle)
     let mut db = Database::open_memory().unwrap();
-    let tx = db.begin_write().unwrap();
+    let tx = db.write_tx().unwrap();
 
     let a = tx.create_node("N", HashMap::new()).unwrap();
     let b = tx.create_node("N", HashMap::new()).unwrap();
@@ -228,7 +228,7 @@ fn traverse_with_cycle() {
 fn traverse_with_depth_returns_depth() {
     // Build a chain: a -> b -> c -> d
     let mut db = Database::open_memory().unwrap();
-    let tx = db.begin_write().unwrap();
+    let tx = db.write_tx().unwrap();
 
     let a = tx.create_node("N", HashMap::new()).unwrap();
     let b = tx.create_node("N", HashMap::new()).unwrap();
@@ -263,7 +263,7 @@ fn traverse_with_depth_returns_depth() {
 fn traverse_with_depth_handles_cycle() {
     // a -> b -> c -> a (cycle)
     let mut db = Database::open_memory().unwrap();
-    let tx = db.begin_write().unwrap();
+    let tx = db.write_tx().unwrap();
 
     let a = tx.create_node("N", HashMap::new()).unwrap();
     let b = tx.create_node("N", HashMap::new()).unwrap();
@@ -292,7 +292,7 @@ fn batch_create_edges_basic() {
     use graphdblite::edge;
 
     let mut db = Database::open_memory().unwrap();
-    let tx = db.begin_write().unwrap();
+    let tx = db.write_tx().unwrap();
 
     let a = tx
         .create_node("Node", props(&[("name", Value::String("A".into()))]))
@@ -330,7 +330,7 @@ fn batch_create_edges_with_properties() {
     use graphdblite::edge;
 
     let mut db = Database::open_memory().unwrap();
-    let tx = db.begin_write().unwrap();
+    let tx = db.write_tx().unwrap();
 
     let a = tx.create_node("Node", HashMap::new()).unwrap();
     let b = tx.create_node("Node", HashMap::new()).unwrap();
@@ -353,7 +353,7 @@ fn batch_create_edges_coalescing_many_from_same_source() {
     use graphdblite::edge;
 
     let mut db = Database::open_memory().unwrap();
-    let tx = db.begin_write().unwrap();
+    let tx = db.write_tx().unwrap();
 
     let src = tx.create_node("Node", HashMap::new()).unwrap();
     let mut targets = Vec::new();
@@ -381,14 +381,14 @@ fn batch_create_edges_matches_individual_create() {
     let mut db = Database::open_memory().unwrap();
 
     // Create nodes.
-    let tx = db.begin_write().unwrap();
+    let tx = db.write_tx().unwrap();
     let a = tx.create_node("Node", HashMap::new()).unwrap();
     let b = tx.create_node("Node", HashMap::new()).unwrap();
     let c = tx.create_node("Node", HashMap::new()).unwrap();
     tx.commit().unwrap();
 
     // Use batch API.
-    let tx = db.begin_write().unwrap();
+    let tx = db.write_tx().unwrap();
     edge::batch_create_edges(
         tx.connection(),
         "E",

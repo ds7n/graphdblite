@@ -9,7 +9,7 @@ use pyo3::exceptions::{PyRuntimeError, PyValueError};
 use pyo3::prelude::*;
 use pyo3::types::{PyBool, PyDict, PyFloat, PyList, PyString, PyTuple};
 
-use graphdblite::{Config, Database as RustDatabase, GraphError, NodeId, Properties, Value};
+use graphdblite::{Config, Database as RustDatabase, GraphError, Record, Value};
 
 // --- Exception hierarchy ---
 
@@ -81,10 +81,7 @@ fn value_to_py(py: Python, val: &Value) -> PyResult<PyObject> {
     })
 }
 
-fn records_to_py(
-    py: Python,
-    records: &[graphdblite::cypher::record::Record],
-) -> PyResult<Vec<PyObject>> {
+fn records_to_py(py: Python, records: &[Record]) -> PyResult<Vec<PyObject>> {
     let mut result = Vec::new();
     for rec in records {
         let dict = PyDict::new_bound(py);
@@ -128,15 +125,22 @@ fn py_to_value(obj: &Bound<'_, pyo3::types::PyAny>) -> PyResult<Value> {
     }
 }
 
-/// Convert a Python dict to a Properties map.
-fn py_dict_to_properties(dict: &Bound<'_, PyDict>) -> PyResult<Properties> {
-    let mut props = Properties::new();
-    for (key, value) in dict.iter() {
-        let key: String = key.extract()?;
-        let val = py_to_value(&value)?;
-        props.insert(key, val);
+/// Reject labels/edge types that are not valid Cypher `symbolic_name`s.
+/// Used by the batch helpers since they inject the name directly into a
+/// generated Cypher string and cannot rely on the parser's identifier rules.
+fn validate_symbolic_name(name: &str, kind: &str) -> PyResult<()> {
+    let mut chars = name.chars();
+    let first_ok = chars
+        .next()
+        .map(|c| c == '_' || c.is_ascii_alphabetic())
+        .unwrap_or(false);
+    let rest_ok = chars.all(|c| c == '_' || c.is_ascii_alphanumeric());
+    if !first_ok || !rest_ok {
+        return Err(PyValueError::new_err(format!(
+            "{kind} {name:?} must match [A-Za-z_][A-Za-z0-9_]* for batch operations"
+        )));
     }
-    Ok(props)
+    Ok(())
 }
 
 /// Convert a Python dict to a HashMap<String, Value> for query parameters.
@@ -221,7 +225,7 @@ impl PyDatabase {
         let cypher = cypher.to_string();
         let records = py
             .allow_threads(|| {
-                let tx = db.begin_read()?;
+                let tx = db.read_tx()?;
                 let r = tx.query_with_params(&cypher, param_map.as_ref())?;
                 tx.commit()?;
                 Ok::<_, GraphError>(r)
@@ -248,7 +252,7 @@ impl PyDatabase {
         let cypher = cypher.to_string();
         let records = py
             .allow_threads(|| {
-                let tx = db.begin_write()?;
+                let tx = db.write_tx()?;
                 let r = tx.query_with_params(&cypher, param_map.as_ref())?;
                 tx.commit()?;
                 Ok::<_, GraphError>(r)
@@ -327,10 +331,8 @@ pub struct PyWriteTransaction {
 }
 
 impl PyWriteTransaction {
-    fn start(db: RustDatabase, parent: Py<PyDatabase>) -> PyResult<Self> {
-        db.connection()
-            .execute_batch("BEGIN IMMEDIATE")
-            .map_err(|e| PyRuntimeError::new_err(format!("failed to begin transaction: {e}")))?;
+    fn start(mut db: RustDatabase, parent: Py<PyDatabase>) -> PyResult<Self> {
+        db.begin_write().map_err(to_py_err)?;
         Ok(Self {
             db: Some(db),
             parent,
@@ -338,9 +340,9 @@ impl PyWriteTransaction {
         })
     }
 
-    fn get_db(&self) -> PyResult<&RustDatabase> {
+    fn get_db_mut(&mut self) -> PyResult<&mut RustDatabase> {
         self.db
-            .as_ref()
+            .as_mut()
             .ok_or_else(|| PyRuntimeError::new_err("transaction is already finished"))
     }
 
@@ -360,26 +362,15 @@ impl PyWriteTransaction {
     /// Optional `params` dict substitutes `$name` parameters in the query.
     #[pyo3(signature = (cypher, params=None))]
     fn execute(
-        &self,
+        &mut self,
         py: Python,
         cypher: &str,
         params: Option<&Bound<'_, PyDict>>,
     ) -> PyResult<Vec<PyObject>> {
-        let db = self.get_db()?;
-        let conn = db.connection();
-        let mut stmt = graphdblite::cypher::parser::parse(cypher).map_err(to_py_err)?;
-        if let Some(p) = params {
-            let map = py_dict_to_value_map(p)?;
-            stmt = graphdblite::cypher::parser::resolve_params(&stmt, &map).map_err(to_py_err)?;
-        }
-        let plan = graphdblite::cypher::planner::plan(conn, &stmt).map_err(to_py_err)?;
-        let ctx = graphdblite::cypher::executor::ExecContext {
-            max_result_rows: db.max_result_rows,
-            max_traversal_depth: db.max_traversal_depth,
-            max_traversal_work: db.max_traversal_work,
-            ..Default::default()
-        };
-        let records = graphdblite::cypher::executor::execute_with_ctx(conn, &plan, &ctx)
+        let param_map = params.map(py_dict_to_value_map).transpose()?;
+        let db = self.get_db_mut()?;
+        let records = db
+            .execute_with_params(cypher, param_map.as_ref())
             .map_err(to_py_err)?;
         records_to_py(py, &records)
     }
@@ -387,7 +378,7 @@ impl PyWriteTransaction {
     /// Execute a read-only Cypher query within this transaction.
     #[pyo3(signature = (cypher, params=None))]
     fn query(
-        &self,
+        &mut self,
         py: Python,
         cypher: &str,
         params: Option<&Bound<'_, PyDict>>,
@@ -396,64 +387,105 @@ impl PyWriteTransaction {
     }
 
     /// Create a secondary index on (label, property) for faster lookups.
-    fn create_index(&self, label: &str, property: &str) -> PyResult<()> {
-        let db = self.get_db()?;
-        graphdblite::index::create_index(db.connection(), label, property).map_err(to_py_err)
+    fn create_index(&mut self, label: &str, property: &str) -> PyResult<()> {
+        let db = self.get_db_mut()?;
+        db.create_index(label, property).map_err(to_py_err)
     }
 
     /// Drop a secondary index on (label, property).
-    fn drop_index(&self, label: &str, property: &str) -> PyResult<()> {
-        let db = self.get_db()?;
-        graphdblite::index::drop_index(db.connection(), label, property).map_err(to_py_err)
+    fn drop_index(&mut self, label: &str, property: &str) -> PyResult<()> {
+        let db = self.get_db_mut()?;
+        db.drop_index(label, property).map_err(to_py_err)
     }
 
     /// Create multiple nodes with the same label in a single batch.
     ///
-    /// Returns a list of node IDs (as integers).
-    fn batch_create_nodes(&self, label: &str, nodes: Vec<Bound<'_, PyDict>>) -> PyResult<Vec<u64>> {
-        let db = self.get_db()?;
-        let conn = db.connection();
-        let mut ids = Vec::with_capacity(nodes.len());
-        for dict in &nodes {
-            let props = py_dict_to_properties(dict)?;
-            let id = graphdblite::node::create_node(conn, &[label.to_string()], props.clone())
-                .map_err(to_py_err)?;
-            graphdblite::index::update_indexes_for_node(conn, id, label, None, &props)
-                .map_err(to_py_err)?;
-            ids.push(id.0);
-        }
-        Ok(ids)
+    /// Returns a list of node IDs (as integers). Implemented as one Cypher
+    /// `UNWIND $rows AS p CREATE (n:Label) SET n = p RETURN id(n)` query.
+    fn batch_create_nodes(
+        &mut self,
+        py: Python,
+        label: &str,
+        nodes: Vec<Bound<'_, PyDict>>,
+    ) -> PyResult<Vec<u64>> {
+        let rows: Vec<Value> = nodes
+            .iter()
+            .map(|d| {
+                let mut map = std::collections::BTreeMap::new();
+                for (k, v) in d.iter() {
+                    map.insert(k.extract::<String>()?, py_to_value(&v)?);
+                }
+                Ok::<_, PyErr>(Value::Map(map))
+            })
+            .collect::<PyResult<_>>()?;
+        validate_symbolic_name(label, "label")?;
+        let cypher = format!("UNWIND $rows AS p CREATE (n:{label}) SET n = p RETURN id(n) AS id");
+        let mut params = HashMap::new();
+        params.insert("rows".to_string(), Value::List(rows));
+        let db = self.get_db_mut()?;
+        let records = db
+            .execute_with_params(&cypher, Some(&params))
+            .map_err(to_py_err)?;
+        let _py = py;
+        records
+            .into_iter()
+            .map(|r| match r.fields.get("id") {
+                Some(Value::I64(n)) => Ok(*n as u64),
+                _ => Err(PyRuntimeError::new_err(
+                    "batch_create_nodes: expected id column",
+                )),
+            })
+            .collect()
     }
 
-    /// Create multiple edges of the same type in a single batch with adjacency coalescing.
+    /// Create multiple edges of the same type. Each edge is a tuple of
+    /// `(src_id, dst_id)` or `(src_id, dst_id, {props})`.
     ///
-    /// Each edge is a tuple of (src_id, dst_id) or (src_id, dst_id, {props}).
-    fn batch_create_edges(&self, edge_type: &str, edges: Vec<Bound<'_, PyTuple>>) -> PyResult<()> {
-        let db = self.get_db()?;
-        let conn = db.connection();
-        let mut edge_data: Vec<(NodeId, NodeId, Properties)> = Vec::with_capacity(edges.len());
+    /// Issues one Cypher CREATE per edge inside the active transaction —
+    /// graphdblite does not currently support `SET r = $map` on relationships,
+    /// so this can't collapse to a single `UNWIND` query.
+    fn batch_create_edges(
+        &mut self,
+        edge_type: &str,
+        edges: Vec<Bound<'_, PyTuple>>,
+    ) -> PyResult<()> {
+        validate_symbolic_name(edge_type, "edge_type")?;
         for tup in &edges {
             let src: u64 = tup.get_item(0)?.extract()?;
             let dst: u64 = tup.get_item(1)?.extract()?;
-            let props = if tup.len() > 2 {
+            let mut params = HashMap::new();
+            params.insert("s".to_string(), Value::I64(src as i64));
+            params.insert("d".to_string(), Value::I64(dst as i64));
+            let mut set_clauses = String::new();
+            if tup.len() > 2 {
                 let dict: Bound<'_, PyDict> = tup.get_item(2)?.downcast_into().map_err(|_| {
                     PyValueError::new_err("edge tuple third element must be a dict")
                 })?;
-                py_dict_to_properties(&dict)?
-            } else {
-                Properties::new()
-            };
-            edge_data.push((NodeId(src), NodeId(dst), props));
+                for (i, (k, v)) in dict.iter().enumerate() {
+                    let key: String = k.extract()?;
+                    validate_symbolic_name(&key, "property name")?;
+                    let pname = format!("p_{i}");
+                    set_clauses.push_str(if i == 0 { " SET " } else { ", " });
+                    set_clauses.push_str(&format!("r.{key} = ${pname}"));
+                    params.insert(pname, py_to_value(&v)?);
+                }
+            }
+            let cypher = format!(
+                "MATCH (a) WHERE id(a) = $s \
+                 MATCH (b) WHERE id(b) = $d \
+                 CREATE (a)-[r:{edge_type}]->(b){set_clauses}"
+            );
+            let db = self.get_db_mut()?;
+            db.execute_with_params(&cypher, Some(&params))
+                .map_err(to_py_err)?;
         }
-        graphdblite::edge::batch_create_edges(conn, edge_type, &edge_data).map_err(to_py_err)
+        Ok(())
     }
 
     /// Commit the transaction.
     fn commit(&mut self, py: Python) -> PyResult<()> {
-        let db = self.get_db()?;
-        db.connection()
-            .execute_batch("COMMIT")
-            .map_err(|e| PyRuntimeError::new_err(format!("commit failed: {e}")))?;
+        let db = self.get_db_mut()?;
+        db.commit().map_err(to_py_err)?;
         self.finished = true;
         self.return_db(py);
         Ok(())
@@ -461,8 +493,8 @@ impl PyWriteTransaction {
 
     /// Rollback the transaction.
     fn rollback(&mut self, py: Python) -> PyResult<()> {
-        let db = self.get_db()?;
-        let _ = db.connection().execute_batch("ROLLBACK");
+        let db = self.get_db_mut()?;
+        let _ = db.rollback();
         self.finished = true;
         self.return_db(py);
         Ok(())
@@ -500,10 +532,8 @@ pub struct PyReadTransaction {
 }
 
 impl PyReadTransaction {
-    fn start(db: RustDatabase, parent: Py<PyDatabase>) -> PyResult<Self> {
-        db.connection()
-            .execute_batch("BEGIN DEFERRED")
-            .map_err(|e| PyRuntimeError::new_err(format!("failed to begin transaction: {e}")))?;
+    fn start(mut db: RustDatabase, parent: Py<PyDatabase>) -> PyResult<Self> {
+        db.begin_read().map_err(to_py_err)?;
         Ok(Self {
             db: Some(db),
             parent,
@@ -511,9 +541,9 @@ impl PyReadTransaction {
         })
     }
 
-    fn get_db(&self) -> PyResult<&RustDatabase> {
+    fn get_db_mut(&mut self) -> PyResult<&mut RustDatabase> {
         self.db
-            .as_ref()
+            .as_mut()
             .ok_or_else(|| PyRuntimeError::new_err("transaction is already finished"))
     }
 
@@ -530,36 +560,23 @@ impl PyReadTransaction {
     /// Execute a read-only Cypher query within this transaction.
     #[pyo3(signature = (cypher, params=None))]
     fn query(
-        &self,
+        &mut self,
         py: Python,
         cypher: &str,
         params: Option<&Bound<'_, PyDict>>,
     ) -> PyResult<Vec<PyObject>> {
-        let db = self.get_db()?;
-        let conn = db.connection();
-        let mut stmt = graphdblite::cypher::parser::parse(cypher).map_err(to_py_err)?;
-        if let Some(p) = params {
-            let map = py_dict_to_value_map(p)?;
-            stmt = graphdblite::cypher::parser::resolve_params(&stmt, &map).map_err(to_py_err)?;
-        }
-        let plan = graphdblite::cypher::planner::plan(conn, &stmt).map_err(to_py_err)?;
-        let ctx = graphdblite::cypher::executor::ExecContext {
-            max_result_rows: db.max_result_rows,
-            max_traversal_depth: db.max_traversal_depth,
-            max_traversal_work: db.max_traversal_work,
-            ..Default::default()
-        };
-        let records = graphdblite::cypher::executor::execute_with_ctx(conn, &plan, &ctx)
+        let param_map = params.map(py_dict_to_value_map).transpose()?;
+        let db = self.get_db_mut()?;
+        let records = db
+            .execute_with_params(cypher, param_map.as_ref())
             .map_err(to_py_err)?;
         records_to_py(py, &records)
     }
 
     /// Commit (release) the read transaction.
     fn commit(&mut self, py: Python) -> PyResult<()> {
-        let db = self.get_db()?;
-        db.connection()
-            .execute_batch("COMMIT")
-            .map_err(|e| PyRuntimeError::new_err(format!("commit failed: {e}")))?;
+        let db = self.get_db_mut()?;
+        db.commit().map_err(to_py_err)?;
         self.finished = true;
         self.return_db(py);
         Ok(())

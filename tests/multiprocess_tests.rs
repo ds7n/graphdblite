@@ -42,7 +42,7 @@ fn concurrent_writers() {
 
     // Verify all nodes were written.
     let mut db = Database::open(&path).unwrap();
-    let tx = db.begin_read().unwrap();
+    let tx = db.read_tx().unwrap();
     let all_nodes = tx.find_nodes_by_label("Writer").unwrap();
     assert_eq!(
         all_nodes.len(),
@@ -72,7 +72,7 @@ fn child_writer() {
     let mut db = Database::open(&path).unwrap();
 
     for i in 0..count {
-        let tx = db.begin_write().unwrap();
+        let tx = db.write_tx().unwrap();
         tx.create_node("Writer", {
             let mut props = HashMap::new();
             props.insert("writer_id".to_string(), Value::I64(writer_id as i64));

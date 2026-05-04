@@ -31,7 +31,7 @@ pub fn load_named_graph(name: &str) -> Result<Database> {
 
     let mut db = Database::open_memory().context("opening in-memory database")?;
     {
-        let tx = db.begin_write().context("begin_write")?;
+        let tx = db.write_tx().context("begin_write")?;
         for stmt in split_cypher_statements(&source) {
             let stmt = stmt.trim();
             if stmt.is_empty() {

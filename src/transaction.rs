@@ -1,10 +1,4 @@
-use crate::cypher::{
-    ast::Statement,
-    cost,
-    executor::{self, ExecContext},
-    parser, planner,
-    record::Record,
-};
+use crate::cypher::{execute_cypher, executor::ExecContext, record::Record};
 use crate::edge;
 use crate::index;
 use crate::node;
@@ -100,21 +94,13 @@ macro_rules! impl_read_ops {
                 cypher: &str,
                 params: Option<&std::collections::HashMap<String, Value>>,
             ) -> Result<Vec<Record>> {
-                let mut stmt = parser::parse(cypher)?;
-                if let Some(p) = params {
-                    stmt = parser::resolve_params(&stmt, p)?;
-                }
-                let plan = planner::plan(&self.tx, &stmt)?;
-                if matches!(stmt, Statement::Explain(_)) {
-                    return Ok(cost::format_explain(&self.tx, &plan));
-                }
                 let ctx = ExecContext {
                     max_result_rows: self.max_result_rows,
                     max_traversal_depth: self.max_traversal_depth,
                     max_traversal_work: self.max_traversal_work,
                     ..Default::default()
                 };
-                executor::execute_with_ctx(&self.tx, &plan, &ctx)
+                execute_cypher(&self.tx, cypher, params, ctx)
             }
 
             /// Execute a Cypher query with optional parameters and procedure registry.
@@ -124,21 +110,13 @@ macro_rules! impl_read_ops {
                 params: Option<&std::collections::HashMap<String, Value>>,
                 procedures: &crate::cypher::procedure::ProcedureRegistry,
             ) -> Result<Vec<Record>> {
-                let mut stmt = parser::parse(cypher)?;
-                if let Some(p) = params {
-                    stmt = parser::resolve_params(&stmt, p)?;
-                }
-                let plan = planner::plan_with_procedures(&self.tx, &stmt, procedures, params)?;
-                if matches!(stmt, Statement::Explain(_)) {
-                    return Ok(cost::format_explain(&self.tx, &plan));
-                }
                 let ctx = ExecContext {
                     max_result_rows: self.max_result_rows,
                     max_traversal_depth: self.max_traversal_depth,
                     max_traversal_work: self.max_traversal_work,
                     procedures: procedures.clone(),
                 };
-                executor::execute_with_ctx(&self.tx, &plan, &ctx)
+                execute_cypher(&self.tx, cypher, params, ctx)
             }
         }
     };
@@ -170,6 +148,13 @@ impl<'a> ReadTransaction<'a> {
     /// Commit the read transaction (releases snapshot).
     pub fn commit(self) -> Result<()> {
         self.tx.commit()?;
+        Ok(())
+    }
+
+    /// Roll back the read transaction (also happens on drop).
+    /// Read-only txns have no writes to revert; this just releases the snapshot.
+    pub fn rollback(self) -> Result<()> {
+        self.tx.rollback()?;
         Ok(())
     }
 }
@@ -346,3 +331,183 @@ impl<'a> WriteTransaction<'a> {
 }
 
 impl_read_ops!(WriteTransaction);
+
+// ----------------------------------------------------------------------------
+// TxGuard — RAII wrapper that auto-rolls-back on drop.
+//
+// Wraps a typed `ReadTransaction` or `WriteTransaction`. Forwards the full
+// typed-Tx API via `Deref`/`DerefMut` so existing callers do not change. The
+// guard's inherent `commit(self)` / `rollback(self)` consume the guard and the
+// inner Tx; if neither is called, `Drop` emits a `tracing::warn!` and lets
+// rusqlite's own `Transaction` Drop perform the actual rollback.
+// ----------------------------------------------------------------------------
+
+/// RAII transaction guard. Returned by `Database::read_tx` / `write_tx`.
+pub struct TxGuard<T> {
+    inner: Option<T>,
+}
+
+impl<T> TxGuard<T> {
+    pub(crate) fn new(tx: T) -> Self {
+        Self { inner: Some(tx) }
+    }
+}
+
+impl<T> std::ops::Deref for TxGuard<T> {
+    type Target = T;
+    fn deref(&self) -> &T {
+        // Inner is only `None` after `commit`/`rollback`, both of which consume
+        // `self` — so any reachable `&TxGuard` has `Some(inner)`.
+        self.inner
+            .as_ref()
+            .expect("TxGuard accessed after commit or rollback")
+    }
+}
+
+impl<T> std::ops::DerefMut for TxGuard<T> {
+    fn deref_mut(&mut self) -> &mut T {
+        self.inner
+            .as_mut()
+            .expect("TxGuard accessed after commit or rollback")
+    }
+}
+
+impl<'a> TxGuard<WriteTransaction<'a>> {
+    /// Commit the wrapped write transaction. Disarms the drop-rollback.
+    pub fn commit(mut self) -> Result<()> {
+        self.inner
+            .take()
+            .expect("TxGuard already finalized")
+            .commit()
+    }
+
+    /// Roll back the wrapped write transaction explicitly. Disarms the
+    /// drop-rollback (which would otherwise have rolled back anyway).
+    pub fn rollback(mut self) -> Result<()> {
+        self.inner
+            .take()
+            .expect("TxGuard already finalized")
+            .rollback()
+    }
+}
+
+impl<'a> TxGuard<ReadTransaction<'a>> {
+    /// Commit (release snapshot for) the wrapped read transaction.
+    pub fn commit(mut self) -> Result<()> {
+        self.inner
+            .take()
+            .expect("TxGuard already finalized")
+            .commit()
+    }
+
+    /// Explicitly end the wrapped read transaction. Read-only txns have no
+    /// writes to revert, so this is equivalent to dropping the guard.
+    pub fn rollback(mut self) -> Result<()> {
+        self.inner
+            .take()
+            .expect("TxGuard already finalized")
+            .rollback()
+    }
+}
+
+impl<T> Drop for TxGuard<T> {
+    fn drop(&mut self) {
+        if self.inner.is_some() {
+            tracing::warn!(
+                "TxGuard dropped without commit or rollback; transaction will be rolled back. \
+                 Call `tx.commit()` to persist writes, or `tx.rollback()` to silence this warning."
+            );
+            // Inner `WriteTransaction`/`ReadTransaction` drops here; rusqlite's
+            // own `Transaction` `Drop` performs the actual ROLLBACK.
+        }
+    }
+}
+
+#[cfg(test)]
+mod tx_guard_tests {
+    use crate::Database;
+
+    #[test]
+    fn explicit_commit_persists() {
+        let mut db = Database::open_memory().unwrap();
+        {
+            let tx = db.write_tx().unwrap();
+            tx.query("CREATE (:Person {name: 'Alice'})").unwrap();
+            tx.commit().unwrap();
+        }
+        let tx = db.read_tx().unwrap();
+        let rows = tx.query("MATCH (n:Person) RETURN n.name").unwrap();
+        assert_eq!(rows.len(), 1);
+        tx.commit().unwrap();
+    }
+
+    #[test]
+    fn forgot_commit_rolls_back() {
+        let mut db = Database::open_memory().unwrap();
+        {
+            let tx = db.write_tx().unwrap();
+            tx.query("CREATE (:Person {name: 'Bob'})").unwrap();
+            // dropped without commit
+        }
+        let tx = db.read_tx().unwrap();
+        let rows = tx.query("MATCH (n:Person) RETURN n.name").unwrap();
+        assert_eq!(rows.len(), 0);
+        tx.commit().unwrap();
+    }
+
+    #[test]
+    fn explicit_rollback_discards() {
+        let mut db = Database::open_memory().unwrap();
+        {
+            let tx = db.write_tx().unwrap();
+            tx.query("CREATE (:Person {name: 'Carol'})").unwrap();
+            tx.rollback().unwrap();
+        }
+        let tx = db.read_tx().unwrap();
+        let rows = tx.query("MATCH (n:Person) RETURN n.name").unwrap();
+        assert_eq!(rows.len(), 0);
+        tx.commit().unwrap();
+    }
+
+    #[test]
+    fn panic_mid_txn_rolls_back() {
+        let mut db = Database::open_memory().unwrap();
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let tx = db.write_tx().unwrap();
+            tx.query("CREATE (:Person {name: 'Dan'})").unwrap();
+            panic!("simulated failure");
+        }));
+        assert!(result.is_err());
+        // After panic-driven unwind, the guard was dropped → rollback.
+        let tx = db.read_tx().unwrap();
+        let rows = tx.query("MATCH (n:Person) RETURN n.name").unwrap();
+        assert_eq!(rows.len(), 0);
+        tx.commit().unwrap();
+    }
+
+    #[test]
+    fn deref_exposes_typed_methods() {
+        // Sanity: method resolution through Deref still finds typed-Tx
+        // CRUD helpers and `query_with_params`.
+        let mut db = Database::open_memory().unwrap();
+        let tx = db.write_tx().unwrap();
+        let id = tx
+            .create_node("Person", std::collections::HashMap::new())
+            .unwrap();
+        let n = tx.get_node(id).unwrap();
+        assert_eq!(n.id, id);
+        tx.commit().unwrap();
+    }
+
+    #[test]
+    fn typed_guard_blocks_when_stateful_txn_active() {
+        // Mixing stateful `begin_*` with typed `*_tx` guards is rejected at
+        // runtime to keep the SQLite layer from silently failing on a nested
+        // BEGIN IMMEDIATE.
+        let mut db = Database::open_memory().unwrap();
+        db.begin_write().unwrap();
+        assert!(db.write_tx().is_err());
+        assert!(db.read_tx().is_err());
+        db.rollback().unwrap();
+    }
+}

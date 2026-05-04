@@ -16,8 +16,7 @@ use std::os::raw::c_char;
 use std::ptr;
 use std::sync::Mutex;
 
-use graphdblite::cypher::{executor, parser, planner, record::Record};
-use graphdblite::{Config, Database, GraphError, Value};
+use graphdblite::{Config, Database, GraphError, Record, Value};
 
 // ---------------------------------------------------------------------------
 // Thread-local error storage
@@ -200,7 +199,7 @@ pub unsafe extern "C" fn graphdb_query(
 
     let result = (|| -> Result<Vec<Record>, GraphError> {
         let mut guard = lock_db(handle)?;
-        let tx = guard.begin_read()?;
+        let tx = guard.read_tx()?;
         let records = tx.query(cypher_str)?;
         tx.commit()?;
         Ok(records)
@@ -240,7 +239,7 @@ pub unsafe extern "C" fn graphdb_execute(
 
     let result = (|| -> Result<Vec<Record>, GraphError> {
         let mut guard = lock_db(handle)?;
-        let tx = guard.begin_write()?;
+        let tx = guard.write_tx()?;
         let records = tx.query(cypher_str)?;
         tx.commit()?;
         Ok(records)
@@ -268,23 +267,8 @@ pub unsafe extern "C" fn graphdb_tx_begin_write(db: *mut GraphDB) -> i32 {
         return -1;
     }
     let handle = unsafe { &*db };
-    let guard = match lock_db(handle) {
-        Ok(g) => g,
-        Err(e) => {
-            set_error(&e.to_string());
-            return -1;
-        }
-    };
-    match guard.connection().execute_batch("BEGIN IMMEDIATE") {
-        Ok(()) => {
-            clear_error();
-            0
-        }
-        Err(e) => {
-            set_error(&format!("failed to begin write transaction: {e}"));
-            -1
-        }
-    }
+    let result = (|| -> Result<(), GraphError> { lock_db(handle)?.begin_write() })();
+    wrap_result(result, |()| {})
 }
 
 /// Begin a read transaction.
@@ -295,28 +279,13 @@ pub unsafe extern "C" fn graphdb_tx_begin_read(db: *mut GraphDB) -> i32 {
         return -1;
     }
     let handle = unsafe { &*db };
-    let guard = match lock_db(handle) {
-        Ok(g) => g,
-        Err(e) => {
-            set_error(&e.to_string());
-            return -1;
-        }
-    };
-    match guard.connection().execute_batch("BEGIN DEFERRED") {
-        Ok(()) => {
-            clear_error();
-            0
-        }
-        Err(e) => {
-            set_error(&format!("failed to begin read transaction: {e}"));
-            -1
-        }
-    }
+    let result = (|| -> Result<(), GraphError> { lock_db(handle)?.begin_read() })();
+    wrap_result(result, |()| {})
 }
 
 /// Execute a Cypher query within the current transaction.
 #[no_mangle]
-pub unsafe extern "C" fn graphdb_tx_query(
+pub unsafe extern "C" fn graphdb_tx_execute(
     db: *mut GraphDB,
     cypher: *const c_char,
     out: *mut *mut GraphResult,
@@ -334,19 +303,7 @@ pub unsafe extern "C" fn graphdb_tx_query(
         }
     };
 
-    let result = (|| -> Result<Vec<Record>, GraphError> {
-        let guard = lock_db(handle)?;
-        let conn = guard.connection();
-        let stmt = parser::parse(cypher_str)?;
-        let plan = planner::plan(conn, &stmt)?;
-        let ctx = executor::ExecContext {
-            max_result_rows: guard.max_result_rows,
-            max_traversal_depth: guard.max_traversal_depth,
-            max_traversal_work: guard.max_traversal_work,
-            ..Default::default()
-        };
-        executor::execute_with_ctx(conn, &plan, &ctx)
-    })();
+    let result = (|| -> Result<Vec<Record>, GraphError> { lock_db(handle)?.execute(cypher_str) })();
 
     wrap_result(result, |records| unsafe {
         *out = Box::into_raw(Box::new(GraphResult {
@@ -357,6 +314,17 @@ pub unsafe extern "C" fn graphdb_tx_query(
     })
 }
 
+/// Deprecated alias for `graphdb_tx_execute`. Will be removed in a future
+/// release. Kept temporarily for the Go binding's transition.
+#[no_mangle]
+pub unsafe extern "C" fn graphdb_tx_query(
+    db: *mut GraphDB,
+    cypher: *const c_char,
+    out: *mut *mut GraphResult,
+) -> i32 {
+    unsafe { graphdb_tx_execute(db, cypher, out) }
+}
+
 /// Commit the current transaction.
 #[no_mangle]
 pub unsafe extern "C" fn graphdb_tx_commit(db: *mut GraphDB) -> i32 {
@@ -365,23 +333,8 @@ pub unsafe extern "C" fn graphdb_tx_commit(db: *mut GraphDB) -> i32 {
         return -1;
     }
     let handle = unsafe { &*db };
-    let guard = match lock_db(handle) {
-        Ok(g) => g,
-        Err(e) => {
-            set_error(&e.to_string());
-            return -1;
-        }
-    };
-    match guard.connection().execute_batch("COMMIT") {
-        Ok(()) => {
-            clear_error();
-            0
-        }
-        Err(e) => {
-            set_error(&format!("commit failed: {e}"));
-            -1
-        }
-    }
+    let result = (|| -> Result<(), GraphError> { lock_db(handle)?.commit() })();
+    wrap_result(result, |()| {})
 }
 
 /// Rollback the current transaction.
@@ -392,23 +345,8 @@ pub unsafe extern "C" fn graphdb_tx_rollback(db: *mut GraphDB) -> i32 {
         return -1;
     }
     let handle = unsafe { &*db };
-    let guard = match lock_db(handle) {
-        Ok(g) => g,
-        Err(e) => {
-            set_error(&e.to_string());
-            return -1;
-        }
-    };
-    match guard.connection().execute_batch("ROLLBACK") {
-        Ok(()) => {
-            clear_error();
-            0
-        }
-        Err(e) => {
-            set_error(&format!("rollback failed: {e}"));
-            -1
-        }
-    }
+    let result = (|| -> Result<(), GraphError> { lock_db(handle)?.rollback() })();
+    wrap_result(result, |()| {})
 }
 
 // ---------------------------------------------------------------------------

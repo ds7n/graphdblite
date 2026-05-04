@@ -101,6 +101,7 @@ pub fn create_edge(
 /// All edges share the same label. Each edge is (src, dst, properties).
 /// Adjacency blobs are grouped by node so each blob is read and written once,
 /// regardless of how many edges touch the same node.
+#[allow(dead_code)]
 pub fn batch_create_edges(
     conn: &Connection,
     label: &str,
@@ -353,13 +354,6 @@ pub fn get_all_edge_props(
     Ok(result)
 }
 
-/// Count the number of parallel edges between (src, dst, label).
-pub fn count_edges(conn: &Connection, src: NodeId, dst: NodeId, label: &str) -> Result<usize> {
-    let prefix = edge_props_prefix(src, dst, label);
-    let entries = kv::scan_prefix(conn, kv::TABLE_EDGE_PROPS, &prefix)?;
-    Ok(entries.len())
-}
-
 /// Set a single property on the first edge between (src, dst, label).
 ///
 /// Use `set_edge_property_at` to target a specific parallel edge by sequence.
@@ -540,6 +534,7 @@ pub struct PathStep {
     /// The parallel edge sequence number.
     pub edge_seq: u64,
     /// The node reached by this step.
+    #[allow(dead_code)]
     pub dst: NodeId,
 }
 
@@ -960,4 +955,132 @@ pub fn get_all_edge_labels(
         }
     }
     Ok(result)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::types::Value;
+    use crate::Database;
+
+    fn props(pairs: &[(&str, Value)]) -> HashMap<String, Value> {
+        pairs
+            .iter()
+            .map(|(k, v)| (k.to_string(), v.clone()))
+            .collect()
+    }
+
+    #[test]
+    fn batch_create_edges_basic() {
+        let mut db = Database::open_memory().unwrap();
+        let tx = db.write_tx().unwrap();
+
+        let a = tx
+            .create_node("Node", props(&[("name", Value::String("A".into()))]))
+            .unwrap();
+        let b = tx
+            .create_node("Node", props(&[("name", Value::String("B".into()))]))
+            .unwrap();
+        let c = tx
+            .create_node("Node", props(&[("name", Value::String("C".into()))]))
+            .unwrap();
+
+        batch_create_edges(
+            tx.connection(),
+            "KNOWS",
+            &[(a, b, HashMap::new()), (a, c, HashMap::new())],
+        )
+        .unwrap();
+
+        let neighbors = tx.get_neighbors(a, "KNOWS", Direction::Outgoing).unwrap();
+        assert_eq!(neighbors.len(), 2);
+        assert!(neighbors.contains(&b));
+        assert!(neighbors.contains(&c));
+
+        let incoming_b = tx.get_neighbors(b, "KNOWS", Direction::Incoming).unwrap();
+        assert!(incoming_b.contains(&a));
+
+        tx.commit().unwrap();
+    }
+
+    #[test]
+    fn batch_create_edges_with_properties() {
+        let mut db = Database::open_memory().unwrap();
+        let tx = db.write_tx().unwrap();
+
+        let a = tx.create_node("Node", HashMap::new()).unwrap();
+        let b = tx.create_node("Node", HashMap::new()).unwrap();
+
+        batch_create_edges(
+            tx.connection(),
+            "CALLS",
+            &[(a, b, props(&[("line", Value::I64(42))]))],
+        )
+        .unwrap();
+
+        let edge_props = tx.get_edge_properties(a, b, "CALLS").unwrap();
+        assert_eq!(edge_props.get("line"), Some(&Value::I64(42)));
+
+        tx.commit().unwrap();
+    }
+
+    #[test]
+    fn batch_create_edges_coalescing_many_from_same_source() {
+        let mut db = Database::open_memory().unwrap();
+        let tx = db.write_tx().unwrap();
+
+        let src = tx.create_node("Node", HashMap::new()).unwrap();
+        let mut targets = Vec::new();
+        for _ in 0..50 {
+            targets.push(tx.create_node("Node", HashMap::new()).unwrap());
+        }
+
+        let edges: Vec<_> = targets.iter().map(|&t| (src, t, HashMap::new())).collect();
+        batch_create_edges(tx.connection(), "E", &edges).unwrap();
+
+        let neighbors = tx.get_neighbors(src, "E", Direction::Outgoing).unwrap();
+        assert_eq!(neighbors.len(), 50);
+        for t in &targets {
+            assert!(neighbors.contains(t));
+        }
+
+        tx.commit().unwrap();
+    }
+
+    #[test]
+    fn batch_create_edges_matches_individual_create() {
+        let mut db = Database::open_memory().unwrap();
+
+        let tx = db.write_tx().unwrap();
+        let a = tx.create_node("Node", HashMap::new()).unwrap();
+        let b = tx.create_node("Node", HashMap::new()).unwrap();
+        let c = tx.create_node("Node", HashMap::new()).unwrap();
+        tx.commit().unwrap();
+
+        let tx = db.write_tx().unwrap();
+        batch_create_edges(
+            tx.connection(),
+            "E",
+            &[
+                (a, b, props(&[("w", Value::I64(1))])),
+                (a, c, props(&[("w", Value::I64(2))])),
+                (b, c, HashMap::new()),
+            ],
+        )
+        .unwrap();
+
+        let a_out = tx.get_neighbors(a, "E", Direction::Outgoing).unwrap();
+        assert_eq!(a_out.len(), 2);
+        let b_out = tx.get_neighbors(b, "E", Direction::Outgoing).unwrap();
+        assert_eq!(b_out.len(), 1);
+        let c_in = tx.get_neighbors(c, "E", Direction::Incoming).unwrap();
+        assert_eq!(c_in.len(), 2);
+
+        let props_ab = tx.get_edge_properties(a, b, "E").unwrap();
+        assert_eq!(props_ab.get("w"), Some(&Value::I64(1)));
+        let props_ac = tx.get_edge_properties(a, c, "E").unwrap();
+        assert_eq!(props_ac.get("w"), Some(&Value::I64(2)));
+
+        tx.commit().unwrap();
+    }
 }

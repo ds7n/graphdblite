@@ -10,9 +10,9 @@
 
 use std::collections::HashMap;
 
+use crate::procedures::{Def as ProcedureDef, Param as ProcParam};
+use crate::{Database, Value};
 use cucumber::{gherkin::Step, given, then, when};
-use graphdblite::procedures::{Def as ProcedureDef, Param as ProcParam};
-use graphdblite::{Database, Value};
 
 use super::compare;
 use super::errors;

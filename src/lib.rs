@@ -3,28 +3,33 @@
 //
 // The Cypher pipeline (parser/planner/executor/IR/AST/eval/iter/cost) is
 // `pub(crate)`: it is internal and can evolve freely. Downstream consumers
-// reach the database through `Database` (stateful API) and `TxGuard` (the
-// RAII Rust wrapper). See `plans/api-lockdown.md` for the full surface.
+// reach the database through `Database` (stateful API) and the
+// `WriteTxGuard` / `ReadTxGuard` RAII wrappers. See `plans/api-lockdown.md`
+// for the full surface.
 // ───────────────────────────────────────────────────────────────────────────
 
 pub(crate) mod cypher;
 mod db;
-pub mod edge;
+pub(crate) mod edge;
 mod id;
-pub mod index;
-pub mod node;
+pub(crate) mod index;
+pub(crate) mod node;
 mod schema;
 pub(crate) mod stats;
 pub(crate) mod storage;
-pub mod temporal;
+pub(crate) mod temporal;
 mod transaction;
 pub mod types;
+
+#[cfg(feature = "tck-support")]
+#[doc(hidden)]
+pub mod tck_support;
 
 // --- Public surface ---------------------------------------------------------
 
 pub use cypher::record::Record;
 pub use db::{Config, Database, SyncMode};
-pub use transaction::{ReadTransaction, TxGuard, WriteTransaction};
+pub use transaction::{ReadTxGuard, WriteTxGuard};
 pub use types::{
     Direction, Edge, ErrorCode, GraphError, Node, NodeId, PathValue, Properties, QueryError,
     QueryPhase, Span, Value,

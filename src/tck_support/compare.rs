@@ -21,8 +21,8 @@
 
 use std::collections::{BTreeMap, HashMap};
 
+use crate::{Record, Value};
 use anyhow::{anyhow, bail, Result};
-use graphdblite::{Record, Value};
 
 // ------------------------------ public API --------------------------------
 
@@ -552,7 +552,7 @@ impl<'a> Parser<'a> {
 
     /// Parse a node pattern `(:Label {k: v})` or `(:Label)` or `(:A:B)`.
     fn parse_node(&mut self) -> Result<Value> {
-        use graphdblite::{Node, NodeId};
+        use crate::{Node, NodeId};
 
         self.expect("(")?;
         self.skip_ws();
@@ -591,7 +591,7 @@ impl<'a> Parser<'a> {
 
     /// Parse an edge pattern `[:TYPE {k: v}]` or `[:TYPE]`.
     fn parse_edge(&mut self) -> Result<Value> {
-        use graphdblite::{Edge, NodeId};
+        use crate::{Edge, NodeId};
 
         self.expect("[")?;
         self.skip_ws();
@@ -629,7 +629,7 @@ impl<'a> Parser<'a> {
 
     /// Parse a path literal `<(n1)-[:TYPE]->(n2)>`.
     fn parse_path(&mut self) -> Result<Value> {
-        use graphdblite::PathValue;
+        use crate::PathValue;
 
         self.expect("<")?;
         let mut nodes = Vec::new();
@@ -685,8 +685,10 @@ impl<'a> Parser<'a> {
 mod tests {
     #[allow(unused_imports)]
     use super::parse_expected;
+    use crate::Value;
 
     #[test]
+    #[allow(clippy::approx_constant)]
     fn scalars() {
         assert_eq!(parse_expected("null").unwrap(), Value::Null);
         assert_eq!(parse_expected("true").unwrap(), Value::Bool(true));

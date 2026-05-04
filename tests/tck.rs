@@ -12,13 +12,11 @@
 //! a single node`). The harness skips these and exits non-zero only if a
 //! *non-skiplisted* scenario fails — making the TCK a regression gate.
 
-mod tck_support;
-
 use std::collections::HashSet;
 use std::path::Path;
 
 use cucumber::writer::Stats;
-use tck_support::world::World;
+use graphdblite::tck_support::world::World;
 
 fn main() {
     let base = Path::new(env!("CARGO_MANIFEST_DIR"))

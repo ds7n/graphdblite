@@ -5,9 +5,9 @@
 use std::collections::{HashMap, HashSet};
 use std::hash::{Hash, Hasher};
 
+use crate::procedures::Registry as ProcedureRegistry;
+use crate::{Database, GraphError, Record, Value};
 use cucumber::World as CucumberWorld;
-use graphdblite::procedures::Registry as ProcedureRegistry;
-use graphdblite::{Database, GraphError, Record, Value};
 use rusqlite::Connection;
 
 /// Hash a Value for property fingerprinting (used in side-effect diffing).
@@ -56,7 +56,7 @@ impl GraphCounts {
         struct NodeBlob {
             #[allow(dead_code)]
             labels: Vec<String>,
-            properties: HashMap<String, graphdblite::Value>,
+            properties: HashMap<String, crate::Value>,
         }
         let mut fingerprints = HashSet::new();
         let mut node_keys = HashSet::new();
@@ -84,9 +84,7 @@ impl GraphCounts {
                 edge_keys.insert(key.clone());
                 let owner = format!("e:{key:?}");
                 let data: Vec<u8> = row.get(1).unwrap();
-                if let Ok(props) =
-                    rmp_serde::from_slice::<HashMap<String, graphdblite::Value>>(&data)
-                {
+                if let Ok(props) = rmp_serde::from_slice::<HashMap<String, crate::Value>>(&data) {
                     for (k, v) in &props {
                         fingerprints.insert((owner.clone(), k.clone(), hash_value(v)));
                     }

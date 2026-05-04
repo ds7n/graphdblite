@@ -11,7 +11,7 @@
 //! The harness uses this map to verify the kind + phase match exactly — no
 //! string matching on error messages required.
 
-use graphdblite::{GraphError, QueryError, QueryPhase};
+use crate::{GraphError, QueryError, QueryPhase};
 
 /// Check whether an actual `GraphError` matches the expected openCypher
 /// (kind, phase) pair declared in a scenario.

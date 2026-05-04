@@ -123,6 +123,10 @@ macro_rules! impl_read_ops {
 }
 
 /// A read-only transaction. Provides snapshot isolation via SQLite's WAL.
+///
+/// Not nameable from outside the crate — `mod transaction` is private and the
+/// type is not re-exported. Callers reach its methods through `Deref` on
+/// [`ReadTxGuard`].
 pub struct ReadTransaction<'a> {
     tx: rusqlite::Transaction<'a>,
     max_result_rows: usize,
@@ -162,6 +166,10 @@ impl<'a> ReadTransaction<'a> {
 impl_read_ops!(ReadTransaction);
 
 /// A read-write transaction. Acquires the write lock via BEGIN IMMEDIATE.
+///
+/// Not nameable from outside the crate — `mod transaction` is private and the
+/// type is not re-exported. Callers reach its methods through `Deref` on
+/// [`WriteTxGuard`].
 pub struct WriteTransaction<'a> {
     tx: rusqlite::Transaction<'a>,
     max_property_value_bytes: usize,
@@ -190,8 +198,10 @@ impl<'a> WriteTransaction<'a> {
         }
     }
 
-    /// Access the underlying SQLite connection for direct operations.
-    pub fn connection(&self) -> &rusqlite::Connection {
+    /// Crate-internal access to the underlying SQLite transaction.
+    /// Used only by in-crate `#[cfg(test)]` modules.
+    #[cfg(test)]
+    pub(crate) fn connection(&self) -> &rusqlite::Connection {
         &self.tx
     }
 
@@ -333,51 +343,44 @@ impl<'a> WriteTransaction<'a> {
 impl_read_ops!(WriteTransaction);
 
 // ----------------------------------------------------------------------------
-// TxGuard — RAII wrapper that auto-rolls-back on drop.
+// WriteTxGuard / ReadTxGuard — RAII wrappers that auto-roll-back on drop.
 //
-// Wraps a typed `ReadTransaction` or `WriteTransaction`. Forwards the full
-// typed-Tx API via `Deref`/`DerefMut` so existing callers do not change. The
-// guard's inherent `commit(self)` / `rollback(self)` consume the guard and the
-// inner Tx; if neither is called, `Drop` emits a `tracing::warn!` and lets
-// rusqlite's own `Transaction` Drop perform the actual rollback.
+// Wrap the crate-internal `WriteTransaction` / `ReadTransaction`. Forward the
+// full typed-Tx API via `Deref`/`DerefMut` so callers can keep using
+// `tx.create_node(...)`, `tx.query(...)`, etc. — the inner Tx types are
+// `pub(crate)` (unnameable from outside), but their `pub` methods remain
+// reachable through deref. Inherent `commit(self)` / `rollback(self)` consume
+// the guard; otherwise `Drop` emits a `tracing::warn!` and lets rusqlite's own
+// `Transaction` Drop perform the actual rollback.
 // ----------------------------------------------------------------------------
 
-/// RAII transaction guard. Returned by `Database::read_tx` / `write_tx`.
-pub struct TxGuard<T> {
-    inner: Option<T>,
+/// RAII guard for a write transaction. Returned by [`Database::write_tx`].
+///
+/// Drops trigger a rollback unless [`commit`](Self::commit) is called.
+/// Methods on the wrapped transaction (`create_node`, `query`, etc.) are
+/// accessible directly via `Deref`.
+pub struct WriteTxGuard<'a> {
+    inner: Option<WriteTransaction<'a>>,
 }
 
-impl<T> TxGuard<T> {
-    pub(crate) fn new(tx: T) -> Self {
+/// RAII guard for a read transaction. Returned by [`Database::read_tx`].
+///
+/// Drops release the snapshot. Methods on the wrapped transaction (`query`,
+/// `get_node`, etc.) are accessible directly via `Deref`.
+pub struct ReadTxGuard<'a> {
+    inner: Option<ReadTransaction<'a>>,
+}
+
+impl<'a> WriteTxGuard<'a> {
+    pub(crate) fn new(tx: WriteTransaction<'a>) -> Self {
         Self { inner: Some(tx) }
     }
-}
 
-impl<T> std::ops::Deref for TxGuard<T> {
-    type Target = T;
-    fn deref(&self) -> &T {
-        // Inner is only `None` after `commit`/`rollback`, both of which consume
-        // `self` — so any reachable `&TxGuard` has `Some(inner)`.
-        self.inner
-            .as_ref()
-            .expect("TxGuard accessed after commit or rollback")
-    }
-}
-
-impl<T> std::ops::DerefMut for TxGuard<T> {
-    fn deref_mut(&mut self) -> &mut T {
-        self.inner
-            .as_mut()
-            .expect("TxGuard accessed after commit or rollback")
-    }
-}
-
-impl<'a> TxGuard<WriteTransaction<'a>> {
     /// Commit the wrapped write transaction. Disarms the drop-rollback.
     pub fn commit(mut self) -> Result<()> {
         self.inner
             .take()
-            .expect("TxGuard already finalized")
+            .expect("WriteTxGuard already finalized")
             .commit()
     }
 
@@ -386,17 +389,21 @@ impl<'a> TxGuard<WriteTransaction<'a>> {
     pub fn rollback(mut self) -> Result<()> {
         self.inner
             .take()
-            .expect("TxGuard already finalized")
+            .expect("WriteTxGuard already finalized")
             .rollback()
     }
 }
 
-impl<'a> TxGuard<ReadTransaction<'a>> {
-    /// Commit (release snapshot for) the wrapped read transaction.
+impl<'a> ReadTxGuard<'a> {
+    pub(crate) fn new(tx: ReadTransaction<'a>) -> Self {
+        Self { inner: Some(tx) }
+    }
+
+    /// Release the snapshot held by the wrapped read transaction.
     pub fn commit(mut self) -> Result<()> {
         self.inner
             .take()
-            .expect("TxGuard already finalized")
+            .expect("ReadTxGuard already finalized")
             .commit()
     }
 
@@ -405,21 +412,62 @@ impl<'a> TxGuard<ReadTransaction<'a>> {
     pub fn rollback(mut self) -> Result<()> {
         self.inner
             .take()
-            .expect("TxGuard already finalized")
+            .expect("ReadTxGuard already finalized")
             .rollback()
     }
 }
 
-impl<T> Drop for TxGuard<T> {
+impl<'a> std::ops::Deref for WriteTxGuard<'a> {
+    type Target = WriteTransaction<'a>;
+    fn deref(&self) -> &WriteTransaction<'a> {
+        // Inner is only `None` after `commit`/`rollback`, both of which consume
+        // `self` — so any reachable `&WriteTxGuard` has `Some(inner)`.
+        self.inner
+            .as_ref()
+            .expect("WriteTxGuard accessed after commit or rollback")
+    }
+}
+
+impl<'a> std::ops::DerefMut for WriteTxGuard<'a> {
+    fn deref_mut(&mut self) -> &mut WriteTransaction<'a> {
+        self.inner
+            .as_mut()
+            .expect("WriteTxGuard accessed after commit or rollback")
+    }
+}
+
+impl<'a> std::ops::Deref for ReadTxGuard<'a> {
+    type Target = ReadTransaction<'a>;
+    fn deref(&self) -> &ReadTransaction<'a> {
+        self.inner
+            .as_ref()
+            .expect("ReadTxGuard accessed after commit or rollback")
+    }
+}
+
+impl<'a> std::ops::DerefMut for ReadTxGuard<'a> {
+    fn deref_mut(&mut self) -> &mut ReadTransaction<'a> {
+        self.inner
+            .as_mut()
+            .expect("ReadTxGuard accessed after commit or rollback")
+    }
+}
+
+impl Drop for WriteTxGuard<'_> {
     fn drop(&mut self) {
         if self.inner.is_some() {
             tracing::warn!(
-                "TxGuard dropped without commit or rollback; transaction will be rolled back. \
+                "WriteTxGuard dropped without commit or rollback; transaction will be rolled back. \
                  Call `tx.commit()` to persist writes, or `tx.rollback()` to silence this warning."
             );
-            // Inner `WriteTransaction`/`ReadTransaction` drops here; rusqlite's
-            // own `Transaction` `Drop` performs the actual ROLLBACK.
         }
+    }
+}
+
+impl Drop for ReadTxGuard<'_> {
+    fn drop(&mut self) {
+        // Read txns have no writes to lose; dropping silently releases the
+        // snapshot. No warning to emit.
     }
 }
 

@@ -169,7 +169,7 @@ More details: [Architecture](docs/architecture.md)
 ```bash
 cargo build --release          # Rust library + CLI
 cargo test --tests             # unit + integration tests
-cargo test --test tck          # openCypher TCK conformance
+cargo test --test tck --features tck-support  # openCypher TCK conformance
 maturin develop --release      # Python wheel (dev)
 ```
 

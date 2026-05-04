@@ -33,12 +33,13 @@ Usage:
 use graphdblite::Database;
 
 let mut db = Database::open("my.db")?;
-let tx = db.begin_write()?;
+let tx = db.write_tx()?;  // RAII guard — auto-rolls-back on drop
 tx.query("CREATE (a:Person {name: 'Alice'})-[:KNOWS]->(b:Person {name: 'Bob'})")?;
 tx.commit()?;
 
-let tx = db.begin_read()?;
+let tx = db.read_tx()?;
 let results = tx.query("MATCH (a)-[:KNOWS]->(b) RETURN a.name, b.name")?;
+tx.commit()?;
 ```
 
 [Full Rust docs →](docs/rust.md)

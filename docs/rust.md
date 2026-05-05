@@ -18,8 +18,8 @@ use std::collections::HashMap;
 fn main() -> graphdblite::Result<()> {
     let mut db = Database::open("my.db")?;
 
-    // Write transaction
-    let tx = db.begin_write()?;
+    // Write transaction — `WriteTxGuard` rolls back on drop if not committed.
+    let mut tx = db.write_tx()?;
     tx.query("CREATE (a:Person {name: 'Alice', age: 30})")?;
     tx.query("CREATE (b:Person {name: 'Bob', age: 25})")?;
     tx.query("MATCH (a:Person {name: 'Alice'}), (b:Person {name: 'Bob'}) CREATE (a)-[:KNOWS]->(b)")?;
@@ -27,7 +27,7 @@ fn main() -> graphdblite::Result<()> {
     tx.commit()?;
 
     // Read transaction
-    let tx = db.begin_read()?;
+    let tx = db.read_tx()?;
     let results = tx.query("MATCH (a:Person)-[:KNOWS]->(b:Person) RETURN a.name, b.name")?;
     for record in &results {
         println!("{:?} knows {:?}", record.get("a.name"), record.get("b.name"));
@@ -64,17 +64,42 @@ let mut db = Database::open_memory()?;
 
 ## Transactions
 
+The Rust API exposes two transaction styles backed by the same engine.
+
+### Recommended: RAII guards (`write_tx` / `read_tx`)
+
 ```rust
-let tx = db.begin_read()?;   // Read-only snapshot (no lock)
-let tx = db.begin_write()?;  // Acquires write lock (BEGIN IMMEDIATE)
+let tx = db.read_tx()?;   // ReadTxGuard — snapshot-isolated read
+let mut tx = db.write_tx()?;  // WriteTxGuard — BEGIN IMMEDIATE
 ```
 
-Both transaction types must be explicitly committed. Dropping without commit
-triggers an implicit rollback.
+`WriteTxGuard` and `ReadTxGuard` deref to the typed transaction, so the
+methods listed below in `ReadTransaction` / `WriteTransaction` are reachable
+directly on the guard. Drop without `commit()` rolls back automatically (the
+write guard also emits a `tracing::warn!`).
+
+### Stateful API (primarily for binding implementations)
+
+```rust
+db.begin_write()?;                 // -> Result<()>
+db.execute("CREATE (:Person {name: 'Alice'})")?;
+db.commit()?;
+```
+
+`begin_write` / `begin_read` / `execute` / `execute_with_params` /
+`commit` / `rollback` form the stateful lifecycle every language binding
+consumes. Mixing the two styles on a single `Database` handle is rejected at
+runtime (each style takes the txn slot exclusively).
+
+When no transaction is active, `execute` / `execute_with_params`
+auto-begin/auto-commit a transaction (read-only plans use `BEGIN
+DEFERRED`, writes use `BEGIN IMMEDIATE`). On error the auto-txn is
+rolled back. Multi-statement transactions still need explicit
+`begin_*` + `commit`.
 
 ## ReadTransaction
 
-Available on both read and write transactions.
+Reachable via deref on `ReadTxGuard` and `WriteTxGuard`.
 
 | Method | Description |
 |--------|-------------|
@@ -90,7 +115,7 @@ Available on both read and write transactions.
 
 ## WriteTransaction
 
-All `ReadTransaction` methods, plus:
+Reachable via deref on `WriteTxGuard`. All `ReadTransaction` methods, plus:
 
 | Method | Description |
 |--------|-------------|

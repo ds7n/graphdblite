@@ -72,7 +72,7 @@ Cypher string
 | **Go** | `bindings/go/` | CGo via FFI, `Database` / `WriteTransaction` / `ReadTransaction` |
 | **C** | `bindings/ffi/` | cbindgen-generated header, `GraphDB` / `GraphResult` opaque handles |
 
-All language bindings (Python/Node/Go/C) drive the underlying database via the stateful API on `Database` (`begin_read`, `begin_write`, `execute`, `commit`, `rollback`). The Rust core additionally exposes `WriteTxGuard`/`ReadTxGuard` via `read_tx`/`write_tx` for compile-time RAII safety.
+All language bindings (Python/Node/Go/C) drive the underlying database via the stateful API on `Database` (`begin_read`, `begin_write`, `execute`, `commit`, `rollback`). When no transaction is active, `execute*` auto-begins/auto-commits one — read-only plans use `BEGIN DEFERRED`, writes use `BEGIN IMMEDIATE`; on error the auto-tx is rolled back. The Rust core additionally exposes `WriteTxGuard`/`ReadTxGuard` via `read_tx`/`write_tx` for compile-time RAII safety.
 
 Each binding ships a **conformance suite** (`docs/BINDING_CONFORMANCE.md`, scenarios `BC-01..BC-10`) covering transaction lifecycle, multi-process snapshot visibility, and resource hygiene. Write Cypher inside a read transaction is rejected by `cypher::execute_cypher` via `ExecContext::require_read_only`.
 

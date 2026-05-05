@@ -173,6 +173,12 @@ cargo test --test tck --features tck-support  # openCypher TCK conformance
 maturin develop --release      # Python wheel (dev)
 ```
 
+## Stability
+
+graphdblite is pre-`1.0.0`. The public API surface and stability
+guarantees are documented in [STABILITY.md](STABILITY.md). Binding authors
+should also read [docs/BINDING_CONFORMANCE.md](docs/BINDING_CONFORMANCE.md).
+
 ## License
 
 [MPL-2.0](LICENSE)

@@ -1,0 +1,1019 @@
+pub mod graphdblite
+pub mod graphdblite::procedures
+pub struct graphdblite::procedures::Def
+pub graphdblite::procedures::Def::inputs: alloc::vec::Vec<graphdblite::procedures::Param>
+pub graphdblite::procedures::Def::name: alloc::string::String
+pub graphdblite::procedures::Def::outputs: alloc::vec::Vec<graphdblite::procedures::Param>
+pub graphdblite::procedures::Def::rows: alloc::vec::Vec<std::collections::hash::map::HashMap<alloc::string::String, graphdblite::types::Value>>
+impl core::clone::Clone for graphdblite::procedures::Def
+pub fn graphdblite::procedures::Def::clone(&self) -> graphdblite::procedures::Def
+impl core::fmt::Debug for graphdblite::procedures::Def
+pub fn graphdblite::procedures::Def::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Freeze for graphdblite::procedures::Def
+impl core::marker::Send for graphdblite::procedures::Def
+impl core::marker::Sync for graphdblite::procedures::Def
+impl core::marker::Unpin for graphdblite::procedures::Def
+impl core::marker::UnsafeUnpin for graphdblite::procedures::Def
+impl core::panic::unwind_safe::RefUnwindSafe for graphdblite::procedures::Def
+impl core::panic::unwind_safe::UnwindSafe for graphdblite::procedures::Def
+pub struct graphdblite::procedures::Param
+pub graphdblite::procedures::Param::name: alloc::string::String
+pub graphdblite::procedures::Param::type_name: alloc::string::String
+impl core::clone::Clone for graphdblite::procedures::Param
+pub fn graphdblite::procedures::Param::clone(&self) -> graphdblite::procedures::Param
+impl core::fmt::Debug for graphdblite::procedures::Param
+pub fn graphdblite::procedures::Param::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Freeze for graphdblite::procedures::Param
+impl core::marker::Send for graphdblite::procedures::Param
+impl core::marker::Sync for graphdblite::procedures::Param
+impl core::marker::Unpin for graphdblite::procedures::Param
+impl core::marker::UnsafeUnpin for graphdblite::procedures::Param
+impl core::panic::unwind_safe::RefUnwindSafe for graphdblite::procedures::Param
+impl core::panic::unwind_safe::UnwindSafe for graphdblite::procedures::Param
+pub struct graphdblite::procedures::Registry
+impl graphdblite::ProcedureRegistry
+pub fn graphdblite::ProcedureRegistry::get(&self, name: &str) -> core::option::Option<&graphdblite::procedures::Def>
+pub fn graphdblite::ProcedureRegistry::is_empty(&self) -> bool
+pub fn graphdblite::ProcedureRegistry::new() -> Self
+pub fn graphdblite::ProcedureRegistry::register(&mut self, proc_def: graphdblite::procedures::Def)
+impl core::clone::Clone for graphdblite::ProcedureRegistry
+pub fn graphdblite::ProcedureRegistry::clone(&self) -> graphdblite::ProcedureRegistry
+impl core::default::Default for graphdblite::ProcedureRegistry
+pub fn graphdblite::ProcedureRegistry::default() -> graphdblite::ProcedureRegistry
+impl core::fmt::Debug for graphdblite::ProcedureRegistry
+pub fn graphdblite::ProcedureRegistry::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Freeze for graphdblite::ProcedureRegistry
+impl core::marker::Send for graphdblite::ProcedureRegistry
+impl core::marker::Sync for graphdblite::ProcedureRegistry
+impl core::marker::Unpin for graphdblite::ProcedureRegistry
+impl core::marker::UnsafeUnpin for graphdblite::ProcedureRegistry
+impl core::panic::unwind_safe::RefUnwindSafe for graphdblite::ProcedureRegistry
+impl core::panic::unwind_safe::UnwindSafe for graphdblite::ProcedureRegistry
+pub mod graphdblite::types
+pub enum graphdblite::types::Direction
+pub graphdblite::types::Direction::Both
+pub graphdblite::types::Direction::Incoming
+pub graphdblite::types::Direction::Outgoing
+impl core::clone::Clone for graphdblite::types::Direction
+pub fn graphdblite::types::Direction::clone(&self) -> graphdblite::types::Direction
+impl core::cmp::Eq for graphdblite::types::Direction
+impl core::cmp::PartialEq for graphdblite::types::Direction
+pub fn graphdblite::types::Direction::eq(&self, other: &graphdblite::types::Direction) -> bool
+impl core::fmt::Debug for graphdblite::types::Direction
+pub fn graphdblite::types::Direction::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Copy for graphdblite::types::Direction
+impl core::marker::StructuralPartialEq for graphdblite::types::Direction
+impl core::marker::Freeze for graphdblite::types::Direction
+impl core::marker::Send for graphdblite::types::Direction
+impl core::marker::Sync for graphdblite::types::Direction
+impl core::marker::Unpin for graphdblite::types::Direction
+impl core::marker::UnsafeUnpin for graphdblite::types::Direction
+impl core::panic::unwind_safe::RefUnwindSafe for graphdblite::types::Direction
+impl core::panic::unwind_safe::UnwindSafe for graphdblite::types::Direction
+#[non_exhaustive] pub enum graphdblite::types::ErrorCode
+pub graphdblite::types::ErrorCode::AmbiguousAggregationExpression
+pub graphdblite::types::ErrorCode::CreatingVarLength
+pub graphdblite::types::ErrorCode::DeleteConnectedNode
+pub graphdblite::types::ErrorCode::DeletedEntityAccess
+pub graphdblite::types::ErrorCode::DifferentColumnsInUnion
+pub graphdblite::types::ErrorCode::InvalidAggregation
+pub graphdblite::types::ErrorCode::InvalidArgumentPassingMode
+pub graphdblite::types::ErrorCode::InvalidArgumentType
+pub graphdblite::types::ErrorCode::InvalidArgumentValue
+pub graphdblite::types::ErrorCode::InvalidClauseComposition
+pub graphdblite::types::ErrorCode::InvalidDelete
+pub graphdblite::types::ErrorCode::InvalidNumberOfArguments
+pub graphdblite::types::ErrorCode::InvalidPropertyType
+pub graphdblite::types::ErrorCode::InvalidUnicodeLiteral
+pub graphdblite::types::ErrorCode::MapElementAccessByNonString
+pub graphdblite::types::ErrorCode::MergeReadOwnWrites
+pub graphdblite::types::ErrorCode::MissingParameter
+pub graphdblite::types::ErrorCode::NegativeIntegerArgument
+pub graphdblite::types::ErrorCode::NoExpressionAlias
+pub graphdblite::types::ErrorCode::NoSingleRelationshipType
+pub graphdblite::types::ErrorCode::NonConstantExpression
+pub graphdblite::types::ErrorCode::NumberOutOfRange
+pub graphdblite::types::ErrorCode::Other
+pub graphdblite::types::ErrorCode::ProcedureNotFound
+pub graphdblite::types::ErrorCode::RequiresDirectedRelationship
+pub graphdblite::types::ErrorCode::UndefinedVariable
+pub graphdblite::types::ErrorCode::UnexpectedSyntax
+pub graphdblite::types::ErrorCode::UnknownFunction
+pub graphdblite::types::ErrorCode::VariableAlreadyBound
+pub graphdblite::types::ErrorCode::VariableTypeConflict
+impl graphdblite::types::ErrorCode
+pub fn graphdblite::types::ErrorCode::as_str(&self) -> &'static str
+impl core::clone::Clone for graphdblite::types::ErrorCode
+pub fn graphdblite::types::ErrorCode::clone(&self) -> graphdblite::types::ErrorCode
+impl core::cmp::Eq for graphdblite::types::ErrorCode
+impl core::cmp::PartialEq for graphdblite::types::ErrorCode
+pub fn graphdblite::types::ErrorCode::eq(&self, other: &graphdblite::types::ErrorCode) -> bool
+impl core::fmt::Debug for graphdblite::types::ErrorCode
+pub fn graphdblite::types::ErrorCode::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::fmt::Display for graphdblite::types::ErrorCode
+pub fn graphdblite::types::ErrorCode::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Copy for graphdblite::types::ErrorCode
+impl core::marker::StructuralPartialEq for graphdblite::types::ErrorCode
+impl core::marker::Freeze for graphdblite::types::ErrorCode
+impl core::marker::Send for graphdblite::types::ErrorCode
+impl core::marker::Sync for graphdblite::types::ErrorCode
+impl core::marker::Unpin for graphdblite::types::ErrorCode
+impl core::marker::UnsafeUnpin for graphdblite::types::ErrorCode
+impl core::panic::unwind_safe::RefUnwindSafe for graphdblite::types::ErrorCode
+impl core::panic::unwind_safe::UnwindSafe for graphdblite::types::ErrorCode
+#[non_exhaustive] pub enum graphdblite::types::GraphError
+pub graphdblite::types::GraphError::EdgeNotFound
+pub graphdblite::types::GraphError::EdgeNotFound::dst: graphdblite::types::NodeId
+pub graphdblite::types::GraphError::EdgeNotFound::hint: core::option::Option<alloc::string::String>
+pub graphdblite::types::GraphError::EdgeNotFound::label: alloc::string::String
+pub graphdblite::types::GraphError::EdgeNotFound::src: graphdblite::types::NodeId
+pub graphdblite::types::GraphError::HasEdges
+pub graphdblite::types::GraphError::HasEdges::hint: core::option::Option<alloc::string::String>
+pub graphdblite::types::GraphError::HasEdges::id: graphdblite::types::NodeId
+pub graphdblite::types::GraphError::IndexAlreadyExists
+pub graphdblite::types::GraphError::IndexAlreadyExists::hint: core::option::Option<alloc::string::String>
+pub graphdblite::types::GraphError::IndexAlreadyExists::label: alloc::string::String
+pub graphdblite::types::GraphError::IndexAlreadyExists::property: alloc::string::String
+pub graphdblite::types::GraphError::IndexNotFound
+pub graphdblite::types::GraphError::IndexNotFound::hint: core::option::Option<alloc::string::String>
+pub graphdblite::types::GraphError::IndexNotFound::label: alloc::string::String
+pub graphdblite::types::GraphError::IndexNotFound::property: alloc::string::String
+pub graphdblite::types::GraphError::InvalidName
+pub graphdblite::types::GraphError::InvalidName::hint: core::option::Option<alloc::string::String>
+pub graphdblite::types::GraphError::InvalidName::name: alloc::string::String
+pub graphdblite::types::GraphError::NodeNotFound
+pub graphdblite::types::GraphError::NodeNotFound::hint: core::option::Option<alloc::string::String>
+pub graphdblite::types::GraphError::NodeNotFound::id: graphdblite::types::NodeId
+pub graphdblite::types::GraphError::Query(graphdblite::types::QueryError)
+pub graphdblite::types::GraphError::SchemaMismatch
+pub graphdblite::types::GraphError::SchemaMismatch::found: u64
+pub graphdblite::types::GraphError::SchemaMismatch::hint: core::option::Option<alloc::string::String>
+pub graphdblite::types::GraphError::SchemaMismatch::supported: u64
+pub graphdblite::types::GraphError::Serialization
+pub graphdblite::types::GraphError::Serialization::context: alloc::string::String
+pub graphdblite::types::GraphError::Serialization::hint: core::option::Option<alloc::string::String>
+pub graphdblite::types::GraphError::Serialization::source: alloc::string::String
+pub graphdblite::types::GraphError::SizeLimit
+pub graphdblite::types::GraphError::SizeLimit::actual: usize
+pub graphdblite::types::GraphError::SizeLimit::hint: core::option::Option<alloc::string::String>
+pub graphdblite::types::GraphError::SizeLimit::limit: usize
+pub graphdblite::types::GraphError::SizeLimit::what: alloc::string::String
+pub graphdblite::types::GraphError::Storage
+pub graphdblite::types::GraphError::Storage::hint: core::option::Option<alloc::string::String>
+pub graphdblite::types::GraphError::Storage::source: rusqlite::error::Error
+pub graphdblite::types::GraphError::Transaction
+pub graphdblite::types::GraphError::Transaction::hint: core::option::Option<alloc::string::String>
+pub graphdblite::types::GraphError::Transaction::message: alloc::string::String
+impl graphdblite::types::GraphError
+pub fn graphdblite::types::GraphError::argument(phase: graphdblite::types::QueryPhase, message: impl core::convert::Into<alloc::string::String>) -> Self
+pub fn graphdblite::types::GraphError::constraint(message: impl core::convert::Into<alloc::string::String>) -> Self
+pub fn graphdblite::types::GraphError::invalid_argument_type(phase: graphdblite::types::QueryPhase, function: impl core::fmt::Display, got: impl core::fmt::Display) -> Self
+pub fn graphdblite::types::GraphError::invalid_argument_value(phase: graphdblite::types::QueryPhase, function: impl core::fmt::Display, message: impl core::fmt::Display) -> Self
+pub fn graphdblite::types::GraphError::number_out_of_range(phase: graphdblite::types::QueryPhase, message: impl core::convert::Into<alloc::string::String>) -> Self
+pub fn graphdblite::types::GraphError::procedure_not_found(name: impl core::fmt::Display) -> Self
+pub fn graphdblite::types::GraphError::query(phase: graphdblite::types::QueryPhase, code: graphdblite::types::ErrorCode, message: impl core::convert::Into<alloc::string::String>) -> Self
+pub fn graphdblite::types::GraphError::semantic(message: impl core::convert::Into<alloc::string::String>) -> Self
+pub fn graphdblite::types::GraphError::serialization(context: impl core::convert::Into<alloc::string::String>, source: impl core::fmt::Display) -> Self
+pub fn graphdblite::types::GraphError::syntax(message: impl core::convert::Into<alloc::string::String>) -> Self
+pub fn graphdblite::types::GraphError::transaction(message: impl core::convert::Into<alloc::string::String>) -> Self
+pub fn graphdblite::types::GraphError::type_error(phase: graphdblite::types::QueryPhase, message: impl core::convert::Into<alloc::string::String>) -> Self
+pub fn graphdblite::types::GraphError::undefined_variable(name: impl core::fmt::Display) -> Self
+pub fn graphdblite::types::GraphError::with_code(self, code: graphdblite::types::ErrorCode) -> Self
+pub fn graphdblite::types::GraphError::with_hint(self, hint: impl core::convert::Into<alloc::string::String>) -> Self
+pub fn graphdblite::types::GraphError::with_span(self, span: graphdblite::types::Span) -> Self
+impl core::convert::From<graphdblite::types::QueryError> for graphdblite::types::GraphError
+pub fn graphdblite::types::GraphError::from(error: graphdblite::types::QueryError) -> Self
+impl core::convert::From<rusqlite::error::Error> for graphdblite::types::GraphError
+pub fn graphdblite::types::GraphError::from(source: rusqlite::error::Error) -> Self
+impl core::error::Error for graphdblite::types::GraphError
+pub fn graphdblite::types::GraphError::source(&self) -> core::option::Option<&(dyn core::error::Error + 'static)>
+impl core::fmt::Debug for graphdblite::types::GraphError
+pub fn graphdblite::types::GraphError::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::fmt::Display for graphdblite::types::GraphError
+pub fn graphdblite::types::GraphError::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Freeze for graphdblite::types::GraphError
+impl core::marker::Send for graphdblite::types::GraphError
+impl core::marker::Sync for graphdblite::types::GraphError
+impl core::marker::Unpin for graphdblite::types::GraphError
+impl core::marker::UnsafeUnpin for graphdblite::types::GraphError
+impl !core::panic::unwind_safe::RefUnwindSafe for graphdblite::types::GraphError
+impl !core::panic::unwind_safe::UnwindSafe for graphdblite::types::GraphError
+#[non_exhaustive] pub enum graphdblite::types::QueryError
+pub graphdblite::types::QueryError::ArgumentError
+pub graphdblite::types::QueryError::ArgumentError::code: graphdblite::types::ErrorCode
+pub graphdblite::types::QueryError::ArgumentError::hint: core::option::Option<alloc::string::String>
+pub graphdblite::types::QueryError::ArgumentError::message: alloc::string::String
+pub graphdblite::types::QueryError::ArgumentError::phase: graphdblite::types::QueryPhase
+pub graphdblite::types::QueryError::ArgumentError::span: core::option::Option<graphdblite::types::Span>
+pub graphdblite::types::QueryError::ArithmeticError
+pub graphdblite::types::QueryError::ArithmeticError::code: graphdblite::types::ErrorCode
+pub graphdblite::types::QueryError::ArithmeticError::hint: core::option::Option<alloc::string::String>
+pub graphdblite::types::QueryError::ArithmeticError::message: alloc::string::String
+pub graphdblite::types::QueryError::ArithmeticError::phase: graphdblite::types::QueryPhase
+pub graphdblite::types::QueryError::ArithmeticError::span: core::option::Option<graphdblite::types::Span>
+pub graphdblite::types::QueryError::ConstraintViolation
+pub graphdblite::types::QueryError::ConstraintViolation::code: graphdblite::types::ErrorCode
+pub graphdblite::types::QueryError::ConstraintViolation::hint: core::option::Option<alloc::string::String>
+pub graphdblite::types::QueryError::ConstraintViolation::message: alloc::string::String
+pub graphdblite::types::QueryError::ConstraintViolation::phase: graphdblite::types::QueryPhase
+pub graphdblite::types::QueryError::ConstraintViolation::span: core::option::Option<graphdblite::types::Span>
+pub graphdblite::types::QueryError::EntityNotFound
+pub graphdblite::types::QueryError::EntityNotFound::code: graphdblite::types::ErrorCode
+pub graphdblite::types::QueryError::EntityNotFound::hint: core::option::Option<alloc::string::String>
+pub graphdblite::types::QueryError::EntityNotFound::message: alloc::string::String
+pub graphdblite::types::QueryError::EntityNotFound::phase: graphdblite::types::QueryPhase
+pub graphdblite::types::QueryError::EntityNotFound::span: core::option::Option<graphdblite::types::Span>
+pub graphdblite::types::QueryError::ProcedureError
+pub graphdblite::types::QueryError::ProcedureError::code: graphdblite::types::ErrorCode
+pub graphdblite::types::QueryError::ProcedureError::hint: core::option::Option<alloc::string::String>
+pub graphdblite::types::QueryError::ProcedureError::message: alloc::string::String
+pub graphdblite::types::QueryError::ProcedureError::phase: graphdblite::types::QueryPhase
+pub graphdblite::types::QueryError::ProcedureError::span: core::option::Option<graphdblite::types::Span>
+pub graphdblite::types::QueryError::SemanticError
+pub graphdblite::types::QueryError::SemanticError::code: graphdblite::types::ErrorCode
+pub graphdblite::types::QueryError::SemanticError::hint: core::option::Option<alloc::string::String>
+pub graphdblite::types::QueryError::SemanticError::message: alloc::string::String
+pub graphdblite::types::QueryError::SemanticError::phase: graphdblite::types::QueryPhase
+pub graphdblite::types::QueryError::SemanticError::span: core::option::Option<graphdblite::types::Span>
+pub graphdblite::types::QueryError::SyntaxError
+pub graphdblite::types::QueryError::SyntaxError::code: graphdblite::types::ErrorCode
+pub graphdblite::types::QueryError::SyntaxError::hint: core::option::Option<alloc::string::String>
+pub graphdblite::types::QueryError::SyntaxError::message: alloc::string::String
+pub graphdblite::types::QueryError::SyntaxError::phase: graphdblite::types::QueryPhase
+pub graphdblite::types::QueryError::SyntaxError::span: core::option::Option<graphdblite::types::Span>
+pub graphdblite::types::QueryError::TypeError
+pub graphdblite::types::QueryError::TypeError::code: graphdblite::types::ErrorCode
+pub graphdblite::types::QueryError::TypeError::hint: core::option::Option<alloc::string::String>
+pub graphdblite::types::QueryError::TypeError::message: alloc::string::String
+pub graphdblite::types::QueryError::TypeError::phase: graphdblite::types::QueryPhase
+pub graphdblite::types::QueryError::TypeError::span: core::option::Option<graphdblite::types::Span>
+impl graphdblite::types::QueryError
+pub fn graphdblite::types::QueryError::code(&self) -> graphdblite::types::ErrorCode
+pub fn graphdblite::types::QueryError::hint(&self) -> core::option::Option<&str>
+pub fn graphdblite::types::QueryError::kind(&self) -> &'static str
+pub fn graphdblite::types::QueryError::message(&self) -> &str
+pub fn graphdblite::types::QueryError::phase(&self) -> graphdblite::types::QueryPhase
+pub fn graphdblite::types::QueryError::span(&self) -> core::option::Option<graphdblite::types::Span>
+pub fn graphdblite::types::QueryError::with_code(self, new_code: graphdblite::types::ErrorCode) -> Self
+pub fn graphdblite::types::QueryError::with_hint(self, hint: impl core::convert::Into<alloc::string::String>) -> Self
+pub fn graphdblite::types::QueryError::with_span(self, new_span: graphdblite::types::Span) -> Self
+impl core::convert::From<graphdblite::types::QueryError> for graphdblite::types::GraphError
+pub fn graphdblite::types::GraphError::from(error: graphdblite::types::QueryError) -> Self
+impl core::error::Error for graphdblite::types::QueryError
+impl core::fmt::Debug for graphdblite::types::QueryError
+pub fn graphdblite::types::QueryError::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::fmt::Display for graphdblite::types::QueryError
+pub fn graphdblite::types::QueryError::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Freeze for graphdblite::types::QueryError
+impl core::marker::Send for graphdblite::types::QueryError
+impl core::marker::Sync for graphdblite::types::QueryError
+impl core::marker::Unpin for graphdblite::types::QueryError
+impl core::marker::UnsafeUnpin for graphdblite::types::QueryError
+impl core::panic::unwind_safe::RefUnwindSafe for graphdblite::types::QueryError
+impl core::panic::unwind_safe::UnwindSafe for graphdblite::types::QueryError
+pub enum graphdblite::types::QueryPhase
+pub graphdblite::types::QueryPhase::Parse
+pub graphdblite::types::QueryPhase::Runtime
+pub graphdblite::types::QueryPhase::SemanticAnalysis
+impl core::clone::Clone for graphdblite::types::QueryPhase
+pub fn graphdblite::types::QueryPhase::clone(&self) -> graphdblite::types::QueryPhase
+impl core::cmp::Eq for graphdblite::types::QueryPhase
+impl core::cmp::PartialEq for graphdblite::types::QueryPhase
+pub fn graphdblite::types::QueryPhase::eq(&self, other: &graphdblite::types::QueryPhase) -> bool
+impl core::fmt::Debug for graphdblite::types::QueryPhase
+pub fn graphdblite::types::QueryPhase::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::fmt::Display for graphdblite::types::QueryPhase
+pub fn graphdblite::types::QueryPhase::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Copy for graphdblite::types::QueryPhase
+impl core::marker::StructuralPartialEq for graphdblite::types::QueryPhase
+impl core::marker::Freeze for graphdblite::types::QueryPhase
+impl core::marker::Send for graphdblite::types::QueryPhase
+impl core::marker::Sync for graphdblite::types::QueryPhase
+impl core::marker::Unpin for graphdblite::types::QueryPhase
+impl core::marker::UnsafeUnpin for graphdblite::types::QueryPhase
+impl core::panic::unwind_safe::RefUnwindSafe for graphdblite::types::QueryPhase
+impl core::panic::unwind_safe::UnwindSafe for graphdblite::types::QueryPhase
+pub enum graphdblite::types::Value
+pub graphdblite::types::Value::Bool(bool)
+pub graphdblite::types::Value::Date(graphdblite::temporal::CypherDate)
+pub graphdblite::types::Value::DateTime(graphdblite::temporal::CypherDateTime)
+pub graphdblite::types::Value::Duration(graphdblite::temporal::CypherDuration)
+pub graphdblite::types::Value::Edge(graphdblite::types::Edge)
+pub graphdblite::types::Value::F64(f64)
+pub graphdblite::types::Value::I64(i64)
+pub graphdblite::types::Value::List(alloc::vec::Vec<graphdblite::types::Value>)
+pub graphdblite::types::Value::LocalDateTime(graphdblite::temporal::CypherLocalDateTime)
+pub graphdblite::types::Value::LocalTime(graphdblite::temporal::CypherLocalTime)
+pub graphdblite::types::Value::Map(alloc::collections::btree::map::BTreeMap<alloc::string::String, graphdblite::types::Value>)
+pub graphdblite::types::Value::Node(graphdblite::types::Node)
+pub graphdblite::types::Value::Null
+pub graphdblite::types::Value::Path(graphdblite::types::PathValue)
+pub graphdblite::types::Value::String(alloc::string::String)
+pub graphdblite::types::Value::Time(graphdblite::temporal::CypherTime)
+impl core::clone::Clone for graphdblite::types::Value
+pub fn graphdblite::types::Value::clone(&self) -> graphdblite::types::Value
+impl core::cmp::Eq for graphdblite::types::Value
+impl core::cmp::PartialEq for graphdblite::types::Value
+pub fn graphdblite::types::Value::eq(&self, other: &Self) -> bool
+impl core::fmt::Debug for graphdblite::types::Value
+pub fn graphdblite::types::Value::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::fmt::Display for graphdblite::types::Value
+pub fn graphdblite::types::Value::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::hash::Hash for graphdblite::types::Value
+pub fn graphdblite::types::Value::hash<H: core::hash::Hasher>(&self, state: &mut H)
+impl serde_core::ser::Serialize for graphdblite::types::Value
+pub fn graphdblite::types::Value::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for graphdblite::types::Value
+pub fn graphdblite::types::Value::deserialize<__D>(__deserializer: __D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+impl core::marker::Freeze for graphdblite::types::Value
+impl core::marker::Send for graphdblite::types::Value
+impl core::marker::Sync for graphdblite::types::Value
+impl core::marker::Unpin for graphdblite::types::Value
+impl core::marker::UnsafeUnpin for graphdblite::types::Value
+impl core::panic::unwind_safe::RefUnwindSafe for graphdblite::types::Value
+impl core::panic::unwind_safe::UnwindSafe for graphdblite::types::Value
+pub struct graphdblite::types::Edge
+pub graphdblite::types::Edge::dst: graphdblite::types::NodeId
+pub graphdblite::types::Edge::label: alloc::string::String
+pub graphdblite::types::Edge::properties: graphdblite::types::Properties
+pub graphdblite::types::Edge::src: graphdblite::types::NodeId
+impl core::clone::Clone for graphdblite::types::Edge
+pub fn graphdblite::types::Edge::clone(&self) -> graphdblite::types::Edge
+impl core::cmp::PartialEq for graphdblite::types::Edge
+pub fn graphdblite::types::Edge::eq(&self, other: &graphdblite::types::Edge) -> bool
+impl core::fmt::Debug for graphdblite::types::Edge
+pub fn graphdblite::types::Edge::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for graphdblite::types::Edge
+impl serde_core::ser::Serialize for graphdblite::types::Edge
+pub fn graphdblite::types::Edge::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for graphdblite::types::Edge
+pub fn graphdblite::types::Edge::deserialize<__D>(__deserializer: __D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+impl core::marker::Freeze for graphdblite::types::Edge
+impl core::marker::Send for graphdblite::types::Edge
+impl core::marker::Sync for graphdblite::types::Edge
+impl core::marker::Unpin for graphdblite::types::Edge
+impl core::marker::UnsafeUnpin for graphdblite::types::Edge
+impl core::panic::unwind_safe::RefUnwindSafe for graphdblite::types::Edge
+impl core::panic::unwind_safe::UnwindSafe for graphdblite::types::Edge
+pub struct graphdblite::types::Node
+pub graphdblite::types::Node::id: graphdblite::types::NodeId
+pub graphdblite::types::Node::labels: alloc::vec::Vec<alloc::string::String>
+pub graphdblite::types::Node::properties: graphdblite::types::Properties
+impl core::clone::Clone for graphdblite::types::Node
+pub fn graphdblite::types::Node::clone(&self) -> graphdblite::types::Node
+impl core::cmp::PartialEq for graphdblite::types::Node
+pub fn graphdblite::types::Node::eq(&self, other: &graphdblite::types::Node) -> bool
+impl core::fmt::Debug for graphdblite::types::Node
+pub fn graphdblite::types::Node::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for graphdblite::types::Node
+impl serde_core::ser::Serialize for graphdblite::types::Node
+pub fn graphdblite::types::Node::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for graphdblite::types::Node
+pub fn graphdblite::types::Node::deserialize<__D>(__deserializer: __D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+impl core::marker::Freeze for graphdblite::types::Node
+impl core::marker::Send for graphdblite::types::Node
+impl core::marker::Sync for graphdblite::types::Node
+impl core::marker::Unpin for graphdblite::types::Node
+impl core::marker::UnsafeUnpin for graphdblite::types::Node
+impl core::panic::unwind_safe::RefUnwindSafe for graphdblite::types::Node
+impl core::panic::unwind_safe::UnwindSafe for graphdblite::types::Node
+pub struct graphdblite::types::NodeId(pub u64)
+impl graphdblite::types::NodeId
+pub fn graphdblite::types::NodeId::from_be_bytes(bytes: [u8; 8]) -> Self
+pub fn graphdblite::types::NodeId::to_be_bytes(self) -> [u8; 8]
+impl core::clone::Clone for graphdblite::types::NodeId
+pub fn graphdblite::types::NodeId::clone(&self) -> graphdblite::types::NodeId
+impl core::cmp::Eq for graphdblite::types::NodeId
+impl core::cmp::PartialEq for graphdblite::types::NodeId
+pub fn graphdblite::types::NodeId::eq(&self, other: &graphdblite::types::NodeId) -> bool
+impl core::fmt::Debug for graphdblite::types::NodeId
+pub fn graphdblite::types::NodeId::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::fmt::Display for graphdblite::types::NodeId
+pub fn graphdblite::types::NodeId::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::hash::Hash for graphdblite::types::NodeId
+pub fn graphdblite::types::NodeId::hash<__H: core::hash::Hasher>(&self, state: &mut __H)
+impl core::marker::Copy for graphdblite::types::NodeId
+impl core::marker::StructuralPartialEq for graphdblite::types::NodeId
+impl serde_core::ser::Serialize for graphdblite::types::NodeId
+pub fn graphdblite::types::NodeId::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for graphdblite::types::NodeId
+pub fn graphdblite::types::NodeId::deserialize<__D>(__deserializer: __D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+impl core::marker::Freeze for graphdblite::types::NodeId
+impl core::marker::Send for graphdblite::types::NodeId
+impl core::marker::Sync for graphdblite::types::NodeId
+impl core::marker::Unpin for graphdblite::types::NodeId
+impl core::marker::UnsafeUnpin for graphdblite::types::NodeId
+impl core::panic::unwind_safe::RefUnwindSafe for graphdblite::types::NodeId
+impl core::panic::unwind_safe::UnwindSafe for graphdblite::types::NodeId
+pub struct graphdblite::types::PathValue
+pub graphdblite::types::PathValue::edges: alloc::vec::Vec<graphdblite::types::Edge>
+pub graphdblite::types::PathValue::nodes: alloc::vec::Vec<graphdblite::types::Node>
+impl graphdblite::types::PathValue
+pub fn graphdblite::types::PathValue::is_empty(&self) -> bool
+pub fn graphdblite::types::PathValue::len(&self) -> usize
+pub fn graphdblite::types::PathValue::single(node: graphdblite::types::Node) -> Self
+impl core::clone::Clone for graphdblite::types::PathValue
+pub fn graphdblite::types::PathValue::clone(&self) -> graphdblite::types::PathValue
+impl core::cmp::PartialEq for graphdblite::types::PathValue
+pub fn graphdblite::types::PathValue::eq(&self, other: &graphdblite::types::PathValue) -> bool
+impl core::fmt::Debug for graphdblite::types::PathValue
+pub fn graphdblite::types::PathValue::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for graphdblite::types::PathValue
+impl serde_core::ser::Serialize for graphdblite::types::PathValue
+pub fn graphdblite::types::PathValue::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for graphdblite::types::PathValue
+pub fn graphdblite::types::PathValue::deserialize<__D>(__deserializer: __D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+impl core::marker::Freeze for graphdblite::types::PathValue
+impl core::marker::Send for graphdblite::types::PathValue
+impl core::marker::Sync for graphdblite::types::PathValue
+impl core::marker::Unpin for graphdblite::types::PathValue
+impl core::marker::UnsafeUnpin for graphdblite::types::PathValue
+impl core::panic::unwind_safe::RefUnwindSafe for graphdblite::types::PathValue
+impl core::panic::unwind_safe::UnwindSafe for graphdblite::types::PathValue
+pub struct graphdblite::types::Span
+pub graphdblite::types::Span::col: u32
+pub graphdblite::types::Span::end: usize
+pub graphdblite::types::Span::line: u32
+pub graphdblite::types::Span::start: usize
+impl graphdblite::types::Span
+pub fn graphdblite::types::Span::is_synthetic(&self) -> bool
+pub const fn graphdblite::types::Span::synthetic() -> Self
+impl core::clone::Clone for graphdblite::types::Span
+pub fn graphdblite::types::Span::clone(&self) -> graphdblite::types::Span
+impl core::cmp::Eq for graphdblite::types::Span
+impl core::cmp::PartialEq for graphdblite::types::Span
+pub fn graphdblite::types::Span::eq(&self, other: &graphdblite::types::Span) -> bool
+impl core::fmt::Debug for graphdblite::types::Span
+pub fn graphdblite::types::Span::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::fmt::Display for graphdblite::types::Span
+pub fn graphdblite::types::Span::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Copy for graphdblite::types::Span
+impl core::marker::StructuralPartialEq for graphdblite::types::Span
+impl core::marker::Freeze for graphdblite::types::Span
+impl core::marker::Send for graphdblite::types::Span
+impl core::marker::Sync for graphdblite::types::Span
+impl core::marker::Unpin for graphdblite::types::Span
+impl core::marker::UnsafeUnpin for graphdblite::types::Span
+impl core::panic::unwind_safe::RefUnwindSafe for graphdblite::types::Span
+impl core::panic::unwind_safe::UnwindSafe for graphdblite::types::Span
+pub fn graphdblite::types::validate_name(name: &str) -> graphdblite::types::Result<()>
+pub fn graphdblite::types::validate_name_length(name: &str, max_bytes: usize) -> graphdblite::types::Result<()>
+pub fn graphdblite::types::validate_properties(label: &str, properties: &graphdblite::types::Properties, max_name_bytes: usize, max_value_bytes: usize) -> graphdblite::types::Result<()>
+pub type graphdblite::types::Properties = std::collections::hash::map::HashMap<alloc::string::String, graphdblite::types::Value>
+pub type graphdblite::types::Result<T> = core::result::Result<T, graphdblite::types::GraphError>
+pub enum graphdblite::Direction
+pub graphdblite::Direction::Both
+pub graphdblite::Direction::Incoming
+pub graphdblite::Direction::Outgoing
+impl core::clone::Clone for graphdblite::types::Direction
+pub fn graphdblite::types::Direction::clone(&self) -> graphdblite::types::Direction
+impl core::cmp::Eq for graphdblite::types::Direction
+impl core::cmp::PartialEq for graphdblite::types::Direction
+pub fn graphdblite::types::Direction::eq(&self, other: &graphdblite::types::Direction) -> bool
+impl core::fmt::Debug for graphdblite::types::Direction
+pub fn graphdblite::types::Direction::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Copy for graphdblite::types::Direction
+impl core::marker::StructuralPartialEq for graphdblite::types::Direction
+impl core::marker::Freeze for graphdblite::types::Direction
+impl core::marker::Send for graphdblite::types::Direction
+impl core::marker::Sync for graphdblite::types::Direction
+impl core::marker::Unpin for graphdblite::types::Direction
+impl core::marker::UnsafeUnpin for graphdblite::types::Direction
+impl core::panic::unwind_safe::RefUnwindSafe for graphdblite::types::Direction
+impl core::panic::unwind_safe::UnwindSafe for graphdblite::types::Direction
+#[non_exhaustive] pub enum graphdblite::ErrorCode
+pub graphdblite::ErrorCode::AmbiguousAggregationExpression
+pub graphdblite::ErrorCode::CreatingVarLength
+pub graphdblite::ErrorCode::DeleteConnectedNode
+pub graphdblite::ErrorCode::DeletedEntityAccess
+pub graphdblite::ErrorCode::DifferentColumnsInUnion
+pub graphdblite::ErrorCode::InvalidAggregation
+pub graphdblite::ErrorCode::InvalidArgumentPassingMode
+pub graphdblite::ErrorCode::InvalidArgumentType
+pub graphdblite::ErrorCode::InvalidArgumentValue
+pub graphdblite::ErrorCode::InvalidClauseComposition
+pub graphdblite::ErrorCode::InvalidDelete
+pub graphdblite::ErrorCode::InvalidNumberOfArguments
+pub graphdblite::ErrorCode::InvalidPropertyType
+pub graphdblite::ErrorCode::InvalidUnicodeLiteral
+pub graphdblite::ErrorCode::MapElementAccessByNonString
+pub graphdblite::ErrorCode::MergeReadOwnWrites
+pub graphdblite::ErrorCode::MissingParameter
+pub graphdblite::ErrorCode::NegativeIntegerArgument
+pub graphdblite::ErrorCode::NoExpressionAlias
+pub graphdblite::ErrorCode::NoSingleRelationshipType
+pub graphdblite::ErrorCode::NonConstantExpression
+pub graphdblite::ErrorCode::NumberOutOfRange
+pub graphdblite::ErrorCode::Other
+pub graphdblite::ErrorCode::ProcedureNotFound
+pub graphdblite::ErrorCode::RequiresDirectedRelationship
+pub graphdblite::ErrorCode::UndefinedVariable
+pub graphdblite::ErrorCode::UnexpectedSyntax
+pub graphdblite::ErrorCode::UnknownFunction
+pub graphdblite::ErrorCode::VariableAlreadyBound
+pub graphdblite::ErrorCode::VariableTypeConflict
+impl graphdblite::types::ErrorCode
+pub fn graphdblite::types::ErrorCode::as_str(&self) -> &'static str
+impl core::clone::Clone for graphdblite::types::ErrorCode
+pub fn graphdblite::types::ErrorCode::clone(&self) -> graphdblite::types::ErrorCode
+impl core::cmp::Eq for graphdblite::types::ErrorCode
+impl core::cmp::PartialEq for graphdblite::types::ErrorCode
+pub fn graphdblite::types::ErrorCode::eq(&self, other: &graphdblite::types::ErrorCode) -> bool
+impl core::fmt::Debug for graphdblite::types::ErrorCode
+pub fn graphdblite::types::ErrorCode::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::fmt::Display for graphdblite::types::ErrorCode
+pub fn graphdblite::types::ErrorCode::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Copy for graphdblite::types::ErrorCode
+impl core::marker::StructuralPartialEq for graphdblite::types::ErrorCode
+impl core::marker::Freeze for graphdblite::types::ErrorCode
+impl core::marker::Send for graphdblite::types::ErrorCode
+impl core::marker::Sync for graphdblite::types::ErrorCode
+impl core::marker::Unpin for graphdblite::types::ErrorCode
+impl core::marker::UnsafeUnpin for graphdblite::types::ErrorCode
+impl core::panic::unwind_safe::RefUnwindSafe for graphdblite::types::ErrorCode
+impl core::panic::unwind_safe::UnwindSafe for graphdblite::types::ErrorCode
+#[non_exhaustive] pub enum graphdblite::GraphError
+pub graphdblite::GraphError::EdgeNotFound
+pub graphdblite::GraphError::EdgeNotFound::dst: graphdblite::types::NodeId
+pub graphdblite::GraphError::EdgeNotFound::hint: core::option::Option<alloc::string::String>
+pub graphdblite::GraphError::EdgeNotFound::label: alloc::string::String
+pub graphdblite::GraphError::EdgeNotFound::src: graphdblite::types::NodeId
+pub graphdblite::GraphError::HasEdges
+pub graphdblite::GraphError::HasEdges::hint: core::option::Option<alloc::string::String>
+pub graphdblite::GraphError::HasEdges::id: graphdblite::types::NodeId
+pub graphdblite::GraphError::IndexAlreadyExists
+pub graphdblite::GraphError::IndexAlreadyExists::hint: core::option::Option<alloc::string::String>
+pub graphdblite::GraphError::IndexAlreadyExists::label: alloc::string::String
+pub graphdblite::GraphError::IndexAlreadyExists::property: alloc::string::String
+pub graphdblite::GraphError::IndexNotFound
+pub graphdblite::GraphError::IndexNotFound::hint: core::option::Option<alloc::string::String>
+pub graphdblite::GraphError::IndexNotFound::label: alloc::string::String
+pub graphdblite::GraphError::IndexNotFound::property: alloc::string::String
+pub graphdblite::GraphError::InvalidName
+pub graphdblite::GraphError::InvalidName::hint: core::option::Option<alloc::string::String>
+pub graphdblite::GraphError::InvalidName::name: alloc::string::String
+pub graphdblite::GraphError::NodeNotFound
+pub graphdblite::GraphError::NodeNotFound::hint: core::option::Option<alloc::string::String>
+pub graphdblite::GraphError::NodeNotFound::id: graphdblite::types::NodeId
+pub graphdblite::GraphError::Query(graphdblite::types::QueryError)
+pub graphdblite::GraphError::SchemaMismatch
+pub graphdblite::GraphError::SchemaMismatch::found: u64
+pub graphdblite::GraphError::SchemaMismatch::hint: core::option::Option<alloc::string::String>
+pub graphdblite::GraphError::SchemaMismatch::supported: u64
+pub graphdblite::GraphError::Serialization
+pub graphdblite::GraphError::Serialization::context: alloc::string::String
+pub graphdblite::GraphError::Serialization::hint: core::option::Option<alloc::string::String>
+pub graphdblite::GraphError::Serialization::source: alloc::string::String
+pub graphdblite::GraphError::SizeLimit
+pub graphdblite::GraphError::SizeLimit::actual: usize
+pub graphdblite::GraphError::SizeLimit::hint: core::option::Option<alloc::string::String>
+pub graphdblite::GraphError::SizeLimit::limit: usize
+pub graphdblite::GraphError::SizeLimit::what: alloc::string::String
+pub graphdblite::GraphError::Storage
+pub graphdblite::GraphError::Storage::hint: core::option::Option<alloc::string::String>
+pub graphdblite::GraphError::Storage::source: rusqlite::error::Error
+pub graphdblite::GraphError::Transaction
+pub graphdblite::GraphError::Transaction::hint: core::option::Option<alloc::string::String>
+pub graphdblite::GraphError::Transaction::message: alloc::string::String
+impl graphdblite::types::GraphError
+pub fn graphdblite::types::GraphError::argument(phase: graphdblite::types::QueryPhase, message: impl core::convert::Into<alloc::string::String>) -> Self
+pub fn graphdblite::types::GraphError::constraint(message: impl core::convert::Into<alloc::string::String>) -> Self
+pub fn graphdblite::types::GraphError::invalid_argument_type(phase: graphdblite::types::QueryPhase, function: impl core::fmt::Display, got: impl core::fmt::Display) -> Self
+pub fn graphdblite::types::GraphError::invalid_argument_value(phase: graphdblite::types::QueryPhase, function: impl core::fmt::Display, message: impl core::fmt::Display) -> Self
+pub fn graphdblite::types::GraphError::number_out_of_range(phase: graphdblite::types::QueryPhase, message: impl core::convert::Into<alloc::string::String>) -> Self
+pub fn graphdblite::types::GraphError::procedure_not_found(name: impl core::fmt::Display) -> Self
+pub fn graphdblite::types::GraphError::query(phase: graphdblite::types::QueryPhase, code: graphdblite::types::ErrorCode, message: impl core::convert::Into<alloc::string::String>) -> Self
+pub fn graphdblite::types::GraphError::semantic(message: impl core::convert::Into<alloc::string::String>) -> Self
+pub fn graphdblite::types::GraphError::serialization(context: impl core::convert::Into<alloc::string::String>, source: impl core::fmt::Display) -> Self
+pub fn graphdblite::types::GraphError::syntax(message: impl core::convert::Into<alloc::string::String>) -> Self
+pub fn graphdblite::types::GraphError::transaction(message: impl core::convert::Into<alloc::string::String>) -> Self
+pub fn graphdblite::types::GraphError::type_error(phase: graphdblite::types::QueryPhase, message: impl core::convert::Into<alloc::string::String>) -> Self
+pub fn graphdblite::types::GraphError::undefined_variable(name: impl core::fmt::Display) -> Self
+pub fn graphdblite::types::GraphError::with_code(self, code: graphdblite::types::ErrorCode) -> Self
+pub fn graphdblite::types::GraphError::with_hint(self, hint: impl core::convert::Into<alloc::string::String>) -> Self
+pub fn graphdblite::types::GraphError::with_span(self, span: graphdblite::types::Span) -> Self
+impl core::convert::From<graphdblite::types::QueryError> for graphdblite::types::GraphError
+pub fn graphdblite::types::GraphError::from(error: graphdblite::types::QueryError) -> Self
+impl core::convert::From<rusqlite::error::Error> for graphdblite::types::GraphError
+pub fn graphdblite::types::GraphError::from(source: rusqlite::error::Error) -> Self
+impl core::error::Error for graphdblite::types::GraphError
+pub fn graphdblite::types::GraphError::source(&self) -> core::option::Option<&(dyn core::error::Error + 'static)>
+impl core::fmt::Debug for graphdblite::types::GraphError
+pub fn graphdblite::types::GraphError::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::fmt::Display for graphdblite::types::GraphError
+pub fn graphdblite::types::GraphError::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Freeze for graphdblite::types::GraphError
+impl core::marker::Send for graphdblite::types::GraphError
+impl core::marker::Sync for graphdblite::types::GraphError
+impl core::marker::Unpin for graphdblite::types::GraphError
+impl core::marker::UnsafeUnpin for graphdblite::types::GraphError
+impl !core::panic::unwind_safe::RefUnwindSafe for graphdblite::types::GraphError
+impl !core::panic::unwind_safe::UnwindSafe for graphdblite::types::GraphError
+#[non_exhaustive] pub enum graphdblite::QueryError
+pub graphdblite::QueryError::ArgumentError
+pub graphdblite::QueryError::ArgumentError::code: graphdblite::types::ErrorCode
+pub graphdblite::QueryError::ArgumentError::hint: core::option::Option<alloc::string::String>
+pub graphdblite::QueryError::ArgumentError::message: alloc::string::String
+pub graphdblite::QueryError::ArgumentError::phase: graphdblite::types::QueryPhase
+pub graphdblite::QueryError::ArgumentError::span: core::option::Option<graphdblite::types::Span>
+pub graphdblite::QueryError::ArithmeticError
+pub graphdblite::QueryError::ArithmeticError::code: graphdblite::types::ErrorCode
+pub graphdblite::QueryError::ArithmeticError::hint: core::option::Option<alloc::string::String>
+pub graphdblite::QueryError::ArithmeticError::message: alloc::string::String
+pub graphdblite::QueryError::ArithmeticError::phase: graphdblite::types::QueryPhase
+pub graphdblite::QueryError::ArithmeticError::span: core::option::Option<graphdblite::types::Span>
+pub graphdblite::QueryError::ConstraintViolation
+pub graphdblite::QueryError::ConstraintViolation::code: graphdblite::types::ErrorCode
+pub graphdblite::QueryError::ConstraintViolation::hint: core::option::Option<alloc::string::String>
+pub graphdblite::QueryError::ConstraintViolation::message: alloc::string::String
+pub graphdblite::QueryError::ConstraintViolation::phase: graphdblite::types::QueryPhase
+pub graphdblite::QueryError::ConstraintViolation::span: core::option::Option<graphdblite::types::Span>
+pub graphdblite::QueryError::EntityNotFound
+pub graphdblite::QueryError::EntityNotFound::code: graphdblite::types::ErrorCode
+pub graphdblite::QueryError::EntityNotFound::hint: core::option::Option<alloc::string::String>
+pub graphdblite::QueryError::EntityNotFound::message: alloc::string::String
+pub graphdblite::QueryError::EntityNotFound::phase: graphdblite::types::QueryPhase
+pub graphdblite::QueryError::EntityNotFound::span: core::option::Option<graphdblite::types::Span>
+pub graphdblite::QueryError::ProcedureError
+pub graphdblite::QueryError::ProcedureError::code: graphdblite::types::ErrorCode
+pub graphdblite::QueryError::ProcedureError::hint: core::option::Option<alloc::string::String>
+pub graphdblite::QueryError::ProcedureError::message: alloc::string::String
+pub graphdblite::QueryError::ProcedureError::phase: graphdblite::types::QueryPhase
+pub graphdblite::QueryError::ProcedureError::span: core::option::Option<graphdblite::types::Span>
+pub graphdblite::QueryError::SemanticError
+pub graphdblite::QueryError::SemanticError::code: graphdblite::types::ErrorCode
+pub graphdblite::QueryError::SemanticError::hint: core::option::Option<alloc::string::String>
+pub graphdblite::QueryError::SemanticError::message: alloc::string::String
+pub graphdblite::QueryError::SemanticError::phase: graphdblite::types::QueryPhase
+pub graphdblite::QueryError::SemanticError::span: core::option::Option<graphdblite::types::Span>
+pub graphdblite::QueryError::SyntaxError
+pub graphdblite::QueryError::SyntaxError::code: graphdblite::types::ErrorCode
+pub graphdblite::QueryError::SyntaxError::hint: core::option::Option<alloc::string::String>
+pub graphdblite::QueryError::SyntaxError::message: alloc::string::String
+pub graphdblite::QueryError::SyntaxError::phase: graphdblite::types::QueryPhase
+pub graphdblite::QueryError::SyntaxError::span: core::option::Option<graphdblite::types::Span>
+pub graphdblite::QueryError::TypeError
+pub graphdblite::QueryError::TypeError::code: graphdblite::types::ErrorCode
+pub graphdblite::QueryError::TypeError::hint: core::option::Option<alloc::string::String>
+pub graphdblite::QueryError::TypeError::message: alloc::string::String
+pub graphdblite::QueryError::TypeError::phase: graphdblite::types::QueryPhase
+pub graphdblite::QueryError::TypeError::span: core::option::Option<graphdblite::types::Span>
+impl graphdblite::types::QueryError
+pub fn graphdblite::types::QueryError::code(&self) -> graphdblite::types::ErrorCode
+pub fn graphdblite::types::QueryError::hint(&self) -> core::option::Option<&str>
+pub fn graphdblite::types::QueryError::kind(&self) -> &'static str
+pub fn graphdblite::types::QueryError::message(&self) -> &str
+pub fn graphdblite::types::QueryError::phase(&self) -> graphdblite::types::QueryPhase
+pub fn graphdblite::types::QueryError::span(&self) -> core::option::Option<graphdblite::types::Span>
+pub fn graphdblite::types::QueryError::with_code(self, new_code: graphdblite::types::ErrorCode) -> Self
+pub fn graphdblite::types::QueryError::with_hint(self, hint: impl core::convert::Into<alloc::string::String>) -> Self
+pub fn graphdblite::types::QueryError::with_span(self, new_span: graphdblite::types::Span) -> Self
+impl core::convert::From<graphdblite::types::QueryError> for graphdblite::types::GraphError
+pub fn graphdblite::types::GraphError::from(error: graphdblite::types::QueryError) -> Self
+impl core::error::Error for graphdblite::types::QueryError
+impl core::fmt::Debug for graphdblite::types::QueryError
+pub fn graphdblite::types::QueryError::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::fmt::Display for graphdblite::types::QueryError
+pub fn graphdblite::types::QueryError::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Freeze for graphdblite::types::QueryError
+impl core::marker::Send for graphdblite::types::QueryError
+impl core::marker::Sync for graphdblite::types::QueryError
+impl core::marker::Unpin for graphdblite::types::QueryError
+impl core::marker::UnsafeUnpin for graphdblite::types::QueryError
+impl core::panic::unwind_safe::RefUnwindSafe for graphdblite::types::QueryError
+impl core::panic::unwind_safe::UnwindSafe for graphdblite::types::QueryError
+pub enum graphdblite::QueryPhase
+pub graphdblite::QueryPhase::Parse
+pub graphdblite::QueryPhase::Runtime
+pub graphdblite::QueryPhase::SemanticAnalysis
+impl core::clone::Clone for graphdblite::types::QueryPhase
+pub fn graphdblite::types::QueryPhase::clone(&self) -> graphdblite::types::QueryPhase
+impl core::cmp::Eq for graphdblite::types::QueryPhase
+impl core::cmp::PartialEq for graphdblite::types::QueryPhase
+pub fn graphdblite::types::QueryPhase::eq(&self, other: &graphdblite::types::QueryPhase) -> bool
+impl core::fmt::Debug for graphdblite::types::QueryPhase
+pub fn graphdblite::types::QueryPhase::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::fmt::Display for graphdblite::types::QueryPhase
+pub fn graphdblite::types::QueryPhase::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Copy for graphdblite::types::QueryPhase
+impl core::marker::StructuralPartialEq for graphdblite::types::QueryPhase
+impl core::marker::Freeze for graphdblite::types::QueryPhase
+impl core::marker::Send for graphdblite::types::QueryPhase
+impl core::marker::Sync for graphdblite::types::QueryPhase
+impl core::marker::Unpin for graphdblite::types::QueryPhase
+impl core::marker::UnsafeUnpin for graphdblite::types::QueryPhase
+impl core::panic::unwind_safe::RefUnwindSafe for graphdblite::types::QueryPhase
+impl core::panic::unwind_safe::UnwindSafe for graphdblite::types::QueryPhase
+pub enum graphdblite::SyncMode
+pub graphdblite::SyncMode::Extra
+pub graphdblite::SyncMode::Full
+pub graphdblite::SyncMode::Normal
+pub graphdblite::SyncMode::Off
+impl core::clone::Clone for graphdblite::SyncMode
+pub fn graphdblite::SyncMode::clone(&self) -> graphdblite::SyncMode
+impl core::cmp::Eq for graphdblite::SyncMode
+impl core::cmp::PartialEq for graphdblite::SyncMode
+pub fn graphdblite::SyncMode::eq(&self, other: &graphdblite::SyncMode) -> bool
+impl core::fmt::Debug for graphdblite::SyncMode
+pub fn graphdblite::SyncMode::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::fmt::Display for graphdblite::SyncMode
+pub fn graphdblite::SyncMode::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Copy for graphdblite::SyncMode
+impl core::marker::StructuralPartialEq for graphdblite::SyncMode
+impl core::marker::Freeze for graphdblite::SyncMode
+impl core::marker::Send for graphdblite::SyncMode
+impl core::marker::Sync for graphdblite::SyncMode
+impl core::marker::Unpin for graphdblite::SyncMode
+impl core::marker::UnsafeUnpin for graphdblite::SyncMode
+impl core::panic::unwind_safe::RefUnwindSafe for graphdblite::SyncMode
+impl core::panic::unwind_safe::UnwindSafe for graphdblite::SyncMode
+pub enum graphdblite::Value
+pub graphdblite::Value::Bool(bool)
+pub graphdblite::Value::Date(graphdblite::temporal::CypherDate)
+pub graphdblite::Value::DateTime(graphdblite::temporal::CypherDateTime)
+pub graphdblite::Value::Duration(graphdblite::temporal::CypherDuration)
+pub graphdblite::Value::Edge(graphdblite::types::Edge)
+pub graphdblite::Value::F64(f64)
+pub graphdblite::Value::I64(i64)
+pub graphdblite::Value::List(alloc::vec::Vec<graphdblite::types::Value>)
+pub graphdblite::Value::LocalDateTime(graphdblite::temporal::CypherLocalDateTime)
+pub graphdblite::Value::LocalTime(graphdblite::temporal::CypherLocalTime)
+pub graphdblite::Value::Map(alloc::collections::btree::map::BTreeMap<alloc::string::String, graphdblite::types::Value>)
+pub graphdblite::Value::Node(graphdblite::types::Node)
+pub graphdblite::Value::Null
+pub graphdblite::Value::Path(graphdblite::types::PathValue)
+pub graphdblite::Value::String(alloc::string::String)
+pub graphdblite::Value::Time(graphdblite::temporal::CypherTime)
+impl core::clone::Clone for graphdblite::types::Value
+pub fn graphdblite::types::Value::clone(&self) -> graphdblite::types::Value
+impl core::cmp::Eq for graphdblite::types::Value
+impl core::cmp::PartialEq for graphdblite::types::Value
+pub fn graphdblite::types::Value::eq(&self, other: &Self) -> bool
+impl core::fmt::Debug for graphdblite::types::Value
+pub fn graphdblite::types::Value::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::fmt::Display for graphdblite::types::Value
+pub fn graphdblite::types::Value::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::hash::Hash for graphdblite::types::Value
+pub fn graphdblite::types::Value::hash<H: core::hash::Hasher>(&self, state: &mut H)
+impl serde_core::ser::Serialize for graphdblite::types::Value
+pub fn graphdblite::types::Value::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for graphdblite::types::Value
+pub fn graphdblite::types::Value::deserialize<__D>(__deserializer: __D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+impl core::marker::Freeze for graphdblite::types::Value
+impl core::marker::Send for graphdblite::types::Value
+impl core::marker::Sync for graphdblite::types::Value
+impl core::marker::Unpin for graphdblite::types::Value
+impl core::marker::UnsafeUnpin for graphdblite::types::Value
+impl core::panic::unwind_safe::RefUnwindSafe for graphdblite::types::Value
+impl core::panic::unwind_safe::UnwindSafe for graphdblite::types::Value
+pub struct graphdblite::Config
+pub graphdblite::Config::busy_timeout_ms: u32
+pub graphdblite::Config::cache_size: i32
+pub graphdblite::Config::max_name_bytes: usize
+pub graphdblite::Config::max_property_value_bytes: usize
+pub graphdblite::Config::max_result_rows: usize
+pub graphdblite::Config::max_traversal_depth: u32
+pub graphdblite::Config::max_traversal_work: u64
+pub graphdblite::Config::mmap_size: i64
+pub graphdblite::Config::synchronous: graphdblite::SyncMode
+impl core::default::Default for graphdblite::Config
+pub fn graphdblite::Config::default() -> Self
+impl core::marker::Freeze for graphdblite::Config
+impl core::marker::Send for graphdblite::Config
+impl core::marker::Sync for graphdblite::Config
+impl core::marker::Unpin for graphdblite::Config
+impl core::marker::UnsafeUnpin for graphdblite::Config
+impl core::panic::unwind_safe::RefUnwindSafe for graphdblite::Config
+impl core::panic::unwind_safe::UnwindSafe for graphdblite::Config
+pub struct graphdblite::Database
+pub graphdblite::Database::max_name_bytes: usize
+pub graphdblite::Database::max_property_value_bytes: usize
+pub graphdblite::Database::max_result_rows: usize
+pub graphdblite::Database::max_traversal_depth: u32
+pub graphdblite::Database::max_traversal_work: u64
+impl graphdblite::Database
+pub fn graphdblite::Database::begin_read(&mut self) -> graphdblite::types::Result<()>
+pub fn graphdblite::Database::begin_write(&mut self) -> graphdblite::types::Result<()>
+pub fn graphdblite::Database::commit(&mut self) -> graphdblite::types::Result<()>
+pub fn graphdblite::Database::create_index(&mut self, label: &str, property: &str) -> graphdblite::types::Result<()>
+pub fn graphdblite::Database::drop_index(&mut self, label: &str, property: &str) -> graphdblite::types::Result<()>
+pub fn graphdblite::Database::execute(&mut self, cypher: &str) -> graphdblite::types::Result<alloc::vec::Vec<graphdblite::Record>>
+pub fn graphdblite::Database::execute_with_params(&mut self, cypher: &str, params: core::option::Option<&std::collections::hash::map::HashMap<alloc::string::String, graphdblite::types::Value>>) -> graphdblite::types::Result<alloc::vec::Vec<graphdblite::Record>>
+pub fn graphdblite::Database::open<P: core::convert::AsRef<std::path::Path>>(path: P) -> graphdblite::types::Result<Self>
+pub fn graphdblite::Database::open_memory() -> graphdblite::types::Result<Self>
+pub fn graphdblite::Database::open_with_config<P: core::convert::AsRef<std::path::Path>>(path: P, config: graphdblite::Config) -> graphdblite::types::Result<Self>
+pub fn graphdblite::Database::read_tx(&mut self) -> graphdblite::types::Result<graphdblite::ReadTxGuard<'_>>
+pub fn graphdblite::Database::rollback(&mut self) -> graphdblite::types::Result<()>
+pub fn graphdblite::Database::write_tx(&mut self) -> graphdblite::types::Result<graphdblite::WriteTxGuard<'_>>
+impl core::ops::drop::Drop for graphdblite::Database
+pub fn graphdblite::Database::drop(&mut self)
+impl !core::marker::Freeze for graphdblite::Database
+impl core::marker::Send for graphdblite::Database
+impl !core::marker::Sync for graphdblite::Database
+impl core::marker::Unpin for graphdblite::Database
+impl core::marker::UnsafeUnpin for graphdblite::Database
+impl !core::panic::unwind_safe::RefUnwindSafe for graphdblite::Database
+impl !core::panic::unwind_safe::UnwindSafe for graphdblite::Database
+pub struct graphdblite::Edge
+pub graphdblite::Edge::dst: graphdblite::types::NodeId
+pub graphdblite::Edge::label: alloc::string::String
+pub graphdblite::Edge::properties: graphdblite::types::Properties
+pub graphdblite::Edge::src: graphdblite::types::NodeId
+impl core::clone::Clone for graphdblite::types::Edge
+pub fn graphdblite::types::Edge::clone(&self) -> graphdblite::types::Edge
+impl core::cmp::PartialEq for graphdblite::types::Edge
+pub fn graphdblite::types::Edge::eq(&self, other: &graphdblite::types::Edge) -> bool
+impl core::fmt::Debug for graphdblite::types::Edge
+pub fn graphdblite::types::Edge::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for graphdblite::types::Edge
+impl serde_core::ser::Serialize for graphdblite::types::Edge
+pub fn graphdblite::types::Edge::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for graphdblite::types::Edge
+pub fn graphdblite::types::Edge::deserialize<__D>(__deserializer: __D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+impl core::marker::Freeze for graphdblite::types::Edge
+impl core::marker::Send for graphdblite::types::Edge
+impl core::marker::Sync for graphdblite::types::Edge
+impl core::marker::Unpin for graphdblite::types::Edge
+impl core::marker::UnsafeUnpin for graphdblite::types::Edge
+impl core::panic::unwind_safe::RefUnwindSafe for graphdblite::types::Edge
+impl core::panic::unwind_safe::UnwindSafe for graphdblite::types::Edge
+pub struct graphdblite::Node
+pub graphdblite::Node::id: graphdblite::types::NodeId
+pub graphdblite::Node::labels: alloc::vec::Vec<alloc::string::String>
+pub graphdblite::Node::properties: graphdblite::types::Properties
+impl core::clone::Clone for graphdblite::types::Node
+pub fn graphdblite::types::Node::clone(&self) -> graphdblite::types::Node
+impl core::cmp::PartialEq for graphdblite::types::Node
+pub fn graphdblite::types::Node::eq(&self, other: &graphdblite::types::Node) -> bool
+impl core::fmt::Debug for graphdblite::types::Node
+pub fn graphdblite::types::Node::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for graphdblite::types::Node
+impl serde_core::ser::Serialize for graphdblite::types::Node
+pub fn graphdblite::types::Node::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for graphdblite::types::Node
+pub fn graphdblite::types::Node::deserialize<__D>(__deserializer: __D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+impl core::marker::Freeze for graphdblite::types::Node
+impl core::marker::Send for graphdblite::types::Node
+impl core::marker::Sync for graphdblite::types::Node
+impl core::marker::Unpin for graphdblite::types::Node
+impl core::marker::UnsafeUnpin for graphdblite::types::Node
+impl core::panic::unwind_safe::RefUnwindSafe for graphdblite::types::Node
+impl core::panic::unwind_safe::UnwindSafe for graphdblite::types::Node
+pub struct graphdblite::NodeId(pub u64)
+impl graphdblite::types::NodeId
+pub fn graphdblite::types::NodeId::from_be_bytes(bytes: [u8; 8]) -> Self
+pub fn graphdblite::types::NodeId::to_be_bytes(self) -> [u8; 8]
+impl core::clone::Clone for graphdblite::types::NodeId
+pub fn graphdblite::types::NodeId::clone(&self) -> graphdblite::types::NodeId
+impl core::cmp::Eq for graphdblite::types::NodeId
+impl core::cmp::PartialEq for graphdblite::types::NodeId
+pub fn graphdblite::types::NodeId::eq(&self, other: &graphdblite::types::NodeId) -> bool
+impl core::fmt::Debug for graphdblite::types::NodeId
+pub fn graphdblite::types::NodeId::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::fmt::Display for graphdblite::types::NodeId
+pub fn graphdblite::types::NodeId::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::hash::Hash for graphdblite::types::NodeId
+pub fn graphdblite::types::NodeId::hash<__H: core::hash::Hasher>(&self, state: &mut __H)
+impl core::marker::Copy for graphdblite::types::NodeId
+impl core::marker::StructuralPartialEq for graphdblite::types::NodeId
+impl serde_core::ser::Serialize for graphdblite::types::NodeId
+pub fn graphdblite::types::NodeId::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for graphdblite::types::NodeId
+pub fn graphdblite::types::NodeId::deserialize<__D>(__deserializer: __D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+impl core::marker::Freeze for graphdblite::types::NodeId
+impl core::marker::Send for graphdblite::types::NodeId
+impl core::marker::Sync for graphdblite::types::NodeId
+impl core::marker::Unpin for graphdblite::types::NodeId
+impl core::marker::UnsafeUnpin for graphdblite::types::NodeId
+impl core::panic::unwind_safe::RefUnwindSafe for graphdblite::types::NodeId
+impl core::panic::unwind_safe::UnwindSafe for graphdblite::types::NodeId
+pub struct graphdblite::PathValue
+pub graphdblite::PathValue::edges: alloc::vec::Vec<graphdblite::types::Edge>
+pub graphdblite::PathValue::nodes: alloc::vec::Vec<graphdblite::types::Node>
+impl graphdblite::types::PathValue
+pub fn graphdblite::types::PathValue::is_empty(&self) -> bool
+pub fn graphdblite::types::PathValue::len(&self) -> usize
+pub fn graphdblite::types::PathValue::single(node: graphdblite::types::Node) -> Self
+impl core::clone::Clone for graphdblite::types::PathValue
+pub fn graphdblite::types::PathValue::clone(&self) -> graphdblite::types::PathValue
+impl core::cmp::PartialEq for graphdblite::types::PathValue
+pub fn graphdblite::types::PathValue::eq(&self, other: &graphdblite::types::PathValue) -> bool
+impl core::fmt::Debug for graphdblite::types::PathValue
+pub fn graphdblite::types::PathValue::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for graphdblite::types::PathValue
+impl serde_core::ser::Serialize for graphdblite::types::PathValue
+pub fn graphdblite::types::PathValue::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for graphdblite::types::PathValue
+pub fn graphdblite::types::PathValue::deserialize<__D>(__deserializer: __D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+impl core::marker::Freeze for graphdblite::types::PathValue
+impl core::marker::Send for graphdblite::types::PathValue
+impl core::marker::Sync for graphdblite::types::PathValue
+impl core::marker::Unpin for graphdblite::types::PathValue
+impl core::marker::UnsafeUnpin for graphdblite::types::PathValue
+impl core::panic::unwind_safe::RefUnwindSafe for graphdblite::types::PathValue
+impl core::panic::unwind_safe::UnwindSafe for graphdblite::types::PathValue
+pub struct graphdblite::ProcedureRegistry
+impl graphdblite::ProcedureRegistry
+pub fn graphdblite::ProcedureRegistry::get(&self, name: &str) -> core::option::Option<&graphdblite::procedures::Def>
+pub fn graphdblite::ProcedureRegistry::is_empty(&self) -> bool
+pub fn graphdblite::ProcedureRegistry::new() -> Self
+pub fn graphdblite::ProcedureRegistry::register(&mut self, proc_def: graphdblite::procedures::Def)
+impl core::clone::Clone for graphdblite::ProcedureRegistry
+pub fn graphdblite::ProcedureRegistry::clone(&self) -> graphdblite::ProcedureRegistry
+impl core::default::Default for graphdblite::ProcedureRegistry
+pub fn graphdblite::ProcedureRegistry::default() -> graphdblite::ProcedureRegistry
+impl core::fmt::Debug for graphdblite::ProcedureRegistry
+pub fn graphdblite::ProcedureRegistry::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Freeze for graphdblite::ProcedureRegistry
+impl core::marker::Send for graphdblite::ProcedureRegistry
+impl core::marker::Sync for graphdblite::ProcedureRegistry
+impl core::marker::Unpin for graphdblite::ProcedureRegistry
+impl core::marker::UnsafeUnpin for graphdblite::ProcedureRegistry
+impl core::panic::unwind_safe::RefUnwindSafe for graphdblite::ProcedureRegistry
+impl core::panic::unwind_safe::UnwindSafe for graphdblite::ProcedureRegistry
+pub struct graphdblite::ReadTxGuard<'a>
+impl<'a> graphdblite::ReadTxGuard<'a>
+pub fn graphdblite::ReadTxGuard<'a>::commit(self) -> graphdblite::types::Result<()>
+pub fn graphdblite::ReadTxGuard<'a>::rollback(self) -> graphdblite::types::Result<()>
+impl core::ops::drop::Drop for graphdblite::ReadTxGuard<'_>
+pub fn graphdblite::ReadTxGuard<'_>::drop(&mut self)
+impl<'a> core::ops::deref::Deref for graphdblite::ReadTxGuard<'a>
+pub type graphdblite::ReadTxGuard<'a>::Target = graphdblite::transaction::ReadTransaction<'a>
+pub fn graphdblite::ReadTxGuard<'a>::deref(&self) -> &graphdblite::transaction::ReadTransaction<'a>
+impl<'a> core::ops::deref::DerefMut for graphdblite::ReadTxGuard<'a>
+pub fn graphdblite::ReadTxGuard<'a>::deref_mut(&mut self) -> &mut graphdblite::transaction::ReadTransaction<'a>
+impl<'a> core::marker::Freeze for graphdblite::ReadTxGuard<'a>
+impl<'a> !core::marker::Send for graphdblite::ReadTxGuard<'a>
+impl<'a> !core::marker::Sync for graphdblite::ReadTxGuard<'a>
+impl<'a> core::marker::Unpin for graphdblite::ReadTxGuard<'a>
+impl<'a> core::marker::UnsafeUnpin for graphdblite::ReadTxGuard<'a>
+impl<'a> !core::panic::unwind_safe::RefUnwindSafe for graphdblite::ReadTxGuard<'a>
+impl<'a> !core::panic::unwind_safe::UnwindSafe for graphdblite::ReadTxGuard<'a>
+pub struct graphdblite::Record
+pub graphdblite::Record::fields: indexmap::map::IndexMap<alloc::string::String, graphdblite::types::Value>
+impl graphdblite::Record
+pub fn graphdblite::Record::get(&self, key: &str) -> core::option::Option<&graphdblite::types::Value>
+pub fn graphdblite::Record::new() -> Self
+pub fn graphdblite::Record::remove(&mut self, key: &str)
+pub fn graphdblite::Record::set(&mut self, key: alloc::string::String, value: graphdblite::types::Value)
+impl core::clone::Clone for graphdblite::Record
+pub fn graphdblite::Record::clone(&self) -> graphdblite::Record
+impl core::cmp::PartialEq for graphdblite::Record
+pub fn graphdblite::Record::eq(&self, other: &graphdblite::Record) -> bool
+impl core::default::Default for graphdblite::Record
+pub fn graphdblite::Record::default() -> Self
+impl core::fmt::Debug for graphdblite::Record
+pub fn graphdblite::Record::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for graphdblite::Record
+impl core::marker::Freeze for graphdblite::Record
+impl core::marker::Send for graphdblite::Record
+impl core::marker::Sync for graphdblite::Record
+impl core::marker::Unpin for graphdblite::Record
+impl core::marker::UnsafeUnpin for graphdblite::Record
+impl core::panic::unwind_safe::RefUnwindSafe for graphdblite::Record
+impl core::panic::unwind_safe::UnwindSafe for graphdblite::Record
+pub struct graphdblite::Span
+pub graphdblite::Span::col: u32
+pub graphdblite::Span::end: usize
+pub graphdblite::Span::line: u32
+pub graphdblite::Span::start: usize
+impl graphdblite::types::Span
+pub fn graphdblite::types::Span::is_synthetic(&self) -> bool
+pub const fn graphdblite::types::Span::synthetic() -> Self
+impl core::clone::Clone for graphdblite::types::Span
+pub fn graphdblite::types::Span::clone(&self) -> graphdblite::types::Span
+impl core::cmp::Eq for graphdblite::types::Span
+impl core::cmp::PartialEq for graphdblite::types::Span
+pub fn graphdblite::types::Span::eq(&self, other: &graphdblite::types::Span) -> bool
+impl core::fmt::Debug for graphdblite::types::Span
+pub fn graphdblite::types::Span::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::fmt::Display for graphdblite::types::Span
+pub fn graphdblite::types::Span::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Copy for graphdblite::types::Span
+impl core::marker::StructuralPartialEq for graphdblite::types::Span
+impl core::marker::Freeze for graphdblite::types::Span
+impl core::marker::Send for graphdblite::types::Span
+impl core::marker::Sync for graphdblite::types::Span
+impl core::marker::Unpin for graphdblite::types::Span
+impl core::marker::UnsafeUnpin for graphdblite::types::Span
+impl core::panic::unwind_safe::RefUnwindSafe for graphdblite::types::Span
+impl core::panic::unwind_safe::UnwindSafe for graphdblite::types::Span
+pub struct graphdblite::WriteTxGuard<'a>
+impl<'a> graphdblite::WriteTxGuard<'a>
+pub fn graphdblite::WriteTxGuard<'a>::commit(self) -> graphdblite::types::Result<()>
+pub fn graphdblite::WriteTxGuard<'a>::rollback(self) -> graphdblite::types::Result<()>
+impl core::ops::drop::Drop for graphdblite::WriteTxGuard<'_>
+pub fn graphdblite::WriteTxGuard<'_>::drop(&mut self)
+impl<'a> core::ops::deref::Deref for graphdblite::WriteTxGuard<'a>
+pub type graphdblite::WriteTxGuard<'a>::Target = graphdblite::transaction::WriteTransaction<'a>
+pub fn graphdblite::WriteTxGuard<'a>::deref(&self) -> &graphdblite::transaction::WriteTransaction<'a>
+impl<'a> core::ops::deref::DerefMut for graphdblite::WriteTxGuard<'a>
+pub fn graphdblite::WriteTxGuard<'a>::deref_mut(&mut self) -> &mut graphdblite::transaction::WriteTransaction<'a>
+impl<'a> core::marker::Freeze for graphdblite::WriteTxGuard<'a>
+impl<'a> !core::marker::Send for graphdblite::WriteTxGuard<'a>
+impl<'a> !core::marker::Sync for graphdblite::WriteTxGuard<'a>
+impl<'a> core::marker::Unpin for graphdblite::WriteTxGuard<'a>
+impl<'a> core::marker::UnsafeUnpin for graphdblite::WriteTxGuard<'a>
+impl<'a> !core::panic::unwind_safe::RefUnwindSafe for graphdblite::WriteTxGuard<'a>
+impl<'a> !core::panic::unwind_safe::UnwindSafe for graphdblite::WriteTxGuard<'a>
+pub type graphdblite::Properties = std::collections::hash::map::HashMap<alloc::string::String, graphdblite::types::Value>

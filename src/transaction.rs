@@ -8,7 +8,7 @@ use crate::types::{
 
 /// Shared read operations — implemented identically on both transaction types.
 macro_rules! impl_read_ops {
-    ($ty:ident) => {
+    ($ty:ident, $read_only:expr) => {
         impl<'a> $ty<'a> {
             /// Get a node by ID.
             pub fn get_node(&self, id: NodeId) -> Result<Node> {
@@ -98,6 +98,7 @@ macro_rules! impl_read_ops {
                     max_result_rows: self.max_result_rows,
                     max_traversal_depth: self.max_traversal_depth,
                     max_traversal_work: self.max_traversal_work,
+                    require_read_only: $read_only,
                     ..Default::default()
                 };
                 execute_cypher(&self.tx, cypher, params, ctx)
@@ -115,6 +116,7 @@ macro_rules! impl_read_ops {
                     max_traversal_depth: self.max_traversal_depth,
                     max_traversal_work: self.max_traversal_work,
                     procedures: procedures.clone(),
+                    require_read_only: $read_only,
                 };
                 execute_cypher(&self.tx, cypher, params, ctx)
             }
@@ -163,7 +165,7 @@ impl<'a> ReadTransaction<'a> {
     }
 }
 
-impl_read_ops!(ReadTransaction);
+impl_read_ops!(ReadTransaction, true);
 
 /// A read-write transaction. Acquires the write lock via BEGIN IMMEDIATE.
 ///
@@ -340,7 +342,7 @@ impl<'a> WriteTransaction<'a> {
     }
 }
 
-impl_read_ops!(WriteTransaction);
+impl_read_ops!(WriteTransaction, false);
 
 // ----------------------------------------------------------------------------
 // WriteTxGuard / ReadTxGuard — RAII wrappers that auto-roll-back on drop.

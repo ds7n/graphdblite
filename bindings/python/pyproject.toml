@@ -11,3 +11,9 @@ requires-python = ">=3.9"
 [tool.maturin]
 module-name = "graphdblite._graphdblite"
 python-source = "python"
+
+[dependency-groups]
+dev = ["pytest>=8"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

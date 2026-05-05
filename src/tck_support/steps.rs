@@ -188,12 +188,16 @@ fn when_executing_query(world: &mut World, step: &Step) {
     };
 
     // Decide tx mode: if the query looks like a write, open a write tx.
+    // Keep this list aligned with `is_read_only` in the executor — anything
+    // that produces a write op there must be detected here, otherwise the
+    // core's read-only enforcement will reject the query in a read tx.
     let is_write = {
         let upper = query.to_uppercase();
         upper.contains("CREATE")
             || upper.contains("DELETE")
             || upper.contains("SET ")
             || upper.contains("MERGE")
+            || upper.contains("REMOVE")
     };
 
     if is_write {

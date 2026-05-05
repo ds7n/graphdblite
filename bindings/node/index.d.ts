@@ -15,21 +15,29 @@ export declare class Database {
   query(cypher: string): Array<object>
   /** Execute a write Cypher query (CREATE, DELETE, SET, MERGE). Returns an array of objects. */
   execute(cypher: string): Array<object>
+  /**
+   * Begin a read-write transaction. Pair with `commit()` or `rollback()`.
+   * On Node 22+ the returned object is also `Symbol.dispose`-friendly via
+   * the `using` syntax (rolls back on scope exit).
+   */
+  beginWrite(): WriteTransaction
+  /** Begin a read transaction. Pair with `commit()`. */
+  beginRead(): ReadTransaction
   /** Close the database connection. */
   close(): void
 }
-/** A read-write transaction. Created via Database.beginWrite(). */
+/** A read-write transaction. Created via `Database.beginWrite()`. */
 export declare class WriteTransaction {
   /** Execute a Cypher query within this transaction. */
   execute(cypher: string): Array<object>
-  /** Execute a read-only Cypher query within this transaction. */
+  /** Execute a Cypher query within this transaction (alias for `execute`). */
   query(cypher: string): Array<object>
   /** Commit the transaction. */
   commit(): void
   /** Rollback the transaction. */
   rollback(): void
 }
-/** A read-only transaction. Created via Database.beginRead(). */
+/** A read-only transaction. Created via `Database.beginRead()`. */
 export declare class ReadTransaction {
   /** Execute a read-only Cypher query within this transaction. */
   query(cypher: string): Array<object>

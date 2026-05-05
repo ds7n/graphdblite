@@ -508,7 +508,9 @@ mod stateful_tx_tests {
         let mut db = Database::open_memory().unwrap();
         db.execute("CREATE (:Person {name: 'Alice'})").unwrap();
         // Persistence: a fresh read sees the row.
-        let rows = db.execute("MATCH (n:Person) RETURN n.name AS name").unwrap();
+        let rows = db
+            .execute("MATCH (n:Person) RETURN n.name AS name")
+            .unwrap();
         assert_eq!(rows.len(), 1);
         assert_eq!(
             rows[0].get("name"),

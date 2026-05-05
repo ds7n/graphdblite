@@ -3937,10 +3937,8 @@ fn large_duration_between() {
 fn set_relationship_properties_replace() {
     let mut db = Database::open_memory().unwrap();
     let tx = db.write_tx().unwrap();
-    tx.query(
-        "CREATE (a:P {name: 'A'})-[:KNOWS {since: 2020, weight: 0.5}]->(b:P {name: 'B'})",
-    )
-    .unwrap();
+    tx.query("CREATE (a:P {name: 'A'})-[:KNOWS {since: 2020, weight: 0.5}]->(b:P {name: 'B'})")
+        .unwrap();
     tx.query("MATCH ()-[r:KNOWS]->() SET r = {since: 2024, source: 'doc'}")
         .unwrap();
     let rows = tx
@@ -3949,7 +3947,10 @@ fn set_relationship_properties_replace() {
     assert_eq!(rows.len(), 1);
     assert_eq!(rows[0].get("since"), Some(&Value::I64(2024)));
     assert_eq!(rows[0].get("weight"), Some(&Value::Null));
-    assert_eq!(rows[0].get("source"), Some(&Value::String("doc".to_string())));
+    assert_eq!(
+        rows[0].get("source"),
+        Some(&Value::String("doc".to_string()))
+    );
     tx.commit().unwrap();
 }
 
@@ -3957,10 +3958,8 @@ fn set_relationship_properties_replace() {
 fn set_relationship_properties_merge() {
     let mut db = Database::open_memory().unwrap();
     let tx = db.write_tx().unwrap();
-    tx.query(
-        "CREATE (a:P {name: 'A'})-[:KNOWS {since: 2020, weight: 0.5}]->(b:P {name: 'B'})",
-    )
-    .unwrap();
+    tx.query("CREATE (a:P {name: 'A'})-[:KNOWS {since: 2020, weight: 0.5}]->(b:P {name: 'B'})")
+        .unwrap();
     tx.query("MATCH ()-[r:KNOWS]->() SET r += {weight: null, source: 'doc'}")
         .unwrap();
     let rows = tx
@@ -3969,7 +3968,10 @@ fn set_relationship_properties_merge() {
     assert_eq!(rows.len(), 1);
     assert_eq!(rows[0].get("since"), Some(&Value::I64(2020)));
     assert_eq!(rows[0].get("weight"), Some(&Value::Null));
-    assert_eq!(rows[0].get("source"), Some(&Value::String("doc".to_string())));
+    assert_eq!(
+        rows[0].get("source"),
+        Some(&Value::String("doc".to_string()))
+    );
     tx.commit().unwrap();
 }
 

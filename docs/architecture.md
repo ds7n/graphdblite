@@ -25,8 +25,8 @@ Cypher query string
        │
        ▼
 ┌─────────────┐
-│ Executor    │  Volcano pull-based iterator model
-│             │  Each operator: fn next() → Option<Record>
+│ Executor    │  Pull-based RecordIter for read-only plans (iter.rs)
+│             │  Materialized push (Vec<Record>) for writes and correlated ops
 └──────┬──────┘
        │
        ▼

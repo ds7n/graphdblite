@@ -23,6 +23,7 @@
   },
   "scripts": {
     "build": "napi build --platform --release",
-    "build-debug": "napi build --platform"
+    "build-debug": "napi build --platform",
+    "test": "node --test test/conformance.test.mjs"
   }
 }

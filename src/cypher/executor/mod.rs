@@ -31,6 +31,11 @@ pub struct ExecContext {
     pub max_traversal_work: u64,
     /// Test procedure registry for CALL statements.
     pub procedures: ProcedureRegistry,
+    /// When true, reject any plan that contains write operators. Set by
+    /// `Database::execute_with_params` and the typed `ReadTransaction::query`
+    /// so write Cypher inside a read-only transaction fails fast instead of
+    /// silently upgrading the SQLite lock.
+    pub require_read_only: bool,
 }
 
 impl Default for ExecContext {
@@ -40,6 +45,7 @@ impl Default for ExecContext {
             max_traversal_depth: 0,
             max_traversal_work: 10_000_000,
             procedures: ProcedureRegistry::default(),
+            require_read_only: false,
         }
     }
 }
@@ -201,7 +207,7 @@ pub fn execute_with_ctx(
 }
 
 /// Check whether a plan tree contains only read-only operators.
-fn is_read_only(plan: &LogicalOp) -> bool {
+pub(crate) fn is_read_only(plan: &LogicalOp) -> bool {
     match plan {
         LogicalOp::Scan { .. }
         | LogicalOp::IndexLookup { .. }

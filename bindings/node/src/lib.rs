@@ -3,8 +3,23 @@
 use napi::bindgen_prelude::*;
 use napi::{NapiRaw, NapiValue};
 use napi_derive::napi;
+use std::sync::{Arc, Mutex};
 
 use graphdblite::{Config, Database as RustDatabase, GraphError, Record, Value};
+
+/// Shared inner state — `None` once `Database.close()` runs. Wrapped in
+/// `Arc<Mutex<>>` so the `Database` JS object and any active
+/// `WriteTransaction` / `ReadTransaction` operate on the same underlying
+/// `RustDatabase` without ownership transfer.
+type SharedDb = Arc<Mutex<Option<RustDatabase>>>;
+
+fn closed_err() -> napi::Error {
+    napi::Error::from_reason("database is closed")
+}
+
+fn finished_err() -> napi::Error {
+    napi::Error::from_reason("transaction is finished")
+}
 
 fn to_napi_err(e: GraphError) -> napi::Error {
     napi::Error::from_reason(e.to_string())
@@ -88,7 +103,15 @@ fn records_to_napi(env: &Env, records: &[Record]) -> Result<Vec<napi::JsObject>>
 /// An embedded graph database with Cypher query support.
 #[napi]
 pub struct Database {
-    inner: Option<RustDatabase>,
+    inner: SharedDb,
+}
+
+impl Database {
+    fn new_inner(db: RustDatabase) -> Self {
+        Self {
+            inner: Arc::new(Mutex::new(Some(db))),
+        }
+    }
 }
 
 #[napi]
@@ -97,7 +120,7 @@ impl Database {
     #[napi(constructor)]
     pub fn new(path: String) -> Result<Self> {
         let db = RustDatabase::open(&path).map_err(to_napi_err)?;
-        Ok(Self { inner: Some(db) })
+        Ok(Self::new_inner(db))
     }
 
     /// Open a database with a custom busy timeout (milliseconds).
@@ -108,23 +131,21 @@ impl Database {
             ..Config::default()
         };
         let db = RustDatabase::open_with_config(&path, config).map_err(to_napi_err)?;
-        Ok(Self { inner: Some(db) })
+        Ok(Self::new_inner(db))
     }
 
     /// Open an in-memory database (for testing).
     #[napi(factory)]
     pub fn open_memory() -> Result<Self> {
         let db = RustDatabase::open_memory().map_err(to_napi_err)?;
-        Ok(Self { inner: Some(db) })
+        Ok(Self::new_inner(db))
     }
 
     /// Execute a read-only Cypher query. Returns an array of objects.
     #[napi]
-    pub fn query(&mut self, env: Env, cypher: String) -> Result<Vec<napi::JsObject>> {
-        let db = self
-            .inner
-            .as_mut()
-            .ok_or_else(|| napi::Error::from_reason("database is closed"))?;
+    pub fn query(&self, env: Env, cypher: String) -> Result<Vec<napi::JsObject>> {
+        let mut guard = self.inner.lock().expect("Database mutex poisoned");
+        let db = guard.as_mut().ok_or_else(closed_err)?;
         let tx = db.read_tx().map_err(to_napi_err)?;
         let records = tx.query(&cypher).map_err(to_napi_err)?;
         tx.commit().map_err(to_napi_err)?;
@@ -133,28 +154,55 @@ impl Database {
 
     /// Execute a write Cypher query (CREATE, DELETE, SET, MERGE). Returns an array of objects.
     #[napi]
-    pub fn execute(&mut self, env: Env, cypher: String) -> Result<Vec<napi::JsObject>> {
-        let db = self
-            .inner
-            .as_mut()
-            .ok_or_else(|| napi::Error::from_reason("database is closed"))?;
+    pub fn execute(&self, env: Env, cypher: String) -> Result<Vec<napi::JsObject>> {
+        let mut guard = self.inner.lock().expect("Database mutex poisoned");
+        let db = guard.as_mut().ok_or_else(closed_err)?;
         let tx = db.write_tx().map_err(to_napi_err)?;
         let records = tx.query(&cypher).map_err(to_napi_err)?;
         tx.commit().map_err(to_napi_err)?;
         records_to_napi(&env, &records)
     }
 
+    /// Begin a read-write transaction. Pair with `commit()` or `rollback()`.
+    /// On Node 22+ the returned object is also `Symbol.dispose`-friendly via
+    /// the `using` syntax (rolls back on scope exit).
+    #[napi]
+    pub fn begin_write(&self) -> Result<WriteTransaction> {
+        let mut guard = self.inner.lock().expect("Database mutex poisoned");
+        let db = guard.as_mut().ok_or_else(closed_err)?;
+        db.begin_write().map_err(to_napi_err)?;
+        Ok(WriteTransaction {
+            inner: Arc::clone(&self.inner),
+            finished: false,
+        })
+    }
+
+    /// Begin a read transaction. Pair with `commit()`.
+    #[napi]
+    pub fn begin_read(&self) -> Result<ReadTransaction> {
+        let mut guard = self.inner.lock().expect("Database mutex poisoned");
+        let db = guard.as_mut().ok_or_else(closed_err)?;
+        db.begin_read().map_err(to_napi_err)?;
+        Ok(ReadTransaction {
+            inner: Arc::clone(&self.inner),
+            finished: false,
+        })
+    }
+
     /// Close the database connection.
     #[napi]
-    pub fn close(&mut self) {
-        self.inner.take();
+    pub fn close(&self) {
+        if let Ok(mut guard) = self.inner.lock() {
+            *guard = None;
+        }
     }
 }
 
-/// A read-write transaction. Created via Database.beginWrite().
+/// A read-write transaction. Created via `Database.beginWrite()`.
 #[napi]
 pub struct WriteTransaction {
-    db: Option<RustDatabase>,
+    inner: SharedDb,
+    finished: bool,
 }
 
 #[napi]
@@ -162,15 +210,16 @@ impl WriteTransaction {
     /// Execute a Cypher query within this transaction.
     #[napi]
     pub fn execute(&mut self, env: Env, cypher: String) -> Result<Vec<napi::JsObject>> {
-        let db = self
-            .db
-            .as_mut()
-            .ok_or_else(|| napi::Error::from_reason("transaction is finished"))?;
+        if self.finished {
+            return Err(finished_err());
+        }
+        let mut guard = self.inner.lock().expect("Database mutex poisoned");
+        let db = guard.as_mut().ok_or_else(closed_err)?;
         let records = db.execute(&cypher).map_err(to_napi_err)?;
         records_to_napi(&env, &records)
     }
 
-    /// Execute a read-only Cypher query within this transaction.
+    /// Execute a Cypher query within this transaction (alias for `execute`).
     #[napi]
     pub fn query(&mut self, env: Env, cypher: String) -> Result<Vec<napi::JsObject>> {
         self.execute(env, cypher)
@@ -179,32 +228,47 @@ impl WriteTransaction {
     /// Commit the transaction.
     #[napi]
     pub fn commit(&mut self) -> Result<()> {
-        let db = self
-            .db
-            .as_mut()
-            .ok_or_else(|| napi::Error::from_reason("transaction is finished"))?;
+        if self.finished {
+            return Err(finished_err());
+        }
+        let mut guard = self.inner.lock().expect("Database mutex poisoned");
+        let db = guard.as_mut().ok_or_else(closed_err)?;
         db.commit().map_err(to_napi_err)?;
-        self.db = None;
+        self.finished = true;
         Ok(())
     }
 
     /// Rollback the transaction.
     #[napi]
     pub fn rollback(&mut self) -> Result<()> {
-        let db = self
-            .db
-            .as_mut()
-            .ok_or_else(|| napi::Error::from_reason("transaction is finished"))?;
-        let _ = db.rollback();
-        self.db = None;
+        if self.finished {
+            return Err(finished_err());
+        }
+        let mut guard = self.inner.lock().expect("Database mutex poisoned");
+        let db = guard.as_mut().ok_or_else(closed_err)?;
+        db.rollback().map_err(to_napi_err)?;
+        self.finished = true;
         Ok(())
     }
 }
 
-/// A read-only transaction. Created via Database.beginRead().
+impl Drop for WriteTransaction {
+    fn drop(&mut self) {
+        if !self.finished {
+            if let Ok(mut guard) = self.inner.lock() {
+                if let Some(db) = guard.as_mut() {
+                    let _ = db.rollback();
+                }
+            }
+        }
+    }
+}
+
+/// A read-only transaction. Created via `Database.beginRead()`.
 #[napi]
 pub struct ReadTransaction {
-    db: Option<RustDatabase>,
+    inner: SharedDb,
+    finished: bool,
 }
 
 #[napi]
@@ -212,10 +276,11 @@ impl ReadTransaction {
     /// Execute a read-only Cypher query within this transaction.
     #[napi]
     pub fn query(&mut self, env: Env, cypher: String) -> Result<Vec<napi::JsObject>> {
-        let db = self
-            .db
-            .as_mut()
-            .ok_or_else(|| napi::Error::from_reason("transaction is finished"))?;
+        if self.finished {
+            return Err(finished_err());
+        }
+        let mut guard = self.inner.lock().expect("Database mutex poisoned");
+        let db = guard.as_mut().ok_or_else(closed_err)?;
         let records = db.execute(&cypher).map_err(to_napi_err)?;
         records_to_napi(&env, &records)
     }
@@ -223,12 +288,25 @@ impl ReadTransaction {
     /// Commit (release) the read transaction.
     #[napi]
     pub fn commit(&mut self) -> Result<()> {
-        let db = self
-            .db
-            .as_mut()
-            .ok_or_else(|| napi::Error::from_reason("transaction is finished"))?;
+        if self.finished {
+            return Err(finished_err());
+        }
+        let mut guard = self.inner.lock().expect("Database mutex poisoned");
+        let db = guard.as_mut().ok_or_else(closed_err)?;
         db.commit().map_err(to_napi_err)?;
-        self.db = None;
+        self.finished = true;
         Ok(())
+    }
+}
+
+impl Drop for ReadTransaction {
+    fn drop(&mut self) {
+        if !self.finished {
+            if let Ok(mut guard) = self.inner.lock() {
+                if let Some(db) = guard.as_mut() {
+                    let _ = db.rollback();
+                }
+            }
+        }
     }
 }

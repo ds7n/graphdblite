@@ -1,0 +1,296 @@
+/* Binding conformance harness — see ../../docs/BINDING_CONFORMANCE.md.
+ *
+ * Each scenario lives in its own static function named bc_NN_*. Failures
+ * print the [BC-NN] tag so the failing checklist row is obvious. The
+ * program exits 0 only when every scenario passes.
+ */
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <unistd.h>
+#include <sys/stat.h>
+
+#include "../graphdblite.h"
+
+/* Each bc_* function returns 0 on pass, 1 on fail. main() aggregates. */
+typedef int (*scenario_fn)(const char *tmpdir);
+
+static int fail(const char *tag, const char *msg) {
+    fprintf(stderr, "[%s] FAIL: %s", tag, msg);
+    const char *err = graphdb_last_error();
+    if (err) fprintf(stderr, " (last error: %s)", err);
+    fprintf(stderr, "\n");
+    return 1;
+}
+
+static int pass(const char *tag) {
+    fprintf(stdout, "[%s] PASS\n", tag);
+    return 0;
+}
+
+/* Open a fresh DB at <tmpdir>/<name>. Caller must close. */
+static GraphDB *fresh_db(const char *tmpdir, const char *name) {
+    char path[1024];
+    snprintf(path, sizeof(path), "%s/%s", tmpdir, name);
+    /* Best-effort cleanup of any prior file from a crashed run. */
+    unlink(path);
+    GraphDB *db = NULL;
+    if (graphdb_open(path, &db) != 0 || db == NULL) {
+        fprintf(stderr, "fresh_db(%s) failed: %s\n", path, graphdb_last_error());
+        return NULL;
+    }
+    return db;
+}
+
+/* Run a query; return the i64 value at (0,0) or -1 on error. */
+static long long count_persons(GraphDB *db) {
+    GraphResult *res = NULL;
+    if (graphdb_query(db, "MATCH (n:Person) RETURN count(n) AS c", &res) != 0) {
+        return -1;
+    }
+    long long n = graphdb_result_value_i64(res, 0, 0);
+    graphdb_result_free(res);
+    return n;
+}
+
+/* ----------------------------------------------------------------------- */
+/* BC-01 — explicit rollback discards writes                                */
+/* ----------------------------------------------------------------------- */
+static int bc_01_explicit_rollback(const char *tmpdir) {
+    const char *tag = "BC-01";
+    GraphDB *db = fresh_db(tmpdir, "bc01.sqlite");
+    if (!db) return fail(tag, "open");
+    int rc = 1;
+    GraphResult *res = NULL;
+    if (graphdb_tx_begin_write(db) != 0) { rc = fail(tag, "begin_write"); goto out; }
+    if (graphdb_tx_execute(db, "CREATE (n:Person {name: 'Alice'})", &res) != 0) {
+        rc = fail(tag, "tx_execute"); goto out;
+    }
+    graphdb_result_free(res); res = NULL;
+    if (graphdb_tx_rollback(db) != 0) { rc = fail(tag, "rollback"); goto out; }
+    if (count_persons(db) != 0) { rc = fail(tag, "data leaked through rollback"); goto out; }
+    rc = pass(tag);
+out:
+    if (res) graphdb_result_free(res);
+    graphdb_close(db);
+    return rc;
+}
+
+/* ----------------------------------------------------------------------- */
+/* BC-02 — commit persists writes                                          */
+/* ----------------------------------------------------------------------- */
+static int bc_02_commit_persists(const char *tmpdir) {
+    const char *tag = "BC-02";
+    GraphDB *db = fresh_db(tmpdir, "bc02.sqlite");
+    if (!db) return fail(tag, "open");
+    int rc = 1;
+    GraphResult *res = NULL;
+    if (graphdb_tx_begin_write(db) != 0) { rc = fail(tag, "begin_write"); goto out; }
+    if (graphdb_tx_execute(db, "CREATE (n:Person {name: 'Alice'})", &res) != 0) {
+        rc = fail(tag, "tx_execute"); goto out;
+    }
+    graphdb_result_free(res); res = NULL;
+    if (graphdb_tx_commit(db) != 0) { rc = fail(tag, "commit"); goto out; }
+    if (count_persons(db) != 1) { rc = fail(tag, "commit did not persist"); goto out; }
+    rc = pass(tag);
+out:
+    if (res) graphdb_result_free(res);
+    graphdb_close(db);
+    return rc;
+}
+
+/* ----------------------------------------------------------------------- */
+/* BC-04 — nested begin returns an error                                   */
+/* ----------------------------------------------------------------------- */
+static int bc_04_nested_begin(const char *tmpdir) {
+    const char *tag = "BC-04";
+    GraphDB *db = fresh_db(tmpdir, "bc04.sqlite");
+    if (!db) return fail(tag, "open");
+    int rc = 1;
+    GraphResult *res = NULL;
+    if (graphdb_tx_begin_write(db) != 0) { rc = fail(tag, "begin_write"); goto out; }
+    if (graphdb_tx_begin_write(db) == 0) { rc = fail(tag, "nested begin_write succeeded"); goto out; }
+    if (graphdb_tx_begin_read(db) == 0)  { rc = fail(tag, "nested begin_read succeeded");  goto out; }
+    /* First tx still usable */
+    if (graphdb_tx_execute(db, "CREATE (n:Person {name: 'Alice'})", &res) != 0) {
+        rc = fail(tag, "first tx Execute"); goto out;
+    }
+    graphdb_result_free(res); res = NULL;
+    if (graphdb_tx_commit(db) != 0) { rc = fail(tag, "commit"); goto out; }
+    if (count_persons(db) != 1) { rc = fail(tag, "first-tx writes lost"); goto out; }
+    rc = pass(tag);
+out:
+    if (res) graphdb_result_free(res);
+    graphdb_close(db);
+    return rc;
+}
+
+/* ----------------------------------------------------------------------- */
+/* BC-05 — write inside a read transaction returns an error                 */
+/* ----------------------------------------------------------------------- */
+static int bc_05_write_in_read_tx(const char *tmpdir) {
+    const char *tag = "BC-05";
+    GraphDB *db = fresh_db(tmpdir, "bc05.sqlite");
+    if (!db) return fail(tag, "open");
+    int rc = 1;
+    GraphResult *res = NULL;
+    if (graphdb_tx_begin_read(db) != 0) { rc = fail(tag, "begin_read"); goto out; }
+    if (graphdb_tx_execute(db, "CREATE (n:Person {name: 'Alice'})", &res) == 0) {
+        rc = fail(tag, "write inside read tx was not rejected");
+        goto out;
+    }
+    rc = pass(tag);
+out:
+    if (res) graphdb_result_free(res);
+    graphdb_tx_rollback(db);
+    graphdb_close(db);
+    return rc;
+}
+
+/* ----------------------------------------------------------------------- */
+/* BC-06 — commit/rollback without an active txn returns an error          */
+/* ----------------------------------------------------------------------- */
+static int bc_06_commit_without_tx(const char *tmpdir) {
+    const char *tag = "BC-06";
+    GraphDB *db = fresh_db(tmpdir, "bc06.sqlite");
+    if (!db) return fail(tag, "open");
+    int rc = 1;
+    if (graphdb_tx_commit(db) == 0) { rc = fail(tag, "commit-with-no-tx succeeded"); goto out; }
+    if (graphdb_tx_rollback(db) == 0) { rc = fail(tag, "rollback-with-no-tx succeeded"); goto out; }
+    if (graphdb_tx_begin_write(db) != 0) { rc = fail(tag, "begin_write"); goto out; }
+    if (graphdb_tx_commit(db) != 0) { rc = fail(tag, "commit"); goto out; }
+    if (graphdb_tx_commit(db) == 0) { rc = fail(tag, "double-commit succeeded"); goto out; }
+    rc = pass(tag);
+out:
+    graphdb_close(db);
+    return rc;
+}
+
+/* ----------------------------------------------------------------------- */
+/* BC-07 — operations after the txn finishes return an error                */
+/* ----------------------------------------------------------------------- */
+static int bc_07_use_after_commit(const char *tmpdir) {
+    const char *tag = "BC-07";
+    GraphDB *db = fresh_db(tmpdir, "bc07.sqlite");
+    if (!db) return fail(tag, "open");
+    int rc = 1;
+    GraphResult *res = NULL;
+    if (graphdb_tx_begin_write(db) != 0) { rc = fail(tag, "begin_write"); goto out; }
+    if (graphdb_tx_execute(db, "CREATE (n:Person {name: 'A'})", &res) != 0) {
+        rc = fail(tag, "tx_execute"); goto out;
+    }
+    graphdb_result_free(res); res = NULL;
+    if (graphdb_tx_commit(db) != 0) { rc = fail(tag, "commit"); goto out; }
+    if (graphdb_tx_execute(db, "CREATE (n:Person {name: 'B'})", &res) == 0) {
+        rc = fail(tag, "execute after commit succeeded"); goto out;
+    }
+    if (res) { graphdb_result_free(res); res = NULL; }
+    if (graphdb_tx_rollback(db) == 0) { rc = fail(tag, "rollback after commit succeeded"); goto out; }
+    rc = pass(tag);
+out:
+    if (res) graphdb_result_free(res);
+    graphdb_close(db);
+    return rc;
+}
+
+/* ----------------------------------------------------------------------- */
+/* BC-09 — closing the DB with an open tx must not corrupt the file        */
+/* ----------------------------------------------------------------------- */
+static int bc_09_close_with_open_tx(const char *tmpdir) {
+    const char *tag = "BC-09";
+    char path[1024];
+    snprintf(path, sizeof(path), "%s/%s", tmpdir, "bc09.sqlite");
+    unlink(path);
+
+    GraphDB *db = NULL;
+    if (graphdb_open(path, &db) != 0 || !db) return fail(tag, "open");
+    GraphResult *res = NULL;
+    if (graphdb_tx_begin_write(db) != 0) {
+        graphdb_close(db); return fail(tag, "begin_write");
+    }
+    if (graphdb_tx_execute(db, "CREATE (n:Person {name: 'Lost'})", &res) != 0) {
+        graphdb_close(db); return fail(tag, "tx_execute");
+    }
+    graphdb_result_free(res); res = NULL;
+    /* Close without commit/rollback. Core must auto-rollback. */
+    graphdb_close(db);
+
+    /* Reopen and confirm. */
+    GraphDB *db2 = NULL;
+    if (graphdb_open(path, &db2) != 0 || !db2) return fail(tag, "reopen");
+    if (count_persons(db2) != 0) {
+        graphdb_close(db2); return fail(tag, "data leaked through close-without-commit");
+    }
+    /* File must still be writeable. */
+    if (graphdb_tx_begin_write(db2) != 0) {
+        graphdb_close(db2); return fail(tag, "post-recovery begin_write");
+    }
+    if (graphdb_tx_execute(db2, "CREATE (n:Person {name: 'Recovered'})", &res) != 0) {
+        graphdb_close(db2); return fail(tag, "post-recovery execute");
+    }
+    graphdb_result_free(res); res = NULL;
+    if (graphdb_tx_commit(db2) != 0) {
+        graphdb_close(db2); return fail(tag, "post-recovery commit");
+    }
+    long long n = count_persons(db2);
+    graphdb_close(db2);
+    if (n != 1) return fail(tag, "post-recovery count != 1");
+    return pass(tag);
+}
+
+/* ----------------------------------------------------------------------- */
+/* BC-10 — result handles freeable after the producing tx ends             */
+/* ----------------------------------------------------------------------- */
+static int bc_10_result_after_commit(const char *tmpdir) {
+    const char *tag = "BC-10";
+    GraphDB *db = fresh_db(tmpdir, "bc10.sqlite");
+    if (!db) return fail(tag, "open");
+    int rc = 1;
+    GraphResult *res = NULL;
+    if (graphdb_tx_begin_write(db) != 0) { rc = fail(tag, "begin_write"); goto out; }
+    if (graphdb_tx_execute(
+            db,
+            "CREATE (n:Person {name: 'Alice'}) RETURN n.name AS name",
+            &res) != 0) {
+        rc = fail(tag, "tx_execute"); goto out;
+    }
+    if (graphdb_tx_commit(db) != 0) { rc = fail(tag, "commit"); goto out; }
+    /* Read result after commit — must still be valid. */
+    const char *got = graphdb_result_value_str(res, 0, 0);
+    if (!got || strcmp(got, "Alice") != 0) {
+        rc = fail(tag, "post-commit result_value_str");
+        goto out;
+    }
+    graphdb_result_free(res); res = NULL;
+    rc = pass(tag);
+out:
+    if (res) graphdb_result_free(res);
+    graphdb_close(db);
+    return rc;
+}
+
+int main(int argc, char **argv) {
+    const char *tmpdir = (argc >= 2) ? argv[1] : "/tmp/graphdblite-bc";
+    if (mkdir(tmpdir, 0700) != 0) {
+        /* OK if it already exists */
+    }
+
+    scenario_fn scenarios[] = {
+        bc_01_explicit_rollback,
+        bc_02_commit_persists,
+        bc_04_nested_begin,
+        bc_05_write_in_read_tx,
+        bc_06_commit_without_tx,
+        bc_07_use_after_commit,
+        bc_09_close_with_open_tx,
+        bc_10_result_after_commit,
+    };
+    size_t n = sizeof(scenarios) / sizeof(scenarios[0]);
+    int failures = 0;
+    for (size_t i = 0; i < n; i++) {
+        if (scenarios[i](tmpdir) != 0) failures++;
+    }
+    fprintf(stdout, "\nSummary: %zu scenarios, %d failures\n", n, failures);
+    return failures == 0 ? 0 : 1;
+}

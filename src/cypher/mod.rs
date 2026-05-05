@@ -32,5 +32,15 @@ pub(crate) fn execute_cypher(
     if matches!(stmt, ast::Statement::Explain(_)) {
         return Ok(cost::format_explain(conn, &plan));
     }
+    if ctx.require_read_only && !executor::is_read_only(&plan) {
+        return Err(crate::types::GraphError::Transaction {
+            message: "write operations are not permitted inside a read transaction".to_string(),
+            hint: Some(
+                "begin a write transaction with begin_write/write_tx, or remove the \
+                 CREATE/SET/DELETE/MERGE/REMOVE clause"
+                    .to_string(),
+            ),
+        });
+    }
     executor::execute_with_ctx(conn, &plan, &ctx)
 }

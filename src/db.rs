@@ -291,6 +291,7 @@ impl Database {
             max_result_rows: self.max_result_rows,
             max_traversal_depth: self.max_traversal_depth,
             max_traversal_work: self.max_traversal_work,
+            require_read_only: self.tx_state == TxState::Read,
             ..Default::default()
         };
         execute_cypher(&self.conn, cypher, params, ctx)

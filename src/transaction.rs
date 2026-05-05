@@ -200,13 +200,6 @@ impl<'a> WriteTransaction<'a> {
         }
     }
 
-    /// Crate-internal access to the underlying SQLite transaction.
-    /// Used only by in-crate `#[cfg(test)]` modules.
-    #[cfg(test)]
-    pub(crate) fn connection(&self) -> &rusqlite::Connection {
-        &self.tx
-    }
-
     // --- Write operations ---
 
     /// Create a new node with a single label.

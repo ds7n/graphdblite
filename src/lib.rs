@@ -38,14 +38,9 @@ pub use types::{
 /// Procedure-registration types for `CALL <name>(...)` support.
 ///
 /// Bindings register procedure definitions on a `Registry` and pass it
-/// through to the executor. Names mirror the module path: prefer
-/// `procedures::Registry`, `procedures::Def`, `procedures::Param` over
-/// the legacy aliases.
+/// through to the executor.
 pub mod procedures {
     pub use crate::cypher::procedure::ProcParam as Param;
     pub use crate::cypher::procedure::ProcedureDef as Def;
     pub use crate::cypher::procedure::ProcedureRegistry as Registry;
 }
-
-/// Deprecated. Use [`procedures::Registry`].
-pub use cypher::procedure::ProcedureRegistry;

@@ -956,13 +956,12 @@ fn exec_project(
                             }
                         }
                         for (key, val) in &rec.fields {
-                            if let Some((_, prop)) = key.split_once('.') {
+                            if let Some((owner, prop)) = key.split_once('.') {
                                 // Dotted key: skip internal fields and fields
                                 // belonging to compound-bound variables.
                                 if prop.starts_with("__") {
                                     continue;
                                 }
-                                let owner = key.split_once('.').unwrap().0;
                                 if bound_vars.iter().any(|v| v == owner) {
                                     continue;
                                 }

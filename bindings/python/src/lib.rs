@@ -441,44 +441,45 @@ impl PyWriteTransaction {
     /// Create multiple edges of the same type. Each edge is a tuple of
     /// `(src_id, dst_id)` or `(src_id, dst_id, {props})`.
     ///
-    /// Issues one Cypher CREATE per edge inside the active transaction —
-    /// graphdblite does not currently support `SET r = $map` on relationships,
-    /// so this can't collapse to a single `UNWIND` query.
+    /// Implemented as one Cypher
+    /// `UNWIND $rows AS row MATCH (a),(b) WHERE id(a)=row.s AND id(b)=row.d
+    ///  CREATE (a)-[r:T]->(b) SET r = row.p` query.
     fn batch_create_edges(
         &mut self,
         edge_type: &str,
         edges: Vec<Bound<'_, PyTuple>>,
     ) -> PyResult<()> {
         validate_symbolic_name(edge_type, "edge_type")?;
+        let mut rows: Vec<Value> = Vec::with_capacity(edges.len());
         for tup in &edges {
             let src: u64 = tup.get_item(0)?.extract()?;
             let dst: u64 = tup.get_item(1)?.extract()?;
-            let mut params = HashMap::new();
-            params.insert("s".to_string(), Value::I64(src as i64));
-            params.insert("d".to_string(), Value::I64(dst as i64));
-            let mut set_clauses = String::new();
+            let mut props = std::collections::BTreeMap::new();
             if tup.len() > 2 {
                 let dict: Bound<'_, PyDict> = tup.get_item(2)?.downcast_into().map_err(|_| {
                     PyValueError::new_err("edge tuple third element must be a dict")
                 })?;
-                for (i, (k, v)) in dict.iter().enumerate() {
-                    let key: String = k.extract()?;
-                    validate_symbolic_name(&key, "property name")?;
-                    let pname = format!("p_{i}");
-                    set_clauses.push_str(if i == 0 { " SET " } else { ", " });
-                    set_clauses.push_str(&format!("r.{key} = ${pname}"));
-                    params.insert(pname, py_to_value(&v)?);
+                for (k, v) in dict.iter() {
+                    props.insert(k.extract::<String>()?, py_to_value(&v)?);
                 }
             }
-            let cypher = format!(
-                "MATCH (a) WHERE id(a) = $s \
-                 MATCH (b) WHERE id(b) = $d \
-                 CREATE (a)-[r:{edge_type}]->(b){set_clauses}"
-            );
-            let db = self.get_db_mut()?;
-            db.execute_with_params(&cypher, Some(&params))
-                .map_err(to_py_err)?;
+            let mut row = std::collections::BTreeMap::new();
+            row.insert("s".to_string(), Value::I64(src as i64));
+            row.insert("d".to_string(), Value::I64(dst as i64));
+            row.insert("p".to_string(), Value::Map(props));
+            rows.push(Value::Map(row));
         }
+        let cypher = format!(
+            "UNWIND $rows AS row \
+             MATCH (a) WHERE id(a) = row.s \
+             MATCH (b) WHERE id(b) = row.d \
+             CREATE (a)-[r:{edge_type}]->(b) SET r = row.p"
+        );
+        let mut params = HashMap::new();
+        params.insert("rows".to_string(), Value::List(rows));
+        let db = self.get_db_mut()?;
+        db.execute_with_params(&cypher, Some(&params))
+            .map_err(to_py_err)?;
         Ok(())
     }
 

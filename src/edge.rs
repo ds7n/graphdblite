@@ -32,7 +32,7 @@ fn edge_props_key(src: NodeId, dst: NodeId, label: &str, seq: u64) -> Vec<u8> {
 
 /// Build the edge properties prefix for scanning all parallel edges:
 /// [src: 8 BE][dst: 8 BE][label: UTF-8][0x00].
-fn edge_props_prefix(src: NodeId, dst: NodeId, label: &str) -> Vec<u8> {
+pub(crate) fn edge_props_prefix(src: NodeId, dst: NodeId, label: &str) -> Vec<u8> {
     let mut key = Vec::with_capacity(16 + label.len() + 1);
     key.extend_from_slice(&src.to_be_bytes());
     key.extend_from_slice(&dst.to_be_bytes());
@@ -42,7 +42,7 @@ fn edge_props_prefix(src: NodeId, dst: NodeId, label: &str) -> Vec<u8> {
 }
 
 /// Extract the sequence number from an edge_props key.
-fn edge_seq_from_key(key: &[u8], prefix_len: usize) -> u64 {
+pub(crate) fn edge_seq_from_key(key: &[u8], prefix_len: usize) -> u64 {
     if key.len() >= prefix_len + 8 {
         let bytes: [u8; 8] = key[prefix_len..prefix_len + 8].try_into().unwrap_or([0; 8]);
         u64::from_be_bytes(bytes)
@@ -393,6 +393,25 @@ pub fn set_edge_property_at(
     }
     let props_key = edge_props_key(src, dst, label, seq);
     let data = rmp_serde::to_vec(&props).map_err(|e| GraphError::Serialization {
+        context: String::new(),
+        source: e.to_string(),
+        hint: None,
+    })?;
+    kv::put(conn, kv::TABLE_EDGE_PROPS, &props_key, &data)?;
+    Ok(())
+}
+
+/// Replace all properties on a specific parallel edge with the given map.
+pub fn set_all_edge_properties_at(
+    conn: &Connection,
+    src: NodeId,
+    dst: NodeId,
+    label: &str,
+    seq: u64,
+    properties: crate::types::Properties,
+) -> Result<()> {
+    let props_key = edge_props_key(src, dst, label, seq);
+    let data = rmp_serde::to_vec(&properties).map_err(|e| GraphError::Serialization {
         context: String::new(),
         source: e.to_string(),
         hint: None,

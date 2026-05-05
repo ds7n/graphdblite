@@ -18,6 +18,9 @@ staging/
 # Generated C header (regenerated on build)
 bindings/ffi/graphdblite.h
 
+# C conformance harness binary
+bindings/ffi/tests/conformance
+
 # Node.js
 bindings/node/node_modules/
 bindings/node/*.node

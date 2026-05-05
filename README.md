@@ -170,6 +170,7 @@ More details: [Architecture](docs/architecture.md)
 cargo build --release          # Rust library + CLI
 cargo test --tests             # unit + integration tests
 cargo test --test tck --features tck-support  # openCypher TCK conformance
+cargo bench --bench cypher     # perf baselines (criterion)
 maturin develop --release      # Python wheel (dev)
 ```
 

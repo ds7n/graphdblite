@@ -20,7 +20,7 @@ ships.
   `UndefinedVariable`.
 - CALL procedure support; list-order comparison; var-length limit pushdown.
 - 100% openCypher TCK conformance (3895/3895 scenarios pass).
-- MSRV declared: Rust 1.74.
+- MSRV declared: Rust 1.82 (required by `Option::is_none_or` in `planner.rs`).
 
 ### Changed
 - Public API lockdown (phases 1–6): `cypher::*`, `storage`, `index`, `node`,

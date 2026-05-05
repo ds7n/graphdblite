@@ -2,8 +2,8 @@
   "name": "graphdblite",
   "version": "0.1.0",
   "description": "Embedded graph database with Cypher support",
-  "main": "index.js",
-  "types": "index.d.ts",
+  "main": "wrapper.js",
+  "types": "wrapper.d.ts",
   "napi": {
     "name": "graphdblite",
     "triples": {
@@ -24,6 +24,6 @@
   "scripts": {
     "build": "napi build --platform --release",
     "build-debug": "napi build --platform",
-    "test": "node --test test/conformance.test.mjs"
+    "test": "node --test test/conformance.test.mjs test/wrapper.test.mjs"
   }
 }

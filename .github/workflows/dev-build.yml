@@ -273,8 +273,76 @@ jobs:
       - name: Build FFI and run Go tests
         run: make -C bindings/go test
 
+  public-api:
+    needs: [test, lint-workflows]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Install cargo-public-api
+        run: cargo install cargo-public-api --locked --version 0.51.0
+      - name: Check for unexpected public API drift
+        run: |
+          cargo public-api --simplified > public-api.actual.txt
+          if ! diff -u public-api.txt public-api.actual.txt; then
+            echo ""
+            echo "::error::Public API surface has drifted from the committed baseline."
+            echo "If this change is intentional, regenerate the snapshot:"
+            echo "  cargo public-api --simplified > public-api.txt"
+            echo "and commit the result. See STABILITY.md."
+            exit 1
+          fi
+
+  test-ffi-conformance:
+    needs: [test, lint-workflows]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Build FFI and run C conformance suite
+        run: make -C bindings/ffi conformance
+
+  test-python-conformance:
+    needs: [test, lint-workflows]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install uv
+        uses: astral-sh/setup-uv@v3
+      - name: Build and install Python binding
+        working-directory: bindings/python
+        run: |
+          uv venv
+          uv pip install maturin pytest
+          uv run maturin develop --release
+      - name: Run conformance suite
+        working-directory: bindings/python
+        run: uv run pytest tests/conformance/ -v
+
+  test-node-conformance:
+    needs: [test, lint-workflows]
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: bindings/node
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+      - run: npm install
+      - name: Build native addon
+        run: npx napi build --platform --release
+      - name: Run conformance suite
+        run: npm test
+
   publish:
-    needs: [build-cli, build-ffi, build-node, build-wheels]
+    needs: [build-cli, build-ffi, build-node, build-wheels, test-go, test-ffi-conformance, test-python-conformance, test-node-conformance, public-api]
     runs-on: ubuntu-latest
     env:
       GH_TOKEN: ${{ github.token }}

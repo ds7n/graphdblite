@@ -1950,6 +1950,82 @@ fn exec_set_properties(
 ) -> Result<Vec<Record>> {
     let mut records = exec(conn, input, ctx)?;
     for rec in &mut records {
+        // Edge variant: the variable carries edge identity metadata
+        // (`__src`/`__dst`/`__type`, plus `__edge_seq` for parallel edges).
+        let edge_src_key = format!("{variable}.__src");
+        let edge_dst_key = format!("{variable}.__dst");
+        let edge_type_key = format!("{variable}.__type");
+        if let (Some(Value::I64(src)), Some(Value::I64(dst)), Some(Value::String(label))) = (
+            rec.get(&edge_src_key),
+            rec.get(&edge_dst_key),
+            rec.get(&edge_type_key),
+        ) {
+            let src = NodeId(*src as u64);
+            let dst = NodeId(*dst as u64);
+            let label = label.clone();
+            let edge_seq_key = format!("{variable}.__edge_seq");
+            let seq = match rec.get(&edge_seq_key) {
+                Some(Value::I64(s)) => *s as u64,
+                _ => {
+                    let prefix = crate::edge::edge_props_prefix(src, dst, &label);
+                    let entries = crate::storage::kv::scan_prefix(
+                        conn,
+                        crate::storage::kv::TABLE_EDGE_PROPS,
+                        &prefix,
+                    )?;
+                    entries
+                        .first()
+                        .map(|(k, _)| crate::edge::edge_seq_from_key(k, prefix.len()))
+                        .unwrap_or(0)
+                }
+            };
+
+            let map_val = eval_expr(value_expr, rec, conn)?;
+            let map = match &map_val {
+                Value::Map(m) => m,
+                Value::Null => continue,
+                _ => {
+                    return Err(GraphError::semantic("SET properties requires a map value"));
+                }
+            };
+
+            let old_props = edge::get_edge_properties_at(conn, src, dst, &label, seq)?;
+            let new_props: Properties = if merge {
+                let mut props = old_props.clone();
+                for (k, v) in map {
+                    if *v == Value::Null {
+                        props.remove(k);
+                    } else {
+                        validate_property_value(v)?;
+                        props.insert(k.clone(), v.clone());
+                    }
+                }
+                props
+            } else {
+                let mut props = Properties::new();
+                for (k, v) in map {
+                    if *v != Value::Null {
+                        validate_property_value(v)?;
+                        props.insert(k.clone(), v.clone());
+                    }
+                }
+                props
+            };
+
+            edge::set_all_edge_properties_at(conn, src, dst, &label, seq, new_props.clone())?;
+
+            // Update the record so downstream RETURN sees the new values.
+            for key in old_props.keys() {
+                let prop_key = format!("{variable}.{key}");
+                rec.remove(&prop_key);
+            }
+            for (key, val) in &new_props {
+                let prop_key = format!("{variable}.{key}");
+                rec.set(prop_key, val.clone());
+            }
+            continue;
+        }
+
         // Skip null variables (from OPTIONAL MATCH).
         if let Some(Value::I64(id)) = rec.get(variable) {
             let node_id = NodeId(*id as u64);

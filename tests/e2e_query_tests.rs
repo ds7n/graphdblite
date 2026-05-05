@@ -3934,6 +3934,46 @@ fn large_duration_between() {
 }
 
 #[test]
+fn set_relationship_properties_replace() {
+    let mut db = Database::open_memory().unwrap();
+    let tx = db.write_tx().unwrap();
+    tx.query(
+        "CREATE (a:P {name: 'A'})-[:KNOWS {since: 2020, weight: 0.5}]->(b:P {name: 'B'})",
+    )
+    .unwrap();
+    tx.query("MATCH ()-[r:KNOWS]->() SET r = {since: 2024, source: 'doc'}")
+        .unwrap();
+    let rows = tx
+        .query("MATCH ()-[r:KNOWS]->() RETURN r.since AS since, r.weight AS weight, r.source AS source")
+        .unwrap();
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].get("since"), Some(&Value::I64(2024)));
+    assert_eq!(rows[0].get("weight"), Some(&Value::Null));
+    assert_eq!(rows[0].get("source"), Some(&Value::String("doc".to_string())));
+    tx.commit().unwrap();
+}
+
+#[test]
+fn set_relationship_properties_merge() {
+    let mut db = Database::open_memory().unwrap();
+    let tx = db.write_tx().unwrap();
+    tx.query(
+        "CREATE (a:P {name: 'A'})-[:KNOWS {since: 2020, weight: 0.5}]->(b:P {name: 'B'})",
+    )
+    .unwrap();
+    tx.query("MATCH ()-[r:KNOWS]->() SET r += {weight: null, source: 'doc'}")
+        .unwrap();
+    let rows = tx
+        .query("MATCH ()-[r:KNOWS]->() RETURN r.since AS since, r.weight AS weight, r.source AS source")
+        .unwrap();
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].get("since"), Some(&Value::I64(2020)));
+    assert_eq!(rows[0].get("weight"), Some(&Value::Null));
+    assert_eq!(rows[0].get("source"), Some(&Value::String("doc".to_string())));
+    tx.commit().unwrap();
+}
+
+#[test]
 fn large_duration_in_seconds() {
     // Analogous to TCK Temporal10[10] but within chrono's year range
     // (original uses ±999999999 years; chrono caps at ~±262,143).

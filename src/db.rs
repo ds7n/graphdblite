@@ -264,37 +264,74 @@ impl Database {
         Ok(())
     }
 
-    /// Execute a Cypher query inside the currently-active transaction.
+    /// Execute a Cypher query.
     ///
-    /// In Phase 1 a transaction must be active — auto-begin/auto-commit (Open
-    /// Decision A) is deferred to a later phase. Returns
-    /// `GraphError::Transaction` when no txn is active, or when a write query
-    /// runs inside a read txn (the latter is enforced by the executor / SQLite).
+    /// If a transaction is already active, the query runs inside it. If none
+    /// is active, the call is implicitly wrapped in `BEGIN ... COMMIT`: the
+    /// mode is picked from the planned query (read-only plans use a deferred
+    /// read txn, writes use BEGIN IMMEDIATE). On error the auto-tx is rolled
+    /// back. Multi-statement transactions still require explicit
+    /// `begin_*` + `commit`.
     pub fn execute(&mut self, cypher: &str) -> Result<Vec<Record>> {
         self.execute_with_params(cypher, None)
     }
 
-    /// Execute a Cypher query with optional parameter substitution inside the
-    /// currently-active transaction.
+    /// Execute a Cypher query with optional parameter substitution. See
+    /// [`Database::execute`] for the auto-tx contract.
     pub fn execute_with_params(
         &mut self,
         cypher: &str,
         params: Option<&std::collections::HashMap<String, Value>>,
     ) -> Result<Vec<Record>> {
-        if self.tx_state == TxState::None {
-            return Err(GraphError::Transaction {
-                message: "no active transaction; call begin_read or begin_write first".to_string(),
-                hint: Some("the stateful API requires an explicit transaction".to_string()),
-            });
+        if self.tx_state != TxState::None {
+            let ctx = ExecContext {
+                max_result_rows: self.max_result_rows,
+                max_traversal_depth: self.max_traversal_depth,
+                max_traversal_work: self.max_traversal_work,
+                require_read_only: self.tx_state == TxState::Read,
+                ..Default::default()
+            };
+            return execute_cypher(&self.conn, cypher, params, ctx);
+        }
+
+        // No active txn → auto-begin/auto-commit. Parse + plan once so we can
+        // pick the txn mode from the actual plan; then BEGIN, run, COMMIT.
+        use crate::cypher::{ast, executor, parser, planner};
+        let mut stmt = parser::parse(cypher)?;
+        if let Some(p) = params {
+            stmt = parser::resolve_params(&stmt, p)?;
         }
         let ctx = ExecContext {
             max_result_rows: self.max_result_rows,
             max_traversal_depth: self.max_traversal_depth,
             max_traversal_work: self.max_traversal_work,
-            require_read_only: self.tx_state == TxState::Read,
             ..Default::default()
         };
-        execute_cypher(&self.conn, cypher, params, ctx)
+        let plan = planner::plan_with_procedures(&self.conn, &stmt, &ctx.procedures, params)?;
+        if matches!(stmt, ast::Statement::Explain(_)) {
+            return Ok(crate::cypher::cost::format_explain(&self.conn, &plan));
+        }
+        let read_only = executor::is_read_only(&plan);
+        if read_only {
+            self.conn.execute_batch("BEGIN DEFERRED")?;
+            self.tx_state = TxState::Read;
+        } else {
+            self.conn.execute_batch("BEGIN IMMEDIATE")?;
+            self.tx_state = TxState::Write;
+        }
+        let result = executor::execute_with_ctx(&self.conn, &plan, &ctx);
+        match result {
+            Ok(records) => {
+                self.conn.execute_batch("COMMIT")?;
+                self.tx_state = TxState::None;
+                Ok(records)
+            }
+            Err(e) => {
+                let _ = self.conn.execute_batch("ROLLBACK");
+                self.tx_state = TxState::None;
+                Err(e)
+            }
+        }
     }
 
     /// Commit the currently-active transaction. Returns
@@ -455,10 +492,41 @@ mod stateful_tx_tests {
     }
 
     #[test]
-    fn execute_without_txn_rejected() {
+    fn execute_without_txn_auto_commits_read() {
+        // Read query with no active txn auto-begins/auto-commits a read txn.
         let mut db = Database::open_memory().unwrap();
-        let err = db.execute("MATCH (n) RETURN n").unwrap_err();
-        assert!(matches!(err, GraphError::Transaction { .. }));
+        let rows = db.execute("RETURN 1 AS x").unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].get("x"), Some(&Value::I64(1)));
+        // No txn left dangling.
+        assert!(db.commit().is_err());
+    }
+
+    #[test]
+    fn execute_without_txn_auto_commits_write() {
+        // Write query with no active txn auto-begins a write txn and commits.
+        let mut db = Database::open_memory().unwrap();
+        db.execute("CREATE (:Person {name: 'Alice'})").unwrap();
+        // Persistence: a fresh read sees the row.
+        let rows = db.execute("MATCH (n:Person) RETURN n.name AS name").unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(
+            rows[0].get("name"),
+            Some(&Value::String("Alice".to_string()))
+        );
+    }
+
+    #[test]
+    fn execute_auto_tx_rolls_back_on_error() {
+        let mut db = Database::open_memory().unwrap();
+        let err = db.execute("RETURN this_is_not_valid_cypher").unwrap_err();
+        // Some error variant — what matters is that no txn is left dangling.
+        let _ = err;
+        assert!(db.commit().is_err());
+        assert!(db.rollback().is_err());
+        // Subsequent queries still work.
+        let rows = db.execute("RETURN 1 AS x").unwrap();
+        assert_eq!(rows.len(), 1);
     }
 
     #[test]

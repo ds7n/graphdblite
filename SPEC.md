@@ -74,6 +74,8 @@ Cypher string
 
 All language bindings (Python/Node/Go/C) drive the underlying database via the stateful API on `Database` (`begin_read`, `begin_write`, `execute`, `commit`, `rollback`). The Rust core additionally exposes `WriteTxGuard`/`ReadTxGuard` via `read_tx`/`write_tx` for compile-time RAII safety.
 
+Each binding ships a **conformance suite** (`docs/BINDING_CONFORMANCE.md`, scenarios `BC-01..BC-10`) covering transaction lifecycle, multi-process snapshot visibility, and resource hygiene. Write Cypher inside a read transaction is rejected by `cypher::execute_cypher` via `ExecContext::require_read_only`.
+
 ## Supported Features
 
 ### Cypher clauses

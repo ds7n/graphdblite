@@ -33,6 +33,7 @@ impl NodeId {
 /// (openCypher forbids it and storage paths rely on the property-value subset
 /// being scalar-or-collection).
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[allow(missing_docs)]
 pub enum Value {
     Null,
     Bool(bool),
@@ -275,6 +276,7 @@ pub type Properties = HashMap<String, Value>;
 
 /// A node in the graph.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[allow(missing_docs)]
 pub struct Node {
     pub id: NodeId,
     /// Node labels (sorted). Empty vec for unlabeled nodes.
@@ -286,6 +288,7 @@ pub struct Node {
 
 /// An edge in the graph.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[allow(missing_docs)]
 pub struct Edge {
     pub src: NodeId,
     pub dst: NodeId,
@@ -299,6 +302,7 @@ pub struct Edge {
 /// the node at index `i` to the node at index `i + 1`. A path with a single
 /// node (and zero edges) represents a length-zero path.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[allow(missing_docs)]
 pub struct PathValue {
     pub nodes: Vec<Node>,
     pub edges: Vec<Edge>,
@@ -326,6 +330,7 @@ impl PathValue {
 
 /// Direction for edge traversal.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[allow(missing_docs)]
 pub enum Direction {
     Outgoing,
     Incoming,
@@ -391,7 +396,7 @@ where
 /// Phase of query processing at which an error was raised.
 ///
 /// Aligns with openCypher's error model so TCK scenarios that assert
-/// "an error should be raised at <phase>" can match precisely.
+/// "an error should be raised at `<phase>`" can match precisely.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum QueryPhase {
     /// Lexing / parsing the Cypher source text.
@@ -418,6 +423,7 @@ impl fmt::Display for QueryPhase {
 /// Lightweight and parser-library-agnostic — pest spans are converted to this
 /// shape at the parser/AST boundary so downstream code never sees pest types.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[allow(missing_docs)]
 pub struct Span {
     pub start: usize,
     pub end: usize,
@@ -458,6 +464,7 @@ impl fmt::Display for Span {
 /// `#[non_exhaustive]` so adding new codes never breaks downstream `match`es.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[non_exhaustive]
+#[allow(missing_docs)]
 pub enum ErrorCode {
     /// Generic / no specific code.
     Other,
@@ -548,6 +555,7 @@ impl fmt::Display for ErrorCode {
 /// add value (e.g. parser errors fill `span`; "did-you-mean" fills `hint`).
 #[derive(Debug)]
 #[non_exhaustive]
+#[allow(missing_docs)]
 pub enum QueryError {
     SyntaxError {
         phase: QueryPhase,
@@ -764,6 +772,7 @@ impl std::error::Error for QueryError {}
 /// carries a `hint: Option<String>` for actionable suggestions.
 #[derive(Debug)]
 #[non_exhaustive]
+#[allow(missing_docs)]
 pub enum GraphError {
     Storage {
         source: rusqlite::Error,
@@ -1237,6 +1246,7 @@ impl QueryError {
     }
 }
 
+/// Convenience alias: `Result<T, GraphError>`.
 pub type Result<T> = std::result::Result<T, GraphError>;
 
 /// Validate that a name (label, property key) contains only `[A-Za-z0-9_]`.

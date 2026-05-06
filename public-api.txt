@@ -31,24 +31,24 @@ impl core::marker::UnsafeUnpin for graphdblite::procedures::Param
 impl core::panic::unwind_safe::RefUnwindSafe for graphdblite::procedures::Param
 impl core::panic::unwind_safe::UnwindSafe for graphdblite::procedures::Param
 pub struct graphdblite::procedures::Registry
-impl graphdblite::ProcedureRegistry
-pub fn graphdblite::ProcedureRegistry::get(&self, name: &str) -> core::option::Option<&graphdblite::procedures::Def>
-pub fn graphdblite::ProcedureRegistry::is_empty(&self) -> bool
-pub fn graphdblite::ProcedureRegistry::new() -> Self
-pub fn graphdblite::ProcedureRegistry::register(&mut self, proc_def: graphdblite::procedures::Def)
-impl core::clone::Clone for graphdblite::ProcedureRegistry
-pub fn graphdblite::ProcedureRegistry::clone(&self) -> graphdblite::ProcedureRegistry
-impl core::default::Default for graphdblite::ProcedureRegistry
-pub fn graphdblite::ProcedureRegistry::default() -> graphdblite::ProcedureRegistry
-impl core::fmt::Debug for graphdblite::ProcedureRegistry
-pub fn graphdblite::ProcedureRegistry::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-impl core::marker::Freeze for graphdblite::ProcedureRegistry
-impl core::marker::Send for graphdblite::ProcedureRegistry
-impl core::marker::Sync for graphdblite::ProcedureRegistry
-impl core::marker::Unpin for graphdblite::ProcedureRegistry
-impl core::marker::UnsafeUnpin for graphdblite::ProcedureRegistry
-impl core::panic::unwind_safe::RefUnwindSafe for graphdblite::ProcedureRegistry
-impl core::panic::unwind_safe::UnwindSafe for graphdblite::ProcedureRegistry
+impl graphdblite::procedures::Registry
+pub fn graphdblite::procedures::Registry::get(&self, name: &str) -> core::option::Option<&graphdblite::procedures::Def>
+pub fn graphdblite::procedures::Registry::is_empty(&self) -> bool
+pub fn graphdblite::procedures::Registry::new() -> Self
+pub fn graphdblite::procedures::Registry::register(&mut self, proc_def: graphdblite::procedures::Def)
+impl core::clone::Clone for graphdblite::procedures::Registry
+pub fn graphdblite::procedures::Registry::clone(&self) -> graphdblite::procedures::Registry
+impl core::default::Default for graphdblite::procedures::Registry
+pub fn graphdblite::procedures::Registry::default() -> graphdblite::procedures::Registry
+impl core::fmt::Debug for graphdblite::procedures::Registry
+pub fn graphdblite::procedures::Registry::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Freeze for graphdblite::procedures::Registry
+impl core::marker::Send for graphdblite::procedures::Registry
+impl core::marker::Sync for graphdblite::procedures::Registry
+impl core::marker::Unpin for graphdblite::procedures::Registry
+impl core::marker::UnsafeUnpin for graphdblite::procedures::Registry
+impl core::panic::unwind_safe::RefUnwindSafe for graphdblite::procedures::Registry
+impl core::panic::unwind_safe::UnwindSafe for graphdblite::procedures::Registry
 pub mod graphdblite::types
 pub enum graphdblite::types::Direction
 pub graphdblite::types::Direction::Both
@@ -912,25 +912,6 @@ impl core::marker::Unpin for graphdblite::types::PathValue
 impl core::marker::UnsafeUnpin for graphdblite::types::PathValue
 impl core::panic::unwind_safe::RefUnwindSafe for graphdblite::types::PathValue
 impl core::panic::unwind_safe::UnwindSafe for graphdblite::types::PathValue
-pub struct graphdblite::ProcedureRegistry
-impl graphdblite::ProcedureRegistry
-pub fn graphdblite::ProcedureRegistry::get(&self, name: &str) -> core::option::Option<&graphdblite::procedures::Def>
-pub fn graphdblite::ProcedureRegistry::is_empty(&self) -> bool
-pub fn graphdblite::ProcedureRegistry::new() -> Self
-pub fn graphdblite::ProcedureRegistry::register(&mut self, proc_def: graphdblite::procedures::Def)
-impl core::clone::Clone for graphdblite::ProcedureRegistry
-pub fn graphdblite::ProcedureRegistry::clone(&self) -> graphdblite::ProcedureRegistry
-impl core::default::Default for graphdblite::ProcedureRegistry
-pub fn graphdblite::ProcedureRegistry::default() -> graphdblite::ProcedureRegistry
-impl core::fmt::Debug for graphdblite::ProcedureRegistry
-pub fn graphdblite::ProcedureRegistry::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-impl core::marker::Freeze for graphdblite::ProcedureRegistry
-impl core::marker::Send for graphdblite::ProcedureRegistry
-impl core::marker::Sync for graphdblite::ProcedureRegistry
-impl core::marker::Unpin for graphdblite::ProcedureRegistry
-impl core::marker::UnsafeUnpin for graphdblite::ProcedureRegistry
-impl core::panic::unwind_safe::RefUnwindSafe for graphdblite::ProcedureRegistry
-impl core::panic::unwind_safe::UnwindSafe for graphdblite::ProcedureRegistry
 pub struct graphdblite::ReadTxGuard<'a>
 impl<'a> graphdblite::ReadTxGuard<'a>
 pub fn graphdblite::ReadTxGuard<'a>::commit(self) -> graphdblite::types::Result<()>

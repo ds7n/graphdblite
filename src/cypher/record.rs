@@ -7,21 +7,25 @@ use crate::types::Value;
 /// Uses `IndexMap` to preserve insertion order, giving deterministic column
 /// ordering in query results.
 #[derive(Debug, Clone, PartialEq)]
+#[allow(missing_docs)]
 pub struct Record {
     pub fields: IndexMap<String, Value>,
 }
 
 impl Record {
+    /// Create an empty record.
     pub fn new() -> Self {
         Self {
             fields: IndexMap::new(),
         }
     }
 
+    /// Look up a field by name.
     pub fn get(&self, key: &str) -> Option<&Value> {
         self.fields.get(key)
     }
 
+    /// Insert or replace a field.
     pub fn set(&mut self, key: String, value: Value) {
         self.fields.insert(key, value);
     }

@@ -18,6 +18,7 @@ enum TxState {
 
 /// SQLite synchronous PRAGMA mode.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[allow(missing_docs)]
 pub enum SyncMode {
     Off,
     Normal,

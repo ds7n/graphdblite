@@ -22,6 +22,14 @@ else
   echo "  [skip] cargo-audit not found — install with: cargo install cargo-audit"
 fi
 
+# Supply-chain / license / advisory gates (deny.toml)
+if command -v cargo-deny &>/dev/null; then
+  echo "  cargo deny check"
+  cargo deny check
+else
+  echo "  [skip] cargo-deny not found — install with: cargo install cargo-deny --locked"
+fi
+
 # Lint GitHub Actions workflows (integrates shellcheck automatically)
 if command -v actionlint &>/dev/null; then
   echo "  actionlint (+ shellcheck)"

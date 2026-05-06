@@ -349,7 +349,7 @@ impl_read_ops!(WriteTransaction, false);
 // `Transaction` Drop perform the actual rollback.
 // ----------------------------------------------------------------------------
 
-/// RAII guard for a write transaction. Returned by [`Database::write_tx`].
+/// RAII guard for a write transaction. Returned by [`crate::Database::write_tx`].
 ///
 /// Drops trigger a rollback unless [`commit`](Self::commit) is called.
 /// Methods on the wrapped transaction (`create_node`, `query`, etc.) are
@@ -358,7 +358,7 @@ pub struct WriteTxGuard<'a> {
     inner: Option<WriteTransaction<'a>>,
 }
 
-/// RAII guard for a read transaction. Returned by [`Database::read_tx`].
+/// RAII guard for a read transaction. Returned by [`crate::Database::read_tx`].
 ///
 /// Drops release the snapshot. Methods on the wrapped transaction (`query`,
 /// `get_node`, etc.) are accessible directly via `Deref`.

@@ -3,6 +3,7 @@ use std::collections::HashMap;
 
 /// A parameter in a procedure signature (input or output).
 #[derive(Debug, Clone)]
+#[allow(missing_docs)]
 pub struct ProcParam {
     pub name: String,
     /// Cypher type name: "STRING?", "INTEGER?", "FLOAT?", "NUMBER?", "BOOLEAN?", "ANY?"
@@ -11,6 +12,7 @@ pub struct ProcParam {
 
 /// A registered test procedure: signature + canned data rows.
 #[derive(Debug, Clone)]
+#[allow(missing_docs)]
 pub struct ProcedureDef {
     pub name: String,
     pub inputs: Vec<ProcParam>,
@@ -26,6 +28,7 @@ pub struct ProcedureRegistry {
 }
 
 impl ProcedureRegistry {
+    /// Create an empty registry.
     pub fn new() -> Self {
         Self::default()
     }
@@ -46,10 +49,12 @@ impl ProcedureRegistry {
         self.procs.insert(proc_def.name.clone(), proc_def);
     }
 
+    /// Look up a registered procedure by fully qualified name.
     pub fn get(&self, name: &str) -> Option<&ProcedureDef> {
         self.procs.get(name)
     }
 
+    /// True if no procedures have been registered.
     pub fn is_empty(&self) -> bool {
         self.procs.is_empty()
     }

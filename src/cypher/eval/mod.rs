@@ -387,9 +387,16 @@ pub fn eval_expr(expr: &Expr, record: &Record, conn: &Connection) -> crate::type
             }
         }
         ExprKind::Star => Ok(Value::Null),
-        ExprKind::Parameter(name) => Err(crate::types::GraphError::argument(
-            crate::types::QueryPhase::Runtime,
-            format!("unresolved parameter: ${name}"),
+        ExprKind::Parameter(name) => Err(crate::types::GraphError::Query(
+            crate::types::QueryError::ArgumentError {
+                phase: crate::types::QueryPhase::Runtime,
+                code: crate::types::ErrorCode::MissingParameter,
+                message: format!("unresolved parameter: ${name}"),
+                hint: Some(format!(
+                    "pass `{name}` via execute_with_params or set it before running the query"
+                )),
+                span: None,
+            },
         )),
         ExprKind::BinaryOp { left, op, right } => {
             let lval = eval_expr(left, record, conn)?;

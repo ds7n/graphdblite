@@ -1,6 +1,6 @@
 name: Security Audit
 
-# Now handled locally via scripts/check.sh (cargo audit).
+# Now handled locally via scripts/check.sh (cargo audit + cargo deny).
 # Kept as manual fallback.
 
 on:
@@ -23,3 +23,12 @@ jobs:
       - uses: rustsec/audit-check@v2
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
+
+  deny:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: EmbarkStudios/cargo-deny-action@v2
+        with:
+          command: check
+          arg: --all-features

@@ -1,12 +1,22 @@
-// ───────────────────────────────────────────────────────────────────────────
-// graphdblite public API surface.
-//
-// The Cypher pipeline (parser/planner/executor/IR/AST/eval/iter/cost) is
-// `pub(crate)`: it is internal and can evolve freely. Downstream consumers
-// reach the database through `Database` (stateful API) and the
-// `WriteTxGuard` / `ReadTxGuard` RAII wrappers. See `plans/api-lockdown.md`
-// for the full surface.
-// ───────────────────────────────────────────────────────────────────────────
+//! Embedded graph database with a Cypher query interface, backed by SQLite.
+//!
+//! Single-file, zero-config, multi-process safe (WAL mode). The Cypher
+//! pipeline (parser, planner, executor) is internal; downstream consumers
+//! reach the database through [`Database`] (stateful API) and the
+//! [`WriteTxGuard`] / [`ReadTxGuard`] RAII wrappers.
+//!
+//! # Quick start
+//!
+//! ```
+//! use graphdblite::Database;
+//!
+//! let mut db = Database::open_memory().unwrap();
+//! db.execute("CREATE (:Person {name: 'Alice'})").unwrap();
+//! let rows = db.execute("MATCH (p:Person) RETURN p.name AS name").unwrap();
+//! assert_eq!(rows.len(), 1);
+//! ```
+
+#![deny(missing_docs)]
 
 pub(crate) mod cypher;
 mod db;
@@ -19,6 +29,7 @@ pub(crate) mod stats;
 pub(crate) mod storage;
 pub(crate) mod temporal;
 mod transaction;
+/// Public value, error, and identifier types used throughout the API.
 pub mod types;
 
 #[cfg(feature = "tck-support")]

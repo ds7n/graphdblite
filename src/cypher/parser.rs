@@ -2941,6 +2941,16 @@ fn humanize_rule_name(rule: &str) -> &str {
         }
         "detach_keyword" => "DETACH",
         "EOI" => "end of query",
+        "symbolic_name" => "a name (e.g. Person, alice, my_label)",
+        "multi_create_clause" => "a CREATE clause",
+        "multi_merge_clause" => "a MERGE clause",
+        "multi_unwind_clause" | "unwind_clause" => "an UNWIND clause",
+        "multi_call_clause" => "a CALL clause",
+        "multi_set_clause" => "a SET clause",
+        "multi_remove_clause" => "a REMOVE clause",
+        "optional_match_clause" => "an OPTIONAL MATCH clause",
+        "delete_clause" => "a DELETE clause",
+        "match_clause" => "a MATCH clause",
         _ => rule,
     }
 }

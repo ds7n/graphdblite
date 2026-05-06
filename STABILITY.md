@@ -20,14 +20,22 @@ A `1.0.0` release will be cut when:
 - A `cargo public-api` snapshot is committed and CI fails on unexpected
   drift.
 
-The current snapshot lives at `public-api.txt` and is checked by the
-`public-api` job in `.github/workflows/dev-build.yml`. To regenerate after
-an intentional surface change:
+The current snapshot lives at `public-api.txt` and is enforced by the
+`public-api` job in `.github/workflows/dev-build.yml` — the job runs
+`cargo public-api --simplified` and `diff -u`s the output against the
+committed baseline. **Any drift fails the job (`exit 1`) — it is not a
+warning.**
+
+To regenerate after an intentional surface change:
 
 ```bash
 cargo install cargo-public-api --locked --version 0.51.0  # one-time
 cargo public-api --simplified > public-api.txt
 ```
+
+Commit the regenerated file in the same PR that changes the surface.
+Reviewers should treat any `public-api.txt` diff as a deliberate API
+change requiring sign-off.
 
 ## Public surface
 
@@ -87,9 +95,8 @@ Bindings should treat unknown error kinds defensively.
 ### Procedures (CALL support)
 
 `graphdblite::procedures::{Registry, Def, Param}` for callers that need
-to register custom procedures (primarily the TCK harness).
-`ProcedureRegistry` is also re-exported at the crate root as a
-deprecated alias.
+to register custom procedures (primarily the TCK harness). This is the
+only public form — there is no top-level alias.
 
 ## Stability guarantees by item
 
@@ -103,7 +110,7 @@ deprecated alias.
 | Error enums | Adding variants is breaking. Display format is best-effort, not stable. |
 | `Config` fields | Adding fields with sensible defaults is non-breaking when constructed via `Config::default()` / struct update syntax. |
 | `Record` | Stable. `fields: HashMap<String, Value>` is the row representation. |
-| `procedures::{Registry, Def, Param}` | Stable. The legacy `ProcedureRegistry` alias may be removed in a future minor release. |
+| `procedures::{Registry, Def, Param}` | Stable. |
 | `cypher::*`, `storage`, `index`, `node`, `edge`, `temporal` | **Not public.** May change at any time. |
 | `Database::connection()` | **Not public** (`pub(crate)`). |
 
@@ -122,6 +129,36 @@ data — the worst it can do is lose uncommitted writes.
    `cypher::execute_cypher` via `ExecContext::require_read_only`.
 5. All ACID properties — provided by SQLite below us, independent of
    bindings.
+
+## Security notes for binding authors
+
+### Database paths are not validated
+
+`Database::open` accepts any `AsRef<Path>` and passes it directly to
+SQLite. graphdblite is an embedded library — it does not sandbox
+filesystem access, validate that the path stays within a particular
+directory, or reject symlinks. This is intentional and matches
+`rusqlite` / `sqlite3`'s contract.
+
+If a binding accepts the database path from untrusted input (e.g. a
+network request, a query string, an environment variable controlled by
+an end user), the binding **must** validate or constrain the path before
+calling `open`. Practical guidance:
+
+- Resolve to an absolute canonical path (`std::fs::canonicalize` /
+  `Path::canonicalize`) and verify it stays inside an allowed root.
+- Reject paths containing `..` segments after resolution, or that
+  cross filesystem boundaries via symlinks.
+- Prefer a fixed application data directory and accept only a
+  filename component from the caller, not a full path.
+- If the caller can choose any path, they can also overwrite arbitrary
+  files the process has write access to (SQLite will create the file
+  and a `-wal`/`-shm` companion). Treat the path as code, not data.
+
+The core crate does not perform these checks because it cannot know
+which paths the embedding application considers safe. Bindings that
+expose `open` to remote callers (which none of the first-party bindings
+currently do) are responsible for the policy.
 
 ## Writing a compliant binding
 

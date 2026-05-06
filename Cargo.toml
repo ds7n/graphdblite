@@ -23,7 +23,6 @@ crate-type = ["lib"]
 rusqlite = { version = "0.32", features = ["bundled"] }
 rmp-serde = "1"
 serde = { version = "1", features = ["derive"] }
-thiserror = "2"
 indexmap = "2"
 pest = "2"
 pest_derive = "2"

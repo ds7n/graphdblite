@@ -32,12 +32,31 @@ ships.
   errors.
 - `docs/architecture.md` describes the actual materialized-stage executor
   (with the iterator-shaped `iter.rs` fast path for correlated subqueries).
+- Go binding module path corrected: `bindings/go/go.mod` now declares
+  `github.com/ds7n/graphdblite/bindings/go` (matches README and
+  `docs/go.md`; consumers `go get` the subdirectory module from the main
+  repo).
+- Parser error messages no longer leak pest grammar rule names. New
+  `humanize_rule_name` entries cover `multi_create_clause`,
+  `multi_merge_clause`, `multi_unwind_clause`, `multi_call_clause`,
+  `multi_set_clause`, `multi_remove_clause`, `optional_match_clause`,
+  `unwind_clause`, `match_clause`, `delete_clause`, and `symbolic_name`.
+- Unresolved parameters now report `ErrorCode::MissingParameter` with a
+  hint pointing to `execute_with_params` (was `ErrorCode::Other`).
+- `#![deny(missing_docs)]` enabled at the crate root with crate-level
+  rustdoc + a quick-start doc-test on `Database`. Variant-heavy enums
+  (`Value`, `QueryError`, `GraphError`, `ErrorCode`, `Direction`,
+  `SyncMode`) and identity structs (`Node`, `Edge`, `PathValue`, `Span`,
+  `Record`) carry `#[allow(missing_docs)]` — documented at the type
+  level, variant/field names are self-explanatory.
 
 ### Removed
 - Dead `edge::batch_create_edges` helper (no callers post-binding migration)
   and its tests.
 - Deprecated top-level `ProcedureRegistry` re-export (`procedures::Registry`
   is the only form).
+- Unused `thiserror` dependency (flagged by `cargo udeps`, no in-tree
+  references).
 
 ### Security
 - Closed M2–M5 and L1–L5 audit findings.
@@ -46,3 +65,14 @@ ships.
 - `Registry::register` `debug_assert!`s that procedure names match the
   grammar's `procedure_name` rule.
 - `cargo audit`: 0 vulnerabilities across 246 dependencies (2026-05-05).
+- `cargo deny check`: passes (advisories, bans, licenses, sources). License
+  allow-list constrained to MPL-2.0, MIT, Apache-2.0, BSD-2-Clause, Unicode-3.0;
+  unknown registries and git sources denied. Wired into `scripts/check.sh`
+  and `.github/workflows/audit.yml`.
+- `STABILITY.md` now documents the path-traversal contract for
+  `Database::open` (paths are passed directly to SQLite; bindings exposing
+  the API to untrusted callers must validate / constrain the path
+  themselves).
+- Public-API drift gate clarified: `public-api.txt` baseline is enforced
+  by CI with `exit 1` on any diff. Stale entries from the removed
+  top-level `ProcedureRegistry` alias dropped.

@@ -8,6 +8,29 @@ ships.
 ## [Unreleased]
 
 ### Added
+- Database files now stamp `application_id = 0x4744424C` ("GDBL") and
+  `user_version = 1` in the SQLite header. `file(1)` reports the ID;
+  `Database::open` rejects files whose `application_id` is non-zero and
+  doesn't match (catches "I pointed graphdblite at a foreign SQLite file"
+  mistakes), and rejects files whose `user_version` is newer than this
+  build supports (forward-compat hardening). See
+  `docs/sqlite-application-id.md` for upstream `magic.txt` registration
+  procedure and `docs/sqlite-magic.patch` for the prepared diff.
+- Bench infrastructure: `.github/workflows/bench.yml` (manual) captures a
+  criterion baseline on consistent runner hardware and uploads it as an
+  artifact. `scripts/bench-compare.sh` runs the suite locally against a
+  named baseline and exits non-zero on regressions over a threshold
+  (default 15%); requires `critcmp`, no-ops cleanly without it.
+- `cargo fuzz` targets (`fuzz/`): `parse` and `parse_and_plan`. Hidden
+  `__fuzz` module behind the `fuzzing` feature exposes the internal
+  entry points without affecting the public API.
+- CI: `test` job runs on ubuntu/macOS/windows (`fail-fast: false`,
+  `cargo test --workspace --locked`); fmt+clippy stay Ubuntu-only.
+- CLI: `-j`/`--json` flag for NDJSON output (one JSON object per row) and
+  `-V`/`--version`. REPL gained `.mode table|json` dot-commands and rejects
+  unknown `.commands` instead of forwarding them to the executor. Nodes,
+  edges, and paths serialize with a `__type` discriminator; temporal values
+  emit ISO-8601 strings.
 - Node binding `withWriteTx`/`withReadTx` callback API with `Symbol.dispose`
   support.
 - Auto-begin/auto-commit on `Database::execute` when no transaction is active

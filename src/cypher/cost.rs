@@ -333,8 +333,8 @@ fn format_plan_tree(conn: &Connection, plan: &LogicalOp, depth: usize, lines: &m
 /// shapes (range comparisons, OR, NOT) don't translate to a point IndexLookup
 /// and are intentionally ignored.
 fn collect_eq_properties(expr: &Expr, alias: &str, out: &mut Vec<String>) {
-    match &expr.kind {
-        ExprKind::BinaryOp { left, op, right } => match op {
+    if let ExprKind::BinaryOp { left, op, right } = &expr.kind {
+        match op {
             BinOp::And => {
                 collect_eq_properties(left, alias, out);
                 collect_eq_properties(right, alias, out);
@@ -348,8 +348,7 @@ fn collect_eq_properties(expr: &Expr, alias: &str, out: &mut Vec<String>) {
                 }
             }
             _ => {}
-        },
-        _ => {}
+        }
     }
 }
 

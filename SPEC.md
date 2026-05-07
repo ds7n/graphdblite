@@ -99,7 +99,7 @@ Each binding ships a **conformance suite** (`docs/BINDING_CONFORMANCE.md`, scena
 - Arithmetic: `+`, `-`, `*`, `/`, `%`, `^` (exponentiation)
 - Comparison: `=`, `<>`, `<`, `>`, `<=`, `>=`, chained comparisons
 - Boolean: `AND`, `OR`, `XOR`, `NOT` (three-valued logic)
-- String: `STARTS WITH`, `ENDS WITH`, `CONTAINS`, `=~` (regex)
+- String: `STARTS WITH`, `ENDS WITH`, `CONTAINS`
 - Null: `IS NULL`, `IS NOT NULL`
 - Lists: indexing `[n]`, slicing `[a..b]`, `IN`, list comprehensions `[x IN list WHERE pred | expr]`
 - Pattern comprehensions: `[(n)-[:R]->(m) | m.prop]`
@@ -134,7 +134,7 @@ Each binding ships a **conformance suite** (`docs/BINDING_CONFORMANCE.md`, scena
 
 ### TCK conformance
 - Full openCypher TCK vendored (220 feature files, 3895 scenarios)
-- **100% pass rate** (3895/3895), 2 skiplisted — as of 2026-05-01
+- **100% pass rate** (3895/3895), 2 skiplisted — as of 2026-05-07
 - Regenerate blocker analysis: `uv run tests/tck/analyze_blockers.py`
 
 ## Known Limitations

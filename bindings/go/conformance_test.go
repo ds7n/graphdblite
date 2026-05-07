@@ -274,3 +274,144 @@ func TestBC_10_ResultFreeAfterCommit(t *testing.T) {
 	// Free again — must not panic.
 	res.Free()
 }
+
+// --------------------------------------------------------------------------
+// WithWriteTx / WithReadTx callback wrappers — parity with Node's
+// db.withWriteTx(fn) / db.withReadTx(fn). Not numbered as BC because the
+// conformance checklist doesn't require them today.
+// --------------------------------------------------------------------------
+
+func TestWithWriteTx_CommitsOnSuccess(t *testing.T) {
+	db, _ := openTempDB(t)
+	defer db.Close()
+
+	if err := db.WithWriteTx(func(tx *WriteTransaction) error {
+		res, err := tx.Execute("CREATE (n:Person {name: 'Alice'})")
+		if err != nil {
+			return err
+		}
+		res.Free()
+		return nil
+	}); err != nil {
+		t.Fatalf("WithWriteTx: %v", err)
+	}
+	if got := personCount(t, db); got != 1 {
+		t.Fatalf("after WithWriteTx: count = %d, want 1", got)
+	}
+}
+
+func TestWithWriteTx_RollsBackOnError(t *testing.T) {
+	db, _ := openTempDB(t)
+	defer db.Close()
+
+	wantErr := "boom"
+	err := db.WithWriteTx(func(tx *WriteTransaction) error {
+		res, err := tx.Execute("CREATE (n:Person {name: 'Alice'})")
+		if err != nil {
+			return err
+		}
+		res.Free()
+		return errFromString(wantErr)
+	})
+	if err == nil || err.Error() != wantErr {
+		t.Fatalf("WithWriteTx err = %v, want %q", err, wantErr)
+	}
+	if got := personCount(t, db); got != 0 {
+		t.Fatalf("after WithWriteTx error: count = %d, want 0", got)
+	}
+	// Database must still accept new transactions.
+	if err := db.WithWriteTx(func(tx *WriteTransaction) error {
+		res, err := tx.Execute("CREATE (n:Person {name: 'Bob'})")
+		if err != nil {
+			return err
+		}
+		res.Free()
+		return nil
+	}); err != nil {
+		t.Fatalf("post-error WithWriteTx: %v", err)
+	}
+	if got := personCount(t, db); got != 1 {
+		t.Fatalf("after recovery: count = %d, want 1", got)
+	}
+}
+
+func TestWithWriteTx_RollsBackOnPanic(t *testing.T) {
+	db, _ := openTempDB(t)
+	defer db.Close()
+
+	defer func() {
+		if r := recover(); r == nil {
+			t.Fatalf("expected panic to propagate, got none")
+		}
+		if got := personCount(t, db); got != 0 {
+			t.Fatalf("after panic: count = %d, want 0", got)
+		}
+		// Subsequent transactions must work.
+		if err := db.WithWriteTx(func(tx *WriteTransaction) error {
+			res, err := tx.Execute("CREATE (n:Person {name: 'Carol'})")
+			if err != nil {
+				return err
+			}
+			res.Free()
+			return nil
+		}); err != nil {
+			t.Fatalf("post-panic WithWriteTx: %v", err)
+		}
+		if got := personCount(t, db); got != 1 {
+			t.Fatalf("post-panic count = %d, want 1", got)
+		}
+	}()
+
+	_ = db.WithWriteTx(func(tx *WriteTransaction) error {
+		res, _ := tx.Execute("CREATE (n:Person {name: 'Alice'})")
+		if res != nil {
+			res.Free()
+		}
+		panic("oops")
+	})
+}
+
+func TestWithReadTx_ReleasesOnSuccess(t *testing.T) {
+	db, _ := openTempDB(t)
+	defer db.Close()
+
+	// Seed one row outside the helper.
+	if err := db.WithWriteTx(func(tx *WriteTransaction) error {
+		res, err := tx.Execute("CREATE (n:Person {name: 'Alice'})")
+		if err != nil {
+			return err
+		}
+		res.Free()
+		return nil
+	}); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+
+	var got int64
+	if err := db.WithReadTx(func(tx *ReadTransaction) error {
+		res, err := tx.Query("MATCH (n:Person) RETURN count(n) AS c")
+		if err != nil {
+			return err
+		}
+		got = res.ValueI64(0, 0)
+		res.Free()
+		return nil
+	}); err != nil {
+		t.Fatalf("WithReadTx: %v", err)
+	}
+	if got != 1 {
+		t.Fatalf("WithReadTx count = %d, want 1", got)
+	}
+	// Read tx must have been released — opening a write tx must succeed.
+	if _, err := db.BeginWrite(); err != nil {
+		t.Fatalf("BeginWrite after WithReadTx: %v", err)
+	}
+}
+
+// errFromString is a tiny helper that returns an error with a fixed message;
+// keeps the test free of an extra package-level dependency.
+type stringErr string
+
+func (s stringErr) Error() string { return string(s) }
+
+func errFromString(s string) error { return stringErr(s) }

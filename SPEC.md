@@ -17,7 +17,7 @@ The database is a single SQLite file. Rather than mapping graph structures into 
 | `adj_in` | `[dst_id][label][src_id]` | Varint-encoded adjacency list (reverse index) |
 | `edge_props` | `[src_id][dst_id][label][0x00][seq]` | MessagePack-serialized edge properties. Sequence byte supports multiple parallel edges per `(src, dst, type)` triple. |
 
-A `metadata` table tracks schema version and the node ID counter. Secondary indexes are dynamically created per `(label, property)` pair as separate tables.
+A `metadata` table tracks schema version and the node ID counter. Secondary indexes are dynamically created per `(label, property)` pair as separate tables. Every database file is stamped with SQLite `application_id = 0x4744424C` ("GDBL") and `user_version = 1` in the file header — `Database::open` rejects files whose `application_id` is set to a different value (catches "I pointed graphdblite at a foreign SQLite file" mistakes) or whose `user_version` is newer than this build supports.
 
 **Why SQLite-as-KV:** Avoids impedance mismatch between graph traversals and SQL joins. Prefix scans on byte-ordered keys give O(1) neighbor lookups. SQLite's WAL mode provides multi-process concurrent reads with single-writer semantics — no application-level locking needed.
 

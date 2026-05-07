@@ -165,6 +165,36 @@ tx.Commit() // releases the read snapshot
 
 `ReadTransaction` has only `Query` and `Commit` (no `Rollback`, no `Execute`).
 
+### WithWriteTx / WithReadTx
+
+Callback wrappers that handle commit/rollback automatically — parity with the
+Node binding's `db.withWriteTx(fn)` / `db.withReadTx(fn)`. The transaction is
+committed when the callback returns `nil`, rolled back if it returns an error,
+and rolled back before re-raising on a panic.
+
+```go
+err := db.WithWriteTx(func(tx *graphdblite.WriteTransaction) error {
+    res, err := tx.Execute("CREATE (n:Person {name: 'Alice'})")
+    if err != nil {
+        return err
+    }
+    res.Free()
+    return nil
+})
+// err is the callback's error (or the commit error if commit failed).
+
+var name string
+_ = db.WithReadTx(func(tx *graphdblite.ReadTransaction) error {
+    res, err := tx.Query("MATCH (n:Person) RETURN n.name AS name LIMIT 1")
+    if err != nil {
+        return err
+    }
+    name = res.ValueStr(0, 0)
+    res.Free()
+    return nil
+})
+```
+
 ## Examples
 
 ### Social graph

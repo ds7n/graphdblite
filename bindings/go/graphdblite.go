@@ -257,6 +257,74 @@ func (tx *ReadTransaction) Commit() error {
 	return nil
 }
 
+// WithWriteTx runs fn inside a write transaction, committing on success and
+// rolling back on a returned error or a panic. Mirrors the Node binding's
+// db.withWriteTx(...) and Python's `with db.begin_write() as tx:` semantics.
+//
+// If fn returns nil, Commit is called and its error (if any) is returned.
+// If fn returns an error, Rollback is attempted and fn's error is returned
+// (the rollback error is intentionally discarded — fn's error is the cause).
+// If fn panics, Rollback is attempted and the panic is re-raised.
+func (db *Database) WithWriteTx(fn func(*WriteTransaction) error) (err error) {
+	tx, err := db.BeginWrite()
+	if err != nil {
+		return err
+	}
+	committed := false
+	defer func() {
+		// Re-panic after rollback so callers see the original stack.
+		if r := recover(); r != nil {
+			if !committed {
+				_ = tx.Rollback()
+			}
+			panic(r)
+		}
+		if !committed {
+			_ = tx.Rollback()
+		}
+	}()
+	if err = fn(tx); err != nil {
+		return err
+	}
+	if err = tx.Commit(); err != nil {
+		return err
+	}
+	committed = true
+	return nil
+}
+
+// WithReadTx runs fn inside a read transaction, releasing it on return.
+// Read transactions have nothing to roll back, so the tx is always finalized
+// via Commit on a clean exit; on a returned error or a panic, Commit is
+// still called (best-effort) so the database handle is not left holding the
+// read lock.
+func (db *Database) WithReadTx(fn func(*ReadTransaction) error) (err error) {
+	tx, err := db.BeginRead()
+	if err != nil {
+		return err
+	}
+	finalized := false
+	defer func() {
+		if r := recover(); r != nil {
+			if !finalized {
+				_ = tx.Commit()
+			}
+			panic(r)
+		}
+		if !finalized {
+			_ = tx.Commit()
+		}
+	}()
+	if err = fn(tx); err != nil {
+		return err
+	}
+	if err = tx.Commit(); err != nil {
+		return err
+	}
+	finalized = true
+	return nil
+}
+
 // Result methods.
 
 // RowCount returns the number of rows in the result.

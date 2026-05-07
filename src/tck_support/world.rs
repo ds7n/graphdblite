@@ -153,6 +153,11 @@ pub struct World {
     pub pre_counts: GraphCounts,
     /// Procedure registry for CALL tests — populated by `there exists a procedure` steps.
     pub procedures: ProcedureRegistry,
+    /// Current feature name, populated by the `before` hook in `tests/tck.rs`.
+    /// Empty when not running under that hook (e.g. unit tests).
+    pub current_feature: String,
+    /// Current scenario name, populated by the `before` hook.
+    pub current_scenario: String,
 }
 
 impl std::fmt::Debug for World {

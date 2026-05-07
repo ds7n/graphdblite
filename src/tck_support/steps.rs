@@ -208,6 +208,11 @@ fn when_executing_query(world: &mut World, step: &Step) {
             tx.query_with_procedures(query, params.as_ref(), &world.procedures)
         } {
             Ok(records) => {
+                crate::tck_support::headers::log_headers(
+                    &world.current_feature,
+                    &world.current_scenario,
+                    &records,
+                );
                 world.last_result = Some(records);
                 world.last_error = None;
                 tx.commit().expect("commit");
@@ -226,6 +231,11 @@ fn when_executing_query(world: &mut World, step: &Step) {
             tx.query_with_procedures(query, params.as_ref(), &world.procedures)
         } {
             Ok(records) => {
+                crate::tck_support::headers::log_headers(
+                    &world.current_feature,
+                    &world.current_scenario,
+                    &records,
+                );
                 world.last_result = Some(records);
                 world.last_error = None;
             }

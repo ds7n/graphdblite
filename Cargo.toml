@@ -65,3 +65,12 @@ path = "src/bin/cli.rs"
 name = "tck"
 harness = false
 required-features = ["tck-support"]
+
+# Column-header golden test — see tests/record_columns_golden.rs.
+# Drives the same TCK feature suite as `tck` and asserts each scenario's
+# first-row column headers match the committed golden. Phase 0.2 of
+# `plans/record-v2.md`.
+[[test]]
+name = "record_columns_golden"
+harness = false
+required-features = ["tck-support"]

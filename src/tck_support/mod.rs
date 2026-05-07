@@ -9,5 +9,6 @@
 pub mod compare;
 pub mod errors;
 pub mod graphs;
+pub mod headers;
 pub mod steps;
 pub mod world;

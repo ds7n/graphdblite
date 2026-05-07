@@ -1,0 +1,8 @@
+--- a/magic.txt
++++ b/magic.txt
+@@ -27,4 +27,5 @@
+ >68  belong  =0x45737269  Esri Spatially-Enabled Database -
+ >68  belong  =0x4d504258  MBTiles tileset -
+ >68  belong  =0x6a035744  TeXnicard card database
++>68  belong  =0x4744424c  graphdblite graph database -
+ >0   string  =SQLite      SQLite3 database

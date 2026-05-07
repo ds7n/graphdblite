@@ -8,6 +8,22 @@ use crate::schema;
 use crate::transaction::{ReadTransaction, ReadTxGuard, WriteTransaction, WriteTxGuard};
 use crate::types::{GraphError, Result, Value};
 
+/// SQLite `application_id` value identifying this file as a graphdblite
+/// database. Stored as a big-endian 32-bit integer at offset 68 of the
+/// database header (per the SQLite file format spec). ASCII bytes are
+/// `G`, `D`, `B`, `L` — chosen to match the uppercase convention of
+/// existing entries in SQLite's `magic.txt` registry (`GPKG`, `GP10`,
+/// `MPBX`, …). See `docs/sqlite-application-id.md` for the upstream
+/// registration plan.
+const GRAPHDBLITE_APPLICATION_ID: i32 = 0x4744_424C;
+
+/// On-disk schema version. Bumped only when an incompatible storage-layout
+/// change requires migration. Read via `PRAGMA user_version`. A graphdblite
+/// build refuses to open a file whose `user_version` is greater than this
+/// constant — it was written by a newer release that may have introduced
+/// layout changes the older code can't safely interpret.
+const GRAPHDBLITE_SCHEMA_VERSION: i32 = 1;
+
 /// State of the stateful transaction lifecycle on a `Database` handle.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum TxState {
@@ -180,6 +196,7 @@ impl Database {
              PRAGMA mmap_size={};",
             config.busy_timeout_ms, config.synchronous, config.cache_size, config.mmap_size,
         ))?;
+        check_and_stamp_identity(&conn)?;
         schema::init_schema(&conn)?;
         Ok(Self {
             conn,
@@ -409,6 +426,55 @@ impl Database {
     }
 }
 
+/// Verify the database's `application_id` (offset 68) and `user_version`
+/// (offset 60) belong to graphdblite. A zero application_id indicates a
+/// freshly-created file (or one created before this check existed) — we
+/// stamp it. A nonzero ID different from ours rejects the open with a
+/// clear error so users don't accidentally point graphdblite at a
+/// foreign SQLite file (Firefox cookies, GeoPackage, etc.). A
+/// `user_version` greater than the current schema version rejects the
+/// open: the file was written by a newer release whose layout this
+/// build can't safely interpret.
+fn check_and_stamp_identity(conn: &Connection) -> Result<()> {
+    let app_id: i32 = conn.query_row("PRAGMA application_id", [], |r| r.get(0))?;
+    if app_id != 0 && app_id != GRAPHDBLITE_APPLICATION_ID {
+        return Err(GraphError::Storage {
+            source: rusqlite::Error::SqliteFailure(
+                rusqlite::ffi::Error::new(rusqlite::ffi::SQLITE_NOTADB),
+                Some(format!(
+                    "file is not a graphdblite database (application_id={app_id:#010x}, expected {GRAPHDBLITE_APPLICATION_ID:#010x} 'GDBL')"
+                )),
+            ),
+            hint: Some(
+                "this file was created by a different application — point graphdblite at a fresh path or a previously-opened graphdblite database".to_string(),
+            ),
+        });
+    }
+
+    let user_version: i32 = conn.query_row("PRAGMA user_version", [], |r| r.get(0))?;
+    if user_version > GRAPHDBLITE_SCHEMA_VERSION {
+        return Err(GraphError::Storage {
+            source: rusqlite::Error::SqliteFailure(
+                rusqlite::ffi::Error::new(rusqlite::ffi::SQLITE_NOTADB),
+                Some(format!(
+                    "database schema version {user_version} is newer than this build supports ({GRAPHDBLITE_SCHEMA_VERSION})"
+                )),
+            ),
+            hint: Some(
+                "this file was written by a newer graphdblite release; upgrade the library to read it".to_string(),
+            ),
+        });
+    }
+
+    // `PRAGMA application_id = N` and `PRAGMA user_version = N` only rewrite
+    // the header page if the value differs, so this is cheap on every open.
+    conn.execute_batch(&format!(
+        "PRAGMA application_id = {GRAPHDBLITE_APPLICATION_ID};
+         PRAGMA user_version = {GRAPHDBLITE_SCHEMA_VERSION};"
+    ))?;
+    Ok(())
+}
+
 impl Drop for Database {
     fn drop(&mut self) {
         if self.tx_state != TxState::None {
@@ -543,5 +609,98 @@ mod stateful_tx_tests {
             db.rollback().unwrap_err(),
             GraphError::Transaction { .. }
         ));
+    }
+}
+
+#[cfg(test)]
+mod identity_tests {
+    use super::*;
+
+    #[test]
+    fn fresh_database_is_stamped_with_application_id() {
+        let path = tempfile::NamedTempFile::new().unwrap().into_temp_path();
+        {
+            let _db = Database::open(&path).unwrap();
+        }
+        // Re-open through raw rusqlite to verify the bytes on disk.
+        let conn = Connection::open(&path).unwrap();
+        let app_id: i32 = conn
+            .query_row("PRAGMA application_id", [], |r| r.get(0))
+            .unwrap();
+        let user_version: i32 = conn
+            .query_row("PRAGMA user_version", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(app_id, GRAPHDBLITE_APPLICATION_ID);
+        assert_eq!(user_version, GRAPHDBLITE_SCHEMA_VERSION);
+    }
+
+    #[test]
+    fn reopen_existing_graphdblite_database_succeeds() {
+        let path = tempfile::NamedTempFile::new().unwrap().into_temp_path();
+        {
+            let mut db = Database::open(&path).unwrap();
+            db.execute("CREATE (:Person {name: 'Alice'})").unwrap();
+        }
+        // Second open must not error on the existing application_id.
+        let mut db = Database::open(&path).unwrap();
+        let rows = db.execute("MATCH (n:Person) RETURN n.name").unwrap();
+        assert_eq!(rows.len(), 1);
+    }
+
+    #[test]
+    fn open_rejects_foreign_application_id() {
+        let path = tempfile::NamedTempFile::new().unwrap().into_temp_path();
+        // Pre-stamp the file with a different application_id (GeoPackage).
+        {
+            let conn = Connection::open(&path).unwrap();
+            conn.execute_batch("PRAGMA application_id = 0x47504b47;")
+                .unwrap();
+        }
+        let err = match Database::open(&path) {
+            Err(e) => e,
+            Ok(_) => panic!("expected Database::open to fail"),
+        };
+        match err {
+            GraphError::Storage { source, .. } => {
+                let msg = source.to_string();
+                assert!(
+                    msg.contains("not a graphdblite database"),
+                    "unexpected message: {msg}"
+                );
+            }
+            other => panic!("expected Storage error, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn open_rejects_newer_schema_version() {
+        let path = tempfile::NamedTempFile::new().unwrap().into_temp_path();
+        // Create a real graphdblite database, then bump user_version past
+        // what this build understands.
+        {
+            let _db = Database::open(&path).unwrap();
+        }
+        {
+            let conn = Connection::open(&path).unwrap();
+            conn.execute_batch(&format!(
+                "PRAGMA user_version = {};",
+                GRAPHDBLITE_SCHEMA_VERSION + 1
+            ))
+            .unwrap();
+        }
+        let err = match Database::open(&path) {
+            Err(e) => e,
+            Ok(_) => panic!("expected Database::open to fail"),
+        };
+        match err {
+            GraphError::Storage { source, .. } => {
+                let msg = source.to_string();
+                assert!(
+                    msg.contains("newer than this build"),
+                    "unexpected message: {msg}"
+                );
+            }
+            other => panic!("expected Storage error, got {other:?}"),
+        }
     }
 }

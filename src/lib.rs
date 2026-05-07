@@ -46,6 +46,29 @@ pub use types::{
     QueryPhase, Span, Value,
 };
 
+/// Hidden re-exports for `cargo fuzz` targets in `fuzz/`. Enabled by the
+/// `fuzzing` Cargo feature. Not part of the public API — no semver guarantees.
+#[cfg(feature = "fuzzing")]
+#[doc(hidden)]
+pub mod __fuzz {
+    use crate::cypher::{parser, planner};
+    use crate::types::Result;
+
+    /// Parse only — exercises the pest grammar and AST builder.
+    pub fn parse(input: &str) -> Result<()> {
+        parser::parse(input).map(|_| ())
+    }
+
+    /// Parse and plan against a fresh in-memory database (schema initialized,
+    /// no data). Exercises the parse → plan pipeline including index-aware
+    /// planner branches that need a real connection.
+    pub fn parse_and_plan(input: &str) -> Result<()> {
+        let stmt = parser::parse(input)?;
+        let db = crate::Database::open_memory()?;
+        planner::plan(db.connection(), &stmt).map(|_| ())
+    }
+}
+
 /// Procedure-registration types for `CALL <name>(...)` support.
 ///
 /// Bindings register procedure definitions on a `Registry` and pass it

@@ -175,6 +175,84 @@ impl Drop for DepthGuard {
 /// against pest's own recursive-descent stack overflow on adversarial inputs
 /// like `RETURN ((((...))))` — pest would otherwise blow the stack before our
 /// `parse_expr` depth guard could run.
+/// Compute (line, column) for a byte offset. 1-indexed; column counts UTF-8 bytes.
+fn line_col_at(input: &str, byte_pos: usize) -> (u32, u32) {
+    let mut line: u32 = 1;
+    let mut col: u32 = 1;
+    for (i, b) in input.as_bytes().iter().enumerate() {
+        if i >= byte_pos {
+            break;
+        }
+        if *b == b'\n' {
+            line += 1;
+            col = 1;
+        } else {
+            col += 1;
+        }
+    }
+    (line, col)
+}
+
+/// Detect an unclosed `'…` or `"…` string literal so the user gets a precise
+/// diagnostic instead of pest's generic "expected …" list (which can't tell us
+/// the token didn't close).
+///
+/// Walks the input byte-by-byte, skips over `//` line comments, and treats
+/// `\X` inside a string as a two-byte escape. If a string opens and the input
+/// ends before the matching quote, returns a `SyntaxError` whose span points
+/// at the opening quote.
+fn check_unclosed_string(input: &str) -> crate::types::Result<()> {
+    let bytes = input.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() {
+        let b = bytes[i];
+        match b {
+            b'\'' | b'"' => {
+                let quote = b;
+                let open_pos = i;
+                i += 1;
+                while i < bytes.len() && bytes[i] != quote {
+                    if bytes[i] == b'\\' && i + 1 < bytes.len() {
+                        i += 2;
+                    } else {
+                        i += 1;
+                    }
+                }
+                if i >= bytes.len() {
+                    let (line, col) = line_col_at(input, open_pos);
+                    let kind = if quote == b'\'' { "single" } else { "double" };
+                    return Err(GraphError::Query(QueryError::SyntaxError {
+                        phase: QueryPhase::Parse,
+                        code: ErrorCode::UnexpectedSyntax,
+                        message: format!(
+                            "unclosed {kind}-quoted string literal — expected `{}` before end of input",
+                            quote as char
+                        ),
+                        hint: Some(format!(
+                            "add a closing `{}` to terminate the string",
+                            quote as char
+                        )),
+                        span: Some(Span {
+                            start: open_pos,
+                            end: open_pos + 1,
+                            line,
+                            col,
+                        }),
+                    }));
+                }
+                i += 1;
+            }
+            b'/' if i + 1 < bytes.len() && bytes[i + 1] == b'/' => {
+                while i < bytes.len() && bytes[i] != b'\n' {
+                    i += 1;
+                }
+            }
+            _ => i += 1,
+        }
+    }
+    Ok(())
+}
+
 fn check_bracket_depth(input: &str) -> crate::types::Result<()> {
     let bytes = input.as_bytes();
     let mut i = 0;
@@ -239,6 +317,7 @@ pub fn parse(input: &str) -> crate::types::Result<Statement> {
             hint: Some("split the query into smaller statements".to_string()),
         });
     }
+    check_unclosed_string(input)?;
     check_bracket_depth(input)?;
     // Reset depth counter in case a prior parse on this thread aborted mid-recursion.
     EXPR_DEPTH.with(|c| c.set(0));

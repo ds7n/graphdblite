@@ -174,6 +174,37 @@ cargo bench --bench cypher     # perf baselines (criterion)
 maturin develop --release      # Python wheel (dev)
 ```
 
+### Reproducible release builds
+
+`Cargo.lock` is committed and the workspace pins an MSRV
+(`rust-version = "1.82"`), so a checkout at a given commit will resolve to
+the same dependency versions on any machine that has the pinned toolchain.
+
+For a deterministic release binary:
+
+```bash
+# 1. Pin the toolchain (matches the workspace MSRV).
+rustup toolchain install 1.82.0
+rustup override set 1.82.0
+
+# 2. Build with --locked so Cargo refuses to update Cargo.lock,
+#    and --frozen so it also refuses any network access.
+cargo build --release --locked --frozen --bin graphdblite
+```
+
+Notes:
+
+- `--locked` is the important flag for reproducibility: without it Cargo
+  may silently pick newer compatible versions if a registry has them.
+- The build is reproducible in terms of *dependency versions and source
+  inputs*. Bit-for-bit byte-identical binaries also require pinning the
+  build environment (compiler version, sysroot, source paths). Use
+  `RUSTFLAGS="--remap-path-prefix=$PWD=."` if you need to strip absolute
+  paths from debug info.
+- For audit / supply-chain checks, run `cargo deny check` (config in
+  [`deny.toml`](deny.toml)) — wired into `scripts/check.sh` and the
+  `audit.yml` workflow.
+
 ## Stability
 
 graphdblite is pre-`1.0.0`. The public API surface and stability

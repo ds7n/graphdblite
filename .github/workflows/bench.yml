@@ -1,0 +1,56 @@
+name: Bench
+
+# Manual-only — matches the project's CI posture. Runs the criterion suite
+# on a GitHub runner and uploads `target/criterion/` so a maintainer can
+# pull it down and compare against a local baseline with `critcmp`.
+#
+# Don't use this as an auto-failing PR gate. GitHub's shared runners are
+# noisy enough (≥10% variance across consecutive runs on the same SHA)
+# that a strict threshold produces constant false positives. The point of
+# this workflow is to capture a baseline on *known hardware* — compare
+# locally against it via `scripts/bench-compare.sh`.
+on:
+  workflow_dispatch:
+    inputs:
+      baseline_name:
+        description: "Criterion baseline name to save (default: main)"
+        required: false
+        default: "main"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: bench-${{ github.event.inputs.baseline_name }}
+  cancel-in-progress: false
+
+jobs:
+  bench:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Install critcmp
+        run: cargo install --locked critcmp
+
+      - name: Run benchmarks
+        run: cargo bench --bench cypher -- --save-baseline "${{ github.event.inputs.baseline_name }}"
+
+      - name: Export baseline JSON
+        run: |
+          mkdir -p bench-export
+          critcmp --export "${{ github.event.inputs.baseline_name }}" \
+            > "bench-export/${{ github.event.inputs.baseline_name }}.json"
+
+      - name: Upload criterion baseline (raw)
+        uses: actions/upload-artifact@v4
+        with:
+          name: criterion-${{ github.event.inputs.baseline_name }}-${{ github.sha }}
+          path: target/criterion/
+
+      - name: Upload critcmp export (portable JSON)
+        uses: actions/upload-artifact@v4
+        with:
+          name: critcmp-${{ github.event.inputs.baseline_name }}-${{ github.sha }}
+          path: bench-export/

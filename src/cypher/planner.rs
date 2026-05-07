@@ -136,6 +136,34 @@ fn collect_property_refs(expr: &Expr, out: &mut Vec<(String, String)>) {
 
 /// Build an `UnknownFunction` error with a `did you mean X()?` hint when a
 /// known function name is close (Levenshtein) to the misspelled one.
+/// Return `(min, max)` argument counts for known fixed-arity scalar functions.
+///
+/// Returns `None` for variadic functions (`coalesce`), aggregates (`count`,
+/// `collect`, …), and temporal constructors (which accept 0 or 1 args of
+/// varying shape). The runtime evaluator is the source of truth for those.
+fn function_arity(name: &str) -> Option<(usize, usize)> {
+    let bounds = match name {
+        // 1 argument
+        "length" | "nodes" | "tolower" | "toupper" | "tostring" | "toboolean"
+        | "tointeger" | "tofloat" | "keys" | "labels" | "id" | "type" | "properties"
+        | "relationships" | "head" | "last" | "tail" | "size" | "abs" | "sqrt"
+        | "sign" | "ceil" | "floor" | "log" | "log10" | "exp" | "reverse"
+        | "startnode" | "endnode" | "trim" | "ltrim" | "rtrim" => (1, 1),
+        // 2 arguments
+        "split" | "left" | "right" => (2, 2),
+        // 3 arguments
+        "replace" => (3, 3),
+        // 1..2 (round has optional precision)
+        "round" => (1, 2),
+        // 2..3
+        "substring" | "range" => (2, 3),
+        // 0 arguments
+        "e" | "pi" | "rand" => (0, 0),
+        _ => return None,
+    };
+    Some(bounds)
+}
+
 fn unknown_function_error(name: &str, span: Span) -> GraphError {
     let candidates: Vec<String> = crate::cypher::eval::KNOWN_FUNCTION_NAMES
         .iter()
@@ -2626,6 +2654,25 @@ fn validate_expr_types(
             let name_lower = name.to_ascii_lowercase();
             if !crate::cypher::eval::is_known_function(&name_lower) {
                 return Err(unknown_function_error(name, expr.span));
+            }
+            if let Some((min, max)) = function_arity(&name_lower) {
+                let got = args.len();
+                if got < min || got > max {
+                    let expected = if min == max {
+                        format!("{min}")
+                    } else {
+                        format!("{min} or {max}")
+                    };
+                    return Err(GraphError::Query(crate::types::QueryError::ArgumentError {
+                        phase: crate::types::QueryPhase::SemanticAnalysis,
+                        code: ErrorCode::InvalidNumberOfArguments,
+                        message: format!(
+                            "{name}() expected {expected} argument(s) but got {got}"
+                        ),
+                        hint: None,
+                        span: Some(expr.span),
+                    }));
+                }
             }
             if let Some(Expr {
                 kind: ExprKind::Variable(var),

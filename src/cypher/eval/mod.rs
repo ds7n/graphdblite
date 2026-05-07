@@ -2077,7 +2077,7 @@ fn eval_binop(left: &Value, op: BinOp, right: &Value) -> crate::types::Result<Va
                         Ok(Value::F64(a / *b as f64))
                     }
                 }
-                _ => Ok(Value::Null),
+                _ => Err(arithmetic_type_error("/", left, right)),
             }
         }
         BinOp::Mod => {
@@ -2117,7 +2117,7 @@ fn eval_binop(left: &Value, op: BinOp, right: &Value) -> crate::types::Result<Va
                         Ok(Value::F64(a % *b as f64))
                     }
                 }
-                _ => Ok(Value::Null),
+                _ => Err(arithmetic_type_error("%", left, right)),
             }
         }
         BinOp::Pow => {
@@ -2128,7 +2128,7 @@ fn eval_binop(left: &Value, op: BinOp, right: &Value) -> crate::types::Result<Va
                 (Value::F64(a), Value::F64(b)) => Ok(Value::F64(a.powf(*b))),
                 (Value::I64(a), Value::F64(b)) => Ok(Value::F64((*a as f64).powf(*b))),
                 (Value::F64(a), Value::I64(b)) => Ok(Value::F64(a.powf(*b as f64))),
-                _ => Ok(Value::Null),
+                _ => Err(arithmetic_type_error("^", left, right)),
             }
         }
     }
@@ -2157,8 +2157,21 @@ fn eval_arithmetic(
         (Value::F64(a), Value::I64(b)) => Ok(Value::F64(float_op(*a, *b as f64))),
         // String concatenation with +.
         (Value::String(a), Value::String(b)) => Ok(Value::String(format!("{a}{b}"))),
-        _ => Ok(Value::Null),
+        _ => Err(arithmetic_type_error(op_name, left, right)),
     }
+}
+
+/// Build a TypeError for an arithmetic op applied to incompatible non-null operands.
+fn arithmetic_type_error(op_name: &str, left: &Value, right: &Value) -> GraphError {
+    GraphError::type_error(
+        QueryPhase::Runtime,
+        format!(
+            "Type mismatch: cannot apply `{op_name}` to {} and {}",
+            value_type_name(left),
+            value_type_name(right)
+        ),
+    )
+    .with_code(ErrorCode::InvalidArgumentType)
 }
 
 /// Return operator precedence (higher = binds tighter).

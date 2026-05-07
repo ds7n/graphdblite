@@ -148,7 +148,7 @@ Each binding ships a **conformance suite** (`docs/BINDING_CONFORMANCE.md`, scena
 - **Label scans fully materialize** — `MATCH (n:Label)` loads all matching nodes into memory before any downstream LIMIT can stop it. Multi-label queries (`[:A:B]`) fall back to `LIKE` scans that bypass the label index.
 - **Blocking operators** — `ORDER BY`, `DISTINCT`, and aggregation materialize the full input before proceeding. No streaming sort or top-N optimization.
 - **O(n²) dedup in places** — `DISTINCT` and `UNION` use `Vec::contains` instead of `HashSet`.
-- **No query cache** — every query is parsed and planned from scratch.
+- **Parsed-AST cache only; no plan cache** — repeated `db.execute(cypher)` calls with the same query string skip the pest parse via a per-`Database` bounded FIFO cache (default capacity 128). Planning still runs on every call so `CREATE INDEX`/`DROP INDEX` and `$param` literal folding take effect immediately.
 - **Result row limit** — default 100K rows per query (configurable, 0 = unlimited).
 
 ### Concurrency

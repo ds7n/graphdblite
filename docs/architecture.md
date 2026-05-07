@@ -123,6 +123,25 @@ EXPLAIN MATCH (a:Person)-[:KNOWS]->(b:Person) WHERE a.name = 'Alice' RETURN b.na
 This shows the operator tree with estimated row counts, useful for understanding
 which indexes are being used and how the planner structures the query.
 
+## Value type
+
+graphdblite uses a custom `Value` enum rather than `serde_json::Value` for runtime
+values. This is deliberate: Cypher is typed over a richer domain than JSON.
+
+| Value variant | Why JSON can't represent it |
+|---------------|------------------------------|
+| `Node` / `Edge` | Identity (`__id`) + label(s) + properties; structurally distinct from a generic object |
+| `Path` | Ordered alternating node/edge sequence with relationship-uniqueness semantics |
+| `Date` / `Time` / `LocalTime` / `DateTime` / `LocalDateTime` | Cypher temporal types with calendar-aware arithmetic; ISO-8601 strings lose type identity |
+| `Duration` | Months/days/seconds/nanos quadruple — calendar-aware, not a fixed scalar |
+| `I64` vs `F64` | Cypher distinguishes integers from floats (e.g. `1 = 1.0` is true but `toString` differs); JSON has one numeric type |
+| `Bytes` | Binary payloads, not base64-encoded strings |
+
+Bindings serialize `Value` to language-native types at the boundary (e.g. the CLI's
+NDJSON encoder in `src/bin/cli.rs` adds `__type` discriminators for nodes/edges/paths
+and stringifies temporals). The internal type stays rich so the planner, executor,
+and evaluator can reason about Cypher semantics directly.
+
 ## Logical IR
 
 The intermediate representation is language-agnostic — designed so that future query

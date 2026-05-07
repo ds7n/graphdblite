@@ -1,3 +1,23 @@
+//! Cardinality estimation for the logical plan.
+//!
+//! Scope is intentionally minimal — two callers:
+//!   1. `planner::plan_patterns` reorders multi-pattern MATCH branches by
+//!      estimated cardinality (smallest first) to shrink intermediate
+//!      cross-product sizes.
+//!   2. `cypher::execute_cypher` / `Database::execute` format `EXPLAIN`
+//!      output via `format_explain`, which annotates each plan node with
+//!      its estimated row count and surfaces missing-index hints.
+//!
+//! The estimator is **not** consulted for join ordering, expand-direction
+//! picks, or operator-shape selection. Those remain rule-based in the
+//! planner. Expanding cost-driven decisions should be motivated by a
+//! concrete benchmark regression — otherwise the heuristics here (fixed
+//! 30% filter selectivity, 5x expand fan-out, 1000-row default label
+//! count) are too coarse to make better choices than the rules do.
+//!
+//! Real label counts come from `crate::stats`; everything else is a
+//! constant.
+
 use rusqlite::Connection;
 
 use crate::cypher::ast::{BinOp, Expr, ExprKind};

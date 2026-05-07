@@ -74,5 +74,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 }
 
 fn value_str(v: Option<&Value>) -> String {
-    v.map(|v| v.to_string()).unwrap_or_else(|| "NULL".to_string())
+    v.map(|v| v.to_string())
+        .unwrap_or_else(|| "NULL".to_string())
 }

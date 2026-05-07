@@ -144,11 +144,11 @@ fn collect_property_refs(expr: &Expr, out: &mut Vec<(String, String)>) {
 fn function_arity(name: &str) -> Option<(usize, usize)> {
     let bounds = match name {
         // 1 argument
-        "length" | "nodes" | "tolower" | "toupper" | "tostring" | "toboolean"
-        | "tointeger" | "tofloat" | "keys" | "labels" | "id" | "type" | "properties"
-        | "relationships" | "head" | "last" | "tail" | "size" | "abs" | "sqrt"
-        | "sign" | "ceil" | "floor" | "log" | "log10" | "exp" | "reverse"
-        | "startnode" | "endnode" | "trim" | "ltrim" | "rtrim" => (1, 1),
+        "length" | "nodes" | "tolower" | "toupper" | "tostring" | "toboolean" | "tointeger"
+        | "tofloat" | "keys" | "labels" | "id" | "type" | "properties" | "relationships"
+        | "head" | "last" | "tail" | "size" | "abs" | "sqrt" | "sign" | "ceil" | "floor"
+        | "log" | "log10" | "exp" | "reverse" | "startnode" | "endnode" | "trim" | "ltrim"
+        | "rtrim" => (1, 1),
         // 2 arguments
         "split" | "left" | "right" => (2, 2),
         // 3 arguments
@@ -2675,9 +2675,7 @@ fn validate_expr_types(
                     return Err(GraphError::Query(crate::types::QueryError::ArgumentError {
                         phase: crate::types::QueryPhase::SemanticAnalysis,
                         code: ErrorCode::InvalidNumberOfArguments,
-                        message: format!(
-                            "{name}() expected {expected} argument(s) but got {got}"
-                        ),
+                        message: format!("{name}() expected {expected} argument(s) but got {got}"),
                         hint: None,
                         span: Some(expr.span),
                     }));

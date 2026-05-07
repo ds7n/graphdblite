@@ -37,9 +37,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let tx = db.read_tx()?;
 
     println!("== Direct friends of Alice ==");
-    for row in tx.query(
-        "MATCH (a:Person {name: 'Alice'})-[:FRIEND]->(f) RETURN f.name AS friend",
-    )? {
+    for row in
+        tx.query("MATCH (a:Person {name: 'Alice'})-[:FRIEND]->(f) RETURN f.name AS friend")?
+    {
         println!("  {}", value_str(row.get("friend")));
     }
 
@@ -70,5 +70,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 }
 
 fn value_str(v: Option<&Value>) -> String {
-    v.map(|v| v.to_string()).unwrap_or_else(|| "NULL".to_string())
+    v.map(|v| v.to_string())
+        .unwrap_or_else(|| "NULL".to_string())
 }

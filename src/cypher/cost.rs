@@ -1,7 +1,9 @@
 use rusqlite::Connection;
 
+use crate::cypher::ast::{BinOp, Expr, ExprKind};
 use crate::cypher::ir::LogicalOp;
 use crate::cypher::record::Record;
+use crate::index;
 use crate::stats;
 use crate::types::Value;
 
@@ -250,6 +252,35 @@ fn format_plan_tree(conn: &Connection, plan: &LogicalOp, depth: usize, lines: &m
 
     lines.push(format!("{indent}{desc} (est. {rows:.0} rows)"));
 
+    // Index hint: when a Filter sits directly above a Scan with equality
+    // predicates on properties that have no index on (label, property),
+    // suggest creating one. Caught at the Filter node so the hint groups
+    // with the Scan it would optimize.
+    if let LogicalOp::Filter { input, predicate } = plan {
+        if let LogicalOp::Scan { label, alias } = input.as_ref() {
+            if !label.is_empty() {
+                let indexed: Vec<String> = index::list_indexes_for_label(conn, label)
+                    .unwrap_or_default()
+                    .into_iter()
+                    .map(|(_, p)| p)
+                    .collect();
+                let mut suggested: Vec<String> = Vec::new();
+                collect_eq_properties(predicate, alias, &mut suggested);
+                suggested.retain(|p| !indexed.contains(p));
+                suggested.sort();
+                suggested.dedup();
+                let hint_indent = "  ".repeat(depth + 1);
+                for prop in suggested {
+                    lines.push(format!(
+                        "{hint_indent}(hint: no index on :{label}({prop}); \
+                         consider `db.create_index(\"{label}\", \"{prop}\")` \
+                         to turn this Scan+Filter into an IndexLookup)"
+                    ));
+                }
+            }
+        }
+    }
+
     // Recurse into children.
     match plan {
         LogicalOp::Expand { input, .. }
@@ -293,5 +324,45 @@ fn format_plan_tree(conn: &Connection, plan: &LogicalOp, depth: usize, lines: &m
             }
         }
         _ => {} // Leaf nodes (Scan, IndexLookup, EmptyRow, CreateNode, etc.)
+    }
+}
+
+/// Walk an equality-shaped predicate and collect property names targeted by
+/// `<alias>.<prop> = <literal>` (or the symmetric `<literal> = <alias>.<prop>`),
+/// recursing through `AND` so conjunctive filters all contribute. Other
+/// shapes (range comparisons, OR, NOT) don't translate to a point IndexLookup
+/// and are intentionally ignored.
+fn collect_eq_properties(expr: &Expr, alias: &str, out: &mut Vec<String>) {
+    match &expr.kind {
+        ExprKind::BinaryOp { left, op, right } => match op {
+            BinOp::And => {
+                collect_eq_properties(left, alias, out);
+                collect_eq_properties(right, alias, out);
+            }
+            BinOp::Eq => {
+                if let Some(prop) = property_against_literal(left, right, alias) {
+                    out.push(prop);
+                }
+                if let Some(prop) = property_against_literal(right, left, alias) {
+                    out.push(prop);
+                }
+            }
+            _ => {}
+        },
+        _ => {}
+    }
+}
+
+/// If `prop_side` is `<alias>.<prop>` and `lit_side` is a literal (or a
+/// resolved parameter literal from `resolve_params`), return the property name.
+fn property_against_literal(prop_side: &Expr, lit_side: &Expr, alias: &str) -> Option<String> {
+    let prop = match &prop_side.kind {
+        ExprKind::Property(var, prop) if var == alias => prop.clone(),
+        _ => return None,
+    };
+    if matches!(lit_side.kind, ExprKind::Literal(_)) {
+        Some(prop)
+    } else {
+        None
     }
 }

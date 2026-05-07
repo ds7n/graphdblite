@@ -125,9 +125,12 @@ cargo install --path .
 
 Usage:
 ```bash
-graphdblite my.db                                       # interactive REPL
-graphdblite my.db -q "MATCH (n:Person) RETURN n.name"   # single query
+graphdblite my.db                                          # interactive REPL
+graphdblite my.db -q "MATCH (n:Person) RETURN n.name"      # single query
+graphdblite my.db -j -q "MATCH (n) RETURN n"               # NDJSON output
 ```
+
+REPL dot-commands: `.help`, `.mode table|json`, `.quit`/`.exit`.
 
 ## Cypher support
 

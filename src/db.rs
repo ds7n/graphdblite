@@ -129,6 +129,10 @@ pub struct Database {
     /// Maximum total edge-visit budget for a single var-length traversal.
     /// Enforced inside `traverse_paths`. 0 = unlimited.
     pub max_traversal_work: u64,
+    /// Per-`Database` cache of parsed Cypher ASTs. Populated lazily on
+    /// `execute*`/`query*` calls; bounded FIFO eviction. See
+    /// `cypher::parse_cache` for design rationale.
+    parse_cache: crate::cypher::parse_cache::ParseCache,
 }
 
 impl Database {
@@ -206,6 +210,7 @@ impl Database {
             max_result_rows: config.max_result_rows,
             max_traversal_depth: config.max_traversal_depth,
             max_traversal_work: config.max_traversal_work,
+            parse_cache: crate::cypher::parse_cache::ParseCache::new(),
         })
     }
 
@@ -235,6 +240,7 @@ impl Database {
             self.max_result_rows,
             self.max_traversal_depth,
             self.max_traversal_work,
+            &self.parse_cache,
         )))
     }
 
@@ -256,6 +262,7 @@ impl Database {
             self.max_result_rows,
             self.max_traversal_depth,
             self.max_traversal_work,
+            &self.parse_cache,
         )))
     }
 
@@ -309,13 +316,13 @@ impl Database {
                 require_read_only: self.tx_state == TxState::Read,
                 ..Default::default()
             };
-            return execute_cypher(&self.conn, cypher, params, ctx);
+            return execute_cypher(&self.conn, cypher, params, ctx, Some(&self.parse_cache));
         }
 
         // No active txn → auto-begin/auto-commit. Parse + plan once so we can
         // pick the txn mode from the actual plan; then BEGIN, run, COMMIT.
         use crate::cypher::{ast, executor, parser, planner};
-        let mut stmt = parser::parse(cypher)?;
+        let mut stmt = self.parse_cache.get_or_parse(cypher)?;
         if let Some(p) = params {
             stmt = parser::resolve_params(&stmt, p)?;
         }

@@ -4,6 +4,7 @@ pub mod eval;
 pub mod executor;
 pub mod ir;
 pub mod iter;
+pub mod parse_cache;
 pub mod parser;
 pub mod planner;
 pub mod procedure;
@@ -23,8 +24,12 @@ pub(crate) fn execute_cypher(
     cypher: &str,
     params: Option<&HashMap<String, Value>>,
     ctx: executor::ExecContext,
+    cache: Option<&parse_cache::ParseCache>,
 ) -> Result<Vec<record::Record>> {
-    let mut stmt = parser::parse(cypher)?;
+    let mut stmt = match cache {
+        Some(c) => c.get_or_parse(cypher)?,
+        None => parser::parse(cypher)?,
+    };
     if let Some(p) = params {
         stmt = parser::resolve_params(&stmt, p)?;
     }

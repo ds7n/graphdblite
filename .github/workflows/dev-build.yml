@@ -24,15 +24,24 @@ jobs:
           ./actionlint -color
 
   test:
-    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy, rustfmt
-      - run: cargo fmt --check --all
-      - run: cargo clippy --all-targets -- -D warnings
-      - run: cargo test --workspace
+      # fmt + clippy only need to run once. Skipping on macOS/Windows avoids
+      # CRLF-vs-LF false positives from rustfmt on Windows checkouts and
+      # cuts redundant work — the lint outcome is platform-independent.
+      - if: matrix.os == 'ubuntu-latest'
+        run: cargo fmt --check --all
+      - if: matrix.os == 'ubuntu-latest'
+        run: cargo clippy --all-targets --locked -- -D warnings
+      - run: cargo test --workspace --locked
 
   build-cli:
     needs: [test, lint-workflows]

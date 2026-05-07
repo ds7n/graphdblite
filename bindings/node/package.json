@@ -18,6 +18,9 @@
     }
   },
   "license": "MPL-2.0",
+  "engines": {
+    "node": ">=20"
+  },
   "devDependencies": {
     "@napi-rs/cli": "^2.18.0"
   },

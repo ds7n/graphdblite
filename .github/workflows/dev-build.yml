@@ -398,7 +398,7 @@ jobs:
 
           ## Artifacts
           - **CLI binaries**: Linux (x86_64, arm64), macOS (arm64), Windows (x86_64)
-          - **Python wheels**: glibc + musl Linux, macOS, Windows — abi3 (Python 3.9+)
+          - **Python wheels**: glibc + musl Linux, macOS, Windows — abi3 (Python 3.10+)
           - **C FFI libraries**: Linux (x86_64, arm64), macOS (arm64), Windows (x86_64)
           - **Node.js addons**: Linux (x86_64, arm64), macOS (x86_64, arm64), Windows (x86_64)" \
             --prerelease \

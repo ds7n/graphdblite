@@ -6,7 +6,7 @@ build-backend = "maturin"
 name = "graphdblite"
 dynamic = ["version"]
 description = "Embedded graph database with Cypher support"
-requires-python = ">=3.9"
+requires-python = ">=3.10"
 
 [tool.maturin]
 module-name = "graphdblite._graphdblite"

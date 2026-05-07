@@ -1,0 +1,118 @@
+name: CI (full matrix)
+
+# Full tier — version matrix across MSRV/floor + latest for each language,
+# plus cross-platform Rust tests. Catches version-floor regressions and
+# platform-specific issues that the fast tier (ci.yml) doesn't cover.
+#
+# Triggers:
+#   - Nightly cron (06:00 UTC)
+#   - Manual via workflow_dispatch
+#   - Tag pushes (v*) — gates releases
+#
+# Wall clock: ~20-30 min depending on cache state.
+
+on:
+  schedule:
+    - cron: "0 6 * * *"
+  workflow_dispatch:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-full-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  rust:
+    strategy:
+      fail-fast: false
+      matrix:
+        rust: ["1.82", "stable", "beta"]
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ matrix.rust }}
+      - run: cargo test --workspace --locked
+
+  python:
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.10", "3.13"]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+      - uses: astral-sh/setup-uv@v3
+      - name: Build and install Python binding
+        working-directory: bindings/python
+        run: |
+          uv venv --python ${{ matrix.python-version }}
+          uv pip install maturin pytest
+          uv run maturin develop --release
+      - name: Run conformance suite
+        working-directory: bindings/python
+        run: uv run pytest tests/conformance/ -v
+
+  go:
+    strategy:
+      fail-fast: false
+      matrix:
+        go-version: ["1.23", "1.24"]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ matrix.go-version }}
+      - run: make -C bindings/go test
+
+  node:
+    strategy:
+      fail-fast: false
+      matrix:
+        node-version: ["20", "22"]
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: bindings/node
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node-version }}
+      - run: npm install
+      - run: npx napi build --platform --release
+      - run: npm test
+
+  c:
+    strategy:
+      fail-fast: false
+      matrix:
+        compiler: [gcc, clang]
+    runs-on: ubuntu-latest
+    env:
+      CC: ${{ matrix.compiler }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - run: make -C bindings/ffi conformance
+
+  tck:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - run: cargo test --test tck --features tck-support --locked

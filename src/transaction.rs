@@ -1,4 +1,6 @@
-use crate::cypher::{execute_cypher, executor::ExecContext, record::Record};
+use crate::cypher::{
+    execute_cypher, executor::ExecContext, parse_cache::ParseCache, record::Record,
+};
 use crate::edge;
 use crate::index;
 use crate::node;
@@ -101,7 +103,7 @@ macro_rules! impl_read_ops {
                     require_read_only: $read_only,
                     ..Default::default()
                 };
-                execute_cypher(&self.tx, cypher, params, ctx)
+                execute_cypher(&self.tx, cypher, params, ctx, Some(self.parse_cache))
             }
 
             /// Execute a Cypher query with optional parameters and procedure registry.
@@ -118,7 +120,7 @@ macro_rules! impl_read_ops {
                     procedures: procedures.clone(),
                     require_read_only: $read_only,
                 };
-                execute_cypher(&self.tx, cypher, params, ctx)
+                execute_cypher(&self.tx, cypher, params, ctx, Some(self.parse_cache))
             }
         }
     };
@@ -134,6 +136,7 @@ pub struct ReadTransaction<'a> {
     max_result_rows: usize,
     max_traversal_depth: u32,
     max_traversal_work: u64,
+    parse_cache: &'a ParseCache,
 }
 
 impl<'a> ReadTransaction<'a> {
@@ -142,12 +145,14 @@ impl<'a> ReadTransaction<'a> {
         max_result_rows: usize,
         max_traversal_depth: u32,
         max_traversal_work: u64,
+        parse_cache: &'a ParseCache,
     ) -> Self {
         Self {
             tx,
             max_result_rows,
             max_traversal_depth,
             max_traversal_work,
+            parse_cache,
         }
     }
 
@@ -179,6 +184,7 @@ pub struct WriteTransaction<'a> {
     max_result_rows: usize,
     max_traversal_depth: u32,
     max_traversal_work: u64,
+    parse_cache: &'a ParseCache,
 }
 
 impl<'a> WriteTransaction<'a> {
@@ -189,6 +195,7 @@ impl<'a> WriteTransaction<'a> {
         max_result_rows: usize,
         max_traversal_depth: u32,
         max_traversal_work: u64,
+        parse_cache: &'a ParseCache,
     ) -> Self {
         Self {
             tx,
@@ -197,6 +204,7 @@ impl<'a> WriteTransaction<'a> {
             max_result_rows,
             max_traversal_depth,
             max_traversal_work,
+            parse_cache,
         }
     }
 

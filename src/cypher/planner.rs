@@ -265,6 +265,15 @@ fn resolve_sort_aliases(expr: &Expr, items: &[ReturnItem]) -> Expr {
         ExprKind::Variable(name) => {
             for item in items {
                 if item.alias.as_deref() == Some(name) {
+                    // Aggregate aliases are stored under the alias by the
+                    // Aggregate executor — leave the Variable lookup intact
+                    // so the post-Aggregate record's alias key is used.
+                    // Substituting the original aggregate call here would
+                    // produce a synthetic FunctionCall that misses the
+                    // record key (alias != reconstructed column name).
+                    if is_aggregate_fn(&item.expr) {
+                        return expr.clone();
+                    }
                     return item.expr.clone();
                 }
             }

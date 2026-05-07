@@ -38,6 +38,10 @@ anyhow = { version = "1", optional = true }
 # step definitions and Gherkin world. Internal — used only by `tests/tck.rs`.
 # Enable with: cargo test --test tck --features tck-support
 tck-support = ["dep:cucumber", "dep:anyhow"]
+# Exposes a hidden `__fuzz` module re-exporting the parser and planner entry
+# points. Only intended for `cargo fuzz` targets in `fuzz/` — not part of the
+# public API and offers no semver guarantees.
+fuzzing = []
 
 [dev-dependencies]
 tempfile = "3"

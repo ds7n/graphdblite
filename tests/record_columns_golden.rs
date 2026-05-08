@@ -95,7 +95,10 @@ fn main() {
         let expected_set: HashSet<&str> = expected.lines().collect();
         let only_in_actual: Vec<&&str> = actual_set.difference(&expected_set).take(20).collect();
         let only_in_golden: Vec<&&str> = expected_set.difference(&actual_set).take(20).collect();
-        eprintln!("record_columns_golden: drift detected vs {}", golden_path.display());
+        eprintln!(
+            "record_columns_golden: drift detected vs {}",
+            golden_path.display()
+        );
         eprintln!("  lines only in actual ({} shown):", only_in_actual.len());
         for l in &only_in_actual {
             eprintln!("    + {l}");

@@ -30,9 +30,7 @@ fn sink() -> Option<&'static Mutex<std::fs::File>> {
             .write(true)
             .truncate(true)
             .open(&path)
-            .unwrap_or_else(|e| {
-                panic!("GRAPHDBLITE_HEADERS_LOG={path:?}: open failed: {e}")
-            });
+            .unwrap_or_else(|e| panic!("GRAPHDBLITE_HEADERS_LOG={path:?}: open failed: {e}"));
         Some(Mutex::new(f))
     })
     .as_ref()

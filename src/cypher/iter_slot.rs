@@ -71,12 +71,6 @@ fn slot_to_named(schema: &RecordSchema, rec: &SlotRecord) -> NamedRecord {
 /// through to materialize + `eval_expr` so subfield access on non-node
 /// values (`d.year` on a temporal etc.) still works.
 pub fn is_slot_supported(plan: &LogicalOp) -> bool {
-    let mut refs = PropertyRefs::new();
-    collect_property_refs(plan, &mut refs);
-    is_slot_supported_inner(plan, &refs)
-}
-
-fn is_slot_supported_inner(plan: &LogicalOp, refs: &PropertyRefs) -> bool {
     match plan {
         LogicalOp::EmptyRow | LogicalOp::SingleRow => true,
         LogicalOp::Scan { .. } => true,
@@ -87,10 +81,10 @@ fn is_slot_supported_inner(plan: &LogicalOp, refs: &PropertyRefs) -> bool {
             None => true,
         },
         LogicalOp::Filter { input, predicate } => {
-            is_slot_supported_inner(input, refs) && !expr_has_bare_variable(predicate)
+            is_slot_supported(input) && !expr_has_bare_variable(predicate)
         }
         LogicalOp::Project { input, items, .. } => {
-            is_slot_supported_inner(input, refs) && items.iter().all(is_project_item_supported)
+            is_slot_supported(input) && items.iter().all(is_project_item_supported)
         }
         LogicalOp::Expand {
             input,
@@ -109,7 +103,7 @@ fn is_slot_supported_inner(plan: &LogicalOp, refs: &PropertyRefs) -> bool {
             if edge_types.is_empty() || matches!(direction, crate::types::Direction::Both) {
                 return false;
             }
-            is_slot_supported_inner(input, refs)
+            is_slot_supported(input)
                 && var_length_prop_filters
                     .values()
                     .all(|e| !expr_has_bare_variable(e))

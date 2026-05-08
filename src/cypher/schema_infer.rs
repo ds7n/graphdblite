@@ -149,8 +149,19 @@ pub fn infer_with_props(op: &LogicalOp, props: &HashMap<String, BTreeSet<String>
         }
 
         Unwind { input, alias, .. } => {
+            // Unwound items may be scalars, nodes, or edges; downstream
+            // operators (`MATCH (a)-[r:T]->(b) UNWIND [a, b] AS x RETURN
+            // x.name`, `UNWIND nodes(p) AS n RETURN n.name`, etc.) freely
+            // pull `alias.<prop>` and metadata keys off the binding.
+            // Reserve the union of node + edge metadata clusters and any
+            // referenced properties so the slot path can decant the
+            // post-unwind named record into the schema without dropping
+            // user-visible columns. Cost is small (≤ 8 slots per alias)
+            // and unreferenced slots cost nothing at runtime.
             let mut s = infer_with_props(input, props);
-            s.add(alias.as_str());
+            add_node_metadata(&mut s, alias);
+            add_edge_metadata(&mut s, alias);
+            add_referenced_props(&mut s, alias, props);
             s
         }
 
@@ -925,8 +936,15 @@ mod tests {
             alias: "x".into(),
         };
         let s = infer_schema(&plan);
-        assert_eq!(s.len(), 1);
+        // Unwind reserves node + edge metadata clusters around the alias
+        // (the slot path needs them to decant Node/Edge bindings produced
+        // by `UNWIND nodes(p) AS n` etc.). Concretely: `x`, `x.__id`,
+        // `x.__label`, `x.__labels`, `x.__src`, `x.__dst`, `x.__type`,
+        // `x.__edge_seq` — 8 slots when no extra properties are referenced.
+        assert_eq!(s.len(), 8);
         assert_eq!(s.slot("x"), Some(super::super::record_v2::SlotId(0)));
+        assert!(s.slot("x.__id").is_some());
+        assert!(s.slot("x.__src").is_some());
     }
 
     #[test]

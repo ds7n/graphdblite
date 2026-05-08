@@ -240,6 +240,19 @@ fn dual_run_unwind() {
 }
 
 #[test]
+fn dual_run_unwind_property_access() {
+    // After UNWIND, we project a property of the unwound binding — exercises
+    // the slot-path UnwindSlotIter's overlay of `alias.<prop>` slots.
+    let db = fresh_db();
+    let rows = dual_run(
+        &db,
+        "UNWIND [{n: 1, m: 'a'}, {n: 2, m: 'b'}] AS x RETURN x.n AS num, x.m AS s",
+        false,
+    );
+    assert_eq!(rows.len(), 2);
+}
+
+#[test]
 fn dual_run_with_chain() {
     let db = fresh_db();
     let rows = dual_run(

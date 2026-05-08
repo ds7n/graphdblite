@@ -119,6 +119,14 @@ pub fn is_slot_supported(plan: &LogicalOp) -> bool {
             // node/edge ordering); fall back when they do.
             is_slot_supported(input) && items.iter().all(|s| !expr_has_bare_variable(&s.expr))
         }
+        LogicalOp::Unwind { input, expr, .. } => {
+            // Unwind expression evaluates against a materialized NamedRecord
+            // (same trade-off as 3c–3e). Pattern subqueries open scopes the
+            // slot path doesn't track; reject those. Bare Variable in the
+            // unwind expr is fine — it resolves through `build_compound_binding`
+            // on the materialized view.
+            is_slot_supported(input) && !expr_has_pattern_subquery(expr)
+        }
         LogicalOp::Expand {
             input,
             edge_types,
@@ -433,6 +441,18 @@ fn build_slot_iter_inner<'a>(
         LogicalOp::Sort { input, items } => {
             let input_iter = build_slot_iter_inner(conn, input, ctx, refs)?;
             Ok(Box::new(SortSlotIter::new(input_iter, items.clone(), conn)))
+        }
+
+        LogicalOp::Unwind { input, expr, alias } => {
+            let input_iter = build_slot_iter_inner(conn, input, ctx, refs)?;
+            let output_schema = infer_with_props(plan, refs);
+            Ok(Box::new(UnwindSlotIter::new(
+                input_iter,
+                expr.clone(),
+                alias.clone(),
+                output_schema,
+                conn,
+            )))
         }
 
         LogicalOp::Project {
@@ -1022,6 +1042,145 @@ impl<'a> SlotRecordIter for SortSlotIter<'a> {
 /// identically to the named path on every TCK scenario.
 fn compare_values_for_sort(a: &Value, b: &Value) -> std::cmp::Ordering {
     crate::cypher::iter::compare_values_for_sort_pub(a, b)
+}
+
+/// Slot-aware `Unwind`. For each input row, materialize to a NamedRecord
+/// to evaluate the unwind expression, then emit one output slot record
+/// per list item — populating `alias.<…>` keys in the output schema with
+/// the same flat-binding rules `exec_unwind` uses (node metadata cluster
+/// for `Value::Node`, edge metadata for `Value::Edge`, otherwise just
+/// `alias` itself). `Value::Null` produces zero rows; non-list, non-null
+/// values raise a semantic error to match named-path behavior.
+pub struct UnwindSlotIter<'a> {
+    input: Box<dyn SlotRecordIter + 'a>,
+    expr: Expr,
+    alias: String,
+    output_schema: RecordSchema,
+    conn: &'a Connection,
+    /// Buffered output rows for the current input row. Drained before
+    /// pulling the next input.
+    pending: std::vec::IntoIter<SlotRecord>,
+}
+
+impl<'a> UnwindSlotIter<'a> {
+    pub fn new(
+        input: Box<dyn SlotRecordIter + 'a>,
+        expr: Expr,
+        alias: String,
+        output_schema: RecordSchema,
+        conn: &'a Connection,
+    ) -> Self {
+        Self {
+            input,
+            expr,
+            alias,
+            output_schema,
+            conn,
+            pending: Vec::new().into_iter(),
+        }
+    }
+
+    /// Convert one input slot row + its expanded NamedRecord (alias
+    /// already populated with flat keys) into a slot record laid out
+    /// against `output_schema`. Carries forward every input-schema slot
+    /// and overlays the alias bindings.
+    fn project(
+        &self,
+        input_schema: &RecordSchema,
+        base: &SlotRecord,
+        named: &NamedRecord,
+    ) -> SlotRecord {
+        let mut out = SlotRecord::with_capacity(self.output_schema.len());
+        // Carry forward every slot the input row already had.
+        for (in_slot, name) in input_schema.iter() {
+            if let Some(out_slot) = self.output_schema.slot(name) {
+                out.set(out_slot, base.get(in_slot).clone());
+            }
+        }
+        // Overlay alias-related bindings the named expansion just wrote.
+        let prefix = format!("{}.", self.alias);
+        for (k, v) in &named.fields {
+            if k == &self.alias || k.starts_with(&prefix) {
+                if let Some(out_slot) = self.output_schema.slot(k) {
+                    out.set(out_slot, v.clone());
+                }
+            }
+        }
+        out
+    }
+}
+
+impl<'a> SlotRecordIter for UnwindSlotIter<'a> {
+    fn next_slot(&mut self) -> Result<Option<SlotRecord>> {
+        loop {
+            if let Some(rec) = self.pending.next() {
+                return Ok(Some(rec));
+            }
+            let Some(input_rec) = self.input.next_slot()? else {
+                return Ok(None);
+            };
+            let input_schema = self.input.schema();
+            let view = materialize_named(input_schema, &input_rec);
+            let val = eval_expr(&self.expr, &view, self.conn)?;
+            let items = match val {
+                Value::List(items) => items,
+                Value::Null => continue,
+                other => {
+                    return Err(crate::types::GraphError::semantic(format!(
+                        "UNWIND requires a list, got: {other}"
+                    )));
+                }
+            };
+            let mut produced = Vec::with_capacity(items.len());
+            for item in items {
+                // Build a NamedRecord seeded with the input view, then
+                // populate the alias bindings exactly as `exec_unwind` does.
+                let mut named = view.clone();
+                match &item {
+                    Value::Node(n) => {
+                        let node_rec = crate::cypher::executor::node_to_record_pub(n, &self.alias);
+                        for (k, v) in &node_rec.fields {
+                            named.set(k.clone(), v.clone());
+                        }
+                    }
+                    Value::Edge(e) => {
+                        named.set(self.alias.clone(), Value::Edge(e.clone()));
+                        named.set(format!("{}.__src", self.alias), Value::I64(e.src.0 as i64));
+                        named.set(format!("{}.__dst", self.alias), Value::I64(e.dst.0 as i64));
+                        named.set(
+                            format!("{}.__type", self.alias),
+                            Value::String(e.label.clone()),
+                        );
+                        for (k, v) in &e.properties {
+                            named.set(format!("{}.{}", self.alias, k), v.clone());
+                        }
+                    }
+                    Value::Map(entries) => {
+                        // Mirror Node/Edge: bind the compound value AND
+                        // flatten entries to `alias.<key>` so the slot
+                        // path's Property fast-path doesn't read a
+                        // reserved-but-unwritten Null slot. (The named
+                        // path doesn't bother because its `eval_property`
+                        // falls back to a runtime DotAccess on the Map;
+                        // the slot path's eager slot reads can't.)
+                        named.set(self.alias.clone(), Value::Map(entries.clone()));
+                        for (k, v) in entries {
+                            named.set(format!("{}.{}", self.alias, k), v.clone());
+                        }
+                    }
+                    _ => {
+                        named.set(self.alias.clone(), item.clone());
+                    }
+                }
+                produced.push(self.project(input_schema, &input_rec, &named));
+            }
+            self.pending = produced.into_iter();
+        }
+    }
+
+    fn schema(&self) -> &RecordSchema {
+        &self.output_schema
+    }
 }
 
 // ---------------------------------------------------------------------------

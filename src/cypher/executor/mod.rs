@@ -3692,6 +3692,13 @@ pub fn execute_first_match(
 /// Note: NodeId (u64) is transmitted as i64. This wraps for IDs above
 /// i64::MAX (~9.2e18), which is practically unreachable — sequential IDs
 /// would take thousands of years at millions of inserts per second.
+/// Crate-internal alias so `iter_slot::UnwindSlotIter` can populate
+/// flat node bindings the same way `exec_unwind` does, without
+/// duplicating the field list.
+pub(crate) fn node_to_record_pub(n: &crate::types::Node, alias: &str) -> NamedRecord {
+    node_to_record(n, alias)
+}
+
 pub(crate) fn node_to_record(n: &crate::types::Node, alias: &str) -> NamedRecord {
     debug_assert!(n.id.0 <= i64::MAX as u64, "NodeId exceeds i64::MAX");
     let mut rec = NamedRecord::new();

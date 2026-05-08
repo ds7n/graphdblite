@@ -52,7 +52,18 @@ fn main() {
     }
 
     let manifest = Path::new(env!("CARGO_MANIFEST_DIR"));
-    let baseline_path = manifest.join("tests").join("alloc_baseline.txt");
+    // The slot path adds materialize-and-eval conversion overhead in
+    // Phase 3 — eval still operates on `NamedRecord`. Tracking this
+    // against the named-path baseline produces noise (see
+    // `plans/record-v2.md` "Verification strategy"), so each feature
+    // state owns its own baseline. Phase 5 re-baselines once eval is
+    // slot-aware and the materialize trade-off goes away.
+    let baseline_name = if cfg!(feature = "record-v2") {
+        "alloc_baseline_v2.txt"
+    } else {
+        "alloc_baseline.txt"
+    };
+    let baseline_path = manifest.join("tests").join(baseline_name);
 
     let actual = serialize(&results);
 

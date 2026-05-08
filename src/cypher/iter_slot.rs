@@ -17,7 +17,7 @@
 use rusqlite::Connection;
 
 use crate::cypher::ast::{Expr, ExprKind, ReturnItem};
-use crate::cypher::eval::expr_to_column_name;
+use crate::cypher::eval::{eval_expr, eval_predicate, expr_to_column_name};
 use crate::cypher::executor::{literal_to_value, ExecContext};
 use crate::cypher::ir::LogicalOp;
 use crate::cypher::record::NamedRecord;
@@ -60,15 +60,16 @@ fn slot_to_named(schema: &RecordSchema, rec: &SlotRecord) -> NamedRecord {
 }
 
 /// True iff every operator in `plan` has a slot-path implementation in
-/// Phase 3b. Anything else routes to the named path. Phase 3c–3g extend
+/// Phase 3c. Anything else routes to the named path. Phase 3d–3g extend
 /// this set as operators land.
 ///
-/// `Project` items are checked schema-aware: a `Property(v, p)` only
-/// qualifies for the slot path if the input schema actually contains a
-/// slot for `v.p`. This excludes subfield access on non-node values
-/// (e.g. `WITH v.date AS d ... RETURN d.year` — `d.year` is a temporal
-/// subfield, not a node-property slot — falls back to the named path so
-/// `eval_property`'s subfield logic runs).
+/// **Phase 3c coverage.** Adds `Filter` (any predicate via materialize +
+/// `eval_predicate`) and widens `Project` to allow any expression except
+/// `Variable` and `Star` — those still need compound binding which lands
+/// in Phase 3d. `Property` is schema-aware on the fast path: when the
+/// input schema has the slot we read it directly; otherwise we fall
+/// through to materialize + `eval_expr` so subfield access on non-node
+/// values (`d.year` on a temporal etc.) still works.
 pub fn is_slot_supported(plan: &LogicalOp) -> bool {
     let mut refs = PropertyRefs::new();
     collect_property_refs(plan, &mut refs);
@@ -81,35 +82,93 @@ fn is_slot_supported_inner(plan: &LogicalOp, refs: &PropertyRefs) -> bool {
         LogicalOp::Scan { .. } => true,
         LogicalOp::IndexLookup {
             remaining_filters, ..
-        } => remaining_filters.is_none(),
+        } => match remaining_filters {
+            Some(f) => !expr_has_bare_variable(f),
+            None => true,
+        },
+        LogicalOp::Filter { input, predicate } => {
+            is_slot_supported_inner(input, refs) && !expr_has_bare_variable(predicate)
+        }
         LogicalOp::Project { input, items, .. } => {
-            if !is_slot_supported_inner(input, refs) {
-                return false;
-            }
-            let input_schema = infer_with_props(input, refs);
-            items
-                .iter()
-                .all(|i| is_project_item_slot_evaluable(i, &input_schema))
+            is_slot_supported_inner(input, refs) && items.iter().all(is_project_item_supported)
         }
         _ => false,
     }
 }
 
-/// True iff `item` projects an expression we can evaluate against a slot
-/// record without invoking the full named-path `eval` machinery.
-///
-/// Phase 3b supports literals and property reads — but only when the
-/// referenced slot exists in `input_schema`. **Bare variable references
-/// are excluded:** for the terminal RETURN, the named path builds a
-/// compound `Value::Node` / `Value::Edge` from the flat metadata cluster,
-/// and we don't have that machinery on the slot side yet. Phase 3d adds
-/// compound binding for slots; until then any plan with a bare-variable
-/// RETURN falls back.
-fn is_project_item_slot_evaluable(item: &ReturnItem, input_schema: &RecordSchema) -> bool {
-    match &item.expr.kind {
-        ExprKind::Literal(_) => true,
-        ExprKind::Property(v, p) => input_schema.slot(&format!("{v}.{p}")).is_some(),
-        _ => false,
+/// Phase 3c: a Project item qualifies for the slot path only if its
+/// expression has no embedded bare `Variable` or `Star`. The named-path
+/// `Variable` handler builds compound `Value::Node` / `Value::Edge`
+/// values out of `alias.__id` plus every `alias.<prop>` key in the
+/// record — slot records only carry properties referenced as
+/// `Property(alias, prop)` somewhere in the plan, so dynamic property
+/// access through a Variable (e.g. `[123, n]` followed by `(list[1]).x`,
+/// or `properties(p)`) sees a node with empty properties on the slot
+/// path. Phase 3d adds compound binding for slots and lifts this.
+fn is_project_item_supported(item: &ReturnItem) -> bool {
+    !expr_has_bare_variable(&item.expr)
+}
+
+/// True iff `e` contains a bare `Variable`, `Star`, or any sub-expression
+/// whose `Variable` reference can resolve to a compound node/edge value.
+/// Conservatively pessimistic — false positives just mean falling back to
+/// the named path, which is correct.
+fn expr_has_bare_variable(e: &Expr) -> bool {
+    use ExprKind::*;
+    match &e.kind {
+        Variable(_) | Star => true,
+        Literal(_) | Parameter(_) | HasLabel(_, _) => false,
+        // `Property(v, p)` is a flat-key read, not a compound dereference,
+        // so we can keep it on the slot path — `is_project_item_supported`
+        // (and the runtime fallback in `eval_project_item`) handle missing
+        // slots safely.
+        Property(_, _) => false,
+        BinaryOp { left, right, .. } => {
+            expr_has_bare_variable(left) || expr_has_bare_variable(right)
+        }
+        Not(x) | IsNull(x) | IsNotNull(x) => expr_has_bare_variable(x),
+        FunctionCall { args, .. } => args.iter().any(expr_has_bare_variable),
+        Case {
+            operand,
+            alternatives,
+            default,
+        } => {
+            operand.as_deref().is_some_and(expr_has_bare_variable)
+                || alternatives
+                    .iter()
+                    .any(|(c, r)| expr_has_bare_variable(c) || expr_has_bare_variable(r))
+                || default.as_deref().is_some_and(expr_has_bare_variable)
+        }
+        List(xs) => xs.iter().any(expr_has_bare_variable),
+        ListComprehension {
+            list_expr,
+            filter,
+            map_expr,
+            ..
+        } => {
+            expr_has_bare_variable(list_expr)
+                || filter.as_deref().is_some_and(expr_has_bare_variable)
+                || map_expr.as_deref().is_some_and(expr_has_bare_variable)
+        }
+        // Pattern comprehensions / EXISTS / pattern predicates introduce
+        // new scopes that may bind aliases the slot path doesn't track —
+        // be conservative.
+        PatternComprehension { .. } | Exists { .. } | ExistsSubquery(_) | PatternPredicate(_) => {
+            true
+        }
+        MapLiteral(entries) => entries.iter().any(|(_, v)| expr_has_bare_variable(v)),
+        Index { expr, index } => expr_has_bare_variable(expr) || expr_has_bare_variable(index),
+        DotAccess { expr, .. } => expr_has_bare_variable(expr),
+        Slice { expr, start, end } => {
+            expr_has_bare_variable(expr)
+                || start.as_deref().is_some_and(expr_has_bare_variable)
+                || end.as_deref().is_some_and(expr_has_bare_variable)
+        }
+        Quantifier {
+            list_expr,
+            predicate,
+            ..
+        } => expr_has_bare_variable(list_expr) || expr_has_bare_variable(predicate),
     }
 }
 
@@ -170,6 +229,15 @@ fn build_slot_iter_inner<'a>(
             Ok(Box::new(VecSlotIter::new(records, schema)))
         }
 
+        LogicalOp::Filter { input, predicate } => {
+            let input_iter = build_slot_iter_inner(conn, input, ctx, refs)?;
+            Ok(Box::new(FilterSlotIter {
+                input: input_iter,
+                predicate: predicate.clone(),
+                conn,
+            }))
+        }
+
         LogicalOp::Project {
             input,
             items,
@@ -182,6 +250,7 @@ fn build_slot_iter_inner<'a>(
                 items.clone(),
                 *emit_compound,
                 output_schema,
+                conn,
             )))
         }
 
@@ -192,6 +261,24 @@ fn build_slot_iter_inner<'a>(
             plan.op_name()
         ),
     }
+}
+
+/// Build a [`NamedRecord`] from a slot record using `schema`. Used as a
+/// shim when the slot path needs to call into the named-path `eval` for
+/// expressions richer than slot-fast-path leaves (Phase 3c) — the
+/// resulting NamedRecord carries every flat key the named eval may
+/// expect (`alias.__id`, `alias.__label`, etc.), so semantics match
+/// exactly what the named path would have computed.
+///
+/// Per-row allocation costs the immediate slot perf win for these calls;
+/// the win returns when `eval` itself becomes slot-aware. Phase 5
+/// re-baselines benchmarks once the migration is complete.
+pub fn materialize_named(schema: &RecordSchema, rec: &SlotRecord) -> NamedRecord {
+    let mut nr = NamedRecord::new();
+    for (slot, name) in schema.iter() {
+        nr.set(name.to_string(), rec.get(slot).clone());
+    }
+    nr
 }
 
 /// Materialize a `Node` into a slot record using `schema`. Bindings absent
@@ -297,17 +384,50 @@ impl SlotRecordIter for VecSlotIter {
 // ---------------------------------------------------------------------------
 // Pipeline iterators
 
-/// Slot-aware `Project`. Reads each input record by slot, evaluates the
-/// (slot-evaluable) RETURN items, and writes them into the output record
-/// at the slot dictated by the output schema.
+/// Slot-aware `Filter`. Materializes each input slot record into a
+/// `NamedRecord` so the existing `eval_predicate` runs unchanged; the
+/// original slot record is forwarded on match. Per-row allocation is the
+/// 3c trade-off — eval becomes natively slot-aware in a later sub-phase.
+pub struct FilterSlotIter<'a> {
+    input: Box<dyn SlotRecordIter + 'a>,
+    predicate: Expr,
+    conn: &'a Connection,
+}
+
+impl<'a> SlotRecordIter for FilterSlotIter<'a> {
+    fn next_slot(&mut self) -> Result<Option<SlotRecord>> {
+        while let Some(rec) = self.input.next_slot()? {
+            let view = materialize_named(self.input.schema(), &rec);
+            if eval_predicate(&self.predicate, &view, self.conn)? {
+                return Ok(Some(rec));
+            }
+        }
+        Ok(None)
+    }
+
+    fn schema(&self) -> &RecordSchema {
+        self.input.schema()
+    }
+}
+
+/// Slot-aware `Project`. For each item:
+///
+/// - **Literals** evaluate inline to a `Value`.
+/// - **`Property(v, p)`** with the slot present in the input schema reads
+///   directly via slot lookup (the fast path Phase 3b set up).
+/// - Everything else materializes the slot record into a `NamedRecord`
+///   and calls into `eval_expr` for full named-path semantics. This keeps
+///   correctness exact while we incrementally migrate eval; the per-row
+///   allocation cost is what Phase 5's re-baseline measures away.
 pub struct ProjectSlotIter<'a> {
     input: Box<dyn SlotRecordIter + 'a>,
     items: Vec<ReturnItem>,
-    /// Reserved for Phase 3d when bare-variable projections need to emit
-    /// `Value::Node` / `Value::Edge` for the terminal RETURN. Today the
-    /// 3b set of slot-evaluable expressions never triggers this path.
+    /// Reserved for Phase 3d — terminal RETURN of bare variables needs to
+    /// emit `Value::Node` / `Value::Edge`. `is_slot_supported` excludes
+    /// `Variable` / `Star` items today, so this never triggers.
     _emit_compound: bool,
     output_schema: RecordSchema,
+    conn: &'a Connection,
 }
 
 impl<'a> ProjectSlotIter<'a> {
@@ -316,12 +436,14 @@ impl<'a> ProjectSlotIter<'a> {
         items: Vec<ReturnItem>,
         emit_compound: bool,
         output_schema: RecordSchema,
+        conn: &'a Connection,
     ) -> Self {
         Self {
             input,
             items,
             _emit_compound: emit_compound,
             output_schema,
+            conn,
         }
     }
 }
@@ -333,16 +455,23 @@ impl<'a> SlotRecordIter for ProjectSlotIter<'a> {
             None => return Ok(None),
         };
         let input_schema = self.input.schema();
+        // Lazily materialize a NamedRecord the first time an item needs it,
+        // so all-fast-path projections (RETURN p.name) skip the allocation.
+        let mut materialized: Option<NamedRecord> = None;
         let mut out = SlotRecord::with_capacity(self.output_schema.len());
 
         for item in &self.items {
             let col = column_name_for_item(item);
             let Some(out_slot) = self.output_schema.slot(&col) else {
-                // Schema dropped this item — should not happen given
-                // infer_schema mirrors column_name_for_item, but be defensive.
                 continue;
             };
-            let value = eval_slot_expr(&item.expr, input_schema, &input_rec);
+            let value = eval_project_item(
+                &item.expr,
+                input_schema,
+                &input_rec,
+                &mut materialized,
+                self.conn,
+            )?;
             out.set(out_slot, value);
         }
         Ok(Some(out))
@@ -359,26 +488,37 @@ fn column_name_for_item(item: &ReturnItem) -> String {
         .unwrap_or_else(|| expr_to_column_name(&item.expr))
 }
 
-/// Slot-aware evaluator covering Phase 3b's leaf set: literals and
-/// property reads. The named-path `eval` covers the rest;
-/// `is_slot_evaluable_expr` rejects anything we'd reach here that isn't
-/// in this match.
-fn eval_slot_expr(e: &Expr, schema: &RecordSchema, rec: &SlotRecord) -> Value {
+/// Evaluate a `Project` item against `(input_schema, input_rec)`.
+///
+/// `materialized` is a lazily-built named-record cache shared across all
+/// items in one row — building it costs O(schema.len()), so we only do it
+/// once even if multiple items hit the fallback.
+fn eval_project_item(
+    e: &Expr,
+    input_schema: &RecordSchema,
+    input_rec: &SlotRecord,
+    materialized: &mut Option<NamedRecord>,
+    conn: &Connection,
+) -> Result<Value> {
     match &e.kind {
-        ExprKind::Literal(lit) => literal_to_value_local(lit),
-        ExprKind::Property(var, prop) => slot_or_null(schema, rec, &format!("{var}.{prop}")),
-        _ => unreachable!(
-            "eval_slot_expr received non-slot-evaluable expression — \
-             is_slot_evaluable_expr should have rejected this earlier"
-        ),
+        ExprKind::Literal(lit) => Ok(literal_to_value_local(lit)),
+        ExprKind::Property(var, prop) => {
+            let key = format!("{var}.{prop}");
+            if let Some(slot) = input_schema.slot(&key) {
+                return Ok(input_rec.get(slot).clone());
+            }
+            // Not slotted — could be subfield access on a non-node value.
+            // Fall through to named eval.
+            let view =
+                materialized.get_or_insert_with(|| materialize_named(input_schema, input_rec));
+            eval_expr(e, view, conn)
+        }
+        _ => {
+            let view =
+                materialized.get_or_insert_with(|| materialize_named(input_schema, input_rec));
+            eval_expr(e, view, conn)
+        }
     }
-}
-
-fn slot_or_null(schema: &RecordSchema, rec: &SlotRecord, name: &str) -> Value {
-    schema
-        .slot(name)
-        .map(|s| rec.get(s).clone())
-        .unwrap_or(Value::Null)
 }
 
 /// Local copy of the executor's literal-to-value conversion to keep the
@@ -394,6 +534,6 @@ fn literal_to_value_local(lit: &crate::cypher::ast::LiteralValue) -> Value {
     }
 }
 
-// Suppress unused-import warnings for type aliases we'll need in 3c+.
+// Suppress unused-import warnings for type aliases we'll need in 3d+.
 #[allow(dead_code)]
 fn _kept_for_future_use(_: NodeId, _: SlotId) {}

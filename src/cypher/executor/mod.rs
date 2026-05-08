@@ -309,6 +309,18 @@ pub(crate) fn is_read_only(plan: &LogicalOp) -> bool {
     }
 }
 
+/// Crate-internal alias so `iter_slot` can run subtrees through the named
+/// materialized executor when no slot impl exists yet (e.g. correlated
+/// joins in 3g.1 — we present the named output as a slot iter via
+/// `NamedToSlotAdapter` so upstream operators stay on the slot path).
+pub(crate) fn exec_pub(
+    conn: &Connection,
+    plan: &LogicalOp,
+    ctx: &ExecContext,
+) -> Result<Vec<NamedRecord>> {
+    exec(conn, plan, ctx)
+}
+
 pub(super) fn exec(
     conn: &Connection,
     plan: &LogicalOp,

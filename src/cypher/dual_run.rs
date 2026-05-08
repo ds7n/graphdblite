@@ -299,6 +299,35 @@ fn dual_run_typed_expand_returns_rel_property() {
 }
 
 #[test]
+fn dual_run_multi_match_cross() {
+    // Two MATCH clauses → CorrelatedJoin/CrossProduct. Phase 3g.1 routes
+    // the join through the named path and bridges to slots for the upper
+    // Project.
+    let db = fresh_db();
+    let rows = dual_run(
+        &db,
+        "MATCH (a:Person) MATCH (b:Person) WHERE a.name < b.name \
+         RETURN a.name AS x, b.name AS y",
+        false,
+    );
+    assert_eq!(rows.len(), 3);
+}
+
+#[test]
+fn dual_run_exists_subquery() {
+    // EXISTS pattern predicate — exercises pattern-subquery handling
+    // through the bridged correlated path.
+    let db = fresh_db();
+    let rows = dual_run(
+        &db,
+        "MATCH (a:Person) WHERE EXISTS { MATCH (a)-[:KNOWS]->() } \
+         RETURN a.name AS nm",
+        false,
+    );
+    assert_eq!(rows.len(), 2);
+}
+
+#[test]
 fn dual_run_optional_match() {
     let db = fresh_db();
     let rows = dual_run(

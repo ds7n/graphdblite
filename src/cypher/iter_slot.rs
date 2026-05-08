@@ -148,6 +148,16 @@ pub fn is_slot_supported(plan: &LogicalOp) -> bool {
                     .values()
                     .all(|e| !expr_has_bare_variable(e))
         }
+        // Phase 3g.1 — correlated. Real slot-native join logic is open
+        // question #4 in the plan and warrants its own design pass; for
+        // now we bridge: route the entire join subtree through `exec()`
+        // (the named materialized path) and present the result as a
+        // slot iter so upstream Project/Aggregate/Sort can stay on the
+        // slot path. No perf win at the join itself, but no regression
+        // either — and it widens dual-run coverage.
+        LogicalOp::CrossProduct { .. }
+        | LogicalOp::CorrelatedJoin { .. }
+        | LogicalOp::LeftOuterJoin { .. } => true,
         _ => false,
     }
 }
@@ -454,6 +464,16 @@ fn build_slot_iter_inner<'a>(
             Ok(Box::new(SortSlotIter::new(input_iter, items.clone(), conn)))
         }
 
+        LogicalOp::CrossProduct { .. }
+        | LogicalOp::CorrelatedJoin { .. }
+        | LogicalOp::LeftOuterJoin { .. } => {
+            // Phase 3g.1 bridge — see is_slot_supported comment. Run the
+            // whole join subtree through `exec()` and adapt to slots.
+            let output_schema = infer_with_props(plan, refs);
+            let records = crate::cypher::executor::exec_pub(conn, plan, ctx)?;
+            Ok(Box::new(MaterializedSlotIter::new(records, output_schema)))
+        }
+
         LogicalOp::Unwind { input, expr, alias } => {
             let input_iter = build_slot_iter_inner(conn, input, ctx, refs)?;
             let output_schema = infer_with_props(plan, refs);
@@ -579,6 +599,34 @@ impl SlotRecordIter for EmptyRowSlotIter {
             self.done = true;
             Ok(Some(SlotRecord::new()))
         }
+    }
+    fn schema(&self) -> &RecordSchema {
+        &self.schema
+    }
+}
+
+/// Wraps a pre-materialized `Vec<NamedRecord>` (typically from running a
+/// subtree through the named `exec()`) and presents it as a slot iter
+/// against a fixed output schema. Used in Phase 3g.1 to bridge correlated
+/// operators — keeping upstream Project / Aggregate / Sort on the slot
+/// path even when the join itself doesn't have a slot-native impl yet.
+pub struct MaterializedSlotIter {
+    records: std::vec::IntoIter<NamedRecord>,
+    schema: RecordSchema,
+}
+
+impl MaterializedSlotIter {
+    pub fn new(records: Vec<NamedRecord>, schema: RecordSchema) -> Self {
+        Self {
+            records: records.into_iter(),
+            schema,
+        }
+    }
+}
+
+impl SlotRecordIter for MaterializedSlotIter {
+    fn next_slot(&mut self) -> Result<Option<SlotRecord>> {
+        Ok(self.records.next().map(|r| named_to_slot(&self.schema, &r)))
     }
     fn schema(&self) -> &RecordSchema {
         &self.schema

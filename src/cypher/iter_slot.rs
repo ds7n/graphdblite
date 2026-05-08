@@ -92,6 +92,28 @@ fn is_slot_supported_inner(plan: &LogicalOp, refs: &PropertyRefs) -> bool {
         LogicalOp::Project { input, items, .. } => {
             is_slot_supported_inner(input, refs) && items.iter().all(is_project_item_supported)
         }
+        LogicalOp::Expand {
+            input,
+            edge_types,
+            direction,
+            var_length_prop_filters,
+            ..
+        } => {
+            // The slot path reuses iter::ExpandIter. ExpandIter has known
+            // gaps relative to exec_expand for unlabeled relationships
+            // (`[r]` without a type) — it doesn't discover edge types per
+            // source node — and for `Direction::Both` traversals the
+            // single-hop branch only checks one orientation. Restrict to
+            // the cases ExpandIter handles faithfully; everything else
+            // falls back to the named (exec_expand) path.
+            if edge_types.is_empty() || matches!(direction, crate::types::Direction::Both) {
+                return false;
+            }
+            is_slot_supported_inner(input, refs)
+                && var_length_prop_filters
+                    .values()
+                    .all(|e| !expr_has_bare_variable(e))
+        }
         _ => false,
     }
 }
@@ -236,6 +258,55 @@ fn build_slot_iter_inner<'a>(
                 predicate: predicate.clone(),
                 conn,
             }))
+        }
+
+        LogicalOp::Expand {
+            input,
+            src_alias,
+            dst_alias,
+            rel_alias,
+            edge_types,
+            direction,
+            min_hops,
+            max_hops,
+            var_length,
+            var_length_prop_filters,
+            result_cap: _,
+        } => {
+            // Reuse the named ExpandIter via slot↔named adapters: in 3d
+            // we trade per-row materialize/convert for not duplicating
+            // ~180 lines of dense traversal logic. Phase 5 re-baseline
+            // measures away the conversion overhead.
+            let input_slot_iter = build_slot_iter_inner(conn, input, ctx, refs)?;
+            let output_schema = infer_with_props(plan, refs);
+            let named_input: Box<dyn crate::cypher::iter::RecordIter + 'a> =
+                Box::new(SlotToNamedAdapter::new(input_slot_iter));
+            let prop_filter_values: std::collections::HashMap<String, Value> =
+                var_length_prop_filters
+                    .iter()
+                    .filter_map(|(k, e)| match &e.kind {
+                        ExprKind::Literal(lit) => Some((k.clone(), literal_to_value(lit))),
+                        _ => None,
+                    })
+                    .collect();
+            let named_expand = crate::cypher::iter::ExpandIter::new(
+                named_input,
+                conn,
+                src_alias.clone(),
+                dst_alias.clone(),
+                rel_alias.clone(),
+                edge_types.clone(),
+                *direction,
+                *min_hops,
+                *max_hops,
+                *var_length,
+                prop_filter_values,
+                ctx.max_traversal_work,
+            );
+            Ok(Box::new(NamedToSlotAdapter::new(
+                Box::new(named_expand),
+                output_schema,
+            )))
         }
 
         LogicalOp::Project {
@@ -534,6 +605,74 @@ fn literal_to_value_local(lit: &crate::cypher::ast::LiteralValue) -> Value {
     }
 }
 
-// Suppress unused-import warnings for type aliases we'll need in 3d+.
+// ---------------------------------------------------------------------------
+// Slot ↔ Named adapters
+//
+// The named iterator stack (`cypher::iter`) carries a lot of dense logic
+// — Expand's relationship-uniqueness check, var-length traversal, bound
+// destination filtering — that we'd rather not duplicate at slot level.
+// These adapters let a slot iter consume / produce named records at one
+// boundary so the named operator runs unchanged in between.
+
+/// Wraps a slot iter so it presents as a named [`RecordIter`]. Each input
+/// slot record is materialized into a `NamedRecord` using its schema.
+pub struct SlotToNamedAdapter<'a> {
+    input: Box<dyn SlotRecordIter + 'a>,
+}
+
+impl<'a> SlotToNamedAdapter<'a> {
+    pub fn new(input: Box<dyn SlotRecordIter + 'a>) -> Self {
+        Self { input }
+    }
+}
+
+impl<'a> crate::cypher::iter::RecordIter for SlotToNamedAdapter<'a> {
+    fn next_record(&mut self) -> Result<Option<NamedRecord>> {
+        Ok(self
+            .input
+            .next_slot()?
+            .map(|rec| materialize_named(self.input.schema(), &rec)))
+    }
+}
+
+/// Wraps a named iter so it presents as a [`SlotRecordIter`] over a fixed
+/// output schema. Each named record is decanted into a slot record by
+/// looking up each slot name in the named record.
+pub struct NamedToSlotAdapter<'a> {
+    input: Box<dyn crate::cypher::iter::RecordIter + 'a>,
+    schema: RecordSchema,
+}
+
+impl<'a> NamedToSlotAdapter<'a> {
+    pub fn new(input: Box<dyn crate::cypher::iter::RecordIter + 'a>, schema: RecordSchema) -> Self {
+        Self { input, schema }
+    }
+}
+
+impl<'a> SlotRecordIter for NamedToSlotAdapter<'a> {
+    fn next_slot(&mut self) -> Result<Option<SlotRecord>> {
+        match self.input.next_record()? {
+            Some(named) => Ok(Some(named_to_slot(&self.schema, &named))),
+            None => Ok(None),
+        }
+    }
+    fn schema(&self) -> &RecordSchema {
+        &self.schema
+    }
+}
+
+/// Project a [`NamedRecord`] into the shape declared by `schema`. Keys
+/// missing from the named record become `Value::Null` slots.
+fn named_to_slot(schema: &RecordSchema, named: &NamedRecord) -> SlotRecord {
+    let mut rec = SlotRecord::with_capacity(schema.len());
+    for (slot, name) in schema.iter() {
+        if let Some(v) = named.get(name) {
+            rec.set(slot, v.clone());
+        }
+    }
+    rec
+}
+
+// Suppress unused-import warnings for type aliases we'll need in 3e+.
 #[allow(dead_code)]
 fn _kept_for_future_use(_: NodeId, _: SlotId) {}

@@ -262,6 +262,43 @@ pub struct ExpandIter<'a> {
     buffer: std::vec::IntoIter<NamedRecord>,
 }
 
+impl<'a> ExpandIter<'a> {
+    /// Construct an ExpandIter from an arbitrary upstream `RecordIter`. Used
+    /// by `cypher::iter_slot` to wrap a slot-input adapter so the slot path
+    /// reuses Expand's dense traversal logic instead of duplicating it.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn new(
+        input: Box<dyn RecordIter + 'a>,
+        conn: &'a Connection,
+        src_alias: String,
+        dst_alias: String,
+        rel_alias: Option<String>,
+        edge_types: Vec<String>,
+        direction: Direction,
+        min_hops: u32,
+        max_hops: u32,
+        var_length: bool,
+        var_length_prop_filters: HashMap<String, Value>,
+        max_traversal_work: u64,
+    ) -> Self {
+        Self {
+            input,
+            conn,
+            src_alias,
+            dst_alias,
+            rel_alias,
+            edge_types,
+            direction,
+            min_hops,
+            max_hops,
+            var_length,
+            var_length_prop_filters,
+            max_traversal_work,
+            buffer: Vec::new().into_iter(),
+        }
+    }
+}
+
 impl<'a> RecordIter for ExpandIter<'a> {
     fn next_record(&mut self) -> Result<Option<NamedRecord>> {
         loop {

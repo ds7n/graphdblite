@@ -194,6 +194,18 @@ fn dual_run_with_chain() {
 }
 
 #[test]
+fn dual_run_typed_expand_returns_rel_property() {
+    // Note: unlabeled `[r]` patterns fall back to the named path because
+    // `iter::ExpandIter` (which the slot path wraps) has known gaps for
+    // type discovery; see is_slot_supported in iter_slot.rs.
+    let mut db = Database::open_memory().unwrap();
+    db.execute("CREATE ()-[:T {num: 1}]->()").unwrap();
+    let rows = dual_run(&db, "MATCH ()-[r:T]->() RETURN r.num", false);
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].get("r.num"), Some(&Value::I64(1)));
+}
+
+#[test]
 fn dual_run_optional_match() {
     let db = fresh_db();
     let rows = dual_run(

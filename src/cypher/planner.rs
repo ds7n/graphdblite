@@ -3461,15 +3461,11 @@ fn validate_non_agg_leaves_in_scope(
                 validate_non_agg_leaves_in_scope(arg, scope)?;
             }
         }
-        ExprKind::Variable(name) => {
-            if !scope.contains(name) {
-                return Err(undefined_variable_error(name, scope, expr.span));
-            }
+        ExprKind::Variable(name) if !scope.contains(name) => {
+            return Err(undefined_variable_error(name, scope, expr.span));
         }
-        ExprKind::Property(var, _) => {
-            if !scope.contains(var) {
-                return Err(undefined_variable_error(var, scope, expr.span));
-            }
+        ExprKind::Property(var, _) if !scope.contains(var) => {
+            return Err(undefined_variable_error(var, scope, expr.span));
         }
         ExprKind::BinaryOp { left, right, .. } => {
             validate_non_agg_leaves_in_scope(left, scope)?;
@@ -3478,7 +3474,7 @@ fn validate_non_agg_leaves_in_scope(
         ExprKind::Not(inner) | ExprKind::IsNull(inner) | ExprKind::IsNotNull(inner) => {
             validate_non_agg_leaves_in_scope(inner, scope)?;
         }
-        _ => {} // Literals, parameters, Star — always valid.
+        _ => {} // Literals, parameters, Star, in-scope Variable/Property — always valid.
     }
     Ok(())
 }
@@ -3486,15 +3482,11 @@ fn validate_non_agg_leaves_in_scope(
 /// Check that all variable references in an expression are in the given scope.
 fn validate_expr_in_scope(expr: &Expr, scope: &HashSet<String>) -> crate::types::Result<()> {
     match &expr.kind {
-        ExprKind::Variable(name) => {
-            if !scope.contains(name) {
-                return Err(undefined_variable_error(name, scope, expr.span));
-            }
+        ExprKind::Variable(name) if !scope.contains(name) => {
+            return Err(undefined_variable_error(name, scope, expr.span));
         }
-        ExprKind::Property(var, _) => {
-            if !scope.contains(var) {
-                return Err(undefined_variable_error(var, scope, expr.span));
-            }
+        ExprKind::Property(var, _) if !scope.contains(var) => {
+            return Err(undefined_variable_error(var, scope, expr.span));
         }
         ExprKind::BinaryOp { left, right, .. } => {
             validate_expr_in_scope(left, scope)?;

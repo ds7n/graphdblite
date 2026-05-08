@@ -4,6 +4,7 @@ pub mod eval;
 pub mod executor;
 pub mod ir;
 pub mod iter;
+pub mod iter_slot;
 pub mod parse_cache;
 pub mod parser;
 pub mod planner;

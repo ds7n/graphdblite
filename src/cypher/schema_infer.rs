@@ -28,9 +28,22 @@ use crate::cypher::eval::expr_to_column_name;
 use crate::cypher::ir::{AggregateExpr, LogicalOp};
 use crate::cypher::record_v2::RecordSchema;
 
+/// Per-alias set of property names referenced anywhere in a plan.
+///
+/// Built by [`collect_property_refs`] and consumed by
+/// [`infer_with_props`] so that `Scan { alias }` reserves slots for every
+/// property a downstream operator may read, even when the references live
+/// in subtrees above the scan.
+pub type PropertyRefs = HashMap<String, BTreeSet<String>>;
+
 /// Compute the output [`RecordSchema`] of `op`'s pipeline.
+///
+/// For consistency when inferring schemas across a plan tree, prefer
+/// [`collect_property_refs`] + [`infer_with_props`] so a single pre-pass
+/// sees the whole plan's references and every subtree's schema agrees on
+/// which property slots to reserve.
 pub fn infer_schema(op: &LogicalOp) -> RecordSchema {
-    let mut props: HashMap<String, BTreeSet<String>> = HashMap::new();
+    let mut props = PropertyRefs::new();
     collect_property_refs(op, &mut props);
     infer_with_props(op, &props)
 }
@@ -38,7 +51,10 @@ pub fn infer_schema(op: &LogicalOp) -> RecordSchema {
 // ---------------------------------------------------------------------------
 // Schema inference
 
-fn infer_with_props(op: &LogicalOp, props: &HashMap<String, BTreeSet<String>>) -> RecordSchema {
+/// Infer the output schema of `op`, using a pre-computed [`PropertyRefs`]
+/// so subtree-level inference still slots properties referenced by
+/// ancestors.
+pub fn infer_with_props(op: &LogicalOp, props: &HashMap<String, BTreeSet<String>>) -> RecordSchema {
     use LogicalOp::*;
 
     match op {
@@ -348,7 +364,8 @@ fn populate_pattern_bindings(
 // reserve even when the references live in downstream `Filter`/`Project`/
 // `Aggregate` expressions.
 
-fn collect_property_refs(op: &LogicalOp, out: &mut HashMap<String, BTreeSet<String>>) {
+/// Walk `op` and record every `alias.prop` reference into `out`.
+pub fn collect_property_refs(op: &LogicalOp, out: &mut HashMap<String, BTreeSet<String>>) {
     use LogicalOp::*;
     match op {
         SingleRow | EmptyRow | Scan { .. } => {}

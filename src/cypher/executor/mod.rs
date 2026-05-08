@@ -230,19 +230,36 @@ pub fn execute_with_ctx_named(
     }
 }
 
-/// Slot-indexed path. Phase 3a: stub that delegates to
-/// `execute_with_ctx_named` so dual-run trivially agrees while subsequent
-/// Phase 3 sub-phases (3b–3g) migrate operators one at a time. The public
-/// signature returns `Vec<NamedRecord>` because the slot ↔ name conversion
-/// happens at the API boundary (`ResultStream::into_named_records`); inside
-/// this function, intermediate records will be `record_v2::Record`.
+/// Slot-indexed path. Phase 3b: handles `Scan` / `IndexLookup` / `Project`
+/// (plus `EmptyRow` / `SingleRow` leaves) end-to-end via the slot iterator
+/// stack in `cypher::iter_slot`; falls back to `execute_with_ctx_named`
+/// for any plan containing operators not yet migrated. The fallback is
+/// transparent — same `Vec<NamedRecord>` return shape — so callers don't
+/// need to know which path ran.
+///
+/// Phase 3c–3g progressively widen [`is_slot_supported`] until every
+/// read-side operator runs natively on slots; Phase 4 does the same for
+/// writes. Once that's done, the boundary conversion in `collect_to_named`
+/// becomes the only place strings are reified per row.
 #[allow(dead_code)] // exercised by dual_run tests + dispatcher when feature is on
 pub fn execute_with_ctx_slot(
     conn: &Connection,
     plan: &LogicalOp,
     ctx: &ExecContext,
 ) -> Result<Vec<NamedRecord>> {
-    execute_with_ctx_named(conn, plan, ctx)
+    use crate::cypher::iter_slot;
+
+    validate_traversal_depth(plan, ctx)?;
+    if !iter_slot::is_slot_supported(plan) {
+        return execute_with_ctx_named(conn, plan, ctx);
+    }
+    let mut iter = iter_slot::build_slot_iter(conn, plan, ctx)?;
+    let result = iter_slot::collect_to_named(&mut *iter)?;
+    if is_bare_write(plan) {
+        Ok(vec![])
+    } else {
+        Ok(result)
+    }
 }
 
 /// Check whether a plan tree contains only read-only operators.

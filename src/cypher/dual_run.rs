@@ -327,6 +327,79 @@ fn dual_run_exists_subquery() {
     assert_eq!(rows.len(), 2);
 }
 
+// ---------------------------------------------------------------------------
+// Phase 4.1 — write-path bridge smokes. Each scenario runs through both
+// paths; the slot path bridges the write subtree through `exec_pub` and
+// surfaces results via `MaterializedSlotIter`.
+
+#[test]
+fn dual_run_create_node_return_property() {
+    // CreateNode → Project. Reads `n.name` from the bridged write result;
+    // exercises the prop-key population in `exec_create_node`.
+    let db = Database::open_memory().unwrap();
+    let rows = dual_run(&db, "CREATE (n {name: 'foo'}) RETURN n.name AS p", false);
+    assert_eq!(rows.len(), 1);
+}
+
+#[test]
+fn dual_run_match_set_return() {
+    let mut db = Database::open_memory().unwrap();
+    db.execute("CREATE (:T {x: 1})").unwrap();
+    let rows = dual_run(&db, "MATCH (n:T) SET n.x = 42 RETURN n.x AS x", false);
+    assert_eq!(rows.len(), 1);
+}
+
+#[test]
+fn dual_run_match_delete_return_property_errors() {
+    // `DELETE n RETURN n.prop` must raise EntityNotFound on both paths.
+    // Use a separate runner because dual_run asserts no error.
+    let mut db = Database::open_memory().unwrap();
+    db.execute("CREATE ({num: 7})").unwrap();
+    let conn = db.connection();
+    let stmt = crate::cypher::parser::parse("MATCH (n) DELETE n RETURN n.num").unwrap();
+    let plan = crate::cypher::planner::plan(conn, &stmt).unwrap();
+    let ctx = ExecContext::default();
+    assert!(execute_with_ctx_named(conn, &plan, &ctx).is_err());
+    // Reset state — delete consumed the only node above.
+    db.execute("CREATE ({num: 7})").unwrap();
+    let conn = db.connection();
+    assert!(execute_with_ctx_slot(conn, &plan, &ctx).is_err());
+}
+
+#[test]
+fn dual_run_merge_create_branch() {
+    // MERGE on an empty graph → create branch; RETURN reads back populated prop.
+    let db = Database::open_memory().unwrap();
+    let rows = dual_run(&db, "MERGE (a:A {n: 5}) RETURN a.n AS n", false);
+    assert_eq!(rows.len(), 1);
+}
+
+#[test]
+fn dual_run_merge_match_branch() {
+    let mut db = Database::open_memory().unwrap();
+    db.execute("CREATE (:A {n: 5})").unwrap();
+    let rows = dual_run(&db, "MERGE (a:A {n: 5}) RETURN a.n AS n", false);
+    assert_eq!(rows.len(), 1);
+}
+
+#[test]
+fn dual_run_with_rename_through_merge() {
+    // `WITH a AS x` rename followed by a write-bridge then RETURN x.id —
+    // exercises the schema_infer Project rename propagation that lets the
+    // bridged named record carry `x.__id` / `x.id` slots.
+    let mut db = Database::open_memory().unwrap();
+    db.execute("CREATE (:Src {id: 0})").unwrap();
+    // Label both sides so the second pass (dual_run runs _named then
+    // _slot against the same DB) doesn't pick up the row created by the
+    // first pass.
+    let rows = dual_run(
+        &db,
+        "MATCH (n:Src) WITH n AS a MERGE (b:B {ref: a.id}) RETURN a.id AS x, b.ref AS y",
+        false,
+    );
+    assert_eq!(rows.len(), 1);
+}
+
 #[test]
 fn dual_run_optional_match() {
     let db = fresh_db();

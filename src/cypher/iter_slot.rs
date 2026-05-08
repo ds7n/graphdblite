@@ -158,6 +158,27 @@ pub fn is_slot_supported(plan: &LogicalOp) -> bool {
         LogicalOp::CrossProduct { .. }
         | LogicalOp::CorrelatedJoin { .. }
         | LogicalOp::LeftOuterJoin { .. } => true,
+        // Phase 4.1 — write-path bridge. Mirrors the 3g.1 join bridge:
+        // route the entire write subtree through the named `exec()` and
+        // present the resulting records as a slot iter via
+        // `MaterializedSlotIter`. The write itself happens during iter
+        // construction (named exec materializes), so a bare-write plan
+        // (no RETURN) still mutates exactly once and `is_bare_write` in
+        // `execute_with_ctx_slot` continues to discard the result rows.
+        // No perf win at the write, no regression — extends dual_run
+        // coverage to every TCK scenario per Phase 4.2. Slot-native
+        // writes land in a follow-up.
+        LogicalOp::CreateNode { .. }
+        | LogicalOp::CreateEdge { .. }
+        | LogicalOp::CreateSequence { .. }
+        | LogicalOp::MatchCreate { .. }
+        | LogicalOp::Delete { .. }
+        | LogicalOp::SetProperty { .. }
+        | LogicalOp::SetLabel { .. }
+        | LogicalOp::SetProperties { .. }
+        | LogicalOp::Remove { .. }
+        | LogicalOp::Merge { .. }
+        | LogicalOp::MatchMerge { .. } => true,
         _ => false,
     }
 }
@@ -466,9 +487,24 @@ fn build_slot_iter_inner<'a>(
 
         LogicalOp::CrossProduct { .. }
         | LogicalOp::CorrelatedJoin { .. }
-        | LogicalOp::LeftOuterJoin { .. } => {
-            // Phase 3g.1 bridge — see is_slot_supported comment. Run the
-            // whole join subtree through `exec()` and adapt to slots.
+        | LogicalOp::LeftOuterJoin { .. }
+        // Phase 4.1 — same bridge shape for write ops. The named `exec()`
+        // performs the mutation and produces the result records (matched
+        // bindings plus newly-created entities); we adapt to slots so any
+        // upstream Project/Sort/Limit can stay on the slot path.
+        | LogicalOp::CreateNode { .. }
+        | LogicalOp::CreateEdge { .. }
+        | LogicalOp::CreateSequence { .. }
+        | LogicalOp::MatchCreate { .. }
+        | LogicalOp::Delete { .. }
+        | LogicalOp::SetProperty { .. }
+        | LogicalOp::SetLabel { .. }
+        | LogicalOp::SetProperties { .. }
+        | LogicalOp::Remove { .. }
+        | LogicalOp::Merge { .. }
+        | LogicalOp::MatchMerge { .. } => {
+            // Phase 3g.1 / 4.1 bridge — see is_slot_supported comment.
+            // Run the whole subtree through `exec()` and adapt to slots.
             let output_schema = infer_with_props(plan, refs);
             let records = crate::cypher::executor::exec_pub(conn, plan, ctx)?;
             Ok(Box::new(MaterializedSlotIter::new(records, output_schema)))
@@ -754,7 +790,20 @@ impl<'a> SlotRecordIter for ProjectSlotIter<'a> {
             //      bindings (e.g. `RETURN a.id AS a` would pick up the
             //      `a → I64(node_id)` slot instead of `a.id`).
             let expr_col = expr_to_column_name(&item.expr);
-            let value = if let Some(in_slot) = input_schema.slot(&expr_col) {
+            // Skip the precomputed-value fast path when `item.expr` reads a
+            // property of a variable an upstream `Delete` has tagged — that
+            // must raise `EntityNotFound` via named eval, not return the
+            // pre-delete cached value. (Mirrors eval_project_item's check.)
+            let deleted_var = property_deleted_var(&item.expr, input_schema, &input_rec);
+            let value = if deleted_var {
+                eval_project_item(
+                    &item.expr,
+                    input_schema,
+                    &input_rec,
+                    &mut materialized,
+                    self.conn,
+                )?
+            } else if let Some(in_slot) = input_schema.slot(&expr_col) {
                 input_rec.get(in_slot).clone()
             } else if col != expr_col && is_aggregate_call(&item.expr) {
                 if let Some(in_slot) = input_schema.slot(&col) {
@@ -787,6 +836,21 @@ impl<'a> SlotRecordIter for ProjectSlotIter<'a> {
     }
 }
 
+/// True iff `e` is a `Property(var, _)` (or wraps such) where
+/// `<var>.__deleted` is bound to `Bool(true)` in `(input_schema, input_rec)`.
+/// Conservatively only recognizes the common shape (top-level Property);
+/// anything more complex falls through to the materialize+eval path which
+/// raises the error itself.
+fn property_deleted_var(e: &Expr, input_schema: &RecordSchema, input_rec: &SlotRecord) -> bool {
+    if let ExprKind::Property(var, _) = &e.kind {
+        let key = format!("{var}.__deleted");
+        if let Some(slot) = input_schema.slot(&key) {
+            return matches!(input_rec.get(slot), Value::Bool(true));
+        }
+    }
+    false
+}
+
 fn column_name_for_item(item: &ReturnItem) -> String {
     item.alias
         .clone()
@@ -808,9 +872,23 @@ fn eval_project_item(
     match &e.kind {
         ExprKind::Literal(lit) => Ok(literal_to_value_local(lit)),
         ExprKind::Property(var, prop) => {
-            let key = format!("{var}.{prop}");
-            if let Some(slot) = input_schema.slot(&key) {
-                return Ok(input_rec.get(slot).clone());
+            // Mirror `eval_property`'s deletion check: an upstream `Delete`
+            // sets `<var>.__deleted = true` and any property read on a
+            // deleted entity must raise `EntityNotFound`. The slot bridge
+            // picks this up via the `<var>.__deleted` slot reserved by
+            // `schema_infer` for `Delete`. When the flag is set, defer to
+            // named `eval_expr` (which raises) rather than returning the
+            // pre-delete cached value via the fast path.
+            let deleted_key = format!("{var}.__deleted");
+            let is_deleted = input_schema
+                .slot(&deleted_key)
+                .map(|s| matches!(input_rec.get(s), Value::Bool(true)))
+                .unwrap_or(false);
+            if !is_deleted {
+                let key = format!("{var}.{prop}");
+                if let Some(slot) = input_schema.slot(&key) {
+                    return Ok(input_rec.get(slot).clone());
+                }
             }
             let view =
                 materialized.get_or_insert_with(|| materialize_named(input_schema, input_rec));

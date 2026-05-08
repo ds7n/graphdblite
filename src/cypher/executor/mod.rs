@@ -1569,6 +1569,15 @@ fn exec_create_node(
     if let Some(alias) = alias {
         rec.set(alias.to_string(), Value::I64(id.0 as i64));
         rec.set(format!("{alias}.__id"), Value::I64(id.0 as i64));
+        // Populate property bindings so the slot bridge can fill prop slots
+        // declared in the inferred schema. Deliberately *not* setting
+        // `__label`/`__labels` — that pair triggers `build_compound_binding`,
+        // and a Variable-resolution shift here would change downstream
+        // semantics (e.g. `WITH a, ...` where `a` was previously `Value::I64`
+        // but would become `Value::Node`).
+        for (k, v) in &props {
+            rec.set(format!("{alias}.{k}"), v.clone());
+        }
     }
     Ok(vec![rec])
 }
@@ -1714,6 +1723,11 @@ fn exec_match_create(
                         bindings.insert(alias.clone(), id);
                         out_rec.set(alias.clone(), Value::I64(id.0 as i64));
                         out_rec.set(format!("{alias}.__id"), Value::I64(id.0 as i64));
+                        // Property keys only — see exec_create_node note re:
+                        // compound-binding heuristic and __label.
+                        for (k, v) in &props {
+                            out_rec.set(format!("{alias}.{k}"), v.clone());
+                        }
                     }
                 }
                 LogicalOp::CreateEdge {
@@ -2514,11 +2528,19 @@ fn exec_merge_node(
     let mut rec = NamedRecord::new();
     rec.set(alias.to_string(), Value::I64(node_id.0 as i64));
     rec.set(format!("{alias}.__id"), Value::I64(node_id.0 as i64));
+    // Populate property bindings from the resolved node so slot-path Property
+    // reads land on populated slots. Skip `__label`/`__labels`: that pair
+    // triggers `build_compound_binding`, shifting Variable resolution from
+    // `Value::I64` to `Value::Node` and breaking downstream code paths that
+    // expect the flat shape (see exec_create_node note).
+    let resolved = node::get_node(conn, node_id)?;
+    for (k, v) in &resolved.properties {
+        rec.set(format!("{alias}.{k}"), v.clone());
+    }
 
     // Bind path variable if present: MERGE p = (a {props})
     if let Some(ref path_var) = pattern.path_variable {
-        let n = node::get_node(conn, node_id)?;
-        rec.set(path_var.clone(), Value::Path(PathValue::single(n)));
+        rec.set(path_var.clone(), Value::Path(PathValue::single(resolved)));
     }
 
     Ok(vec![rec])
@@ -2713,10 +2735,16 @@ fn exec_match_merge(
                 let mut out_rec = rec.clone();
                 out_rec.set(alias.to_string(), Value::I64(id.0 as i64));
                 out_rec.set(format!("{alias}.__id"), Value::I64(id.0 as i64));
+                // Populate prop keys (post-ON CREATE) so slot-path Property
+                // reads land on populated slots. Skip __label/__labels —
+                // see exec_create_node note re: compound-binding heuristic.
+                let resolved = node::get_node(conn, id)?;
+                for (k, v) in &resolved.properties {
+                    out_rec.set(format!("{alias}.{k}"), v.clone());
+                }
                 // Bind path variable if present.
                 if let Some(ref path_var) = merge_pattern.path_variable {
-                    let n = node::get_node(conn, id)?;
-                    out_rec.set(path_var.clone(), Value::Path(PathValue::single(n)));
+                    out_rec.set(path_var.clone(), Value::Path(PathValue::single(resolved)));
                 }
                 result.push(out_rec);
             } else {
@@ -2728,10 +2756,14 @@ fn exec_match_merge(
                     let mut out_rec = rec.clone();
                     out_rec.set(alias.to_string(), Value::I64(n.id.0 as i64));
                     out_rec.set(format!("{alias}.__id"), Value::I64(n.id.0 as i64));
+                    // Re-fetch (ON MATCH may have written) and populate prop keys.
+                    let resolved = node::get_node(conn, n.id)?;
+                    for (k, v) in &resolved.properties {
+                        out_rec.set(format!("{alias}.{k}"), v.clone());
+                    }
                     // Bind path variable if present.
                     if let Some(ref path_var) = merge_pattern.path_variable {
-                        let node = node::get_node(conn, n.id)?;
-                        out_rec.set(path_var.clone(), Value::Path(PathValue::single(node)));
+                        out_rec.set(path_var.clone(), Value::Path(PathValue::single(resolved)));
                     }
                     result.push(out_rec);
                 }

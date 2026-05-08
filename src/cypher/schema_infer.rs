@@ -101,16 +101,56 @@ pub fn infer_with_props(op: &LogicalOp, props: &HashMap<String, BTreeSet<String>
         | Distinct { input }
         | Skip { input, .. }
         | Limit { input, .. }
-        | Delete { input, .. }
         | SetProperty { input, .. }
         | SetLabel { input, .. }
         | SetProperties { input, .. }
         | Remove { input, .. } => infer_with_props(input, props),
 
-        Project { items, .. } => {
+        // Delete sets `<var>.__deleted = true` on returned records for each
+        // Variable expression. Reserve those slots so the slot bridge can
+        // surface the flag to downstream operators (Project/Property reads
+        // raise `EntityNotFound` when the flag is set).
+        Delete { input, exprs, .. } => {
+            let mut s = infer_with_props(input, props);
+            for e in exprs {
+                if let crate::cypher::ast::ExprKind::Variable(v) = &e.kind {
+                    s.add(format!("{v}.__deleted"));
+                }
+            }
+            s
+        }
+
+        Project {
+            input,
+            items,
+            emit_compound,
+        } => {
             let mut s = RecordSchema::new();
+            // Mirror `exec_project`'s intermediate Variable rename: when an
+            // item is `Variable(src) [AS alias]` and we're not at the
+            // final RETURN (`emit_compound = false`), propagate every
+            // `src.*` slot from the input schema as `alias.*` so downstream
+            // operators can still resolve `alias.__id` / `alias.prop` etc.
+            // Final RETURN keeps the simple "alias-only" shape.
+            let in_schema = if !*emit_compound {
+                Some(infer_with_props(input, props))
+            } else {
+                None
+            };
             for item in items {
-                s.add(return_item_name(item));
+                let col = return_item_name(item);
+                s.add(&col);
+                if let (false, Some(in_s)) = (*emit_compound, in_schema.as_ref()) {
+                    if let crate::cypher::ast::ExprKind::Variable(src) = &item.expr.kind {
+                        let src_prefix = format!("{src}.");
+                        let dst_prefix = format!("{col}.");
+                        for (_, name) in in_s.iter() {
+                            if let Some(rest) = name.strip_prefix(&src_prefix) {
+                                s.add(format!("{dst_prefix}{rest}"));
+                            }
+                        }
+                    }
+                }
             }
             s
         }

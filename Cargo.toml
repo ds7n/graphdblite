@@ -41,6 +41,11 @@ anyhow = { version = "1", optional = true }
 # step definitions and Gherkin world. Internal — used only by `tests/tck.rs`.
 # Enable with: cargo test --test tck --features tck-support
 tck-support = ["dep:cucumber", "dep:anyhow"]
+# Marker feature gating the alloc-regression test (`tests/alloc_regression.rs`).
+# `dhat` is always a dev-dep but only activates when this feature is on, so
+# regular `cargo test` is unaffected.
+# Run with: cargo test --test alloc_regression --features dhat-heap --release
+dhat-heap = []
 # Exposes a hidden `__fuzz` module re-exporting the parser and planner entry
 # points. Only intended for `cargo fuzz` targets in `fuzz/` — not part of the
 # public API and offers no semver guarantees.
@@ -50,6 +55,7 @@ fuzzing = []
 tempfile = "3"
 pollster = "0.3"
 criterion = { version = "0.5", default-features = false, features = ["plotters", "cargo_bench_support"] }
+dhat = "0.3"
 
 [[bench]]
 name = "cypher"
@@ -74,3 +80,12 @@ required-features = ["tck-support"]
 name = "record_columns_golden"
 harness = false
 required-features = ["tck-support"]
+
+# Allocation-count regression test — see tests/alloc_regression.rs.
+# Profiles a fixed query set under dhat and asserts per-query allocation
+# counts stay within ±5% of a committed baseline. Phase 0.3 of
+# `plans/record-v2.md`.
+[[test]]
+name = "alloc_regression"
+harness = false
+required-features = ["dhat-heap"]

@@ -23,7 +23,10 @@ crate-type = ["lib"]
 rusqlite = { version = "0.32", features = ["bundled"] }
 rmp-serde = "1"
 serde = { version = "1", features = ["derive"] }
-indexmap = "2"
+# Cap below 2.14 — that release pulls hashbrown 0.17, which uses
+# edition2024 and requires Rust 1.85. Drop this cap when our MSRV
+# moves past 1.85.
+indexmap = ">=2, <2.14"
 pest = "2"
 pest_derive = "2"
 chrono = { version = "0.4.44", features = ["serde"] }

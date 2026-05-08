@@ -192,7 +192,31 @@ fn is_bare_write(plan: &LogicalOp) -> bool {
 }
 
 /// Execute with an explicit context carrying runtime limits.
+///
+/// Dispatches to the legacy `IndexMap`-backed `execute_with_ctx_named` by
+/// default, or the slot-indexed `execute_with_ctx_slot` when the
+/// `record-v2` feature is on. Both functions live side-by-side during the
+/// migration so `dual_run` can call them in-process for the same plan and
+/// compare results — see `plans/record-v2.md` Phase 3a.
 pub fn execute_with_ctx(
+    conn: &Connection,
+    plan: &LogicalOp,
+    ctx: &ExecContext,
+) -> Result<Vec<NamedRecord>> {
+    #[cfg(feature = "record-v2")]
+    {
+        execute_with_ctx_slot(conn, plan, ctx)
+    }
+    #[cfg(not(feature = "record-v2"))]
+    {
+        execute_with_ctx_named(conn, plan, ctx)
+    }
+}
+
+/// Legacy path: produces `NamedRecord`s via the existing `IndexMap`-backed
+/// executor. Definitive truth during the record-v2 migration; every dual-run
+/// comparison treats this output as the reference.
+pub fn execute_with_ctx_named(
     conn: &Connection,
     plan: &LogicalOp,
     ctx: &ExecContext,
@@ -204,6 +228,21 @@ pub fn execute_with_ctx(
     } else {
         Ok(result)
     }
+}
+
+/// Slot-indexed path. Phase 3a: stub that delegates to
+/// `execute_with_ctx_named` so dual-run trivially agrees while subsequent
+/// Phase 3 sub-phases (3b–3g) migrate operators one at a time. The public
+/// signature returns `Vec<NamedRecord>` because the slot ↔ name conversion
+/// happens at the API boundary (`ResultStream::into_named_records`); inside
+/// this function, intermediate records will be `record_v2::Record`.
+#[allow(dead_code)] // exercised by dual_run tests + dispatcher when feature is on
+pub fn execute_with_ctx_slot(
+    conn: &Connection,
+    plan: &LogicalOp,
+    ctx: &ExecContext,
+) -> Result<Vec<NamedRecord>> {
+    execute_with_ctx_named(conn, plan, ctx)
 }
 
 /// Check whether a plan tree contains only read-only operators.

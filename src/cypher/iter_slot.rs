@@ -108,6 +108,17 @@ pub fn is_slot_supported(plan: &LogicalOp) -> bool {
                     .iter()
                     .all(|a| !expr_has_pattern_subquery(&a.input))
         }
+        // Phase 3f pass-through ops. Each preserves the input schema and
+        // applies a row-level transformation that is independent of which
+        // backing record shape carries the row — the slot impls below do
+        // the work natively.
+        LogicalOp::Skip { input, .. } | LogicalOp::Limit { input, .. } => is_slot_supported(input),
+        LogicalOp::Distinct { input } => is_slot_supported(input),
+        LogicalOp::Sort { input, items } => {
+            // Sort keys may reference bare variables (compound binding for
+            // node/edge ordering); fall back when they do.
+            is_slot_supported(input) && items.iter().all(|s| !expr_has_bare_variable(&s.expr))
+        }
         LogicalOp::Expand {
             input,
             edge_types,
@@ -396,6 +407,32 @@ fn build_slot_iter_inner<'a>(
                 output_schema,
                 conn,
             )))
+        }
+
+        LogicalOp::Skip { input, count } => {
+            let input_iter = build_slot_iter_inner(conn, input, ctx, refs)?;
+            Ok(Box::new(SkipSlotIter {
+                input: input_iter,
+                remaining_to_skip: *count,
+            }))
+        }
+
+        LogicalOp::Limit { input, count } => {
+            let input_iter = build_slot_iter_inner(conn, input, ctx, refs)?;
+            Ok(Box::new(LimitSlotIter {
+                input: input_iter,
+                remaining: *count,
+            }))
+        }
+
+        LogicalOp::Distinct { input } => {
+            let input_iter = build_slot_iter_inner(conn, input, ctx, refs)?;
+            Ok(Box::new(DistinctSlotIter::new(input_iter)))
+        }
+
+        LogicalOp::Sort { input, items } => {
+            let input_iter = build_slot_iter_inner(conn, input, ctx, refs)?;
+            Ok(Box::new(SortSlotIter::new(input_iter, items.clone(), conn)))
         }
 
         LogicalOp::Project {
@@ -803,6 +840,188 @@ impl<'a> SlotRecordIter for AggregateSlotIter<'a> {
     fn schema(&self) -> &RecordSchema {
         &self.output_schema
     }
+}
+
+// ---------------------------------------------------------------------------
+// Phase 3f pass-through ops
+
+/// Slot-aware `Skip`. Drops the first `count` rows from `input`, then
+/// streams the rest unchanged.
+pub struct SkipSlotIter<'a> {
+    input: Box<dyn SlotRecordIter + 'a>,
+    remaining_to_skip: u64,
+}
+
+impl<'a> SlotRecordIter for SkipSlotIter<'a> {
+    fn next_slot(&mut self) -> Result<Option<SlotRecord>> {
+        while self.remaining_to_skip > 0 {
+            match self.input.next_slot()? {
+                Some(_) => self.remaining_to_skip -= 1,
+                None => return Ok(None),
+            }
+        }
+        self.input.next_slot()
+    }
+    fn schema(&self) -> &RecordSchema {
+        self.input.schema()
+    }
+}
+
+/// Slot-aware `Limit`. Streams up to `count` rows from `input`, then
+/// reports exhaustion.
+pub struct LimitSlotIter<'a> {
+    input: Box<dyn SlotRecordIter + 'a>,
+    remaining: u64,
+}
+
+impl<'a> SlotRecordIter for LimitSlotIter<'a> {
+    fn next_slot(&mut self) -> Result<Option<SlotRecord>> {
+        if self.remaining == 0 {
+            return Ok(None);
+        }
+        match self.input.next_slot()? {
+            Some(rec) => {
+                self.remaining -= 1;
+                Ok(Some(rec))
+            }
+            None => Ok(None),
+        }
+    }
+    fn schema(&self) -> &RecordSchema {
+        self.input.schema()
+    }
+}
+
+/// Slot-aware `Distinct` (blocking). Materializes input rows once and
+/// emits each unique slot record. Equality is on full slot-row contents
+/// using the input schema (ordered by slot index, identical to
+/// schema-name iteration order).
+pub struct DistinctSlotIter<'a> {
+    input: Box<dyn SlotRecordIter + 'a>,
+    schema: RecordSchema,
+    /// `None` until first `next_slot` triggers materialization.
+    results: Option<std::vec::IntoIter<SlotRecord>>,
+}
+
+impl<'a> DistinctSlotIter<'a> {
+    pub fn new(input: Box<dyn SlotRecordIter + 'a>) -> Self {
+        let schema = input.schema().clone();
+        Self {
+            input,
+            schema,
+            results: None,
+        }
+    }
+
+    fn materialize(&mut self) -> Result<()> {
+        let mut deduped: Vec<SlotRecord> = Vec::new();
+        while let Some(rec) = self.input.next_slot()? {
+            // O(n²) dedup using slot-row equality. Matches the named path's
+            // strategy in `iter::Distinct`; both rely on small result sets.
+            if !deduped.iter().any(|s| slot_rows_equal(s, &rec)) {
+                deduped.push(rec);
+            }
+        }
+        self.results = Some(deduped.into_iter());
+        Ok(())
+    }
+}
+
+impl<'a> SlotRecordIter for DistinctSlotIter<'a> {
+    fn next_slot(&mut self) -> Result<Option<SlotRecord>> {
+        if self.results.is_none() {
+            self.materialize()?;
+        }
+        Ok(self.results.as_mut().and_then(|it| it.next()))
+    }
+    fn schema(&self) -> &RecordSchema {
+        &self.schema
+    }
+}
+
+fn slot_rows_equal(a: &SlotRecord, b: &SlotRecord) -> bool {
+    if a.len() != b.len() {
+        return false;
+    }
+    (0..a.len()).all(|i| {
+        let s = SlotId(i as u32);
+        a.get(s) == b.get(s)
+    })
+}
+
+/// Slot-aware `Sort` (blocking). Drains input, materializes each row to
+/// a NamedRecord on the fly to evaluate sort keys via `eval_expr`
+/// (matching `iter::Sort`'s null-last + descending semantics), then
+/// re-emits the underlying slot records in the resolved order. The
+/// per-row materialize is the 3f trade-off; same shape as 3c/3d/3e.
+pub struct SortSlotIter<'a> {
+    input: Box<dyn SlotRecordIter + 'a>,
+    items: Vec<crate::cypher::ast::SortItem>,
+    conn: &'a Connection,
+    results: Option<std::vec::IntoIter<SlotRecord>>,
+}
+
+impl<'a> SortSlotIter<'a> {
+    pub fn new(
+        input: Box<dyn SlotRecordIter + 'a>,
+        items: Vec<crate::cypher::ast::SortItem>,
+        conn: &'a Connection,
+    ) -> Self {
+        Self {
+            input,
+            items,
+            conn,
+            results: None,
+        }
+    }
+
+    fn materialize(&mut self) -> Result<()> {
+        let schema = self.input.schema().clone();
+        // Pre-compute sort keys per row so eval runs once even when the
+        // comparator visits a row multiple times.
+        let mut tagged: Vec<(Vec<Value>, SlotRecord)> = Vec::new();
+        while let Some(rec) = self.input.next_slot()? {
+            let view = materialize_named(&schema, &rec);
+            let keys: Vec<Value> = self
+                .items
+                .iter()
+                .map(|si| eval_expr(&si.expr, &view, self.conn).unwrap_or(Value::Null))
+                .collect();
+            tagged.push((keys, rec));
+        }
+        let descending: Vec<bool> = self.items.iter().map(|si| si.descending).collect();
+        tagged.sort_by(|a, b| {
+            for (i, desc) in descending.iter().enumerate() {
+                let ord = compare_values_for_sort(&a.0[i], &b.0[i]);
+                let ord = if *desc { ord.reverse() } else { ord };
+                if ord != std::cmp::Ordering::Equal {
+                    return ord;
+                }
+            }
+            std::cmp::Ordering::Equal
+        });
+        let sorted: Vec<SlotRecord> = tagged.into_iter().map(|(_, r)| r).collect();
+        self.results = Some(sorted.into_iter());
+        Ok(())
+    }
+}
+
+impl<'a> SlotRecordIter for SortSlotIter<'a> {
+    fn next_slot(&mut self) -> Result<Option<SlotRecord>> {
+        if self.results.is_none() {
+            self.materialize()?;
+        }
+        Ok(self.results.as_mut().and_then(|it| it.next()))
+    }
+    fn schema(&self) -> &RecordSchema {
+        self.input.schema()
+    }
+}
+
+/// Reuses `iter`'s null-last comparator so slot-path Sort orders rows
+/// identically to the named path on every TCK scenario.
+fn compare_values_for_sort(a: &Value, b: &Value) -> std::cmp::Ordering {
+    crate::cypher::iter::compare_values_for_sort_pub(a, b)
 }
 
 // ---------------------------------------------------------------------------

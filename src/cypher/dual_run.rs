@@ -193,6 +193,35 @@ fn dual_run_order_by_limit() {
 }
 
 #[test]
+fn dual_run_skip_limit() {
+    let db = fresh_db();
+    let rows = dual_run(
+        &db,
+        "MATCH (p:Person) RETURN p.name AS nm ORDER BY p.name SKIP 1 LIMIT 1",
+        true,
+    );
+    assert_eq!(rows.len(), 1);
+}
+
+#[test]
+fn dual_run_distinct() {
+    let db = fresh_db();
+    let rows = dual_run(&db, "MATCH (p:Person) RETURN DISTINCT p.age AS a", false);
+    assert_eq!(rows.len(), 3);
+}
+
+#[test]
+fn dual_run_sort_descending() {
+    let db = fresh_db();
+    let rows = dual_run(
+        &db,
+        "MATCH (p:Person) RETURN p.name AS nm ORDER BY p.age DESC",
+        true,
+    );
+    assert_eq!(rows.len(), 3);
+}
+
+#[test]
 fn dual_run_var_length_path() {
     let db = fresh_db();
     let rows = dual_run(

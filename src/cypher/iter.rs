@@ -630,6 +630,13 @@ pub fn build_iter<'a>(
     }
 }
 
+/// Crate-internal accessor so `iter_slot::SortSlotIter` reuses this
+/// comparator unchanged. Keeping a single source ensures slot- and named-
+/// path Sort produce identical orderings on every TCK scenario.
+pub(crate) fn compare_values_for_sort_pub(a: &Value, b: &Value) -> std::cmp::Ordering {
+    compare_values_for_sort(a, b)
+}
+
 /// Compare two values for sorting (null-last semantics).
 fn compare_values_for_sort(a: &Value, b: &Value) -> std::cmp::Ordering {
     match (a, b) {

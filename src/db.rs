@@ -219,7 +219,7 @@ impl Database {
     /// Crate-internal: used by `tck_support` for storage-table introspection.
     /// Not part of the public API — bindings use the stateful `execute`/
     /// `begin_*`/`commit` methods instead.
-    #[cfg(any(feature = "tck-support", feature = "fuzzing"))]
+    #[cfg(any(feature = "tck-support", feature = "fuzzing", test))]
     pub(crate) fn connection(&self) -> &Connection {
         &self.conn
     }

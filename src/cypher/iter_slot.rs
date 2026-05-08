@@ -76,15 +76,14 @@ pub fn is_slot_supported(plan: &LogicalOp) -> bool {
         LogicalOp::Scan { .. } => true,
         LogicalOp::IndexLookup {
             remaining_filters, ..
-        } => {
-            // The slot-path builder doesn't apply `remaining_filters` post-
-            // lookup yet, so fall back to the named path whenever the
-            // planner attached one (typically multi-property pattern
-            // predicates where one prop is indexed and the rest are
-            // residuals). Phase 3 follow-up: lift this by wrapping the
-            // index hits in a slot-aware filter step.
-            remaining_filters.is_none()
-        }
+        } => match remaining_filters {
+            // Multi-property pattern predicates where one prop is indexed
+            // and the rest are residuals. The builder wraps the index hits
+            // in a slot-aware FilterSlotIter — same shape as a top-level
+            // Filter, so the same constraints apply.
+            Some(f) => !expr_has_bare_variable(f),
+            None => true,
+        },
         LogicalOp::Filter { input, predicate } => {
             is_slot_supported(input) && !expr_has_bare_variable(predicate)
         }
@@ -330,7 +329,7 @@ fn build_slot_iter_inner<'a>(
             alias,
             property,
             value,
-            remaining_filters: _,
+            remaining_filters,
         } => {
             let schema = infer_with_props(plan, refs);
             let lookup_value = literal_to_value(value);
@@ -340,7 +339,19 @@ fn build_slot_iter_inner<'a>(
                 let n = node::get_node(conn, id)?;
                 records.push(node_to_slot_record(&n, alias, &schema));
             }
-            Ok(Box::new(VecSlotIter::new(records, schema)))
+            let base: Box<dyn SlotRecordIter + 'a> = Box::new(VecSlotIter::new(records, schema));
+            // When the planner attached a residual predicate (multi-prop
+            // pattern where only one prop is indexed), wrap with a slot
+            // FilterSlotIter — same materialize-and-eval pattern as a
+            // top-level Filter, no schema change.
+            match remaining_filters {
+                Some(f) => Ok(Box::new(FilterSlotIter {
+                    input: base,
+                    predicate: f.clone(),
+                    conn,
+                })),
+                None => Ok(base),
+            }
         }
 
         LogicalOp::Filter { input, predicate } => {

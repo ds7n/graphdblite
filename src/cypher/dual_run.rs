@@ -193,6 +193,29 @@ fn dual_run_order_by_limit() {
 }
 
 #[test]
+fn dual_run_indexed_with_remaining_filter() {
+    // Triggers IndexLookup with a residual predicate. Index narrows on
+    // `name`; `age` is the remaining filter applied via slot FilterSlotIter.
+    let mut db = Database::open_memory().unwrap();
+    {
+        let tx = db.write_tx().unwrap();
+        tx.query("CREATE (:Person {name: 'Alice', age: 30})")
+            .unwrap();
+        tx.query("CREATE (:Person {name: 'Alice', age: 25})")
+            .unwrap();
+        tx.query("CREATE (:Person {name: 'Bob', age: 30})").unwrap();
+        tx.create_index("Person", "name").unwrap();
+        tx.commit().unwrap();
+    }
+    let rows = dual_run(
+        &db,
+        "MATCH (p:Person {name: 'Alice', age: 30}) RETURN p.age AS a",
+        false,
+    );
+    assert_eq!(rows.len(), 1);
+}
+
+#[test]
 fn dual_run_skip_limit() {
     let db = fresh_db();
     let rows = dual_run(

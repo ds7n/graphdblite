@@ -59,8 +59,17 @@ return an error rather than silently no-op.
 
 ### BC-07 — operations on a finished transaction return an error
 
-After commit or rollback, further `execute`/`query`/`commit`/`rollback`
-calls on the same transaction object MUST return an error.
+For bindings that expose a per-transaction object (Python, Node, Go),
+`execute`/`query`/`commit`/`rollback` on a tx object whose commit or
+rollback has already returned MUST return an error.
+
+For the C/FFI binding, where transaction state lives on the flat
+`GraphDB` handle rather than a per-tx object, the contract is narrower:
+`graphdb_tx_rollback` after commit MUST still return an error (no tx
+to roll back). `graphdb_tx_execute` after commit, however, succeeds
+via the core's `Database::execute` auto-tx semantics — it opens and
+commits a fresh transaction implicitly. Bindings that need stricter
+behavior should track tx state on their wrapper.
 
 ---
 

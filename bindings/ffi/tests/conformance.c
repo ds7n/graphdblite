@@ -168,8 +168,19 @@ out:
 }
 
 /* ----------------------------------------------------------------------- */
-/* BC-07 — operations after the txn finishes return an error                */
+/* BC-07 — operations after the txn finishes (FFI variant)                  */
 /* ----------------------------------------------------------------------- */
+/* The FFI binding exposes a flat handle API: tx state lives on the GraphDB,
+ * not on a per-tx object. After graphdb_tx_commit, graphdb_tx_execute on the
+ * same handle implicitly auto-starts a fresh transaction (Database::execute
+ * auto-tx — see CLAUDE.md). That's a deliberate quality-of-life difference
+ * from the wrapped-tx-object bindings (Python, Node, Go), where the tx
+ * object becomes invalid after commit.
+ *
+ * What still must error in the C binding: graphdb_tx_rollback after commit,
+ * since there is genuinely no transaction to roll back. That is the
+ * portion of BC-07 that maps cleanly onto the flat handle model.
+ */
 static int bc_07_use_after_commit(const char *tmpdir) {
     const char *tag = "BC-07";
     GraphDB *db = fresh_db(tmpdir, "bc07.sqlite");
@@ -182,8 +193,9 @@ static int bc_07_use_after_commit(const char *tmpdir) {
     }
     graphdb_result_free(res); res = NULL;
     if (graphdb_tx_commit(db) != 0) { rc = fail(tag, "commit"); goto out; }
-    if (graphdb_tx_execute(db, "CREATE (n:Person {name: 'B'})", &res) == 0) {
-        rc = fail(tag, "execute after commit succeeded"); goto out;
+    /* auto-tx: this succeeds and implicitly opens+commits its own tx */
+    if (graphdb_tx_execute(db, "CREATE (n:Person {name: 'B'})", &res) != 0) {
+        rc = fail(tag, "auto-tx execute after commit"); goto out;
     }
     if (res) { graphdb_result_free(res); res = NULL; }
     if (graphdb_tx_rollback(db) == 0) { rc = fail(tag, "rollback after commit succeeded"); goto out; }

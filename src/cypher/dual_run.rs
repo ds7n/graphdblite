@@ -154,6 +154,34 @@ fn dual_run_aggregate() {
 }
 
 #[test]
+fn dual_run_aggregate_group_by_property() {
+    let mut db = Database::open_memory().unwrap();
+    db.execute(
+        "CREATE (:T {bucket: 'a', n: 1}), (:T {bucket: 'a', n: 2}),
+                (:T {bucket: 'b', n: 3})",
+    )
+    .unwrap();
+    let rows = dual_run(
+        &db,
+        "MATCH (t:T) RETURN t.bucket AS b, count(*) AS c, sum(t.n) AS s",
+        false,
+    );
+    assert_eq!(rows.len(), 2);
+}
+
+#[test]
+fn dual_run_aggregate_group_by_variable() {
+    // Variable group key — exec_aggregate's flat-key propagation path.
+    let db = fresh_db();
+    let rows = dual_run(
+        &db,
+        "MATCH (p:Person) WITH p, p.age AS a RETURN p.name AS nm, a",
+        false,
+    );
+    assert_eq!(rows.len(), 3);
+}
+
+#[test]
 fn dual_run_order_by_limit() {
     let db = fresh_db();
     let rows = dual_run(

@@ -76,15 +76,37 @@ pub fn is_slot_supported(plan: &LogicalOp) -> bool {
         LogicalOp::Scan { .. } => true,
         LogicalOp::IndexLookup {
             remaining_filters, ..
-        } => match remaining_filters {
-            Some(f) => !expr_has_bare_variable(f),
-            None => true,
-        },
+        } => {
+            // The slot-path builder doesn't apply `remaining_filters` post-
+            // lookup yet, so fall back to the named path whenever the
+            // planner attached one (typically multi-property pattern
+            // predicates where one prop is indexed and the rest are
+            // residuals). Phase 3 follow-up: lift this by wrapping the
+            // index hits in a slot-aware filter step.
+            remaining_filters.is_none()
+        }
         LogicalOp::Filter { input, predicate } => {
             is_slot_supported(input) && !expr_has_bare_variable(predicate)
         }
         LogicalOp::Project { input, items, .. } => {
             is_slot_supported(input) && items.iter().all(is_project_item_supported)
+        }
+        LogicalOp::Aggregate {
+            input,
+            group_keys,
+            aggregates,
+        } => {
+            // Aggregate runs the named `aggregate_named_records` helper on
+            // input materialized to NamedRecords, so anything `eval_expr`
+            // handles works — including bare Variable group keys (resolved
+            // via `build_compound_binding` from flat metadata + properties)
+            // and `count(*)` (Star input is never evaluated). Pattern
+            // subqueries open scopes the slot path doesn't track; gate them.
+            is_slot_supported(input)
+                && group_keys.iter().all(|e| !expr_has_pattern_subquery(e))
+                && aggregates
+                    .iter()
+                    .all(|a| !expr_has_pattern_subquery(&a.input))
         }
         LogicalOp::Expand {
             input,
@@ -185,6 +207,63 @@ fn expr_has_bare_variable(e: &Expr) -> bool {
             predicate,
             ..
         } => expr_has_bare_variable(list_expr) || expr_has_bare_variable(predicate),
+    }
+}
+
+/// True iff `e` contains a pattern-based subquery construct that opens a
+/// scope the slot path doesn't track (`PatternComprehension`, `Exists`,
+/// `ExistsSubquery`, `PatternPredicate`). Used by the `Aggregate` gate
+/// where bare `Variable` is fine (the named eval rebuilds compound nodes
+/// from the materialized record) but pattern scopes are not.
+fn expr_has_pattern_subquery(e: &Expr) -> bool {
+    use ExprKind::*;
+    match &e.kind {
+        Variable(_) | Star | Literal(_) | Parameter(_) | HasLabel(_, _) | Property(_, _) => false,
+        PatternComprehension { .. } | Exists { .. } | ExistsSubquery(_) | PatternPredicate(_) => {
+            true
+        }
+        BinaryOp { left, right, .. } => {
+            expr_has_pattern_subquery(left) || expr_has_pattern_subquery(right)
+        }
+        Not(x) | IsNull(x) | IsNotNull(x) => expr_has_pattern_subquery(x),
+        FunctionCall { args, .. } => args.iter().any(expr_has_pattern_subquery),
+        Case {
+            operand,
+            alternatives,
+            default,
+        } => {
+            operand.as_deref().is_some_and(expr_has_pattern_subquery)
+                || alternatives
+                    .iter()
+                    .any(|(c, r)| expr_has_pattern_subquery(c) || expr_has_pattern_subquery(r))
+                || default.as_deref().is_some_and(expr_has_pattern_subquery)
+        }
+        List(xs) => xs.iter().any(expr_has_pattern_subquery),
+        ListComprehension {
+            list_expr,
+            filter,
+            map_expr,
+            ..
+        } => {
+            expr_has_pattern_subquery(list_expr)
+                || filter.as_deref().is_some_and(expr_has_pattern_subquery)
+                || map_expr.as_deref().is_some_and(expr_has_pattern_subquery)
+        }
+        MapLiteral(entries) => entries.iter().any(|(_, v)| expr_has_pattern_subquery(v)),
+        Index { expr, index } => {
+            expr_has_pattern_subquery(expr) || expr_has_pattern_subquery(index)
+        }
+        DotAccess { expr, .. } => expr_has_pattern_subquery(expr),
+        Slice { expr, start, end } => {
+            expr_has_pattern_subquery(expr)
+                || start.as_deref().is_some_and(expr_has_pattern_subquery)
+                || end.as_deref().is_some_and(expr_has_pattern_subquery)
+        }
+        Quantifier {
+            list_expr,
+            predicate,
+            ..
+        } => expr_has_pattern_subquery(list_expr) || expr_has_pattern_subquery(predicate),
     }
 }
 
@@ -300,6 +379,22 @@ fn build_slot_iter_inner<'a>(
             Ok(Box::new(NamedToSlotAdapter::new(
                 Box::new(named_expand),
                 output_schema,
+            )))
+        }
+
+        LogicalOp::Aggregate {
+            input,
+            group_keys,
+            aggregates,
+        } => {
+            let input_iter = build_slot_iter_inner(conn, input, ctx, refs)?;
+            let output_schema = infer_with_props(plan, refs);
+            Ok(Box::new(AggregateSlotIter::new(
+                input_iter,
+                group_keys.clone(),
+                aggregates.clone(),
+                output_schema,
+                conn,
             )))
         }
 
@@ -530,13 +625,42 @@ impl<'a> SlotRecordIter for ProjectSlotIter<'a> {
             let Some(out_slot) = self.output_schema.slot(&col) else {
                 continue;
             };
-            let value = eval_project_item(
-                &item.expr,
-                input_schema,
-                &input_rec,
-                &mut materialized,
-                self.conn,
-            )?;
+            // Mirror exec_project's precomputed-value lookup. Two safe
+            // cache hits:
+            //   1. The expression's natural column name (`expr_to_column_name`)
+            //      is in the input schema. Always safe — it can't shadow an
+            //      upstream variable.
+            //   2. The output column name (alias) is in the input schema AND
+            //      the expression is an aggregate function call. After
+            //      `Aggregate`, the alias holds the precomputed result;
+            //      re-evaluating it on a single materialized row would be
+            //      wrong. Without the aggregate guard we'd shadow ordinary
+            //      bindings (e.g. `RETURN a.id AS a` would pick up the
+            //      `a → I64(node_id)` slot instead of `a.id`).
+            let expr_col = expr_to_column_name(&item.expr);
+            let value = if let Some(in_slot) = input_schema.slot(&expr_col) {
+                input_rec.get(in_slot).clone()
+            } else if col != expr_col && is_aggregate_call(&item.expr) {
+                if let Some(in_slot) = input_schema.slot(&col) {
+                    input_rec.get(in_slot).clone()
+                } else {
+                    eval_project_item(
+                        &item.expr,
+                        input_schema,
+                        &input_rec,
+                        &mut materialized,
+                        self.conn,
+                    )?
+                }
+            } else {
+                eval_project_item(
+                    &item.expr,
+                    input_schema,
+                    &input_rec,
+                    &mut materialized,
+                    self.conn,
+                )?
+            };
             out.set(out_slot, value);
         }
         Ok(Some(out))
@@ -572,8 +696,6 @@ fn eval_project_item(
             if let Some(slot) = input_schema.slot(&key) {
                 return Ok(input_rec.get(slot).clone());
             }
-            // Not slotted — could be subfield access on a non-node value.
-            // Fall through to named eval.
             let view =
                 materialized.get_or_insert_with(|| materialize_named(input_schema, input_rec));
             eval_expr(e, view, conn)
@@ -586,6 +708,21 @@ fn eval_project_item(
     }
 }
 
+/// True iff `e` is a top-level call to a recognized aggregate function. Same
+/// allow-list as `exec_project`'s aggregate-cache heuristic so the slot
+/// path's lookup behavior matches the named path exactly.
+fn is_aggregate_call(e: &Expr) -> bool {
+    matches!(
+        &e.kind,
+        ExprKind::FunctionCall { name, .. }
+            if matches!(
+                name.to_ascii_lowercase().as_str(),
+                "count" | "sum" | "avg" | "min" | "max" | "collect"
+                    | "percentiledisc" | "percentilecont" | "stdev" | "stdevp"
+            )
+    )
+}
+
 /// Local copy of the executor's literal-to-value conversion to keep the
 /// slot path independent of the named-path module's visibility.
 fn literal_to_value_local(lit: &crate::cypher::ast::LiteralValue) -> Value {
@@ -596,6 +733,75 @@ fn literal_to_value_local(lit: &crate::cypher::ast::LiteralValue) -> Value {
         L::I64(n) => Value::I64(*n),
         L::F64(n) => Value::F64(*n),
         L::String(s) => Value::String(s.clone()),
+    }
+}
+
+/// Slot-aware `Aggregate` (blocking). Drains its input, materializes each
+/// row into a `NamedRecord` (so the existing
+/// `executor::aggregate_named_records` runs unchanged — same column-naming,
+/// same compound-binding semantics for Variable group keys), then re-shapes
+/// the produced named results back into slot records via
+/// [`named_to_slot`]. Per-row materialize/convert cost is the 3e trade-off,
+/// matching 3c–3d's pattern.
+pub struct AggregateSlotIter<'a> {
+    input: Box<dyn SlotRecordIter + 'a>,
+    group_keys: Vec<Expr>,
+    aggregates: Vec<crate::cypher::ir::AggregateExpr>,
+    output_schema: RecordSchema,
+    conn: &'a Connection,
+    /// Lazily computed on first `next_slot` call.
+    results: Option<std::vec::IntoIter<SlotRecord>>,
+}
+
+impl<'a> AggregateSlotIter<'a> {
+    pub fn new(
+        input: Box<dyn SlotRecordIter + 'a>,
+        group_keys: Vec<Expr>,
+        aggregates: Vec<crate::cypher::ir::AggregateExpr>,
+        output_schema: RecordSchema,
+        conn: &'a Connection,
+    ) -> Self {
+        Self {
+            input,
+            group_keys,
+            aggregates,
+            output_schema,
+            conn,
+            results: None,
+        }
+    }
+
+    fn materialize(&mut self) -> Result<()> {
+        // Drain + materialize input.
+        let input_schema = self.input.schema().clone();
+        let mut named_inputs: Vec<NamedRecord> = Vec::new();
+        while let Some(rec) = self.input.next_slot()? {
+            named_inputs.push(materialize_named(&input_schema, &rec));
+        }
+        let agg_results = crate::cypher::executor::aggregate_named_records(
+            self.conn,
+            &named_inputs,
+            &self.group_keys,
+            &self.aggregates,
+        )?;
+        let slot_rows: Vec<SlotRecord> = agg_results
+            .iter()
+            .map(|nr| named_to_slot(&self.output_schema, nr))
+            .collect();
+        self.results = Some(slot_rows.into_iter());
+        Ok(())
+    }
+}
+
+impl<'a> SlotRecordIter for AggregateSlotIter<'a> {
+    fn next_slot(&mut self) -> Result<Option<SlotRecord>> {
+        if self.results.is_none() {
+            self.materialize()?;
+        }
+        Ok(self.results.as_mut().and_then(|it| it.next()))
+    }
+    fn schema(&self) -> &RecordSchema {
+        &self.output_schema
     }
 }
 

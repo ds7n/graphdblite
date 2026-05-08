@@ -1176,13 +1176,28 @@ fn exec_aggregate(
     ctx: &ExecContext,
 ) -> Result<Vec<NamedRecord>> {
     let records = exec(conn, input, ctx)?;
+    aggregate_named_records(conn, &records, group_keys, aggregates)
+}
 
+/// Group + aggregate over a pre-materialized record set. Same column-naming
+/// rules as [`exec_aggregate`] (uses [`agg_col_name`] / [`expr_to_column_name`]
+/// — *not* the divergent naming in [`exec_aggregate_over_records`], which
+/// only the correlated path uses).
+///
+/// Used by [`exec_aggregate`] and by the slot path's `AggregateSlotIter` so
+/// both produce identical column headers for dual-run agreement.
+pub(crate) fn aggregate_named_records(
+    conn: &Connection,
+    records: &[NamedRecord],
+    group_keys: &[Expr],
+    aggregates: &[AggregateExpr],
+) -> Result<Vec<NamedRecord>> {
     if group_keys.is_empty() {
         // No grouping — aggregate over all records.
         let mut rec = NamedRecord::new();
         for agg in aggregates {
             let col_name = agg_col_name(agg);
-            let val = compute_aggregate(agg, &records, conn)?;
+            let val = compute_aggregate(agg, records, conn)?;
             rec.set(col_name, val);
         }
         return Ok(vec![rec]);
@@ -1194,7 +1209,7 @@ fn exec_aggregate(
     let mut group_map: HashMap<Vec<Value>, Vec<NamedRecord>> = HashMap::new();
     let mut key_order: Vec<Vec<Value>> = Vec::new();
 
-    for rec in &records {
+    for rec in records {
         let key_vals: Vec<Value> = group_keys
             .iter()
             .map(|k| eval_expr(k, rec, conn).unwrap_or(Value::Null))

@@ -5,8 +5,9 @@
 use std::collections::{HashMap, HashSet};
 use std::hash::{Hash, Hasher};
 
+use crate::cypher::record::NamedRecord;
 use crate::procedures::Registry as ProcedureRegistry;
-use crate::{Database, GraphError, Record, Value};
+use crate::{Database, GraphError, Value};
 use cucumber::World as CucumberWorld;
 use rusqlite::Connection;
 
@@ -143,7 +144,7 @@ pub struct World {
     /// The database under test. `None` before `Given any graph` fires.
     pub db: Option<Database>,
     /// Result from the most recent `When executing query:` step.
-    pub last_result: Option<Vec<Record>>,
+    pub last_result: Option<Vec<NamedRecord>>,
     /// Error from the most recent `When executing query:` step, if it failed.
     pub last_error: Option<GraphError>,
     /// Parameters accumulated via `And parameters are:` before the query runs.

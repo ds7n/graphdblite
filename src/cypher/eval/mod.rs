@@ -4,7 +4,7 @@ mod temporal_ops;
 use rusqlite::Connection;
 
 use crate::cypher::ast::{BinOp, Expr, ExprKind, LiteralValue, QuantifierKind};
-use crate::cypher::record::Record;
+use crate::cypher::record::NamedRecord;
 use crate::types::{ErrorCode, GraphError, QueryError, QueryPhase, Value};
 
 use comparison::{compare_to_value, literal_to_value, to_tribool, value_type_name, values_equal};
@@ -116,7 +116,11 @@ pub fn is_known_function(name: &str) -> bool {
 /// Evaluate an expression against a record, producing a Value.
 ///
 /// The `conn` parameter is needed for EXISTS subquery evaluation.
-pub fn eval_expr(expr: &Expr, record: &Record, conn: &Connection) -> crate::types::Result<Value> {
+pub fn eval_expr(
+    expr: &Expr,
+    record: &NamedRecord,
+    conn: &Connection,
+) -> crate::types::Result<Value> {
     match &expr.kind {
         ExprKind::Literal(lit) => Ok(literal_to_value(lit)),
         ExprKind::Variable(name) => {
@@ -505,7 +509,7 @@ pub fn eval_expr(expr: &Expr, record: &Record, conn: &Connection) -> crate::type
 /// Evaluate a boolean expression, returning true/false.
 pub fn eval_predicate(
     expr: &Expr,
-    record: &Record,
+    record: &NamedRecord,
     conn: &Connection,
 ) -> crate::types::Result<bool> {
     let val = eval_expr(expr, record, conn)?;
@@ -515,7 +519,7 @@ pub fn eval_predicate(
 /// Evaluate the first argument of a function call.
 fn eval_single_arg(
     args: &[Expr],
-    record: &Record,
+    record: &NamedRecord,
     conn: &Connection,
 ) -> crate::types::Result<Value> {
     args.first()
@@ -556,7 +560,7 @@ fn eval_function_call(
     name: &str,
     args: &[Expr],
     original_text: Option<&str>,
-    record: &Record,
+    record: &NamedRecord,
     conn: &Connection,
 ) -> crate::types::Result<Value> {
     let name_lower = name.to_ascii_lowercase();
@@ -1604,7 +1608,7 @@ fn eval_function_call(
 /// Helper for temporal constructor dispatch: string arg → parse, map arg → construct.
 fn eval_temporal_constructor(
     args: &[Expr],
-    record: &Record,
+    record: &NamedRecord,
     conn: &Connection,
     from_str: impl Fn(&str) -> crate::types::Result<Value>,
     from_map: impl Fn(&std::collections::BTreeMap<String, Value>) -> crate::types::Result<Value>,
@@ -1648,7 +1652,7 @@ fn eval_list_comprehension(
     list_expr: &Expr,
     filter: Option<&Expr>,
     map_expr: Option<&Expr>,
-    record: &Record,
+    record: &NamedRecord,
     conn: &Connection,
 ) -> crate::types::Result<Value> {
     let list_val = eval_expr(list_expr, record, conn)?;
@@ -1691,7 +1695,7 @@ fn eval_quantifier(
     variable: &str,
     list_expr: &Expr,
     predicate: &Expr,
-    record: &Record,
+    record: &NamedRecord,
     conn: &Connection,
 ) -> crate::types::Result<Value> {
     let list_val = eval_expr(list_expr, record, conn)?;
@@ -1769,7 +1773,7 @@ fn eval_pattern_comprehension(
     pattern: &crate::cypher::ast::Pattern,
     where_clause: Option<&Expr>,
     map_expr: &Expr,
-    record: &Record,
+    record: &NamedRecord,
     conn: &Connection,
 ) -> crate::types::Result<Value> {
     use crate::cypher::executor::exec_correlated_subquery;
@@ -1799,7 +1803,7 @@ fn eval_pattern_comprehension(
     //    _anon_* or _path_rel_* aliases) to avoid alias collisions.
     // 2. Flatten Node values into the internal record format (alias -> I64(id),
     //    alias.__id, alias.__label, etc.) so exec_correlated can bind them.
-    let mut outer_rec = Record::new();
+    let mut outer_rec = NamedRecord::new();
     for (k, v) in &record.fields {
         // Skip internal anonymous aliases from outer scopes.
         if k.starts_with("_anon_") || k.starts_with("_path_rel_") {
@@ -1856,7 +1860,7 @@ fn eval_pattern_comprehension(
 fn eval_exists(
     patterns: &[crate::cypher::ast::Pattern],
     where_clause: Option<&Expr>,
-    record: &Record,
+    record: &NamedRecord,
     conn: &Connection,
 ) -> crate::types::Result<Value> {
     use crate::cypher::executor::execute_first_match;
@@ -1892,7 +1896,7 @@ fn eval_exists(
 /// outer record's bindings. Returns true if at least one row is produced.
 fn eval_exists_subquery(
     stmt: &crate::cypher::ast::Statement,
-    record: &Record,
+    record: &NamedRecord,
     conn: &Connection,
 ) -> crate::types::Result<Value> {
     use crate::cypher::executor::exec_correlated_exists;

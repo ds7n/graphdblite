@@ -21,7 +21,8 @@
 
 use std::collections::{BTreeMap, HashMap};
 
-use crate::{Record, Value};
+use crate::cypher::record::NamedRecord;
+use crate::Value;
 use anyhow::{anyhow, bail, Result};
 
 // ------------------------------ public API --------------------------------
@@ -76,7 +77,7 @@ pub fn parse_expected(cell: &str) -> Result<Value> {
 /// When `ordered` is true, comparison is positional; otherwise actual and
 /// expected are treated as multisets.
 pub fn compare_result(
-    actual: &[Record],
+    actual: &[NamedRecord],
     columns: &[String],
     expected_rows: &[Vec<Value>],
     ordered: bool,
@@ -128,7 +129,7 @@ pub fn compare_result(
 
 // --------------------------- row equality ---------------------------------
 
-fn project_rows(records: &[Record], columns: &[String]) -> Vec<Vec<Value>> {
+fn project_rows(records: &[NamedRecord], columns: &[String]) -> Vec<Vec<Value>> {
     records
         .iter()
         .map(|rec| {
@@ -212,7 +213,7 @@ fn value_equal(a: &Value, b: &Value) -> bool {
 /// When `ordered` is true, row comparison is positional; otherwise actual and
 /// expected rows are treated as multisets.
 pub fn compare_result_ignore_list_order(
-    actual: &[Record],
+    actual: &[NamedRecord],
     columns: &[String],
     expected_rows: &[Vec<Value>],
     ordered: bool,

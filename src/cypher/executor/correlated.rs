@@ -9,7 +9,7 @@ use rusqlite::Connection;
 use crate::cypher::ast::{Expr, ExprKind};
 use crate::cypher::eval::{eval_predicate, expr_to_column_name};
 use crate::cypher::ir::*;
-use crate::cypher::record::Record;
+use crate::cypher::record::NamedRecord;
 use crate::edge;
 use crate::node;
 use crate::types::{Direction, NodeId, Result, Value};
@@ -28,7 +28,7 @@ pub(super) fn exec_correlated_join(
     right: &LogicalOp,
     same_match: bool,
     ctx: &ExecContext,
-) -> Result<Vec<Record>> {
+) -> Result<Vec<NamedRecord>> {
     let left_records = exec(conn, input, ctx)?;
     let mut results = Vec::new();
 
@@ -62,7 +62,7 @@ pub(super) fn exec_left_outer_join(
     optional_aliases: &[String],
     opt_filter: Option<&Expr>,
     ctx: &ExecContext,
-) -> Result<Vec<Record>> {
+) -> Result<Vec<NamedRecord>> {
     let left_records = exec(conn, input, ctx)?;
     let mut results = Vec::new();
 
@@ -138,9 +138,9 @@ pub(super) fn value_to_node_id(val: &Value) -> Option<NodeId> {
 pub(super) fn exec_correlated(
     conn: &Connection,
     plan: &LogicalOp,
-    outer: &Record,
+    outer: &NamedRecord,
     ctx: &ExecContext,
-) -> Result<Vec<Record>> {
+) -> Result<Vec<NamedRecord>> {
     match plan {
         LogicalOp::Scan { label, alias } => {
             // If the alias is already bound in the outer record, return just that node.
@@ -655,7 +655,7 @@ pub(super) fn exec_correlated(
             let input_records = exec_correlated(conn, input, outer, ctx)?;
             let mut results = Vec::new();
             for rec in &input_records {
-                let mut projected = Record::new();
+                let mut projected = NamedRecord::new();
                 for item in items {
                     match &item.expr.kind {
                         ExprKind::Star => {
@@ -701,7 +701,7 @@ pub(super) fn exec_correlated(
                 }
                 if *emit_compound {
                     // For final RETURN, also build compound node/relationship values.
-                    let mut compound = Record::new();
+                    let mut compound = NamedRecord::new();
                     let bound_vars = compound_binding_vars(&projected);
                     for var in &bound_vars {
                         if let Some(cv) = build_compound_binding(&projected, var) {

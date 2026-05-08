@@ -12,7 +12,7 @@
 //! that ran. The `tests/record_columns_golden.rs` test diffs the resulting
 //! file against `tests/record_columns_golden.txt`.
 
-use crate::Record;
+use crate::cypher::record::NamedRecord;
 use std::io::Write;
 use std::sync::Mutex;
 use std::sync::OnceLock;
@@ -37,7 +37,7 @@ fn sink() -> Option<&'static Mutex<std::fs::File>> {
 }
 
 /// Append a line for the given scenario. No-op if env var is unset.
-pub fn log_headers(feature: &str, scenario: &str, records: &[Record]) {
+pub fn log_headers(feature: &str, scenario: &str, records: &[NamedRecord]) {
     let Some(mu) = sink() else { return };
     let line = if records.is_empty() {
         format!("{feature}::{scenario}\t<EMPTY>\n")

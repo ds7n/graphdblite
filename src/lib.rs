@@ -38,7 +38,7 @@ pub mod tck_support;
 
 // --- Public surface ---------------------------------------------------------
 
-pub use cypher::record::Record;
+pub use cypher::record::NamedRecord as Record;
 pub use db::{Config, Database, SyncMode};
 pub use transaction::{ReadTxGuard, WriteTxGuard};
 pub use types::{

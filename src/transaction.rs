@@ -1,5 +1,5 @@
 use crate::cypher::{
-    execute_cypher, executor::ExecContext, parse_cache::ParseCache, record::Record,
+    execute_cypher, executor::ExecContext, parse_cache::ParseCache, record::NamedRecord,
 };
 use crate::edge;
 use crate::index;
@@ -86,7 +86,7 @@ macro_rules! impl_read_ops {
             }
 
             /// Execute a Cypher query string and return result records.
-            pub fn query(&self, cypher: &str) -> Result<Vec<Record>> {
+            pub fn query(&self, cypher: &str) -> Result<Vec<NamedRecord>> {
                 self.query_with_params(cypher, None)
             }
 
@@ -95,7 +95,7 @@ macro_rules! impl_read_ops {
                 &self,
                 cypher: &str,
                 params: Option<&std::collections::HashMap<String, Value>>,
-            ) -> Result<Vec<Record>> {
+            ) -> Result<Vec<NamedRecord>> {
                 let ctx = ExecContext {
                     max_result_rows: self.max_result_rows,
                     max_traversal_depth: self.max_traversal_depth,
@@ -112,7 +112,7 @@ macro_rules! impl_read_ops {
                 cypher: &str,
                 params: Option<&std::collections::HashMap<String, Value>>,
                 procedures: &crate::cypher::procedure::ProcedureRegistry,
-            ) -> Result<Vec<Record>> {
+            ) -> Result<Vec<NamedRecord>> {
                 let ctx = ExecContext {
                     max_result_rows: self.max_result_rows,
                     max_traversal_depth: self.max_traversal_depth,

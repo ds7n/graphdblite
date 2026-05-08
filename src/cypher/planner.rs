@@ -5,7 +5,7 @@ use rusqlite::Connection;
 
 use crate::cypher::ast::*;
 use crate::cypher::ir::*;
-use crate::cypher::record::Record;
+use crate::cypher::record::NamedRecord;
 use crate::index;
 use crate::types::{Direction, ErrorCode, GraphError, Span, Value};
 
@@ -223,7 +223,7 @@ fn eval_skip_limit(expr: &Expr, conn: &Connection) -> crate::types::Result<u64> 
         .with_code(ErrorCode::InvalidArgumentType)),
         _ => {
             // Evaluate the expression at plan time with an empty record.
-            let rec = Record::new();
+            let rec = NamedRecord::new();
             let val = crate::cypher::eval::eval_expr(expr, &rec, conn)?;
             match val {
                 Value::I64(n) => {

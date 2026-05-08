@@ -50,6 +50,10 @@ dhat-heap = []
 # points. Only intended for `cargo fuzz` targets in `fuzz/` — not part of the
 # public API and offers no semver guarantees.
 fuzzing = []
+# Switches the executor to the slot-indexed Record shape (see
+# `plans/record-v2.md`). Off by default during the migration; flipped on in
+# Phase 5. Public API is unchanged in either mode.
+record-v2 = []
 
 [dev-dependencies]
 tempfile = "3"

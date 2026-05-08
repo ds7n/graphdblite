@@ -6,7 +6,7 @@ use tracing::{debug, instrument};
 use crate::cypher::ast::{Expr, ExprKind, LiteralValue, PatternElement, SetItem};
 use crate::cypher::eval::{eval_expr, eval_predicate, expr_to_column_name};
 use crate::cypher::ir::*;
-use crate::cypher::record::Record;
+use crate::cypher::record::NamedRecord;
 use crate::edge;
 use crate::index;
 use crate::node;
@@ -139,7 +139,7 @@ fn check_depth_recursive(op: &LogicalOp, cap: u32) -> Result<()> {
 }
 
 /// Check that a result set hasn't exceeded the row cap.
-pub(super) fn check_row_limit(results: &[Record], ctx: &ExecContext) -> Result<()> {
+pub(super) fn check_row_limit(results: &[NamedRecord], ctx: &ExecContext) -> Result<()> {
     if ctx.max_result_rows > 0 && results.len() > ctx.max_result_rows {
         return Err(GraphError::constraint(format!(
             "result set exceeded maximum of {} rows",
@@ -154,7 +154,7 @@ pub(super) fn check_row_limit(results: &[Record], ctx: &ExecContext) -> Result<(
 /// For read-only plans, uses the pull-based iterator model so that pipeline
 /// operators (Filter, Limit, Project) stream without full materialization.
 #[instrument(skip_all, level = "debug")]
-pub fn execute(conn: &Connection, plan: &LogicalOp) -> Result<Vec<Record>> {
+pub fn execute(conn: &Connection, plan: &LogicalOp) -> Result<Vec<NamedRecord>> {
     let ctx = ExecContext::default();
     validate_traversal_depth(plan, &ctx)?;
     if is_read_only(plan) {
@@ -196,7 +196,7 @@ pub fn execute_with_ctx(
     conn: &Connection,
     plan: &LogicalOp,
     ctx: &ExecContext,
-) -> Result<Vec<Record>> {
+) -> Result<Vec<NamedRecord>> {
     validate_traversal_depth(plan, ctx)?;
     let result = exec(conn, plan, ctx)?;
     if is_bare_write(plan) {
@@ -253,12 +253,16 @@ pub(crate) fn is_read_only(plan: &LogicalOp) -> bool {
     }
 }
 
-pub(super) fn exec(conn: &Connection, plan: &LogicalOp, ctx: &ExecContext) -> Result<Vec<Record>> {
+pub(super) fn exec(
+    conn: &Connection,
+    plan: &LogicalOp,
+    ctx: &ExecContext,
+) -> Result<Vec<NamedRecord>> {
     debug!(op = %plan.op_name(), "executing operator");
     match plan {
-        LogicalOp::SingleRow => Ok(vec![Record::new()]),
+        LogicalOp::SingleRow => Ok(vec![NamedRecord::new()]),
 
-        LogicalOp::EmptyRow => Ok(vec![Record::new()]),
+        LogicalOp::EmptyRow => Ok(vec![NamedRecord::new()]),
 
         LogicalOp::Scan { label, alias } => exec_scan(conn, label, alias, ctx),
 
@@ -467,7 +471,7 @@ pub(super) fn exec(conn: &Connection, plan: &LogicalOp, ctx: &ExecContext) -> Re
                 // Deduplicate for plain UNION.
                 let mut seen = Vec::new();
                 results.retain(|rec| {
-                    if seen.iter().any(|s: &Record| s.fields == rec.fields) {
+                    if seen.iter().any(|s: &NamedRecord| s.fields == rec.fields) {
                         false
                     } else {
                         seen.push(rec.clone());
@@ -485,7 +489,7 @@ pub(super) fn exec_scan(
     label: &str,
     alias: &str,
     ctx: &ExecContext,
-) -> Result<Vec<Record>> {
+) -> Result<Vec<NamedRecord>> {
     let nodes = node::find_nodes_by_label(conn, label)?;
     let mut records = Vec::with_capacity(nodes.len());
     for n in nodes {
@@ -502,7 +506,7 @@ pub(super) fn exec_index_lookup(
     property: &str,
     value: &LiteralValue,
     remaining_filters: Option<&Expr>,
-) -> Result<Vec<Record>> {
+) -> Result<Vec<NamedRecord>> {
     let lookup_value = literal_to_value(value);
     let node_ids = index::index_lookup(conn, label, property, &lookup_value)?;
     let mut records = Vec::new();
@@ -538,7 +542,7 @@ fn exec_expand(
     var_length_prop_filters: &HashMap<String, Expr>,
     result_cap: Option<usize>,
     ctx: &ExecContext,
-) -> Result<Vec<Record>> {
+) -> Result<Vec<NamedRecord>> {
     let input_records = exec(conn, input, ctx)?;
     let mut results = Vec::new();
 
@@ -744,7 +748,7 @@ fn exec_cross_product(
     right: &LogicalOp,
     same_match: bool,
     ctx: &ExecContext,
-) -> Result<Vec<Record>> {
+) -> Result<Vec<NamedRecord>> {
     // Materialize only the left side. Re-execute the right side per left
     // record so peak memory is O(left + right + output) instead of
     // O(left * right).
@@ -777,7 +781,7 @@ fn exec_cross_product(
 /// Collect edge identities from flat relationship bindings in a record
 /// (`alias.__src`, `alias.__dst`, `alias.__type`). Returns a vec of
 /// `(min(src,dst), max(src,dst), type, seq)` tuples.
-pub(super) fn collect_flat_edge_ids(rec: &Record) -> Vec<(i64, i64, String, u64)> {
+pub(super) fn collect_flat_edge_ids(rec: &NamedRecord) -> Vec<(i64, i64, String, u64)> {
     let mut edges = Vec::new();
     for (key, _) in &rec.fields {
         if key.ends_with(".__src") {
@@ -800,7 +804,7 @@ pub(super) fn collect_flat_edge_ids(rec: &Record) -> Vec<(i64, i64, String, u64)
 
 /// Check if a record contains two relationship bindings that refer to the
 /// same underlying edge (same normalized src/dst/type/seq).
-pub(super) fn has_duplicate_relationships(rec: &Record) -> bool {
+pub(super) fn has_duplicate_relationships(rec: &NamedRecord) -> bool {
     let mut seen: Vec<(i64, i64, String, u64)> = Vec::new();
     for (key, _) in &rec.fields {
         if key.ends_with(".__src") {
@@ -830,7 +834,7 @@ fn exec_filter(
     input: &LogicalOp,
     predicate: &Expr,
     ctx: &ExecContext,
-) -> Result<Vec<Record>> {
+) -> Result<Vec<NamedRecord>> {
     let records = exec(conn, input, ctx)?;
     let mut results = Vec::new();
     for rec in records {
@@ -848,7 +852,7 @@ fn exec_filter(
 /// Records flow through the pipeline with a flattened shape (`n.name`,
 /// `n.__id`, etc.); this helper materializes the compound at projection time
 /// so query results look the way openCypher specifies.
-pub(crate) fn build_compound_binding(rec: &Record, var: &str) -> Option<Value> {
+pub(crate) fn build_compound_binding(rec: &NamedRecord, var: &str) -> Option<Value> {
     use crate::types::{Edge, Node, Properties};
 
     // Var-length relationship variables stored directly as Value::List.
@@ -918,7 +922,7 @@ pub(crate) fn build_compound_binding(rec: &Record, var: &str) -> Option<Value> {
 /// Collect the set of variable names in a record that are bound as compound
 /// entities (nodes or edges). Used by `RETURN *` to know which prefixes to
 /// fold into compound columns rather than emitting as flat properties.
-pub(crate) fn compound_binding_vars(rec: &Record) -> Vec<String> {
+pub(crate) fn compound_binding_vars(rec: &NamedRecord) -> Vec<String> {
     use std::collections::BTreeSet;
     let mut vars: BTreeSet<String> = BTreeSet::new();
     for key in rec.fields.keys() {
@@ -937,12 +941,12 @@ fn exec_project(
     items: &[crate::cypher::ast::ReturnItem],
     emit_compound: bool,
     ctx: &ExecContext,
-) -> Result<Vec<Record>> {
+) -> Result<Vec<NamedRecord>> {
     let records = exec(conn, input, ctx)?;
     let mut results = Vec::new();
 
     for rec in &records {
-        let mut projected = Record::new();
+        let mut projected = NamedRecord::new();
         for item in items {
             match &item.expr.kind {
                 ExprKind::Star => {
@@ -1114,12 +1118,12 @@ fn exec_aggregate(
     group_keys: &[Expr],
     aggregates: &[AggregateExpr],
     ctx: &ExecContext,
-) -> Result<Vec<Record>> {
+) -> Result<Vec<NamedRecord>> {
     let records = exec(conn, input, ctx)?;
 
     if group_keys.is_empty() {
         // No grouping — aggregate over all records.
-        let mut rec = Record::new();
+        let mut rec = NamedRecord::new();
         for agg in aggregates {
             let col_name = agg_col_name(agg);
             let val = compute_aggregate(agg, &records, conn)?;
@@ -1131,7 +1135,7 @@ fn exec_aggregate(
     // Group by keys using a HashMap for O(1) group lookup.
     // IndexMap would preserve insertion order, but we use a separate Vec
     // to track key order so we don't need an extra dependency.
-    let mut group_map: HashMap<Vec<Value>, Vec<Record>> = HashMap::new();
+    let mut group_map: HashMap<Vec<Value>, Vec<NamedRecord>> = HashMap::new();
     let mut key_order: Vec<Vec<Value>> = Vec::new();
 
     for rec in &records {
@@ -1151,7 +1155,7 @@ fn exec_aggregate(
     let mut results = Vec::new();
     for key_vals in &key_order {
         let group_records = &group_map[key_vals];
-        let mut rec = Record::new();
+        let mut rec = NamedRecord::new();
         for (i, key_expr) in group_keys.iter().enumerate() {
             let col_name = expr_to_column_name(key_expr);
             rec.set(col_name.clone(), key_vals[i].clone());
@@ -1181,9 +1185,13 @@ fn exec_aggregate(
     Ok(results)
 }
 
-fn compute_aggregate(agg: &AggregateExpr, records: &[Record], conn: &Connection) -> Result<Value> {
+fn compute_aggregate(
+    agg: &AggregateExpr,
+    records: &[NamedRecord],
+    conn: &Connection,
+) -> Result<Value> {
     // When DISTINCT is set, deduplicate input values (skip nulls).
-    let deduped_records: Vec<Record>;
+    let deduped_records: Vec<NamedRecord>;
     let effective_records = if agg.distinct && !matches!(agg.input.kind, ExprKind::Star) {
         let mut seen: Vec<Value> = Vec::new();
         let mut kept = Vec::new();
@@ -1312,7 +1320,7 @@ fn compute_aggregate(agg: &AggregateExpr, records: &[Record], conn: &Connection)
             // Evaluate the percentile parameter from extra_arg.
             let pct = match &agg.extra_arg {
                 Some(pct_expr) => {
-                    let empty_rec = Record::new();
+                    let empty_rec = NamedRecord::new();
                     let first_rec = effective_records.first().unwrap_or(&empty_rec);
                     match eval_expr(pct_expr, first_rec, conn)? {
                         Value::F64(v) => v,
@@ -1400,7 +1408,7 @@ fn exec_sort(
     input: &LogicalOp,
     items: &[crate::cypher::ast::SortItem],
     ctx: &ExecContext,
-) -> Result<Vec<Record>> {
+) -> Result<Vec<NamedRecord>> {
     let mut records = exec(conn, input, ctx)?;
     records.sort_by(|a, b| {
         for item in items {
@@ -1417,12 +1425,16 @@ fn exec_sort(
     Ok(records)
 }
 
-fn exec_distinct(conn: &Connection, input: &LogicalOp, ctx: &ExecContext) -> Result<Vec<Record>> {
+fn exec_distinct(
+    conn: &Connection,
+    input: &LogicalOp,
+    ctx: &ExecContext,
+) -> Result<Vec<NamedRecord>> {
     let records = exec(conn, input, ctx)?;
     let mut seen = Vec::new();
     let mut results = Vec::new();
     for rec in records {
-        if !seen.iter().any(|s: &Record| s.fields == rec.fields) {
+        if !seen.iter().any(|s: &NamedRecord| s.fields == rec.fields) {
             seen.push(rec.clone());
             results.push(rec);
         }
@@ -1435,7 +1447,7 @@ fn exec_skip(
     input: &LogicalOp,
     count: u64,
     ctx: &ExecContext,
-) -> Result<Vec<Record>> {
+) -> Result<Vec<NamedRecord>> {
     let records = exec(conn, input, ctx)?;
     Ok(records.into_iter().skip(count as usize).collect())
 }
@@ -1445,7 +1457,7 @@ fn exec_limit(
     input: &LogicalOp,
     count: u64,
     ctx: &ExecContext,
-) -> Result<Vec<Record>> {
+) -> Result<Vec<NamedRecord>> {
     let records = exec(conn, input, ctx)?;
     Ok(records.into_iter().take(count as usize).collect())
 }
@@ -1455,9 +1467,9 @@ fn exec_create_node(
     labels: &[String],
     alias: Option<&str>,
     properties: &HashMap<String, Expr>,
-) -> Result<Vec<Record>> {
+) -> Result<Vec<NamedRecord>> {
     let mut props = Properties::new();
-    let dummy_rec = Record::new();
+    let dummy_rec = NamedRecord::new();
     for (key, expr) in properties {
         let val = eval_expr(expr, &dummy_rec, conn)?;
         if val == Value::Null {
@@ -1470,7 +1482,7 @@ fn exec_create_node(
     let primary_label = labels.first().map(|s| s.as_str()).unwrap_or("");
     index::update_indexes_for_node(conn, id, primary_label, None, &props)?;
 
-    let mut rec = Record::new();
+    let mut rec = NamedRecord::new();
     if let Some(alias) = alias {
         rec.set(alias.to_string(), Value::I64(id.0 as i64));
         rec.set(format!("{alias}.__id"), Value::I64(id.0 as i64));
@@ -1484,16 +1496,16 @@ fn exec_create_edge(
     _dst_alias: &str,
     _edge_type: &str,
     _properties: &HashMap<String, Expr>,
-) -> Result<Vec<Record>> {
+) -> Result<Vec<NamedRecord>> {
     // Standalone edge creation is handled by exec_create_sequence.
     // This path is only reached for isolated CreateEdge ops (shouldn't happen in practice).
     Ok(vec![])
 }
 
-fn exec_create_sequence(conn: &Connection, ops: &[LogicalOp]) -> Result<Vec<Record>> {
+fn exec_create_sequence(conn: &Connection, ops: &[LogicalOp]) -> Result<Vec<NamedRecord>> {
     // Track variable → NodeId bindings for edge creation.
     let mut bindings: HashMap<String, NodeId> = HashMap::new();
-    let mut last_record = Record::new();
+    let mut last_record = NamedRecord::new();
 
     for op in ops {
         match op {
@@ -1572,7 +1584,7 @@ fn exec_match_create(
     input: &LogicalOp,
     create_ops: &[LogicalOp],
     ctx: &ExecContext,
-) -> Result<Vec<Record>> {
+) -> Result<Vec<NamedRecord>> {
     let records = exec(conn, input, ctx)?;
     let mut result = Vec::with_capacity(records.len());
 
@@ -1673,7 +1685,7 @@ fn exec_delete(
     exprs: &[Expr],
     detach: bool,
     ctx: &ExecContext,
-) -> Result<Vec<Record>> {
+) -> Result<Vec<NamedRecord>> {
     let mut records = exec(conn, input, ctx)?;
 
     // Two-phase delete: collect all entities first, then delete edges, then nodes.
@@ -1719,7 +1731,7 @@ fn exec_delete(
 
 /// Collect entities from a variable binding for two-phase delete.
 fn collect_var_entities(
-    rec: &Record,
+    rec: &NamedRecord,
     var: &str,
     edges: &mut Vec<(NodeId, NodeId, String, Option<u64>)>,
     nodes: &mut Vec<NodeId>,
@@ -1784,7 +1796,7 @@ fn exec_set_property(
     input: &LogicalOp,
     assignments: &[crate::cypher::ast::Assignment],
     ctx: &ExecContext,
-) -> Result<Vec<Record>> {
+) -> Result<Vec<NamedRecord>> {
     let mut records = exec(conn, input, ctx)?;
     for rec in &mut records {
         for assignment in assignments {
@@ -1886,7 +1898,7 @@ fn exec_set_label(
     variable: &str,
     labels: &[String],
     ctx: &ExecContext,
-) -> Result<Vec<Record>> {
+) -> Result<Vec<NamedRecord>> {
     let mut records = exec(conn, input, ctx)?;
     for rec in &mut records {
         // Skip null variables (from OPTIONAL MATCH).
@@ -1946,7 +1958,7 @@ fn exec_set_properties(
     value_expr: &crate::cypher::ast::Expr,
     merge: bool,
     ctx: &ExecContext,
-) -> Result<Vec<Record>> {
+) -> Result<Vec<NamedRecord>> {
     let mut records = exec(conn, input, ctx)?;
     for rec in &mut records {
         // Edge variant: the variable carries edge identity metadata
@@ -2094,7 +2106,7 @@ fn exec_remove(
     input: &LogicalOp,
     items: &[crate::cypher::ast::RemoveItem],
     ctx: &ExecContext,
-) -> Result<Vec<Record>> {
+) -> Result<Vec<NamedRecord>> {
     let mut records = exec(conn, input, ctx)?;
     for rec in &mut records {
         for item in items {
@@ -2197,7 +2209,7 @@ fn apply_merge_set_item_node(
     conn: &Connection,
     item: &SetItem,
     node_id: NodeId,
-    rec: &Record,
+    rec: &NamedRecord,
 ) -> Result<()> {
     match item {
         SetItem::Property(assignment) => {
@@ -2252,7 +2264,7 @@ fn apply_merge_set_item_edge(
     src_id: NodeId,
     dst_id: NodeId,
     edge_type: &str,
-    rec: &Record,
+    rec: &NamedRecord,
 ) -> Result<()> {
     match item {
         SetItem::Property(assignment) => {
@@ -2291,7 +2303,7 @@ fn apply_merge_set_item_edge_at(
     dst_id: NodeId,
     edge_type: &str,
     seq: u64,
-    rec: &Record,
+    rec: &NamedRecord,
 ) -> Result<()> {
     match item {
         SetItem::Property(assignment) => {
@@ -2330,7 +2342,7 @@ fn apply_merge_set_item_edge_at(
 /// Resolve an expression to a property map. If the expression evaluates to a
 /// node ID, load that node's properties. If it evaluates to an edge, use the
 /// edge's properties. If it's already a map, use it directly.
-fn resolve_to_map(expr: &Expr, rec: &Record, conn: &Connection) -> Result<Properties> {
+fn resolve_to_map(expr: &Expr, rec: &NamedRecord, conn: &Connection) -> Result<Properties> {
     let val = eval_expr(expr, rec, conn)?;
     match val {
         Value::Map(map) => Ok(map.into_iter().collect()),
@@ -2353,7 +2365,7 @@ fn exec_merge(
     pattern: &crate::cypher::ast::Pattern,
     on_create: &[SetItem],
     on_match: &[SetItem],
-) -> Result<Vec<Record>> {
+) -> Result<Vec<NamedRecord>> {
     if pattern.elements.len() == 1 {
         return exec_merge_node(conn, pattern, on_create, on_match);
     }
@@ -2367,7 +2379,7 @@ fn exec_merge_node(
     pattern: &crate::cypher::ast::Pattern,
     on_create: &[SetItem],
     on_match: &[SetItem],
-) -> Result<Vec<Record>> {
+) -> Result<Vec<NamedRecord>> {
     let node_pat = match pattern.elements.first() {
         Some(PatternElement::Node(n)) => n,
         _ => unreachable!("MERGE pattern validated at plan time"),
@@ -2377,7 +2389,7 @@ fn exec_merge_node(
     let alias = node_pat.variable.as_deref().unwrap_or("_merge");
 
     // Pre-evaluate properties.
-    let dummy_rec = Record::new();
+    let dummy_rec = NamedRecord::new();
     let mut props = Properties::new();
     for (key, expr) in &node_pat.properties {
         let val = eval_expr(expr, &dummy_rec, conn)?;
@@ -2394,7 +2406,7 @@ fn exec_merge_node(
 
     let node_id = match matched {
         Some(n) => {
-            let rec = Record::new();
+            let rec = NamedRecord::new();
             for item in on_match {
                 apply_merge_set_item_node(conn, item, n.id, &rec)?;
             }
@@ -2408,7 +2420,7 @@ fn exec_merge_node(
                 index::update_indexes_for_node(conn, id, lbl, None, &props)?;
             }
 
-            let rec = Record::new();
+            let rec = NamedRecord::new();
             for item in on_create {
                 apply_merge_set_item_node(conn, item, id, &rec)?;
             }
@@ -2416,7 +2428,7 @@ fn exec_merge_node(
         }
     };
 
-    let mut rec = Record::new();
+    let mut rec = NamedRecord::new();
     rec.set(alias.to_string(), Value::I64(node_id.0 as i64));
     rec.set(format!("{alias}.__id"), Value::I64(node_id.0 as i64));
 
@@ -2435,7 +2447,7 @@ fn exec_merge_relationship(
     pattern: &crate::cypher::ast::Pattern,
     on_create: &[SetItem],
     on_match: &[SetItem],
-) -> Result<Vec<Record>> {
+) -> Result<Vec<NamedRecord>> {
     let src_pat = match &pattern.elements[0] {
         PatternElement::Node(n) => n,
         _ => unreachable!(),
@@ -2459,7 +2471,7 @@ fn exec_merge_relationship(
 
     // Pre-evaluate edge properties and check for null.
     let mut edge_props = Properties::new();
-    let dummy_rec = Record::new();
+    let dummy_rec = NamedRecord::new();
     for (key, expr) in &rel.properties {
         let val = eval_expr(expr, &dummy_rec, conn)?;
         if val == Value::Null {
@@ -2484,7 +2496,7 @@ fn exec_merge_relationship(
     };
     if !edge_match {
         edge::create_edge(conn, src_id, dst_id, &edge_type, edge_props)?;
-        let mut rec = Record::new();
+        let mut rec = NamedRecord::new();
         if let Some(ref v) = src_pat.variable {
             rec.set(v.clone(), Value::I64(src_id.0 as i64));
         }
@@ -2495,7 +2507,7 @@ fn exec_merge_relationship(
             apply_merge_set_item_edge(conn, item, src_id, dst_id, &edge_type, &rec)?;
         }
     } else {
-        let mut rec = Record::new();
+        let mut rec = NamedRecord::new();
         if let Some(ref v) = src_pat.variable {
             rec.set(v.clone(), Value::I64(src_id.0 as i64));
         }
@@ -2507,7 +2519,7 @@ fn exec_merge_relationship(
         }
     }
 
-    let mut rec = Record::new();
+    let mut rec = NamedRecord::new();
     if let Some(ref v) = src_pat.variable {
         rec.set(v.clone(), Value::I64(src_id.0 as i64));
     }
@@ -2541,7 +2553,7 @@ fn find_or_create_merge_node(
     label: &str,
     properties: &HashMap<String, Expr>,
 ) -> Result<NodeId> {
-    let dummy_rec = Record::new();
+    let dummy_rec = NamedRecord::new();
     let mut props = Properties::new();
     for (key, expr) in properties {
         let val = eval_expr(expr, &dummy_rec, conn)?;
@@ -2574,7 +2586,7 @@ fn exec_match_merge(
     on_create: &[SetItem],
     on_match: &[SetItem],
     ctx: &ExecContext,
-) -> Result<Vec<Record>> {
+) -> Result<Vec<NamedRecord>> {
     let records = exec(conn, input, ctx)?;
     let mut result = Vec::with_capacity(records.len());
 
@@ -2828,7 +2840,7 @@ fn exec_call(
     yield_items: &[(String, Option<String>)],
     _yield_star: bool,
     ctx: &ExecContext,
-) -> Result<Vec<Record>> {
+) -> Result<Vec<NamedRecord>> {
     let records = exec(conn, input, ctx)?;
 
     let proc_def = ctx.procedures.get(procedure_name).ok_or_else(|| {
@@ -2921,7 +2933,7 @@ fn exec_unwind(
     expr: &Expr,
     alias: &str,
     ctx: &ExecContext,
-) -> Result<Vec<Record>> {
+) -> Result<Vec<NamedRecord>> {
     let records = exec(conn, input, ctx)?;
     let mut results = Vec::new();
 
@@ -2977,7 +2989,7 @@ fn exec_materialize_path(
     node_aliases: &[String],
     rel_aliases: &[String],
     ctx: &ExecContext,
-) -> Result<Vec<Record>> {
+) -> Result<Vec<NamedRecord>> {
     let records = exec(conn, input, ctx)?;
     let mut results = Vec::new();
 
@@ -3068,13 +3080,13 @@ fn exec_materialize_path(
 /// Reuses the existing `compute_aggregate` function.
 pub(super) fn exec_aggregate_over_records(
     conn: &Connection,
-    records: &[Record],
+    records: &[NamedRecord],
     group_keys: &[Expr],
     aggregates: &[AggregateExpr],
-) -> Result<Vec<Record>> {
+) -> Result<Vec<NamedRecord>> {
     if group_keys.is_empty() {
         // Global aggregation over all records.
-        let mut result = Record::new();
+        let mut result = NamedRecord::new();
         for agg in aggregates {
             let val = compute_aggregate(agg, records, conn)?;
             let alias = agg
@@ -3087,7 +3099,7 @@ pub(super) fn exec_aggregate_over_records(
     }
 
     // Group by keys.
-    let mut groups: Vec<(Vec<Value>, Vec<Record>)> = Vec::new();
+    let mut groups: Vec<(Vec<Value>, Vec<NamedRecord>)> = Vec::new();
     for rec in records {
         let key: Vec<Value> = group_keys
             .iter()
@@ -3102,7 +3114,7 @@ pub(super) fn exec_aggregate_over_records(
 
     let mut results = Vec::new();
     for (key_vals, group_recs) in &groups {
-        let mut result = Record::new();
+        let mut result = NamedRecord::new();
         // Set group key columns.
         for (i, k) in group_keys.iter().enumerate() {
             let col = match &k.kind {
@@ -3192,7 +3204,7 @@ fn exec_shortest_path(
     max_hops: u32,
     all_paths: bool,
     ctx: &ExecContext,
-) -> Result<Vec<Record>> {
+) -> Result<Vec<NamedRecord>> {
     let records = exec(conn, input, ctx)?;
     let label = edge_type.unwrap_or("");
     let mut results = Vec::new();
@@ -3469,7 +3481,11 @@ fn compare_values_for_sort(a: &Value, b: &Value) -> std::cmp::Ordering {
 ///
 /// Strips the top-level projection/sort/limit layers since EXISTS only
 /// cares about row existence, not projected values.
-pub fn exec_correlated_exists(conn: &Connection, plan: &LogicalOp, outer: &Record) -> Result<bool> {
+pub fn exec_correlated_exists(
+    conn: &Connection,
+    plan: &LogicalOp,
+    outer: &NamedRecord,
+) -> Result<bool> {
     let rows = exec_correlated(conn, plan, outer, &ExecContext::default())?;
     Ok(!rows.is_empty())
 }
@@ -3479,8 +3495,8 @@ pub fn exec_correlated_exists(conn: &Connection, plan: &LogicalOp, outer: &Recor
 pub fn exec_correlated_subquery(
     conn: &Connection,
     plan: &LogicalOp,
-    outer: &Record,
-) -> Result<Vec<Record>> {
+    outer: &NamedRecord,
+) -> Result<Vec<NamedRecord>> {
     exec_correlated(conn, plan, outer, &ExecContext::default())
 }
 
@@ -3600,14 +3616,14 @@ pub fn execute_first_match(
     }
 }
 
-/// Build a `Record` from a `Node`, keyed under the given alias.
+/// Build a `NamedRecord` from a `Node`, keyed under the given alias.
 ///
 /// Note: NodeId (u64) is transmitted as i64. This wraps for IDs above
 /// i64::MAX (~9.2e18), which is practically unreachable — sequential IDs
 /// would take thousands of years at millions of inserts per second.
-pub(crate) fn node_to_record(n: &crate::types::Node, alias: &str) -> Record {
+pub(crate) fn node_to_record(n: &crate::types::Node, alias: &str) -> NamedRecord {
     debug_assert!(n.id.0 <= i64::MAX as u64, "NodeId exceeds i64::MAX");
-    let mut rec = Record::new();
+    let mut rec = NamedRecord::new();
     populate_node_bindings(&mut rec, n, alias);
     rec
 }
@@ -3616,7 +3632,7 @@ pub(crate) fn node_to_record(n: &crate::types::Node, alias: &str) -> Record {
 /// `alias.__id`, `alias.__label`, `alias.__labels`) into `rec`. Used both by
 /// `node_to_record` (fresh record) and by Expand-style operators that merge
 /// new bindings into an existing record.
-pub(crate) fn populate_node_bindings(rec: &mut Record, n: &crate::types::Node, alias: &str) {
+pub(crate) fn populate_node_bindings(rec: &mut NamedRecord, n: &crate::types::Node, alias: &str) {
     rec.set(alias.to_string(), Value::I64(n.id.0 as i64));
     for (key, val) in &n.properties {
         rec.set(format!("{alias}.{key}"), val.clone());
@@ -3639,7 +3655,7 @@ pub(crate) fn populate_node_bindings(rec: &mut Record, n: &crate::types::Node, a
 /// or build edge bindings).
 pub(crate) fn fetch_and_populate(
     conn: &Connection,
-    rec: &mut Record,
+    rec: &mut NamedRecord,
     id: NodeId,
     alias: &str,
 ) -> Result<crate::types::Node> {
@@ -3652,7 +3668,7 @@ pub(crate) fn fetch_and_populate(
 ///
 /// A binding matches if the record either doesn't contain the key (no
 /// constraint) or contains it with an equal value.
-fn record_matches_bindings(rec: &Record, bindings: &[(String, Value)]) -> bool {
+fn record_matches_bindings(rec: &NamedRecord, bindings: &[(String, Value)]) -> bool {
     bindings.iter().all(|(key, outer_val)| match rec.get(key) {
         Some(inner_val) => inner_val == outer_val,
         None => true,

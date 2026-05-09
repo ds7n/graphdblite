@@ -22,7 +22,7 @@ use rusqlite::Connection;
 
 use crate::cypher::ast::{BinOp, Expr, ExprKind};
 use crate::cypher::ir::LogicalOp;
-use crate::cypher::record::Record;
+use crate::cypher::record::NamedRecord;
 use crate::index;
 use crate::stats;
 use crate::types::Value;
@@ -151,11 +151,11 @@ fn estimate_rows(conn: &Connection, plan: &LogicalOp) -> f64 {
 /// Format a logical plan as EXPLAIN output records.
 ///
 /// Returns a single record with a "plan" column containing the tree-formatted plan.
-pub fn format_explain(conn: &Connection, plan: &LogicalOp) -> Vec<Record> {
+pub fn format_explain(conn: &Connection, plan: &LogicalOp) -> Vec<NamedRecord> {
     let mut lines = Vec::new();
     format_plan_tree(conn, plan, 0, &mut lines);
     let text = lines.join("\n");
-    let mut rec = Record::new();
+    let mut rec = NamedRecord::new();
     rec.set("plan".to_string(), Value::String(text));
     vec![rec]
 }

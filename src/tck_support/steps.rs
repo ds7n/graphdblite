@@ -17,23 +17,33 @@ use cucumber::{gherkin::Step, given, then, when};
 use super::compare;
 use super::errors;
 use super::graphs;
-use super::world::{GraphCounts, World};
+use super::world::{dual_run_enabled, GraphCounts, World};
+use crate::cypher::executor::Path;
 
 // ─── Given ───────────────────────────────────────────────────────────────
 
 #[given("any graph")]
 fn given_any_graph(world: &mut World) {
     world.db = Some(Database::open_memory().expect("open_memory"));
+    if dual_run_enabled() {
+        world.db_slot = Some(Database::open_memory().expect("open_memory shadow"));
+    }
 }
 
 #[given("an empty graph")]
 fn given_empty_graph(world: &mut World) {
     world.db = Some(Database::open_memory().expect("open_memory"));
+    if dual_run_enabled() {
+        world.db_slot = Some(Database::open_memory().expect("open_memory shadow"));
+    }
 }
 
 #[given(expr = "the {word} graph")]
 fn given_named_graph(world: &mut World, name: String) {
     world.db = Some(graphs::load_named_graph(&name).expect("load named graph"));
+    if dual_run_enabled() {
+        world.db_slot = Some(graphs::load_named_graph(&name).expect("load named graph (shadow)"));
+    }
 }
 
 #[given("having executed:")]
@@ -59,6 +69,24 @@ fn having_executed(world: &mut World, step: &Step) {
         });
     }
     tx.commit().expect("commit");
+
+    // Mirror to the shadow DB so its post-setup state matches before the
+    // first `When executing query:` step compares the two paths.
+    if let Some(shadow) = world.db_slot.as_mut() {
+        let tx = shadow.write_tx().expect("begin_write (shadow)");
+        for stmt in split_setup_statements(query) {
+            let stmt = stmt.trim();
+            if stmt.is_empty() {
+                continue;
+            }
+            tx.query(stmt).unwrap_or_else(|e| {
+                panic!(
+                    "setup query failed (shadow): {e}\nstatement: {stmt}\nfull script:\n{query}"
+                );
+            });
+        }
+        tx.commit().expect("commit shadow");
+    }
 }
 
 /// Split a multi-statement setup script into individual Cypher statements.
@@ -167,6 +195,131 @@ fn given_procedure(world: &mut World, step: &Step, sig: String) {
 
 // ─── When ────────────────────────────────────────────────────────────────
 
+/// Run `query` against `db` with the given path pinned. Returns either the
+/// result records or the error, plus a flag indicating whether the tx was
+/// committed (writes only commit on success; reads always release).
+fn run_query_pinned(
+    db: &mut Database,
+    query: &str,
+    params: Option<&HashMap<String, Value>>,
+    procedures: &crate::procedures::Registry,
+    path: Path,
+    is_write: bool,
+) -> Result<Vec<crate::cypher::record::NamedRecord>, crate::GraphError> {
+    if is_write {
+        let tx = db.write_tx().expect("begin_write");
+        let outcome = tx.query_with_procedures_path(query, params, procedures, path);
+        match &outcome {
+            Ok(_) => tx.commit().expect("commit"),
+            Err(_) => tx.rollback().expect("rollback"),
+        }
+        outcome
+    } else {
+        let tx = db.read_tx().expect("begin_read");
+        let outcome = tx.query_with_procedures_path(query, params, procedures, path);
+        tx.commit().expect("commit read tx");
+        outcome
+    }
+}
+
+/// Compare two query outcomes (named is the reference, slot the candidate)
+/// and panic with a clear diff on divergence. Order-sensitive when
+/// `ordered` is true (ORDER BY / LIMIT / SKIP); multiset otherwise.
+fn assert_results_equivalent(
+    named: &Result<Vec<crate::cypher::record::NamedRecord>, crate::GraphError>,
+    slot: &Result<Vec<crate::cypher::record::NamedRecord>, crate::GraphError>,
+    query: &str,
+    ordered: bool,
+    feature: &str,
+    scenario: &str,
+) {
+    use crate::types::Value;
+    use std::collections::HashMap as Hm;
+
+    let ctx = || format!("{feature}::{scenario}\nquery: {query}");
+
+    match (named, slot) {
+        (Ok(n), Ok(s)) => {
+            assert_eq!(
+                n.len(),
+                s.len(),
+                "row count differs (named={} slot={}) [{}]",
+                n.len(),
+                s.len(),
+                ctx()
+            );
+            if ordered {
+                for (i, (a, b)) in n.iter().zip(s.iter()).enumerate() {
+                    assert_eq!(
+                        a,
+                        b,
+                        "row {i} differs [{}]\n  named={a:?}\n   slot={b:?}",
+                        ctx()
+                    );
+                }
+            } else {
+                let mut counts: Hm<Vec<(String, Value)>, isize> = Hm::new();
+                for r in n {
+                    *counts
+                        .entry(
+                            r.fields
+                                .iter()
+                                .map(|(k, v)| (k.clone(), v.clone()))
+                                .collect(),
+                        )
+                        .or_default() += 1;
+                }
+                for r in s {
+                    *counts
+                        .entry(
+                            r.fields
+                                .iter()
+                                .map(|(k, v)| (k.clone(), v.clone()))
+                                .collect(),
+                        )
+                        .or_default() -= 1;
+                }
+                let leftover: Vec<_> = counts.into_iter().filter(|(_, c)| *c != 0).collect();
+                assert!(
+                    leftover.is_empty(),
+                    "multiset diff [{}]: {leftover:?}",
+                    ctx()
+                );
+            }
+        }
+        (Err(en), Err(es)) => {
+            // Both paths errored — accept any error pair (TCK Then-step
+            // checks the kind on the named result; if both errored, the
+            // scenario assertion will still gate on the right kind).
+            let _ = (en, es);
+        }
+        (Ok(n), Err(es)) => panic!(
+            "named succeeded ({} rows) but slot errored: {es:?} [{}]",
+            n.len(),
+            ctx()
+        ),
+        (Err(en), Ok(s)) => panic!(
+            "slot succeeded ({} rows) but named errored: {en:?} [{}]",
+            s.len(),
+            ctx()
+        ),
+    }
+}
+
+fn is_write_query(query: &str) -> bool {
+    let upper = query.to_uppercase();
+    upper.contains("CREATE")
+        || upper.contains("DELETE")
+        || upper.contains("SET ")
+        || upper.contains("MERGE")
+        || upper.contains("REMOVE")
+}
+
+fn query_is_ordered(query: &str) -> bool {
+    let upper = query.to_uppercase();
+    upper.contains("ORDER BY") || upper.contains(" LIMIT ") || upper.contains(" SKIP ")
+}
+
 #[when("executing query:")]
 fn when_executing_query(world: &mut World, step: &Step) {
     let query = step
@@ -187,54 +340,70 @@ fn when_executing_query(world: &mut World, step: &Step) {
         Some(world.params.drain().collect())
     };
 
-    // Decide tx mode: if the query looks like a write, open a write tx.
-    // Keep this list aligned with `is_read_only` in the executor — anything
-    // that produces a write op there must be detected here, otherwise the
-    // core's read-only enforcement will reject the query in a read tx.
-    let is_write = {
-        let upper = query.to_uppercase();
-        upper.contains("CREATE")
-            || upper.contains("DELETE")
-            || upper.contains("SET ")
-            || upper.contains("MERGE")
-            || upper.contains("REMOVE")
+    let is_write = is_write_query(query);
+    let dual = world.db_slot.is_some();
+    // Pin the primary to Named when dual mode is active so the comparison
+    // is deterministic regardless of the active feature flag. Outside dual
+    // mode keep `Path::Default` so the existing TCK runs still exercise
+    // whichever path the feature flag selects.
+    let primary_path = if dual { Path::Named } else { Path::Default };
+
+    // Snapshot the planner's `_anon_*` counter so the shadow run reuses the
+    // same generated column names as the primary. Otherwise running the
+    // same query twice consumes the counter twice and produces identical
+    // records under different `_anon_rel_N` keys, which the multiset
+    // comparison would flag as divergence.
+    let anon_pre = if dual {
+        Some(crate::cypher::planner::anon_counter_snapshot())
+    } else {
+        None
     };
 
-    if is_write {
-        let tx = db.write_tx().expect("begin_write");
-        match if world.procedures.is_empty() {
-            tx.query_with_params(query, params.as_ref())
-        } else {
-            tx.query_with_procedures(query, params.as_ref(), &world.procedures)
-        } {
-            Ok(records) => {
-                world.last_result = Some(records);
-                world.last_error = None;
-                tx.commit().expect("commit");
-            }
-            Err(e) => {
-                world.last_result = None;
-                world.last_error = Some(e);
-                tx.rollback().expect("rollback");
-            }
+    let primary = run_query_pinned(
+        db,
+        query,
+        params.as_ref(),
+        &world.procedures,
+        primary_path,
+        is_write,
+    );
+
+    if let Some(shadow) = world.db_slot.as_mut() {
+        if let Some(v) = anon_pre {
+            crate::cypher::planner::anon_counter_restore(v);
         }
-    } else {
-        let tx = db.read_tx().expect("begin_read");
-        match if world.procedures.is_empty() {
-            tx.query_with_params(query, params.as_ref())
-        } else {
-            tx.query_with_procedures(query, params.as_ref(), &world.procedures)
-        } {
-            Ok(records) => {
-                world.last_result = Some(records);
-                world.last_error = None;
-            }
-            Err(e) => {
-                world.last_result = None;
-                world.last_error = Some(e);
-            }
+        let shadow_outcome = run_query_pinned(
+            shadow,
+            query,
+            params.as_ref(),
+            &world.procedures,
+            Path::Slot,
+            is_write,
+        );
+        assert_results_equivalent(
+            &primary,
+            &shadow_outcome,
+            query,
+            query_is_ordered(query),
+            &world.current_feature,
+            &world.current_scenario,
+        );
+    }
+
+    match primary {
+        Ok(records) => {
+            crate::tck_support::headers::log_headers(
+                &world.current_feature,
+                &world.current_scenario,
+                &records,
+            );
+            world.last_result = Some(records);
+            world.last_error = None;
         }
-        tx.commit().expect("commit read tx");
+        Err(e) => {
+            world.last_result = None;
+            world.last_error = Some(e);
+        }
     }
 }
 
@@ -248,9 +417,34 @@ fn when_executing_control_query(world: &mut World, step: &Step) {
 
     let db = world.db.as_mut().expect("database not initialized");
 
-    // Control queries verify side effects — always read-only.
-    let tx = db.read_tx().expect("begin_read");
-    match tx.query(query) {
+    let dual = world.db_slot.is_some();
+    let primary_path = if dual { Path::Named } else { Path::Default };
+
+    let anon_pre = if dual {
+        Some(crate::cypher::planner::anon_counter_snapshot())
+    } else {
+        None
+    };
+
+    let primary = run_query_pinned(db, query, None, &world.procedures, primary_path, false);
+
+    if let Some(shadow) = world.db_slot.as_mut() {
+        if let Some(v) = anon_pre {
+            crate::cypher::planner::anon_counter_restore(v);
+        }
+        let shadow_outcome =
+            run_query_pinned(shadow, query, None, &world.procedures, Path::Slot, false);
+        assert_results_equivalent(
+            &primary,
+            &shadow_outcome,
+            query,
+            query_is_ordered(query),
+            &world.current_feature,
+            &world.current_scenario,
+        );
+    }
+
+    match primary {
         Ok(records) => {
             world.last_result = Some(records);
             world.last_error = None;
@@ -260,7 +454,6 @@ fn when_executing_control_query(world: &mut World, step: &Step) {
             world.last_error = Some(e);
         }
     }
-    tx.commit().expect("commit read tx");
 }
 
 // ─── Then ────────────────────────────────────────────────────────────────

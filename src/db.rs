@@ -3,7 +3,7 @@ use std::path::Path;
 
 use rusqlite::{Connection, OpenFlags, TransactionBehavior};
 
-use crate::cypher::{execute_cypher, executor::ExecContext, record::Record};
+use crate::cypher::{execute_cypher, executor::ExecContext, record::NamedRecord};
 use crate::schema;
 use crate::transaction::{ReadTransaction, ReadTxGuard, WriteTransaction, WriteTxGuard};
 use crate::types::{GraphError, Result, Value};
@@ -219,7 +219,7 @@ impl Database {
     /// Crate-internal: used by `tck_support` for storage-table introspection.
     /// Not part of the public API — bindings use the stateful `execute`/
     /// `begin_*`/`commit` methods instead.
-    #[cfg(any(feature = "tck-support", feature = "fuzzing"))]
+    #[cfg(any(feature = "tck-support", feature = "fuzzing", test))]
     pub(crate) fn connection(&self) -> &Connection {
         &self.conn
     }
@@ -297,7 +297,7 @@ impl Database {
     /// read txn, writes use BEGIN IMMEDIATE). On error the auto-tx is rolled
     /// back. Multi-statement transactions still require explicit
     /// `begin_*` + `commit`.
-    pub fn execute(&mut self, cypher: &str) -> Result<Vec<Record>> {
+    pub fn execute(&mut self, cypher: &str) -> Result<Vec<NamedRecord>> {
         self.execute_with_params(cypher, None)
     }
 
@@ -307,7 +307,7 @@ impl Database {
         &mut self,
         cypher: &str,
         params: Option<&std::collections::HashMap<String, Value>>,
-    ) -> Result<Vec<Record>> {
+    ) -> Result<Vec<NamedRecord>> {
         if self.tx_state != TxState::None {
             let ctx = ExecContext {
                 max_result_rows: self.max_result_rows,

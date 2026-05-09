@@ -15,6 +15,11 @@ on:
 permissions:
   contents: write
 
+# See ci.yml — bumps rustc's per-thread stack to avoid cold-cache
+# typeck SIGSEGV.
+env:
+  RUST_MIN_STACK: 16777216
+
 jobs:
   build-cli-macos:
     runs-on: macos-latest

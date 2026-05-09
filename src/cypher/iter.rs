@@ -15,7 +15,7 @@ use crate::cypher::executor::{
     fetch_and_populate, is_user_visible_field, literal_to_value, node_to_record,
 };
 use crate::cypher::ir::*;
-use crate::cypher::record::Record;
+use crate::cypher::record::NamedRecord;
 use crate::types::{Direction, NodeId, Result, Value};
 use crate::{edge, index, node};
 
@@ -27,11 +27,11 @@ use crate::{edge, index, node};
 ///   lifetime management complex
 pub trait RecordIter {
     /// Return the next record, or `None` when exhausted.
-    fn next_record(&mut self) -> Result<Option<Record>>;
+    fn next_record(&mut self) -> Result<Option<NamedRecord>>;
 }
 
 /// Collect all records from an iterator into a Vec.
-pub fn collect_all(iter: &mut dyn RecordIter) -> Result<Vec<Record>> {
+pub fn collect_all(iter: &mut dyn RecordIter) -> Result<Vec<NamedRecord>> {
     let mut records = Vec::new();
     while let Some(rec) = iter.next_record()? {
         records.push(rec);
@@ -43,11 +43,11 @@ pub fn collect_all(iter: &mut dyn RecordIter) -> Result<Vec<Record>> {
 
 /// Iterates over pre-materialized records (used for leaf nodes and blocking ops).
 pub struct VecIter {
-    records: std::vec::IntoIter<Record>,
+    records: std::vec::IntoIter<NamedRecord>,
 }
 
 impl VecIter {
-    pub fn new(records: Vec<Record>) -> Self {
+    pub fn new(records: Vec<NamedRecord>) -> Self {
         Self {
             records: records.into_iter(),
         }
@@ -55,7 +55,7 @@ impl VecIter {
 }
 
 impl RecordIter for VecIter {
-    fn next_record(&mut self) -> Result<Option<Record>> {
+    fn next_record(&mut self) -> Result<Option<NamedRecord>> {
         Ok(self.records.next())
     }
 }
@@ -73,12 +73,12 @@ impl EmptyRowIter {
 }
 
 impl RecordIter for EmptyRowIter {
-    fn next_record(&mut self) -> Result<Option<Record>> {
+    fn next_record(&mut self) -> Result<Option<NamedRecord>> {
         if self.done {
             Ok(None)
         } else {
             self.done = true;
-            Ok(Some(Record::new()))
+            Ok(Some(NamedRecord::new()))
         }
     }
 }
@@ -93,7 +93,7 @@ pub struct FilterIter<'a> {
 }
 
 impl<'a> RecordIter for FilterIter<'a> {
-    fn next_record(&mut self) -> Result<Option<Record>> {
+    fn next_record(&mut self) -> Result<Option<NamedRecord>> {
         while let Some(rec) = self.input.next_record()? {
             if eval_predicate(&self.predicate, &rec, self.conn)? {
                 return Ok(Some(rec));
@@ -110,7 +110,7 @@ pub struct SkipIter<'a> {
 }
 
 impl<'a> RecordIter for SkipIter<'a> {
-    fn next_record(&mut self) -> Result<Option<Record>> {
+    fn next_record(&mut self) -> Result<Option<NamedRecord>> {
         while self.remaining_to_skip > 0 {
             if self.input.next_record()?.is_none() {
                 return Ok(None);
@@ -128,7 +128,7 @@ pub struct LimitIter<'a> {
 }
 
 impl<'a> RecordIter for LimitIter<'a> {
-    fn next_record(&mut self) -> Result<Option<Record>> {
+    fn next_record(&mut self) -> Result<Option<NamedRecord>> {
         if self.remaining == 0 {
             return Ok(None);
         }
@@ -155,13 +155,13 @@ pub struct ProjectIter<'a> {
 }
 
 impl<'a> RecordIter for ProjectIter<'a> {
-    fn next_record(&mut self) -> Result<Option<Record>> {
+    fn next_record(&mut self) -> Result<Option<NamedRecord>> {
         let rec = match self.input.next_record()? {
             Some(r) => r,
             None => return Ok(None),
         };
 
-        let mut projected = Record::new();
+        let mut projected = NamedRecord::new();
         for item in &self.items {
             match &item.expr.kind {
                 ExprKind::Star => {
@@ -259,11 +259,48 @@ pub struct ExpandIter<'a> {
     var_length_prop_filters: HashMap<String, Value>,
     max_traversal_work: u64,
     /// Buffer of expanded records from the current input record.
-    buffer: std::vec::IntoIter<Record>,
+    buffer: std::vec::IntoIter<NamedRecord>,
+}
+
+impl<'a> ExpandIter<'a> {
+    /// Construct an ExpandIter from an arbitrary upstream `RecordIter`. Used
+    /// by `cypher::iter_slot` to wrap a slot-input adapter so the slot path
+    /// reuses Expand's dense traversal logic instead of duplicating it.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn new(
+        input: Box<dyn RecordIter + 'a>,
+        conn: &'a Connection,
+        src_alias: String,
+        dst_alias: String,
+        rel_alias: Option<String>,
+        edge_types: Vec<String>,
+        direction: Direction,
+        min_hops: u32,
+        max_hops: u32,
+        var_length: bool,
+        var_length_prop_filters: HashMap<String, Value>,
+        max_traversal_work: u64,
+    ) -> Self {
+        Self {
+            input,
+            conn,
+            src_alias,
+            dst_alias,
+            rel_alias,
+            edge_types,
+            direction,
+            min_hops,
+            max_hops,
+            var_length,
+            var_length_prop_filters,
+            max_traversal_work,
+            buffer: Vec::new().into_iter(),
+        }
+    }
 }
 
 impl<'a> RecordIter for ExpandIter<'a> {
-    fn next_record(&mut self) -> Result<Option<Record>> {
+    fn next_record(&mut self) -> Result<Option<NamedRecord>> {
         loop {
             // Drain buffered expansions first.
             if let Some(rec) = self.buffer.next() {
@@ -444,7 +481,8 @@ pub fn build_iter<'a>(
         LogicalOp::Scan { label, alias } => {
             // Materialize the scan (SQLite rows) but the pipeline above streams.
             let nodes = node::find_nodes_by_label(conn, label)?;
-            let records: Vec<Record> = nodes.iter().map(|n| node_to_record(n, alias)).collect();
+            let records: Vec<NamedRecord> =
+                nodes.iter().map(|n| node_to_record(n, alias)).collect();
             Ok(Box::new(VecIter::new(records)))
         }
 
@@ -555,7 +593,7 @@ pub fn build_iter<'a>(
             let mut seen = Vec::new();
             let mut deduped = Vec::new();
             for rec in records {
-                if !seen.iter().any(|s: &Record| s.fields == rec.fields) {
+                if !seen.iter().any(|s: &NamedRecord| s.fields == rec.fields) {
                     seen.push(rec.clone());
                     deduped.push(rec);
                 }
@@ -590,6 +628,13 @@ pub fn build_iter<'a>(
             Ok(Box::new(VecIter::new(records)))
         }
     }
+}
+
+/// Crate-internal accessor so `iter_slot::SortSlotIter` reuses this
+/// comparator unchanged. Keeping a single source ensures slot- and named-
+/// path Sort produce identical orderings on every TCK scenario.
+pub(crate) fn compare_values_for_sort_pub(a: &Value, b: &Value) -> std::cmp::Ordering {
+    compare_values_for_sort(a, b)
 }
 
 /// Compare two values for sorting (null-last semantics).

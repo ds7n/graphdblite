@@ -4,11 +4,18 @@ pub mod eval;
 pub mod executor;
 pub mod ir;
 pub mod iter;
+pub mod iter_slot;
 pub mod parse_cache;
 pub mod parser;
 pub mod planner;
 pub mod procedure;
 pub mod record;
+pub mod record_v2;
+pub mod row_sink;
+pub mod schema_infer;
+
+#[cfg(test)]
+mod dual_run;
 
 use crate::types::{Result, Value};
 use rusqlite::Connection;
@@ -25,7 +32,7 @@ pub(crate) fn execute_cypher(
     params: Option<&HashMap<String, Value>>,
     ctx: executor::ExecContext,
     cache: Option<&parse_cache::ParseCache>,
-) -> Result<Vec<record::Record>> {
+) -> Result<Vec<record::NamedRecord>> {
     let mut stmt = match cache {
         Some(c) => c.get_or_parse(cypher)?,
         None => parser::parse(cypher)?,

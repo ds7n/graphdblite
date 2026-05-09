@@ -8,11 +8,11 @@ use crate::types::Value;
 /// ordering in query results.
 #[derive(Debug, Clone, PartialEq)]
 #[allow(missing_docs)]
-pub struct Record {
+pub struct NamedRecord {
     pub fields: IndexMap<String, Value>,
 }
 
-impl Record {
+impl NamedRecord {
     /// Create an empty record.
     pub fn new() -> Self {
         Self {
@@ -36,7 +36,7 @@ impl Record {
     }
 }
 
-impl Default for Record {
+impl Default for NamedRecord {
     fn default() -> Self {
         Self::new()
     }

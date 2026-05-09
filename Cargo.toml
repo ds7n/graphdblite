@@ -37,19 +37,38 @@ cucumber = { version = "0.21", optional = true }
 anyhow = { version = "1", optional = true }
 
 [features]
+# Default features. `record-v2` is on as of Phase 5 — see
+# `plans/record-v2.md`. Public API is unchanged either way.
+default = ["record-v2"]
 # Compiles `graphdblite::tck_support`, the openCypher TCK conformance harness's
 # step definitions and Gherkin world. Internal — used only by `tests/tck.rs`.
 # Enable with: cargo test --test tck --features tck-support
 tck-support = ["dep:cucumber", "dep:anyhow"]
+# Marker feature gating the alloc-regression test (`tests/alloc_regression.rs`).
+# `dhat` is always a dev-dep but only activates when this feature is on, so
+# regular `cargo test` is unaffected.
+# Run with: cargo test --test alloc_regression --features dhat-heap --release
+dhat-heap = []
 # Exposes a hidden `__fuzz` module re-exporting the parser and planner entry
 # points. Only intended for `cargo fuzz` targets in `fuzz/` — not part of the
 # public API and offers no semver guarantees.
 fuzzing = []
+# Switches the executor to the slot-indexed Record shape (see
+# `plans/record-v2.md`). On by default since Phase 5. Public API is
+# unchanged in either mode.
+record-v2 = []
+# Explicit opt-out marker for the legacy named-record path. Pair with
+# `--no-default-features` to disable the default `record-v2`:
+#   cargo build --no-default-features --features record-v1
+# This feature is otherwise a no-op; it exists so the named path has a
+# discoverable name in build invocations and CI matrices.
+record-v1 = []
 
 [dev-dependencies]
 tempfile = "3"
 pollster = "0.3"
 criterion = { version = "0.5", default-features = false, features = ["plotters", "cargo_bench_support"] }
+dhat = "0.3"
 
 [[bench]]
 name = "cypher"
@@ -65,3 +84,21 @@ path = "src/bin/cli.rs"
 name = "tck"
 harness = false
 required-features = ["tck-support"]
+
+# Column-header golden test — see tests/record_columns_golden.rs.
+# Drives the same TCK feature suite as `tck` and asserts each scenario's
+# first-row column headers match the committed golden. Phase 0.2 of
+# `plans/record-v2.md`.
+[[test]]
+name = "record_columns_golden"
+harness = false
+required-features = ["tck-support"]
+
+# Allocation-count regression test — see tests/alloc_regression.rs.
+# Profiles a fixed query set under dhat and asserts per-query allocation
+# counts stay within ±5% of a committed baseline. Phase 0.3 of
+# `plans/record-v2.md`.
+[[test]]
+name = "alloc_regression"
+harness = false
+required-features = ["dhat-heap"]

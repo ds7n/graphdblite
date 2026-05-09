@@ -168,11 +168,125 @@ fn bench_aggregate(c: &mut Criterion) {
     group.finish();
 }
 
+/// Multi-stage WITH projection chain — exercises Record cloning across
+/// pipeline boundaries, the workload most sensitive to per-row key overhead.
+fn bench_with_chain(c: &mut Criterion) {
+    let n = 5_000;
+    let (_dir, mut db) = seed_chain(n, true);
+
+    let mut group = c.benchmark_group("with_chain");
+    group.throughput(Throughput::Elements(n as u64));
+
+    group.bench_function("three_stage", |b| {
+        b.iter(|| {
+            let rows = db
+                .execute(
+                    "MATCH (p:Person) \
+                     WITH p, p.age * 2 AS doubled \
+                     WITH p, doubled, doubled + 10 AS adj \
+                     WHERE adj > 50 \
+                     RETURN p.name, adj \
+                     ORDER BY adj DESC LIMIT 100",
+                )
+                .unwrap();
+            assert!(!rows.is_empty());
+        });
+    });
+
+    group.finish();
+}
+
+/// MERGE in match-existing mode — the hot path once the graph is populated.
+fn bench_merge_pattern(c: &mut Criterion) {
+    let n = 1_000;
+    let (_dir, mut db) = seed_chain(n, true);
+
+    let mut group = c.benchmark_group("merge_pattern");
+    group.throughput(Throughput::Elements(1));
+
+    group.bench_function("match_existing", |b| {
+        b.iter(|| {
+            let rows = db
+                .execute(
+                    "MERGE (p:Person {name: 'p500'}) \
+                     ON CREATE SET p.age = 99 \
+                     RETURN p",
+                )
+                .unwrap();
+            assert_eq!(rows.len(), 1);
+        });
+    });
+
+    group.finish();
+}
+
+/// DELETE many — measures throughput of the write path with large match
+/// sets. Each iteration recreates the throwaway batch to keep the workload
+/// stable.
+fn bench_delete_many(c: &mut Criterion) {
+    let mut group = c.benchmark_group("delete_many");
+    let batch = 200usize;
+    group.throughput(Throughput::Elements(batch as u64));
+
+    group.bench_function("by_label", |b| {
+        b.iter_with_setup(
+            || {
+                let (dir, mut db) = seed_chain(0, false);
+                db.execute(&format!(
+                    "UNWIND range(0, {}) AS i CREATE (:Throwaway {{idx: i}})",
+                    batch - 1
+                ))
+                .unwrap();
+                (dir, db)
+            },
+            |(dir, mut db)| {
+                let _ = db.execute("MATCH (t:Throwaway) DELETE t").unwrap();
+                drop(db);
+                drop(dir);
+            },
+        );
+    });
+
+    group.finish();
+}
+
+/// Correlated subquery via EXISTS — exercises the multi-scope record merge
+/// path the slot-map refactor has to thread schemas through. Kept small
+/// (200 nodes) because EXISTS is O(outer × inner) without further plan
+/// optimisation, and the bench is here to detect record-shape regressions,
+/// not measure absolute latency.
+fn bench_correlated_subq(c: &mut Criterion) {
+    let n = 200;
+    let (_dir, mut db) = seed_chain(n, true);
+
+    let mut group = c.benchmark_group("correlated_subq");
+    group.throughput(Throughput::Elements(1));
+
+    group.bench_function("exists_pattern", |b| {
+        b.iter(|| {
+            let rows = db
+                .execute(
+                    "MATCH (p:Person) \
+                     WHERE EXISTS { (p)-[:KNOWS]->(q:Person) WHERE q.age > p.age } \
+                     RETURN p.name",
+                )
+                .unwrap();
+            assert!(!rows.is_empty());
+        });
+    });
+
+    group.finish();
+}
+
 criterion_group!(
     benches,
     bench_node_create,
     bench_lookup,
     bench_traversal,
-    bench_aggregate
+    bench_aggregate,
+    bench_with_chain,
+    bench_merge_pattern,
+    bench_delete_many,
+    bench_correlated_subq,
 );
 criterion_main!(benches);

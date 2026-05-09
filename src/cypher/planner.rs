@@ -5,12 +5,29 @@ use rusqlite::Connection;
 
 use crate::cypher::ast::*;
 use crate::cypher::ir::*;
-use crate::cypher::record::Record;
+use crate::cypher::record::NamedRecord;
 use crate::index;
 use crate::types::{Direction, ErrorCode, GraphError, Span, Value};
 
 /// Global counter for unique anonymous variable aliases across all plan_single_pattern calls.
 static ANON_COUNTER: AtomicUsize = AtomicUsize::new(0);
+
+/// Snapshot the anonymous-variable counter. Used by the TCK dual-run harness
+/// (Phase 4.2) to keep generated `_anon_*` column names identical across the
+/// named and slot runs of the same scenario; otherwise the counter advances
+/// during the first run and the two paths produce equivalent records under
+/// different column names, looking like a divergence.
+#[cfg(feature = "tck-support")]
+pub fn anon_counter_snapshot() -> usize {
+    ANON_COUNTER.load(Ordering::Relaxed)
+}
+
+/// Restore the anonymous-variable counter to a previously-captured value.
+/// Pair with [`anon_counter_snapshot`] inside a single dual-run comparison.
+#[cfg(feature = "tck-support")]
+pub fn anon_counter_restore(value: usize) {
+    ANON_COUNTER.store(value, Ordering::Relaxed);
+}
 
 /// Suggest the closest in-scope name for a misspelled identifier.
 ///
@@ -223,7 +240,7 @@ fn eval_skip_limit(expr: &Expr, conn: &Connection) -> crate::types::Result<u64> 
         .with_code(ErrorCode::InvalidArgumentType)),
         _ => {
             // Evaluate the expression at plan time with an empty record.
-            let rec = Record::new();
+            let rec = NamedRecord::new();
             let val = crate::cypher::eval::eval_expr(expr, &rec, conn)?;
             match val {
                 Value::I64(n) => {

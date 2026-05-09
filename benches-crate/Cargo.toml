@@ -1,0 +1,28 @@
+# Standalone workspace for criterion benches.
+#
+# This crate is intentionally NOT a member of the parent workspace —
+# the empty `[workspace]` table below makes cargo treat this directory
+# as its own workspace, so `cargo test --workspace` (used by the
+# pre-push hook and the CI test job) does not have to typecheck the
+# criterion macro expansions in `benches/cypher.rs`.
+#
+# Run benches via:
+#   cargo bench --manifest-path benches-crate/Cargo.toml --bench cypher
+# or use the `scripts/bench-compare.sh` helper.
+[workspace]
+
+[package]
+name = "graphdblite-bench"
+version = "0.0.0"
+edition = "2021"
+publish = false
+license = "MPL-2.0"
+
+[dependencies]
+graphdblite = { path = ".." }
+tempfile = "3"
+criterion = { version = "0.5", default-features = false, features = ["plotters", "cargo_bench_support"] }
+
+[[bench]]
+name = "cypher"
+harness = false

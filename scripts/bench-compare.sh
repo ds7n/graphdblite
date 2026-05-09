@@ -41,9 +41,9 @@ fi
 if (( update )); then
   echo "==> Saving baseline '$baseline'"
   if [[ -n "$filter" ]]; then
-    cargo bench --bench cypher -- --save-baseline "$baseline" "$filter"
+    cargo bench --manifest-path benches-crate/Cargo.toml --target-dir target --bench cypher -- --save-baseline "$baseline" "$filter"
   else
-    cargo bench --bench cypher -- --save-baseline "$baseline"
+    cargo bench --manifest-path benches-crate/Cargo.toml --target-dir target --bench cypher -- --save-baseline "$baseline"
   fi
   echo
   echo "Baseline '$baseline' saved under target/criterion/."
@@ -59,9 +59,9 @@ fi
 
 echo "==> Running current benchmarks (saved as baseline 'current')"
 if [[ -n "$filter" ]]; then
-  cargo bench --bench cypher -- --save-baseline current "$filter"
+  cargo bench --manifest-path benches-crate/Cargo.toml --target-dir target --bench cypher -- --save-baseline current "$filter"
 else
-  cargo bench --bench cypher -- --save-baseline current
+  cargo bench --manifest-path benches-crate/Cargo.toml --target-dir target --bench cypher -- --save-baseline current
 fi
 
 echo

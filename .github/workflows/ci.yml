@@ -14,10 +14,11 @@ on:
 permissions:
   contents: read
 
-# Cold-cache test builds typecheck the full crate plus criterion bench
-# code in parallel and have hit SIGSEGV during typeck at rustc's 8MB
+# Cold-cache test builds have hit SIGSEGV during typeck at rustc's 8MB
 # default per-thread stack. Bump it preemptively (rustc's own panic
-# message recommends this exact value).
+# message recommends this exact value). The criterion bench crate
+# lives in its own workspace under `benches-crate/` and isn't built
+# by `cargo test --workspace`.
 env:
   RUST_MIN_STACK: 16777216
 

@@ -35,7 +35,7 @@ jobs:
         run: cargo install --locked critcmp
 
       - name: Run benchmarks
-        run: cargo bench --bench cypher -- --save-baseline "${{ github.event.inputs.baseline_name }}"
+        run: cargo bench --manifest-path benches-crate/Cargo.toml --target-dir target --bench cypher -- --save-baseline "${{ github.event.inputs.baseline_name }}"
 
       - name: Export baseline JSON
         run: |

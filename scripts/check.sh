@@ -4,10 +4,11 @@
 set -e
 
 # Bump rustc's per-thread stack from the 8MB default. Cold-cache test
-# builds (`cargo test --workspace` after `cargo clean`) typecheck the
-# whole crate plus criterion bench code in parallel and have hit
+# builds (`cargo test --workspace` after `cargo clean`) have hit
 # SIGSEGV during typeck at the default size; rustc's own panic message
 # recommends this exact value. Harmless when the stack isn't needed.
+# (The criterion bench crate lives in its own workspace under
+# `benches-crate/` and isn't typechecked by `--workspace`.)
 export RUST_MIN_STACK=16777216
 
 echo "==> Running pre-push checks (mirrors CI)..."

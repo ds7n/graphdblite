@@ -67,12 +67,7 @@ record-v1 = []
 [dev-dependencies]
 tempfile = "3"
 pollster = "0.3"
-criterion = { version = "0.5", default-features = false, features = ["plotters", "cargo_bench_support"] }
 dhat = "0.3"
-
-[[bench]]
-name = "cypher"
-harness = false
 
 [[bin]]
 name = "graphdblite"

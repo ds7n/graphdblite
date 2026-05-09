@@ -143,6 +143,11 @@ impl GraphCounts {
 pub struct World {
     /// The database under test. `None` before `Given any graph` fires.
     pub db: Option<Database>,
+    /// Optional shadow database. Populated alongside `db` only when the
+    /// `GRAPHDBLITE_DUAL_RUN=1` env var is set; setup steps mirror to both,
+    /// and `When executing query:` runs the query through `Path::Named` on
+    /// `db` and `Path::Slot` on `db_slot`, asserting equivalence.
+    pub db_slot: Option<Database>,
     /// Result from the most recent `When executing query:` step.
     pub last_result: Option<Vec<NamedRecord>>,
     /// Error from the most recent `When executing query:` step, if it failed.
@@ -165,10 +170,20 @@ impl std::fmt::Debug for World {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("World")
             .field("db", &self.db.as_ref().map(|_| "<Database>"))
+            .field("db_slot", &self.db_slot.as_ref().map(|_| "<Database>"))
             .field("last_result", &self.last_result)
             .field("last_error", &self.last_error)
             .field("params", &self.params)
             .field("pre_counts", &self.pre_counts)
             .finish()
     }
+}
+
+/// Returns true when the TCK harness should mirror every scenario into a
+/// shadow DB and assert that the slot path agrees with the named path on
+/// every `When executing query:` step. Set `GRAPHDBLITE_DUAL_RUN=1` to enable.
+pub fn dual_run_enabled() -> bool {
+    std::env::var("GRAPHDBLITE_DUAL_RUN")
+        .map(|v| v == "1")
+        .unwrap_or(false)
 }

@@ -119,6 +119,29 @@ macro_rules! impl_read_ops {
                     max_traversal_work: self.max_traversal_work,
                     procedures: procedures.clone(),
                     require_read_only: $read_only,
+                    ..Default::default()
+                };
+                execute_cypher(&self.tx, cypher, params, ctx, Some(self.parse_cache))
+            }
+
+            /// Execute a Cypher query pinned to a specific executor path.
+            /// Used by the TCK dual-run harness (Phase 4.2) to compare named
+            /// vs. slot path results on the same scenario.
+            #[cfg(feature = "tck-support")]
+            pub fn query_with_procedures_path(
+                &self,
+                cypher: &str,
+                params: Option<&std::collections::HashMap<String, Value>>,
+                procedures: &crate::cypher::procedure::ProcedureRegistry,
+                path: crate::cypher::executor::Path,
+            ) -> Result<Vec<NamedRecord>> {
+                let ctx = ExecContext {
+                    max_result_rows: self.max_result_rows,
+                    max_traversal_depth: self.max_traversal_depth,
+                    max_traversal_work: self.max_traversal_work,
+                    procedures: procedures.clone(),
+                    require_read_only: $read_only,
+                    path,
                 };
                 execute_cypher(&self.tx, cypher, params, ctx, Some(self.parse_cache))
             }

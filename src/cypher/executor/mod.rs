@@ -19,6 +19,24 @@ use crate::cypher::procedure::ProcedureRegistry;
 mod correlated;
 use correlated::{exec_correlated, exec_correlated_join, exec_left_outer_join, value_to_node_id};
 
+/// Selects which executor implementation runs the plan.
+///
+/// `Default` follows the `record-v2` Cargo feature flag — slot path when on,
+/// named path when off. `Named` and `Slot` pin the choice regardless of the
+/// feature, which the TCK dual-run harness uses to compare both paths
+/// against the same scenario (Phase 4.2).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Path {
+    #[default]
+    Default,
+    // `Named` / `Slot` are only constructed under `tck-support`; the
+    // dispatcher's match arms reference them in every build.
+    #[allow(dead_code)]
+    Named,
+    #[allow(dead_code)]
+    Slot,
+}
+
 /// Execution context carrying runtime limits.
 pub struct ExecContext {
     /// Maximum rows any operator may produce. 0 = unlimited.
@@ -36,6 +54,9 @@ pub struct ExecContext {
     /// so write Cypher inside a read-only transaction fails fast instead of
     /// silently upgrading the SQLite lock.
     pub require_read_only: bool,
+    /// Which executor path to use. `Default` follows the feature flag; the
+    /// TCK dual-run harness pins to `Named` / `Slot` to compare results.
+    pub path: Path,
 }
 
 impl Default for ExecContext {
@@ -46,6 +67,7 @@ impl Default for ExecContext {
             max_traversal_work: 10_000_000,
             procedures: ProcedureRegistry::default(),
             require_read_only: false,
+            path: Path::Default,
         }
     }
 }
@@ -203,13 +225,19 @@ pub fn execute_with_ctx(
     plan: &LogicalOp,
     ctx: &ExecContext,
 ) -> Result<Vec<NamedRecord>> {
-    #[cfg(feature = "record-v2")]
-    {
-        execute_with_ctx_slot(conn, plan, ctx)
-    }
-    #[cfg(not(feature = "record-v2"))]
-    {
-        execute_with_ctx_named(conn, plan, ctx)
+    match ctx.path {
+        Path::Named => execute_with_ctx_named(conn, plan, ctx),
+        Path::Slot => execute_with_ctx_slot(conn, plan, ctx),
+        Path::Default => {
+            #[cfg(feature = "record-v2")]
+            {
+                execute_with_ctx_slot(conn, plan, ctx)
+            }
+            #[cfg(not(feature = "record-v2"))]
+            {
+                execute_with_ctx_named(conn, plan, ctx)
+            }
+        }
     }
 }
 

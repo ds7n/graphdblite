@@ -14,6 +14,13 @@ on:
 permissions:
   contents: read
 
+# Cold-cache test builds typecheck the full crate plus criterion bench
+# code in parallel and have hit SIGSEGV during typeck at rustc's 8MB
+# default per-thread stack. Bump it preemptively (rustc's own panic
+# message recommends this exact value).
+env:
+  RUST_MIN_STACK: 16777216
+
 concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true

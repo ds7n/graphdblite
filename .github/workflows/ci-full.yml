@@ -22,6 +22,11 @@ on:
 permissions:
   contents: read
 
+# See ci.yml — bumps rustc's per-thread stack to avoid cold-cache
+# typeck SIGSEGV.
+env:
+  RUST_MIN_STACK: 16777216
+
 concurrency:
   group: ci-full-${{ github.ref }}
   cancel-in-progress: true

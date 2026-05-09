@@ -20,15 +20,17 @@
 
 pub(crate) mod cypher;
 mod db;
-pub(crate) mod edge;
 mod id;
-pub(crate) mod index;
-pub(crate) mod node;
 mod schema;
 pub(crate) mod stats;
 pub(crate) mod storage;
 pub(crate) mod temporal;
 mod transaction;
+
+// Existing crate-internal callers refer to `crate::node`, `crate::edge`,
+// `crate::index`. The primitives now live under `storage/`; re-export here
+// so the move stays contained to the mod files (no churn in callers).
+pub(crate) use storage::{edge, index, node};
 /// Public value, error, and identifier types used throughout the API.
 pub mod types;
 

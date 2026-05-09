@@ -492,6 +492,19 @@ pub struct PathStep {
 /// Returns all paths from `start` following edges with the given `label`(s) and
 /// `direction`, with length between `min_hops` and `max_hops` inclusive.
 ///
+/// # Why a custom DFS instead of `petgraph`
+/// `petgraph` operates on an in-memory `Graph` value: every node and edge must
+/// be loaded into a `Vec`/`HashMap` before any algorithm runs. graphdblite's
+/// graph lives in SQLite — adjacency is lazy-loaded per-node via `kv::get` on
+/// the `adj_out`/`adj_in` tables, and a single hop only touches the rows it
+/// needs. Using `petgraph` would mean materializing the full subgraph
+/// reachable from `start` (or the entire database) before traversal, which
+/// defeats both the point of an embedded engine and the hop-bounded /
+/// fuel-capped pruning that `traverse_paths` performs inline. Cypher
+/// var-length patterns also need per-hop property predicates and parallel-edge
+/// (`(src,dst,label,seq)`) enumeration; `petgraph` has neither concept and
+/// would still leave us with a custom walker on top.
+///
 /// # Algorithm
 /// Uses iterative DFS (explicit stack) with **relationship uniqueness** — each
 /// edge may appear at most once per path, but different paths may share edges.
@@ -904,4 +917,269 @@ pub fn get_all_edge_labels(
         }
     }
     Ok(result)
+}
+
+#[cfg(test)]
+mod traverse_paths_tests {
+    //! Unit tests for `traverse_paths` exercised against the storage layer
+    //! directly — no Cypher parser/planner/executor in the loop. The
+    //! executor calls `traverse_paths` from three sites
+    //! (`exec_correlated`, `exec_expand`, `ExpandIter`); these tests pin
+    //! the algorithm's behaviour independent of any of them.
+    use super::*;
+    use crate::storage::node;
+    use crate::types::Value;
+    use rusqlite::Connection;
+
+    fn fresh_conn() -> Connection {
+        let conn = Connection::open_in_memory().expect("open in-memory db");
+        crate::schema::init_schema(&conn).expect("init schema");
+        conn
+    }
+
+    fn mk_node(conn: &Connection, label: &str) -> NodeId {
+        node::create_node(conn, &[label.to_string()], Properties::new()).expect("create node")
+    }
+
+    fn mk_edge(conn: &Connection, src: NodeId, dst: NodeId, label: &str) {
+        create_edge(conn, src, dst, label, Properties::new()).expect("create edge");
+    }
+
+    #[test]
+    fn linear_chain_returns_paths_at_each_depth() {
+        // a -KNOWS-> b -KNOWS-> c -KNOWS-> d
+        let conn = fresh_conn();
+        let a = mk_node(&conn, "P");
+        let b = mk_node(&conn, "P");
+        let c = mk_node(&conn, "P");
+        let d = mk_node(&conn, "P");
+        for (s, t) in [(a, b), (b, c), (c, d)] {
+            mk_edge(&conn, s, t, "KNOWS");
+        }
+
+        let paths = traverse_paths(
+            &conn,
+            a,
+            &["KNOWS"],
+            Direction::Outgoing,
+            1,
+            3,
+            &HashMap::new(),
+            None,
+            0,
+        )
+        .expect("traverse");
+
+        // Expect b at depth 1, c at depth 2, d at depth 3.
+        let mut by_dst: HashMap<NodeId, usize> = paths.iter().map(|(n, p)| (*n, p.len())).collect();
+        assert_eq!(by_dst.remove(&b), Some(1));
+        assert_eq!(by_dst.remove(&c), Some(2));
+        assert_eq!(by_dst.remove(&d), Some(3));
+        assert!(by_dst.is_empty(), "unexpected extra paths: {by_dst:?}");
+    }
+
+    #[test]
+    fn relationship_uniqueness_breaks_two_node_cycle() {
+        // a -R-> b and b -R-> a. With max_hops large, DFS would loop
+        // forever without per-edge visited tracking.
+        let conn = fresh_conn();
+        let a = mk_node(&conn, "P");
+        let b = mk_node(&conn, "P");
+        mk_edge(&conn, a, b, "R");
+        mk_edge(&conn, b, a, "R");
+
+        let paths = traverse_paths(
+            &conn,
+            a,
+            &["R"],
+            Direction::Outgoing,
+            1,
+            10,
+            &HashMap::new(),
+            None,
+            0,
+        )
+        .expect("traverse");
+
+        // Outgoing-only: a->b (depth 1), then b->a using the second edge
+        // (depth 2). Both edges consumed, no further hops possible.
+        assert_eq!(paths.len(), 2);
+        assert!(paths.iter().any(|(n, p)| *n == b && p.len() == 1));
+        assert!(paths.iter().any(|(n, p)| *n == a && p.len() == 2));
+    }
+
+    #[test]
+    fn parallel_edges_yield_distinct_paths() {
+        // Two edges a-R->b with seq=0 and seq=1 must be enumerated as
+        // independent 1-hop paths (parallel-edge support).
+        let conn = fresh_conn();
+        let a = mk_node(&conn, "P");
+        let b = mk_node(&conn, "P");
+        mk_edge(&conn, a, b, "R");
+        mk_edge(&conn, a, b, "R");
+
+        let paths = traverse_paths(
+            &conn,
+            a,
+            &["R"],
+            Direction::Outgoing,
+            1,
+            1,
+            &HashMap::new(),
+            None,
+            0,
+        )
+        .expect("traverse");
+
+        assert_eq!(paths.len(), 2, "parallel edges should produce 2 paths");
+        let mut seqs: Vec<u64> = paths.iter().map(|(_, p)| p[0].edge_seq).collect();
+        seqs.sort_unstable();
+        assert_eq!(seqs, vec![0, 1]);
+    }
+
+    #[test]
+    fn prop_filter_prunes_edges_at_each_hop() {
+        // a -R{w:1}-> b, a -R{w:2}-> c. Filter w=1 keeps only a->b.
+        let conn = fresh_conn();
+        let a = mk_node(&conn, "P");
+        let b = mk_node(&conn, "P");
+        let c = mk_node(&conn, "P");
+        let mut p1 = Properties::new();
+        p1.insert("w".into(), Value::I64(1));
+        let mut p2 = Properties::new();
+        p2.insert("w".into(), Value::I64(2));
+        create_edge(&conn, a, b, "R", p1).expect("edge1");
+        create_edge(&conn, a, c, "R", p2).expect("edge2");
+
+        let mut filter = HashMap::new();
+        filter.insert("w".to_string(), Value::I64(1));
+
+        let paths = traverse_paths(
+            &conn,
+            a,
+            &["R"],
+            Direction::Outgoing,
+            1,
+            1,
+            &filter,
+            None,
+            0,
+        )
+        .expect("traverse");
+
+        assert_eq!(paths.len(), 1);
+        assert_eq!(paths[0].0, b);
+    }
+
+    #[test]
+    fn min_hops_zero_includes_start_with_empty_path() {
+        let conn = fresh_conn();
+        let a = mk_node(&conn, "P");
+        let b = mk_node(&conn, "P");
+        mk_edge(&conn, a, b, "R");
+
+        let paths = traverse_paths(
+            &conn,
+            a,
+            &["R"],
+            Direction::Outgoing,
+            0,
+            1,
+            &HashMap::new(),
+            None,
+            0,
+        )
+        .expect("traverse");
+
+        // Zero-length match plus the 1-hop result.
+        assert_eq!(paths.len(), 2);
+        assert!(paths.iter().any(|(n, p)| *n == a && p.is_empty()));
+        assert!(paths.iter().any(|(n, p)| *n == b && p.len() == 1));
+    }
+
+    #[test]
+    fn max_hops_zero_returns_only_zero_length_when_min_is_zero() {
+        let conn = fresh_conn();
+        let a = mk_node(&conn, "P");
+        let b = mk_node(&conn, "P");
+        mk_edge(&conn, a, b, "R");
+
+        let paths = traverse_paths(
+            &conn,
+            a,
+            &["R"],
+            Direction::Outgoing,
+            0,
+            0,
+            &HashMap::new(),
+            None,
+            0,
+        )
+        .expect("traverse");
+
+        assert_eq!(paths.len(), 1);
+        assert_eq!(paths[0].0, a);
+        assert!(paths[0].1.is_empty());
+    }
+
+    #[test]
+    fn direction_both_follows_incoming_and_outgoing() {
+        // a -R-> b and c -R-> a. Direction::Both from `a` should reach
+        // both b (outgoing) and c (incoming) at depth 1.
+        let conn = fresh_conn();
+        let a = mk_node(&conn, "P");
+        let b = mk_node(&conn, "P");
+        let c = mk_node(&conn, "P");
+        mk_edge(&conn, a, b, "R");
+        mk_edge(&conn, c, a, "R");
+
+        let paths = traverse_paths(
+            &conn,
+            a,
+            &["R"],
+            Direction::Both,
+            1,
+            1,
+            &HashMap::new(),
+            None,
+            0,
+        )
+        .expect("traverse");
+
+        let mut dsts: Vec<NodeId> = paths.iter().map(|(n, _)| *n).collect();
+        dsts.sort_by_key(|n| n.0);
+        let mut expected = vec![b, c];
+        expected.sort_by_key(|n| n.0);
+        assert_eq!(dsts, expected);
+    }
+
+    #[test]
+    fn fuel_cap_returns_size_limit_error() {
+        // Tiny budget against any non-trivial graph triggers the cap.
+        let conn = fresh_conn();
+        let a = mk_node(&conn, "P");
+        let b = mk_node(&conn, "P");
+        let c = mk_node(&conn, "P");
+        mk_edge(&conn, a, b, "R");
+        mk_edge(&conn, b, c, "R");
+
+        let err = traverse_paths(
+            &conn,
+            a,
+            &["R"],
+            Direction::Outgoing,
+            1,
+            10,
+            &HashMap::new(),
+            None,
+            1, // 1 edge visit allowed; will exhaust on the second hop
+        )
+        .expect_err("expected SizeLimit");
+        match err {
+            GraphError::SizeLimit { what, .. } => {
+                assert!(what.contains("variable-length traversal work"));
+            }
+            other => panic!("expected SizeLimit, got {other:?}"),
+        }
+    }
 }

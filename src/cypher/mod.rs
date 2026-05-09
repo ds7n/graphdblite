@@ -11,11 +11,7 @@ pub mod planner;
 pub mod procedure;
 pub mod record;
 pub mod record_v2;
-pub mod row_sink;
 pub mod schema_infer;
-
-#[cfg(test)]
-mod dual_run;
 
 use crate::types::{Result, Value};
 use rusqlite::Connection;

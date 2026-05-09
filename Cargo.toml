@@ -37,9 +37,6 @@ cucumber = { version = "0.21", optional = true }
 anyhow = { version = "1", optional = true }
 
 [features]
-# Default features. `record-v2` is on as of Phase 5 — see
-# `plans/record-v2.md`. Public API is unchanged either way.
-default = ["record-v2"]
 # Compiles `graphdblite::tck_support`, the openCypher TCK conformance harness's
 # step definitions and Gherkin world. Internal — used only by `tests/tck.rs`.
 # Enable with: cargo test --test tck --features tck-support
@@ -53,16 +50,6 @@ dhat-heap = []
 # points. Only intended for `cargo fuzz` targets in `fuzz/` — not part of the
 # public API and offers no semver guarantees.
 fuzzing = []
-# Switches the executor to the slot-indexed Record shape (see
-# `plans/record-v2.md`). On by default since Phase 5. Public API is
-# unchanged in either mode.
-record-v2 = []
-# Explicit opt-out marker for the legacy named-record path. Pair with
-# `--no-default-features` to disable the default `record-v2`:
-#   cargo build --no-default-features --features record-v1
-# This feature is otherwise a no-op; it exists so the named path has a
-# discoverable name in build invocations and CI matrices.
-record-v1 = []
 
 [dev-dependencies]
 tempfile = "3"

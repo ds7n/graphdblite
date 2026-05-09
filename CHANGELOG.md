@@ -83,6 +83,15 @@ ships.
   level, variant/field names are self-explanatory.
 
 ### Removed
+- Record v2 Phase 6 cleanup. Removed the `record-v1`/`record-v2` Cargo
+  features, the `executor::Path` enum and its `path` field on
+  `ExecContext`, the `query_with_procedures_path` test-only entry point,
+  the dual-run harness (`src/cypher/dual_run.rs`,
+  `GRAPHDBLITE_DUAL_RUN`, `World::db_slot`, `assert_results_equivalent`),
+  the `RowSink` trait (`src/cypher/row_sink.rs`), the planner anon-counter
+  snapshot/restore helpers, and the dual `alloc_baseline.txt` /
+  `alloc_baseline_v2.txt` split (single canonical baseline now). The slot
+  path is the only path; TCK 3895/3895, alloc regression 0.0% drift.
 - Dead `edge::batch_create_edges` helper (no callers post-binding migration)
   and its tests.
 - Deprecated top-level `ProcedureRegistry` re-export (`procedures::Registry`

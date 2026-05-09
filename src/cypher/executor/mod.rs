@@ -12,24 +12,6 @@ use crate::cypher::procedure::ProcedureRegistry;
 mod correlated;
 use correlated::{exec_correlated, exec_correlated_join, exec_left_outer_join, value_to_node_id};
 
-/// Selects which executor implementation runs the plan.
-///
-/// `Default` follows the `record-v2` Cargo feature flag — slot path when on,
-/// named path when off. `Named` and `Slot` pin the choice regardless of the
-/// feature, which the TCK dual-run harness uses to compare both paths
-/// against the same scenario (Phase 4.2).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum Path {
-    #[default]
-    Default,
-    // `Named` / `Slot` are only constructed under `tck-support`; the
-    // dispatcher's match arms reference them in every build.
-    #[allow(dead_code)]
-    Named,
-    #[allow(dead_code)]
-    Slot,
-}
-
 /// Execution context carrying runtime limits.
 pub struct ExecContext {
     /// Maximum rows any operator may produce. 0 = unlimited.
@@ -47,9 +29,6 @@ pub struct ExecContext {
     /// so write Cypher inside a read-only transaction fails fast instead of
     /// silently upgrading the SQLite lock.
     pub require_read_only: bool,
-    /// Which executor path to use. `Default` follows the feature flag; the
-    /// TCK dual-run harness pins to `Named` / `Slot` to compare results.
-    pub path: Path,
 }
 
 impl Default for ExecContext {
@@ -60,7 +39,6 @@ impl Default for ExecContext {
             max_traversal_work: 10_000_000,
             procedures: ProcedureRegistry::default(),
             require_read_only: false,
-            path: Path::Default,
         }
     }
 }
@@ -214,62 +192,11 @@ pub(in crate::cypher::executor) fn is_bare_write(plan: &LogicalOp) -> bool {
 
 /// Execute with an explicit context carrying runtime limits.
 ///
-/// Dispatches to the legacy `IndexMap`-backed `execute_with_ctx_named` by
-/// default, or the slot-indexed `execute_with_ctx_slot` when the
-/// `record-v2` feature is on. Both functions live side-by-side during the
-/// migration so `dual_run` can call them in-process for the same plan and
-/// compare results — see `plans/record-v2.md` Phase 3a.
+/// Runs the slot-indexed iterator stack in [`crate::cypher::iter_slot`] for
+/// any plan it supports, falling back transparently to the materialized
+/// named executor for the remaining ops (`MaterializePath`, `ShortestPath`,
+/// `Call`).
 pub fn execute_with_ctx(
-    conn: &Connection,
-    plan: &LogicalOp,
-    ctx: &ExecContext,
-) -> Result<Vec<NamedRecord>> {
-    match ctx.path {
-        Path::Named => execute_with_ctx_named(conn, plan, ctx),
-        Path::Slot => execute_with_ctx_slot(conn, plan, ctx),
-        Path::Default => {
-            #[cfg(feature = "record-v2")]
-            {
-                execute_with_ctx_slot(conn, plan, ctx)
-            }
-            #[cfg(not(feature = "record-v2"))]
-            {
-                execute_with_ctx_named(conn, plan, ctx)
-            }
-        }
-    }
-}
-
-/// Legacy path: produces `NamedRecord`s via the existing `IndexMap`-backed
-/// executor. Definitive truth during the record-v2 migration; every dual-run
-/// comparison treats this output as the reference.
-pub fn execute_with_ctx_named(
-    conn: &Connection,
-    plan: &LogicalOp,
-    ctx: &ExecContext,
-) -> Result<Vec<NamedRecord>> {
-    validate_traversal_depth(plan, ctx)?;
-    let result = exec(conn, plan, ctx)?;
-    if is_bare_write(plan) {
-        Ok(vec![])
-    } else {
-        Ok(result)
-    }
-}
-
-/// Slot-indexed path. Phase 3b: handles `Scan` / `IndexLookup` / `Project`
-/// (plus `EmptyRow` / `SingleRow` leaves) end-to-end via the slot iterator
-/// stack in `cypher::iter_slot`; falls back to `execute_with_ctx_named`
-/// for any plan containing operators not yet migrated. The fallback is
-/// transparent — same `Vec<NamedRecord>` return shape — so callers don't
-/// need to know which path ran.
-///
-/// Phase 3c–3g progressively widen [`is_slot_supported`] until every
-/// read-side operator runs natively on slots; Phase 4 does the same for
-/// writes. Once that's done, the boundary conversion in `collect_to_named`
-/// becomes the only place strings are reified per row.
-#[allow(dead_code)] // exercised by dual_run tests + dispatcher when feature is on
-pub fn execute_with_ctx_slot(
     conn: &Connection,
     plan: &LogicalOp,
     ctx: &ExecContext,
@@ -278,7 +205,12 @@ pub fn execute_with_ctx_slot(
 
     validate_traversal_depth(plan, ctx)?;
     if !iter_slot::is_slot_supported(plan) {
-        return execute_with_ctx_named(conn, plan, ctx);
+        let result = exec(conn, plan, ctx)?;
+        return if is_bare_write(plan) {
+            Ok(vec![])
+        } else {
+            Ok(result)
+        };
     }
     let mut iter = iter_slot::build_slot_iter(conn, plan, ctx)?;
     let result = iter_slot::collect_to_named(&mut *iter)?;

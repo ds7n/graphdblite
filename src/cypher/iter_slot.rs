@@ -12,8 +12,6 @@
 //! At the API boundary, [`collect_to_named`] converts the slot records
 //! back to `NamedRecord` using the final schema.
 
-#![cfg_attr(not(feature = "record-v2"), allow(dead_code))]
-
 use rusqlite::Connection;
 
 use crate::cypher::ast::{Expr, ExprKind, ReturnItem};

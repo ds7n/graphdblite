@@ -13,10 +13,11 @@ ignore = []
 [licenses]
 version = 2
 # Allow-list — every license used by a transitive dep must appear here.
-# Re-run `cargo deny check licenses` after dep changes; add the SPDX id
-# (and confirm compatibility with MPL-2.0) before whitelisting.
+# graphdblite itself is MIT; this list governs what we accept *from*
+# upstream deps. Re-run `cargo deny check licenses` after dep changes
+# and add the SPDX id (and confirm compatibility with MIT) before
+# whitelisting.
 allow = [
-    "MPL-2.0",
     "MIT",
     "Apache-2.0",
     "BSD-2-Clause",

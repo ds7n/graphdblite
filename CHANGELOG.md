@@ -55,6 +55,10 @@ ships.
   workloads marginal as expected.
 
 ### Changed
+- **Relicensed from MPL-2.0 to MIT.** Updated workspace + binding manifests
+  (`Cargo.toml`, `benches-crate/Cargo.toml`, `bindings/node/package.json`),
+  `LICENSE`, and README. Dropped MPL-2.0 from the `cargo deny` allow-list
+  (no transitive dep uses it).
 - Public API lockdown (phases 1–6): `cypher::*`, `storage`, `index`, `node`,
   `edge`, `temporal` are now `pub(crate)`. The Cypher pipeline is reachable
   only via `Database::execute` or the typed `WriteTxGuard`/`ReadTxGuard`

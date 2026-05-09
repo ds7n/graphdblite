@@ -216,4 +216,4 @@ should also read [docs/BINDING_CONFORMANCE.md](docs/BINDING_CONFORMANCE.md).
 
 ## License
 
-[MPL-2.0](LICENSE)
+[MIT](LICENSE)

@@ -8,7 +8,7 @@ mod temporal_ops;
 use rusqlite::Connection;
 
 use crate::cypher::ast::{BinOp, Expr, ExprKind};
-use crate::cypher::record::NamedRecord;
+use crate::cypher::record_view::RecordView;
 use crate::types::{ErrorCode, GraphError, QueryPhase, Value};
 
 use comparison::{compare_to_value, literal_to_value, to_tribool, value_type_name, values_equal};
@@ -130,7 +130,7 @@ pub fn is_known_function(name: &str) -> bool {
 /// The `conn` parameter is needed for EXISTS subquery evaluation.
 pub fn eval_expr(
     expr: &Expr,
-    record: &NamedRecord,
+    record: &dyn RecordView,
     conn: &Connection,
 ) -> crate::types::Result<Value> {
     match &expr.kind {
@@ -521,7 +521,7 @@ pub fn eval_expr(
 /// Evaluate a boolean expression, returning true/false.
 pub fn eval_predicate(
     expr: &Expr,
-    record: &NamedRecord,
+    record: &dyn RecordView,
     conn: &Connection,
 ) -> crate::types::Result<bool> {
     let val = eval_expr(expr, record, conn)?;

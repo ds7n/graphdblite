@@ -3,13 +3,13 @@
 use rusqlite::Connection;
 
 use crate::cypher::ast::*;
-use crate::cypher::record::NamedRecord;
+use crate::cypher::record_view::{view_to_named, RecordView};
 use crate::types::Value;
 
 pub(in crate::cypher::eval) fn eval_exists(
     patterns: &[crate::cypher::ast::Pattern],
     where_clause: Option<&Expr>,
-    record: &NamedRecord,
+    record: &dyn RecordView,
     conn: &Connection,
 ) -> crate::types::Result<Value> {
     use crate::cypher::executor::execute_first_match;
@@ -28,12 +28,12 @@ pub(in crate::cypher::eval) fn eval_exists(
     }
 
     // Extract correlated bindings from the outer record (bare alias keys, no dots).
-    let outer_bindings: Vec<(String, Value)> = record
-        .fields
-        .iter()
-        .filter(|(k, _)| !k.contains('.'))
-        .map(|(k, v)| (k.clone(), v.clone()))
-        .collect();
+    let mut outer_bindings: Vec<(String, Value)> = Vec::new();
+    record.for_each_field(&mut |k, v| {
+        if !k.contains('.') {
+            outer_bindings.push((k.to_string(), v.clone()));
+        }
+    });
 
     // Short-circuit: return true on the first matching row.
     let found = execute_first_match(conn, &op, &outer_bindings)?;
@@ -45,7 +45,7 @@ pub(in crate::cypher::eval) fn eval_exists(
 /// outer record's bindings. Returns true if at least one row is produced.
 pub(in crate::cypher::eval) fn eval_exists_subquery(
     stmt: &crate::cypher::ast::Statement,
-    record: &NamedRecord,
+    record: &dyn RecordView,
     conn: &Connection,
 ) -> crate::types::Result<Value> {
     use crate::cypher::executor::exec_correlated_exists;
@@ -54,7 +54,10 @@ pub(in crate::cypher::eval) fn eval_exists_subquery(
     let base_plan = plan_subquery(conn, stmt)?;
 
     // Execute the subquery as a correlated subquery, pushing the outer
-    // record's bindings down so nested expressions can see them.
-    let found = exec_correlated_exists(conn, &base_plan, record)?;
+    // record's bindings down so nested expressions can see them. The
+    // correlated executor still operates on `NamedRecord`, so we pay
+    // a single materialization at this boundary (rare path).
+    let outer = view_to_named(record);
+    let found = exec_correlated_exists(conn, &base_plan, &outer)?;
     Ok(Value::Bool(found))
 }

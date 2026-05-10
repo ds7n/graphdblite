@@ -5,6 +5,7 @@ use rusqlite::Connection;
 use crate::cypher::ast::*;
 use crate::cypher::eval::{eval_expr, eval_predicate, expr_to_column_name};
 use crate::cypher::record::NamedRecord;
+use crate::cypher::record_view::RecordView;
 use crate::types::*;
 use crate::{edge, index, node};
 
@@ -381,7 +382,7 @@ pub(in crate::cypher::executor) fn exec_filter(
 /// Records flow through the pipeline with a flattened shape (`n.name`,
 /// `n.__id`, etc.); this helper materializes the compound at projection time
 /// so query results look the way openCypher specifies.
-pub(crate) fn build_compound_binding(rec: &NamedRecord, var: &str) -> Option<Value> {
+pub(crate) fn build_compound_binding(rec: &dyn RecordView, var: &str) -> Option<Value> {
     use crate::types::{Edge, Node, Properties};
 
     // Var-length relationship variables stored directly as Value::List.
@@ -402,18 +403,21 @@ pub(crate) fn build_compound_binding(rec: &NamedRecord, var: &str) -> Option<Val
     if let (Some(Value::I64(src)), Some(Value::I64(dst)), Some(Value::String(label))) =
         (rec.get(&src_key), rec.get(&dst_key), rec.get(&type_key))
     {
+        let src = *src;
+        let dst = *dst;
+        let label = label.clone();
         let mut properties = Properties::new();
-        for (key, val) in &rec.fields {
+        rec.for_each_field(&mut |key, val| {
             if let Some(prop) = key.strip_prefix(&prefix) {
                 if !prop.starts_with("__") {
                     properties.insert(prop.to_string(), val.clone());
                 }
             }
-        }
+        });
         return Some(Value::Edge(Edge {
-            src: NodeId(*src as u64),
-            dst: NodeId(*dst as u64),
-            label: label.clone(),
+            src: NodeId(src as u64),
+            dst: NodeId(dst as u64),
+            label,
             properties,
         }));
     }
@@ -424,14 +428,16 @@ pub(crate) fn build_compound_binding(rec: &NamedRecord, var: &str) -> Option<Val
     if let (Some(Value::I64(id)), Some(Value::String(label_str))) =
         (rec.get(&id_key), rec.get(&label_key))
     {
+        let id = *id;
+        let label_str = label_str.clone();
         let mut properties = Properties::new();
-        for (key, val) in &rec.fields {
+        rec.for_each_field(&mut |key, val| {
             if let Some(prop) = key.strip_prefix(&prefix) {
                 if !prop.starts_with("__") {
                     properties.insert(prop.to_string(), val.clone());
                 }
             }
-        }
+        });
         // Reconstruct labels from the colon-joined __label string.
         let labels: Vec<String> = if label_str.is_empty() {
             Vec::new()
@@ -439,7 +445,7 @@ pub(crate) fn build_compound_binding(rec: &NamedRecord, var: &str) -> Option<Val
             label_str.split(':').map(|s| s.to_string()).collect()
         };
         return Some(Value::Node(Node {
-            id: NodeId(*id as u64),
+            id: NodeId(id as u64),
             labels,
             properties,
         }));
@@ -451,16 +457,16 @@ pub(crate) fn build_compound_binding(rec: &NamedRecord, var: &str) -> Option<Val
 /// Collect the set of variable names in a record that are bound as compound
 /// entities (nodes or edges). Used by `RETURN *` to know which prefixes to
 /// fold into compound columns rather than emitting as flat properties.
-pub(crate) fn compound_binding_vars(rec: &NamedRecord) -> Vec<String> {
+pub(crate) fn compound_binding_vars(rec: &dyn RecordView) -> Vec<String> {
     use std::collections::BTreeSet;
     let mut vars: BTreeSet<String> = BTreeSet::new();
-    for key in rec.fields.keys() {
+    rec.for_each_field(&mut |key, _| {
         if let Some((var, prop)) = key.split_once('.') {
             if prop == "__id" || prop == "__src" {
                 vars.insert(var.to_string());
             }
         }
-    }
+    });
     vars.into_iter().collect()
 }
 

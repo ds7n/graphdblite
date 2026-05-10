@@ -131,7 +131,7 @@ pub(in crate::cypher::executor) fn compute_aggregate(
             } else {
                 let count = effective_records
                     .iter()
-                    .filter(|r| !matches!(eval_expr(&agg.input, r, conn), Ok(Value::Null)))
+                    .filter(|r| !matches!(eval_expr(&agg.input, *r, conn), Ok(Value::Null)))
                     .count();
                 Ok(Value::I64(count as i64))
             }

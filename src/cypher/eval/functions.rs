@@ -3,7 +3,7 @@
 use rusqlite::Connection;
 
 use crate::cypher::ast::*;
-use crate::cypher::record::NamedRecord;
+use crate::cypher::record_view::RecordView;
 use crate::types::{ErrorCode, GraphError, QueryError, QueryPhase, Value};
 
 use super::column_name::*;
@@ -12,7 +12,7 @@ use super::*;
 /// Evaluate the first argument of a function call.
 pub(in crate::cypher::eval) fn eval_single_arg(
     args: &[Expr],
-    record: &NamedRecord,
+    record: &dyn RecordView,
     conn: &Connection,
 ) -> crate::types::Result<Value> {
     args.first()
@@ -53,7 +53,7 @@ pub(in crate::cypher::eval) fn eval_function_call(
     name: &str,
     args: &[Expr],
     original_text: Option<&str>,
-    record: &NamedRecord,
+    record: &dyn RecordView,
     conn: &Connection,
 ) -> crate::types::Result<Value> {
     let name_lower = name.to_ascii_lowercase();
@@ -1101,7 +1101,7 @@ pub(in crate::cypher::eval) fn eval_function_call(
 /// Helper for temporal constructor dispatch: string arg → parse, map arg → construct.
 pub(in crate::cypher::eval) fn eval_temporal_constructor(
     args: &[Expr],
-    record: &NamedRecord,
+    record: &dyn RecordView,
     conn: &Connection,
     from_str: impl Fn(&str) -> crate::types::Result<Value>,
     from_map: impl Fn(&std::collections::BTreeMap<String, Value>) -> crate::types::Result<Value>,

@@ -20,6 +20,7 @@ use crate::cypher::executor::{literal_to_value, ExecContext};
 use crate::cypher::ir::LogicalOp;
 use crate::cypher::record::NamedRecord;
 use crate::cypher::record_v2::{Record as SlotRecord, RecordSchema, SlotId};
+use crate::cypher::record_view::SlotView;
 use crate::cypher::schema_infer::{collect_property_refs, infer_with_props, PropertyRefs};
 use crate::types::{NodeId, Result, Value};
 use crate::{index, node};
@@ -694,10 +695,9 @@ impl SlotRecordIter for VecSlotIter {
 // ---------------------------------------------------------------------------
 // Pipeline iterators
 
-/// Slot-aware `Filter`. Materializes each input slot record into a
-/// `NamedRecord` so the existing `eval_predicate` runs unchanged; the
-/// original slot record is forwarded on match. Per-row allocation is the
-/// 3c trade-off — eval becomes natively slot-aware in a later sub-phase.
+/// Slot-aware `Filter`. Evaluates the predicate against the slot record
+/// via [`SlotView`], so no per-row `NamedRecord` materialization is
+/// needed; the original slot record is forwarded on match.
 pub struct FilterSlotIter<'a> {
     input: Box<dyn SlotRecordIter + 'a>,
     predicate: Expr,
@@ -707,7 +707,7 @@ pub struct FilterSlotIter<'a> {
 impl<'a> SlotRecordIter for FilterSlotIter<'a> {
     fn next_slot(&mut self) -> Result<Option<SlotRecord>> {
         while let Some(rec) = self.input.next_slot()? {
-            let view = materialize_named(self.input.schema(), &rec);
+            let view = SlotView::new(self.input.schema(), &rec);
             if eval_predicate(&self.predicate, &view, self.conn)? {
                 return Ok(Some(rec));
             }
@@ -765,9 +765,6 @@ impl<'a> SlotRecordIter for ProjectSlotIter<'a> {
             None => return Ok(None),
         };
         let input_schema = self.input.schema();
-        // Lazily materialize a NamedRecord the first time an item needs it,
-        // so all-fast-path projections (RETURN p.name) skip the allocation.
-        let mut materialized: Option<NamedRecord> = None;
         let mut out = SlotRecord::with_capacity(self.output_schema.len());
 
         for item in &self.items {
@@ -790,39 +787,21 @@ impl<'a> SlotRecordIter for ProjectSlotIter<'a> {
             let expr_col = expr_to_column_name(&item.expr);
             // Skip the precomputed-value fast path when `item.expr` reads a
             // property of a variable an upstream `Delete` has tagged — that
-            // must raise `EntityNotFound` via named eval, not return the
+            // must raise `EntityNotFound` via eval, not return the
             // pre-delete cached value. (Mirrors eval_project_item's check.)
             let deleted_var = property_deleted_var(&item.expr, input_schema, &input_rec);
             let value = if deleted_var {
-                eval_project_item(
-                    &item.expr,
-                    input_schema,
-                    &input_rec,
-                    &mut materialized,
-                    self.conn,
-                )?
+                eval_project_item(&item.expr, input_schema, &input_rec, self.conn)?
             } else if let Some(in_slot) = input_schema.slot(&expr_col) {
                 input_rec.get(in_slot).clone()
             } else if col != expr_col && is_aggregate_call(&item.expr) {
                 if let Some(in_slot) = input_schema.slot(&col) {
                     input_rec.get(in_slot).clone()
                 } else {
-                    eval_project_item(
-                        &item.expr,
-                        input_schema,
-                        &input_rec,
-                        &mut materialized,
-                        self.conn,
-                    )?
+                    eval_project_item(&item.expr, input_schema, &input_rec, self.conn)?
                 }
             } else {
-                eval_project_item(
-                    &item.expr,
-                    input_schema,
-                    &input_rec,
-                    &mut materialized,
-                    self.conn,
-                )?
+                eval_project_item(&item.expr, input_schema, &input_rec, self.conn)?
             };
             out.set(out_slot, value);
         }
@@ -857,14 +836,10 @@ fn column_name_for_item(item: &ReturnItem) -> String {
 
 /// Evaluate a `Project` item against `(input_schema, input_rec)`.
 ///
-/// `materialized` is a lazily-built named-record cache shared across all
-/// items in one row — building it costs O(schema.len()), so we only do it
-/// once even if multiple items hit the fallback.
 fn eval_project_item(
     e: &Expr,
     input_schema: &RecordSchema,
     input_rec: &SlotRecord,
-    materialized: &mut Option<NamedRecord>,
     conn: &Connection,
 ) -> Result<Value> {
     match &e.kind {
@@ -888,14 +863,12 @@ fn eval_project_item(
                     return Ok(input_rec.get(slot).clone());
                 }
             }
-            let view =
-                materialized.get_or_insert_with(|| materialize_named(input_schema, input_rec));
-            eval_expr(e, view, conn)
+            let view = SlotView::new(input_schema, input_rec);
+            eval_expr(e, &view, conn)
         }
         _ => {
-            let view =
-                materialized.get_or_insert_with(|| materialize_named(input_schema, input_rec));
-            eval_expr(e, view, conn)
+            let view = SlotView::new(input_schema, input_rec);
+            eval_expr(e, &view, conn)
         }
     }
 }
@@ -1136,7 +1109,7 @@ impl<'a> SortSlotIter<'a> {
         // comparator visits a row multiple times.
         let mut tagged: Vec<(Vec<Value>, SlotRecord)> = Vec::new();
         while let Some(rec) = self.input.next_slot()? {
-            let view = materialize_named(&schema, &rec);
+            let view = SlotView::new(&schema, &rec);
             let keys: Vec<Value> = self
                 .items
                 .iter()
@@ -1255,8 +1228,10 @@ impl<'a> SlotRecordIter for UnwindSlotIter<'a> {
                 return Ok(None);
             };
             let input_schema = self.input.schema();
-            let view = materialize_named(input_schema, &input_rec);
-            let val = eval_expr(&self.expr, &view, self.conn)?;
+            let val = {
+                let view = SlotView::new(input_schema, &input_rec);
+                eval_expr(&self.expr, &view, self.conn)?
+            };
             let items = match val {
                 Value::List(items) => items,
                 Value::Null => continue,
@@ -1266,10 +1241,15 @@ impl<'a> SlotRecordIter for UnwindSlotIter<'a> {
                     )));
                 }
             };
+            if items.is_empty() {
+                continue;
+            }
+            // Materialize once after we know there's at least one item to
+            // emit; each output row clones from this base + adds the
+            // alias bindings (mirrors `exec_unwind`).
+            let view = materialize_named(input_schema, &input_rec);
             let mut produced = Vec::with_capacity(items.len());
             for item in items {
-                // Build a NamedRecord seeded with the input view, then
-                // populate the alias bindings exactly as `exec_unwind` does.
                 let mut named = view.clone();
                 match &item {
                     Value::Node(n) => {

@@ -4,6 +4,7 @@ use rusqlite::Connection;
 
 use crate::cypher::ast::*;
 use crate::cypher::record::NamedRecord;
+use crate::cypher::record_view::{view_to_named, RecordView};
 use crate::types::{GraphError, Value};
 
 use super::*;
@@ -13,7 +14,7 @@ pub(in crate::cypher::eval) fn eval_list_comprehension(
     list_expr: &Expr,
     filter: Option<&Expr>,
     map_expr: Option<&Expr>,
-    record: &NamedRecord,
+    record: &dyn RecordView,
     conn: &Connection,
 ) -> crate::types::Result<Value> {
     let list_val = eval_expr(list_expr, record, conn)?;
@@ -27,9 +28,12 @@ pub(in crate::cypher::eval) fn eval_list_comprehension(
         }
     };
 
+    // Comprehension binds a fresh per-item variable on top of the outer
+    // scope, so we need an owned mutable record. Materialize once.
+    let base = view_to_named(record);
     let mut results = Vec::new();
     for item in items {
-        let mut local = record.clone();
+        let mut local = base.clone();
         local.set(variable.to_string(), item.clone());
 
         if let Some(pred) = filter {
@@ -56,7 +60,7 @@ pub(in crate::cypher::eval) fn eval_quantifier(
     variable: &str,
     list_expr: &Expr,
     predicate: &Expr,
-    record: &NamedRecord,
+    record: &dyn RecordView,
     conn: &Connection,
 ) -> crate::types::Result<Value> {
     let list_val = eval_expr(list_expr, record, conn)?;
@@ -74,8 +78,9 @@ pub(in crate::cypher::eval) fn eval_quantifier(
     let mut false_count: usize = 0;
     let mut null_count: usize = 0;
 
+    let base = view_to_named(record);
     for item in &items {
-        let mut local = record.clone();
+        let mut local = base.clone();
         local.set(variable.to_string(), item.clone());
         let val = eval_expr(predicate, &local, conn)?;
         match val {
@@ -134,7 +139,7 @@ pub(in crate::cypher::eval) fn eval_pattern_comprehension(
     pattern: &crate::cypher::ast::Pattern,
     where_clause: Option<&Expr>,
     map_expr: &Expr,
-    record: &NamedRecord,
+    record: &dyn RecordView,
     conn: &Connection,
 ) -> crate::types::Result<Value> {
     use crate::cypher::executor::exec_correlated_subquery;
@@ -164,8 +169,9 @@ pub(in crate::cypher::eval) fn eval_pattern_comprehension(
     //    _anon_* or _path_rel_* aliases) to avoid alias collisions.
     // 2. Flatten Node values into the internal record format (alias -> I64(id),
     //    alias.__id, alias.__label, etc.) so exec_correlated can bind them.
+    let outer_base = view_to_named(record);
     let mut outer_rec = NamedRecord::new();
-    for (k, v) in &record.fields {
+    for (k, v) in &outer_base.fields {
         // Skip internal anonymous aliases from outer scopes.
         if k.starts_with("_anon_") || k.starts_with("_path_rel_") {
             continue;
@@ -202,7 +208,7 @@ pub(in crate::cypher::eval) fn eval_pattern_comprehension(
     for row in &rows {
         // Merge the outer record with the inner row so the map expression
         // can reference both outer and inner variables.
-        let mut merged = record.clone();
+        let mut merged = outer_base.clone();
         for (k, v) in &row.fields {
             merged.set(k.clone(), v.clone());
         }

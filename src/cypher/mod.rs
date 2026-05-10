@@ -11,6 +11,7 @@ pub mod planner;
 pub mod procedure;
 pub mod record;
 pub mod record_v2;
+pub mod record_view;
 pub mod schema_infer;
 
 use crate::types::{Result, Value};

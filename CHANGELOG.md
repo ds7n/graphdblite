@@ -53,6 +53,19 @@ ships.
   `cargo bench --bench cypher`) — pest accounted for ~49% cumulative
   time on hot lookups. Bench impact: `traversal/one_hop` -63%; simpler
   workloads marginal as expected.
+- Per-`Database` plan cache (`cypher::plan_cache`). Repeated executes
+  reuse the planned `LogicalOp` tree, skipping the planner entirely on
+  hits. Built on a param-agnostic planner: `IndexLookup` carries
+  `LookupKey::Param(name)` (resolved at exec time via the
+  `eval::ParamScope` thread-local) instead of baking literals into the
+  plan, so `WHERE n.prop = $x` reuses one plan across every `$x`
+  value. Bounded FIFO (capacity 128) keyed on `(cypher,
+  schema_epoch)`; the epoch is bumped atomically on `CREATE INDEX` /
+  `DROP INDEX` so DDL lazily invalidates entries. Caching is skipped
+  for CALL (procedure-registry sensitive at plan time) and for
+  SKIP/LIMIT containing `$param` (planner evaluates these to a `u64`
+  at plan time). Alloc impact: `indexed_lookup` -21.7%, `var_length`
+  -7.6%.
 
 ### Changed
 - **Relicensed from MPL-2.0 to MIT.** Updated workspace + binding manifests

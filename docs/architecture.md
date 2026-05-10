@@ -163,3 +163,46 @@ storage or execution.
 | `Delete(identifiers)` | Node/edge deletion |
 | `SetProperty(identifier, key, value)` | SET |
 | `Merge(pattern, on_create?, on_match?)` | MERGE |
+
+## Query caching
+
+Two per-`Database` caches sit on the parse → plan → execute pipeline. Both are
+bounded FIFO with default capacity 128, locked behind a single `Mutex`, and
+populated lazily on every `db.execute(cypher)` / `tx.query(cypher)` call.
+
+### Parse cache (`cypher::parse_cache`)
+
+Stores the parsed `Statement` AST keyed on the raw cypher string. The pest PEG
+grammar dominates wall-clock for short repeated queries (~49% on indexed point
+lookups in profiling), so caching the AST eliminates the bulk of that work.
+
+The AST is parameter-agnostic — `parser::validate_params` runs against the
+cached AST without rewriting it — so two callers passing different `$param`
+values for the same query string both benefit. The cache requires no
+invalidation: the AST does not depend on indexes, schema, or runtime state.
+
+### Plan cache (`cypher::plan_cache`)
+
+Stores the planned `LogicalOp` tree keyed on `(cypher, schema_epoch)`. Plans
+embed index-selection decisions, so the cache must invalidate on
+`CREATE INDEX` / `DROP INDEX`: `Database::schema_epoch` (an `AtomicU64`) is
+bumped on every DDL, and entries built under an older epoch become unreachable
+on subsequent lookups (FIFO eviction reclaims their slots).
+
+Plans are *parameter-agnostic by construction*. Index-eligible filters like
+`WHERE n.prop = $x` produce `IndexLookup { value: LookupKey::Param(name) }`
+in the IR; the executor resolves the parameter at runtime through
+`eval::ParamScope` (a thread-local set at `execute_cypher` entry). One plan
+serves every parameter value for the same query template.
+
+Two cases bypass the plan cache:
+
+- **CALL statements/clauses.** `plan_call` consults the procedure registry at
+  plan time, and the registry is supplied per-execute via `ExecContext`.
+- **`SKIP $n` / `LIMIT $n`.** The planner evaluates these to a `u64` at plan
+  time via `eval_skip_limit`, so a cached plan would carry a stale count for
+  a different parameter value.
+
+`is_plan_cacheable(stmt)` rejects exactly these AST shapes; everything else
+(WHERE filters, properties, projections, list comprehensions referring to
+`$param`) is fully cacheable.

@@ -4,6 +4,7 @@ use rusqlite::Connection;
 
 use crate::cypher::ast::*;
 use crate::cypher::eval::{eval_expr, eval_predicate, expr_to_column_name};
+use crate::cypher::ir::LookupKey;
 use crate::cypher::record::NamedRecord;
 use crate::cypher::record_view::RecordView;
 use crate::types::*;
@@ -32,10 +33,10 @@ pub(in crate::cypher::executor) fn exec_index_lookup(
     label: &str,
     alias: &str,
     property: &str,
-    value: &LiteralValue,
+    value: &LookupKey,
     remaining_filters: Option<&Expr>,
 ) -> Result<Vec<NamedRecord>> {
-    let lookup_value = literal_to_value(value);
+    let lookup_value = crate::cypher::executor::resolve_lookup_key(value)?;
     let node_ids = index::index_lookup(conn, label, property, &lookup_value)?;
     let mut records = Vec::new();
 
@@ -44,7 +45,7 @@ pub(in crate::cypher::executor) fn exec_index_lookup(
         let rec = node_to_record(&n, alias);
 
         if let Some(filter) = remaining_filters {
-            if !eval_predicate(filter, &rec, conn)? {
+            if !eval_predicate(filter, &rec, crate::cypher::eval::EvalCx::new(conn))? {
                 continue;
             }
         }
@@ -406,7 +407,7 @@ pub(in crate::cypher::executor) fn exec_filter(
     let records = exec(conn, input, ctx)?;
     let mut results = Vec::new();
     for rec in records {
-        if eval_predicate(predicate, &rec, conn)? {
+        if eval_predicate(predicate, &rec, crate::cypher::eval::EvalCx::new(conn))? {
             results.push(rec);
         }
     }
@@ -572,7 +573,8 @@ pub(in crate::cypher::executor) fn exec_project(
                         } else if let Some(existing) = rec.get(&col_name) {
                             projected.set(col_name, existing.clone());
                         } else {
-                            let val = eval_expr(&item.expr, rec, conn)?;
+                            let val =
+                                eval_expr(&item.expr, rec, crate::cypher::eval::EvalCx::new(conn))?;
                             projected.set(col_name, val);
                         }
                     } else {
@@ -595,7 +597,8 @@ pub(in crate::cypher::executor) fn exec_project(
                             propagated_any = true;
                         }
                         if !propagated_any {
-                            let val = eval_expr(&item.expr, rec, conn)?;
+                            let val =
+                                eval_expr(&item.expr, rec, crate::cypher::eval::EvalCx::new(conn))?;
                             projected.set(col_name, val);
                         }
                     }
@@ -638,7 +641,7 @@ pub(in crate::cypher::executor) fn exec_project(
                         } else if col_name == expr_col {
                             // No alias rename — safe to check col_name too
                             // (already checked above, so this is a miss → eval).
-                            eval_expr(&item.expr, rec, conn)?
+                            eval_expr(&item.expr, rec, crate::cypher::eval::EvalCx::new(conn))?
                         } else if let Some(existing) = rec.get(&col_name) {
                             // Alias differs from expression name. The col_name
                             // value in the record may be a pre-computed aggregate
@@ -658,13 +661,13 @@ pub(in crate::cypher::executor) fn exec_project(
                             if is_agg {
                                 existing.clone()
                             } else {
-                                eval_expr(&item.expr, rec, conn)?
+                                eval_expr(&item.expr, rec, crate::cypher::eval::EvalCx::new(conn))?
                             }
                         } else {
-                            eval_expr(&item.expr, rec, conn)?
+                            eval_expr(&item.expr, rec, crate::cypher::eval::EvalCx::new(conn))?
                         }
                     } else {
-                        eval_expr(&item.expr, rec, conn)?
+                        eval_expr(&item.expr, rec, crate::cypher::eval::EvalCx::new(conn))?
                     };
                     projected.set(col_name, val);
                 }
@@ -695,7 +698,7 @@ pub(in crate::cypher::executor) fn exec_unwind(
     let mut results = Vec::new();
 
     for rec in &records {
-        let val = eval_expr(expr, rec, conn)?;
+        let val = eval_expr(expr, rec, crate::cypher::eval::EvalCx::new(conn))?;
         match val {
             Value::List(items) => {
                 for item in items {

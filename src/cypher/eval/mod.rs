@@ -5,11 +5,111 @@ mod functions;
 mod subquery;
 mod temporal_ops;
 
+use std::cell::Cell;
+use std::collections::HashMap;
+
 use rusqlite::Connection;
 
 use crate::cypher::ast::{BinOp, Expr, ExprKind};
 use crate::cypher::record_view::RecordView;
 use crate::types::{ErrorCode, GraphError, QueryPhase, Value};
+
+// Thread-local pointer to the current query's `$param` map.
+//
+// Set by `ParamScope::enter` at the top of `crate::cypher::execute_cypher`
+// and restored on drop. Read by `EvalCx::new` so every existing
+// `EvalCx::new(conn)` call site picks up params without touching iter
+// structs / executor helpers individually.
+//
+// Thread-locality is sound here because `rusqlite::Connection` is `!Send`:
+// the entire executor call tree runs on the thread that called
+// `Database::execute_*`. The pointer is non-null only while a `ParamScope`
+// guard is alive on that thread's stack; on drop the previous value is
+// restored, so nested `execute_cypher` calls (e.g. EXISTS subqueries) see
+// each other's params correctly.
+thread_local! {
+    static CURRENT_PARAMS: Cell<*const HashMap<String, Value>> =
+        const { Cell::new(std::ptr::null()) };
+}
+
+/// RAII guard that publishes a `&HashMap<String, Value>` to the thread-local
+/// for the lifetime of the guard, restoring the previous value on drop.
+pub(crate) struct ParamScope {
+    prev: *const HashMap<String, Value>,
+}
+
+impl ParamScope {
+    pub(crate) fn enter(params: Option<&HashMap<String, Value>>) -> Self {
+        let new_ptr = params.map_or(std::ptr::null(), |p| p as *const _);
+        let prev = CURRENT_PARAMS.with(|c| c.replace(new_ptr));
+        Self { prev }
+    }
+}
+
+impl Drop for ParamScope {
+    fn drop(&mut self) {
+        CURRENT_PARAMS.with(|c| c.set(self.prev));
+    }
+}
+
+/// Evaluation context: shared inputs threaded through every `eval_*` call.
+///
+/// Bundles the SQLite connection (needed for EXISTS subqueries) and the
+/// optional `$param` map (looked up by [`ExprKind::Parameter`] resolution).
+/// Construct via [`EvalCx::new`] — the params map comes from the thread-local
+/// published by [`ParamScope`].
+#[derive(Clone, Copy)]
+pub struct EvalCx<'a> {
+    pub conn: &'a Connection,
+    pub params: Option<&'a HashMap<String, Value>>,
+}
+
+impl<'a> EvalCx<'a> {
+    /// Build a context. Looks up the active `$param` map from the thread-local
+    /// published by [`ParamScope`]. When no scope is active (tests, ad-hoc
+    /// callers), `Parameter` references error as `MissingParameter`.
+    pub fn new(conn: &'a Connection) -> Self {
+        let raw = CURRENT_PARAMS.with(|c| c.get());
+        let params = if raw.is_null() {
+            None
+        } else {
+            // SAFETY: `ParamScope` keeps the underlying `HashMap` alive for
+            // the entire executor invocation. The lifetime `'a` is bounded by
+            // `conn`, which is borrowed from the same `execute_cypher` stack
+            // frame that holds the `ParamScope` — so the params reference is
+            // valid for at least `'a`. The pointer is only non-null between
+            // `ParamScope::enter` and its `Drop`.
+            Some(unsafe { &*raw })
+        };
+        Self { conn, params }
+    }
+
+    /// Test-only constructor that explicitly carries a borrowed param map,
+    /// bypassing the thread-local. Used in eval-level unit tests where no
+    /// `ParamScope` is active.
+    #[cfg(test)]
+    pub fn with_params(conn: &'a Connection, params: Option<&'a HashMap<String, Value>>) -> Self {
+        Self { conn, params }
+    }
+}
+
+/// Look up a `$param` value via the active [`ParamScope`] thread-local.
+/// Used by non-eval executor sites (e.g. `IndexLookup` value resolution)
+/// that don't construct an [`EvalCx`] but still need parameter values.
+/// Returns `None` if no scope is active or the name is absent.
+pub(crate) fn lookup_param(name: &str) -> Option<Value> {
+    CURRENT_PARAMS.with(|c| {
+        let raw = c.get();
+        if raw.is_null() {
+            None
+        } else {
+            // SAFETY: identical to `EvalCx::new` — the pointer is valid for
+            // the lifetime of the surrounding `ParamScope` guard, which
+            // brackets the entire executor invocation.
+            unsafe { (*raw).get(name).cloned() }
+        }
+    })
+}
 
 use comparison::{compare_to_value, literal_to_value, to_tribool, value_type_name, values_equal};
 use temporal_ops::{
@@ -126,13 +226,12 @@ pub fn is_known_function(name: &str) -> bool {
 }
 
 /// Evaluate an expression against a record, producing a Value.
-///
-/// The `conn` parameter is needed for EXISTS subquery evaluation.
 pub fn eval_expr(
     expr: &Expr,
     record: &dyn RecordView,
-    conn: &Connection,
+    ecx: EvalCx<'_>,
 ) -> crate::types::Result<Value> {
+    let conn = ecx.conn;
     match &expr.kind {
         ExprKind::Literal(lit) => Ok(literal_to_value(lit)),
         ExprKind::Variable(name) => {
@@ -233,14 +332,14 @@ pub fn eval_expr(
         }
         ExprKind::List(items) => {
             let values: crate::types::Result<Vec<Value>> =
-                items.iter().map(|e| eval_expr(e, record, conn)).collect();
+                items.iter().map(|e| eval_expr(e, record, ecx)).collect();
             Ok(Value::List(values?))
         }
         ExprKind::Index { expr, index } => {
             // If the base is a variable, first try to build a compound binding
             // for dynamic property access (n['name']).
             if let ExprKind::Variable(var) = &expr.as_ref().kind {
-                let idx_val = eval_expr(index, record, conn)?;
+                let idx_val = eval_expr(index, record, ecx)?;
                 if let Value::String(key) = &idx_val {
                     // Dynamic property access on a node/edge variable.
                     let prop_key = format!("{var}.{key}");
@@ -270,8 +369,8 @@ pub fn eval_expr(
                     }
                 }
             }
-            let base = eval_expr(expr, record, conn)?;
-            let idx = eval_expr(index, record, conn)?;
+            let base = eval_expr(expr, record, ecx)?;
+            let idx = eval_expr(index, record, ecx)?;
             match (&base, &idx) {
                 (Value::List(items), Value::I64(i)) => {
                     let len = items.len() as i64;
@@ -317,7 +416,7 @@ pub fn eval_expr(
             }
         }
         ExprKind::DotAccess { expr, key } => {
-            let base = eval_expr(expr, record, conn)?;
+            let base = eval_expr(expr, record, ecx)?;
             match &base {
                 Value::Map(m) => Ok(m.get(key).cloned().unwrap_or(Value::Null)),
                 Value::Node(n) => Ok(n.properties.get(key).cloned().unwrap_or(Value::Null)),
@@ -332,14 +431,14 @@ pub fn eval_expr(
             }
         }
         ExprKind::Slice { expr, start, end } => {
-            let base = eval_expr(expr, record, conn)?;
+            let base = eval_expr(expr, record, ecx)?;
             let start_val = start
                 .as_ref()
-                .map(|e| eval_expr(e, record, conn))
+                .map(|e| eval_expr(e, record, ecx))
                 .transpose()?;
             let end_val = end
                 .as_ref()
-                .map(|e| eval_expr(e, record, conn))
+                .map(|e| eval_expr(e, record, ecx))
                 .transpose()?;
             match base {
                 Value::List(items) => {
@@ -403,35 +502,38 @@ pub fn eval_expr(
             }
         }
         ExprKind::Star => Ok(Value::Null),
-        ExprKind::Parameter(name) => Err(crate::types::GraphError::Query(
-            crate::types::QueryError::ArgumentError {
-                phase: crate::types::QueryPhase::Runtime,
-                code: crate::types::ErrorCode::MissingParameter,
-                message: format!("unresolved parameter: ${name}"),
-                hint: Some(format!(
-                    "pass `{name}` via execute_with_params or set it before running the query"
-                )),
-                span: None,
-            },
-        )),
+        ExprKind::Parameter(name) => match ecx.params.and_then(|p| p.get(name)) {
+            Some(v) => Ok(v.clone()),
+            None => Err(crate::types::GraphError::Query(
+                crate::types::QueryError::ArgumentError {
+                    phase: crate::types::QueryPhase::Runtime,
+                    code: crate::types::ErrorCode::MissingParameter,
+                    message: format!("unresolved parameter: ${name}"),
+                    hint: Some(format!(
+                        "pass `{name}` via execute_with_params or set it before running the query"
+                    )),
+                    span: None,
+                },
+            )),
+        },
         ExprKind::BinaryOp { left, op, right } => {
-            let lval = eval_expr(left, record, conn)?;
-            let rval = eval_expr(right, record, conn)?;
+            let lval = eval_expr(left, record, ecx)?;
+            let rval = eval_expr(right, record, ecx)?;
             eval_binop(&lval, *op, &rval)
         }
         ExprKind::Not(inner) => {
-            let val = eval_expr(inner, record, conn)?;
+            let val = eval_expr(inner, record, ecx)?;
             match to_tribool(&val)? {
                 Some(b) => Ok(Value::Bool(!b)),
                 None => Ok(Value::Null),
             }
         }
         ExprKind::IsNull(inner) => {
-            let val = eval_expr(inner, record, conn)?;
+            let val = eval_expr(inner, record, ecx)?;
             Ok(Value::Bool(matches!(val, Value::Null)))
         }
         ExprKind::IsNotNull(inner) => {
-            let val = eval_expr(inner, record, conn)?;
+            let val = eval_expr(inner, record, ecx)?;
             Ok(Value::Bool(!matches!(val, Value::Null)))
         }
         ExprKind::Case {
@@ -441,23 +543,23 @@ pub fn eval_expr(
         } => {
             if let Some(op_expr) = operand {
                 // Simple CASE: CASE operand WHEN value THEN result ...
-                let op_val = eval_expr(op_expr, record, conn)?;
+                let op_val = eval_expr(op_expr, record, ecx)?;
                 for (when_val_expr, result) in alternatives {
-                    let when_val = eval_expr(when_val_expr, record, conn)?;
+                    let when_val = eval_expr(when_val_expr, record, ecx)?;
                     if values_equal(&op_val, &when_val) == Value::Bool(true) {
-                        return eval_expr(result, record, conn);
+                        return eval_expr(result, record, ecx);
                     }
                 }
             } else {
                 // Searched CASE: CASE WHEN cond THEN result ...
                 for (cond, result) in alternatives {
-                    if eval_predicate(cond, record, conn)? {
-                        return eval_expr(result, record, conn);
+                    if eval_predicate(cond, record, ecx)? {
+                        return eval_expr(result, record, ecx);
                     }
                 }
             }
             match default {
-                Some(expr) => eval_expr(expr, record, conn),
+                Some(expr) => eval_expr(expr, record, ecx),
                 None => Ok(Value::Null),
             }
         }
@@ -472,14 +574,14 @@ pub fn eval_expr(
             filter.as_deref(),
             map_expr.as_deref(),
             record,
-            conn,
+            ecx,
         ),
         ExprKind::Quantifier {
             kind,
             variable,
             list_expr,
             predicate,
-        } => eval_quantifier(*kind, variable, list_expr, predicate, record, conn),
+        } => eval_quantifier(*kind, variable, list_expr, predicate, record, ecx),
         ExprKind::PatternComprehension {
             path_variable,
             pattern,
@@ -491,20 +593,20 @@ pub fn eval_expr(
             where_clause.as_deref(),
             map_expr,
             record,
-            conn,
+            ecx,
         ),
         ExprKind::Exists {
             patterns,
             where_clause,
-        } => eval_exists(patterns, where_clause.as_deref(), record, conn),
+        } => eval_exists(patterns, where_clause.as_deref(), record, ecx),
         ExprKind::PatternPredicate(pattern) => {
-            eval_exists(std::slice::from_ref(pattern), None, record, conn)
+            eval_exists(std::slice::from_ref(pattern), None, record, ecx)
         }
-        ExprKind::ExistsSubquery(stmt) => eval_exists_subquery(stmt, record, conn),
+        ExprKind::ExistsSubquery(stmt) => eval_exists_subquery(stmt, record, ecx),
         ExprKind::MapLiteral(pairs) => {
             let mut map = std::collections::BTreeMap::new();
             for (k, expr) in pairs {
-                let val = eval_expr(expr, record, conn)?;
+                let val = eval_expr(expr, record, ecx)?;
                 map.insert(k.clone(), val);
             }
             Ok(Value::Map(map))
@@ -514,7 +616,7 @@ pub fn eval_expr(
             args,
             original_text,
             ..
-        } => eval_function_call(name, args, original_text.as_deref(), record, conn),
+        } => eval_function_call(name, args, original_text.as_deref(), record, ecx),
     }
 }
 
@@ -522,9 +624,9 @@ pub fn eval_expr(
 pub fn eval_predicate(
     expr: &Expr,
     record: &dyn RecordView,
-    conn: &Connection,
+    ecx: EvalCx<'_>,
 ) -> crate::types::Result<bool> {
-    let val = eval_expr(expr, record, conn)?;
+    let val = eval_expr(expr, record, ecx)?;
     Ok(matches!(val, Value::Bool(true)))
 }
 
@@ -815,5 +917,50 @@ pub(in crate::cypher::eval) fn binop_precedence(op: &BinOp) -> u8 {
         BinOp::Add | BinOp::Sub => 6,
         BinOp::Mul | BinOp::Div | BinOp::Mod => 7,
         BinOp::Pow => 8,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::cypher::ast::{Expr, ExprKind};
+    use crate::cypher::record::NamedRecord;
+
+    #[test]
+    fn parameter_resolves_from_evalcx_params() {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        let rec = NamedRecord::new();
+        let expr = Expr::synthetic(ExprKind::Parameter("x".to_string()));
+
+        let mut params = HashMap::new();
+        params.insert("x".to_string(), Value::I64(42));
+
+        let ecx = EvalCx::with_params(&conn, Some(&params));
+        let val = eval_expr(&expr, &rec, ecx).unwrap();
+        assert_eq!(val, Value::I64(42));
+    }
+
+    #[test]
+    fn parameter_missing_errors_with_missing_parameter_code() {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        let rec = NamedRecord::new();
+        let expr = Expr::synthetic(ExprKind::Parameter("missing".to_string()));
+
+        let ecx = EvalCx::new(&conn);
+        let err = eval_expr(&expr, &rec, ecx).unwrap_err();
+        let msg = format!("{err:?}");
+        assert!(msg.contains("MissingParameter"), "got: {msg}");
+        assert!(msg.contains("missing"), "got: {msg}");
+    }
+
+    #[test]
+    fn parameter_with_empty_params_map_errors() {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        let rec = NamedRecord::new();
+        let expr = Expr::synthetic(ExprKind::Parameter("y".to_string()));
+
+        let empty: HashMap<String, Value> = HashMap::new();
+        let ecx = EvalCx::with_params(&conn, Some(&empty));
+        assert!(eval_expr(&expr, &rec, ecx).is_err());
     }
 }

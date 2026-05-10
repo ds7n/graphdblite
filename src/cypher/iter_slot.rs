@@ -356,7 +356,7 @@ fn build_slot_iter_inner<'a>(
             remaining_filters,
         } => {
             let schema = infer_with_props(plan, refs);
-            let lookup_value = literal_to_value(value);
+            let lookup_value = crate::cypher::executor::resolve_lookup_key(value)?;
             let node_ids = index::index_lookup(conn, label, property, &lookup_value)?;
             let mut records = Vec::with_capacity(node_ids.len());
             for id in node_ids {
@@ -702,7 +702,11 @@ impl<'a> SlotRecordIter for FilterSlotIter<'a> {
     fn next_slot(&mut self) -> Result<Option<SlotRecord>> {
         while let Some(rec) = self.input.next_slot()? {
             let view = SlotView::new(self.input.schema(), &rec);
-            if eval_predicate(&self.predicate, &view, self.conn)? {
+            if eval_predicate(
+                &self.predicate,
+                &view,
+                crate::cypher::eval::EvalCx::new(self.conn),
+            )? {
                 return Ok(Some(rec));
             }
         }
@@ -858,11 +862,11 @@ fn eval_project_item(
                 }
             }
             let view = SlotView::new(input_schema, input_rec);
-            eval_expr(e, &view, conn)
+            eval_expr(e, &view, crate::cypher::eval::EvalCx::new(conn))
         }
         _ => {
             let view = SlotView::new(input_schema, input_rec);
-            eval_expr(e, &view, conn)
+            eval_expr(e, &view, crate::cypher::eval::EvalCx::new(conn))
         }
     }
 }
@@ -1105,7 +1109,10 @@ impl<'a> SortSlotIter<'a> {
             let keys: Vec<Value> = self
                 .items
                 .iter()
-                .map(|si| eval_expr(&si.expr, &view, self.conn).unwrap_or(Value::Null))
+                .map(|si| {
+                    eval_expr(&si.expr, &view, crate::cypher::eval::EvalCx::new(self.conn))
+                        .unwrap_or(Value::Null)
+                })
                 .collect();
             tagged.push((keys, rec));
         }
@@ -1222,7 +1229,11 @@ impl<'a> SlotRecordIter for UnwindSlotIter<'a> {
             let input_schema = self.input.schema();
             let val = {
                 let view = SlotView::new(input_schema, &input_rec);
-                eval_expr(&self.expr, &view, self.conn)?
+                eval_expr(
+                    &self.expr,
+                    &view,
+                    crate::cypher::eval::EvalCx::new(self.conn),
+                )?
             };
             let items = match val {
                 Value::List(items) => items,

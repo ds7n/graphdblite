@@ -21,7 +21,7 @@
 use rusqlite::Connection;
 
 use crate::cypher::ast::{BinOp, Expr, ExprKind};
-use crate::cypher::ir::LogicalOp;
+use crate::cypher::ir::{LogicalOp, LookupKey};
 use crate::cypher::record::NamedRecord;
 use crate::index;
 use crate::stats;
@@ -174,7 +174,11 @@ fn format_plan_tree(conn: &Connection, plan: &LogicalOp, depth: usize, lines: &m
             value,
             ..
         } => {
-            format!("IndexLookup :{label}.{property} = {value:?} AS {alias}")
+            let v = match value {
+                LookupKey::Literal(lv) => format!("{lv:?}"),
+                LookupKey::Param(name) => format!("${name}"),
+            };
+            format!("IndexLookup :{label}.{property} = {v} AS {alias}")
         }
         LogicalOp::Expand {
             src_alias,

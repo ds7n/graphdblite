@@ -5,6 +5,18 @@ use crate::cypher::ast::{
 };
 use crate::types::Direction;
 
+/// Lookup-key payload for `IndexLookup`.
+///
+/// Either a baked-in `Literal` from the AST, or a `Param(name)` placeholder
+/// resolved against the executor's `$param` map at exec time. Param-keyed
+/// lookups are what let prepared-style queries (`WHERE n.prop = $x`) reuse a
+/// cached plan across different parameter values.
+#[derive(Debug, Clone, PartialEq)]
+pub enum LookupKey {
+    Literal(LiteralValue),
+    Param(String),
+}
+
 /// Logical query plan operator. Language-agnostic IR that the executor consumes.
 #[derive(Debug, Clone, PartialEq)]
 pub enum LogicalOp {
@@ -19,7 +31,7 @@ pub enum LogicalOp {
         label: String,
         alias: String,
         property: String,
-        value: LiteralValue,
+        value: LookupKey,
         /// Remaining inline property filters not covered by the index.
         remaining_filters: Option<Expr>,
     },

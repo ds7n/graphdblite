@@ -19,7 +19,7 @@ pub(in crate::cypher::executor) fn exec_create_node(
     let mut props = Properties::new();
     let dummy_rec = NamedRecord::new();
     for (key, expr) in properties {
-        let val = eval_expr(expr, &dummy_rec, conn)?;
+        let val = eval_expr(expr, &dummy_rec, crate::cypher::eval::EvalCx::new(conn))?;
         if val == Value::Null {
             continue;
         }
@@ -76,7 +76,8 @@ pub(in crate::cypher::executor) fn exec_create_sequence(
             } => {
                 let mut props = Properties::new();
                 for (key, expr) in properties {
-                    let val = eval_expr(expr, &last_record, conn)?;
+                    let val =
+                        eval_expr(expr, &last_record, crate::cypher::eval::EvalCx::new(conn))?;
                     if val == Value::Null {
                         continue;
                     }
@@ -109,7 +110,8 @@ pub(in crate::cypher::executor) fn exec_create_sequence(
                 })?;
                 let mut props = Properties::new();
                 for (key, expr) in properties {
-                    let val = eval_expr(expr, &last_record, conn)?;
+                    let val =
+                        eval_expr(expr, &last_record, crate::cypher::eval::EvalCx::new(conn))?;
                     if val == Value::Null {
                         continue;
                     }
@@ -178,7 +180,7 @@ pub(in crate::cypher::executor) fn exec_match_create(
                     }
                     let mut props = Properties::new();
                     for (key, expr) in properties {
-                        let val = eval_expr(expr, rec, conn)?;
+                        let val = eval_expr(expr, rec, crate::cypher::eval::EvalCx::new(conn))?;
                         if val == Value::Null {
                             continue;
                         }
@@ -213,7 +215,7 @@ pub(in crate::cypher::executor) fn exec_match_create(
                     })?;
                     let mut props = Properties::new();
                     for (key, expr) in properties {
-                        let val = eval_expr(expr, rec, conn)?;
+                        let val = eval_expr(expr, rec, crate::cypher::eval::EvalCx::new(conn))?;
                         if val == Value::Null {
                             continue;
                         }
@@ -264,7 +266,7 @@ pub(in crate::cypher::executor) fn exec_delete(
                 collect_var_entities(rec, var, &mut edges_to_delete, &mut nodes_to_delete);
                 rec.set(format!("{var}.__deleted"), Value::Bool(true));
             } else {
-                let val = eval_expr(expr, rec, conn)?;
+                let val = eval_expr(expr, rec, crate::cypher::eval::EvalCx::new(conn))?;
                 collect_value_entities(&val, &mut edges_to_delete, &mut nodes_to_delete);
             }
         }
@@ -375,7 +377,11 @@ pub(in crate::cypher::executor) fn exec_set_property(
                 rec.get(&edge_dst_key),
                 rec.get(&edge_type_key),
             ) {
-                let val = eval_expr(&assignment.value, rec, conn)?;
+                let val = eval_expr(
+                    &assignment.value,
+                    rec,
+                    crate::cypher::eval::EvalCx::new(conn),
+                )?;
                 validate_property_value(&val)?;
                 let edge_seq_key = format!("{var}.__edge_seq");
                 if let Some(Value::I64(seq)) = rec.get(&edge_seq_key) {
@@ -408,7 +414,11 @@ pub(in crate::cypher::executor) fn exec_set_property(
             } else if let Some(Value::I64(id)) = rec.get(var) {
                 let node_id = NodeId(*id as u64);
                 let old = node::get_node(conn, node_id)?;
-                let val = eval_expr(&assignment.value, rec, conn)?;
+                let val = eval_expr(
+                    &assignment.value,
+                    rec,
+                    crate::cypher::eval::EvalCx::new(conn),
+                )?;
                 validate_property_value(&val)?;
                 node::set_node_property(conn, node_id, &assignment.property, val.clone())?;
                 let mut new_props = old.properties.clone();
@@ -556,7 +566,7 @@ pub(in crate::cypher::executor) fn exec_set_properties(
                 }
             };
 
-            let map_val = eval_expr(value_expr, rec, conn)?;
+            let map_val = eval_expr(value_expr, rec, crate::cypher::eval::EvalCx::new(conn))?;
             let map = match &map_val {
                 Value::Map(m) => m,
                 Value::Null => continue,
@@ -605,7 +615,7 @@ pub(in crate::cypher::executor) fn exec_set_properties(
         // Skip null variables (from OPTIONAL MATCH).
         if let Some(Value::I64(id)) = rec.get(variable) {
             let node_id = NodeId(*id as u64);
-            let map_val = eval_expr(value_expr, rec, conn)?;
+            let map_val = eval_expr(value_expr, rec, crate::cypher::eval::EvalCx::new(conn))?;
 
             // The map value must be a Map (or Null to skip).
             let map = match &map_val {

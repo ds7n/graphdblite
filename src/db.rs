@@ -321,11 +321,16 @@ impl Database {
 
         // No active txn → auto-begin/auto-commit. Parse + plan once so we can
         // pick the txn mode from the actual plan; then BEGIN, run, COMMIT.
-        use crate::cypher::{ast, executor, parser, planner};
-        let mut stmt = self.parse_cache.get_or_parse(cypher)?;
+        // Same param-handling contract as `execute_cypher`: validate params
+        // are present (resolve_params side effect, result discarded) and
+        // publish them to the eval thread-local via `ParamScope` instead of
+        // baking them into the plan.
+        use crate::cypher::{ast, eval, executor, parser, planner};
+        let stmt = self.parse_cache.get_or_parse(cypher)?;
         if let Some(p) = params {
-            stmt = parser::resolve_params(&stmt, p)?;
+            let _ = parser::resolve_params(&stmt, p)?;
         }
+        let _scope = eval::ParamScope::enter(params);
         let ctx = ExecContext {
             max_result_rows: self.max_result_rows,
             max_traversal_depth: self.max_traversal_depth,

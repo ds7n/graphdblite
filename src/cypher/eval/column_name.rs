@@ -121,6 +121,7 @@ pub fn expr_to_column_name(expr: &Expr) -> String {
         ExprKind::IsNotNull(inner) => format!("{} IS NOT NULL", expr_to_column_name(inner)),
         ExprKind::Not(inner) => format!("NOT {}", expr_to_column_name(inner)),
         ExprKind::PatternComprehension { .. } => "_expr".to_string(),
+        ExprKind::Parameter(name) => format!("${name}"),
         ExprKind::HasLabel(var, labels) => {
             let label_str: Vec<String> = labels.iter().map(|l| format!(":{l}")).collect();
             format!("({var}{})", label_str.join(""))

@@ -36,7 +36,7 @@ pub(in crate::cypher::executor) fn exec_call(
         // Evaluate argument expressions.
         let mut eval_args = Vec::new();
         for arg in args {
-            eval_args.push(eval_expr(arg, rec, conn)?);
+            eval_args.push(eval_expr(arg, rec, crate::cypher::eval::EvalCx::new(conn))?);
         }
 
         // Filter procedure data rows by matching input values.

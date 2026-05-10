@@ -96,7 +96,7 @@ pub(super) fn exec_left_outer_join(
                 // Rows that fail the predicate are discarded; if ALL rows fail,
                 // the left record is null-filled.
                 if let Some(filter) = opt_filter {
-                    if !eval_predicate(filter, &combined, conn)? {
+                    if !eval_predicate(filter, &combined, crate::cypher::eval::EvalCx::new(conn))? {
                         continue;
                     }
                 }
@@ -173,13 +173,13 @@ pub(super) fn exec_correlated(
                 }
                 let rec = node_to_record(&node, alias);
                 // Check the index property matches.
-                let expected = literal_to_value(value);
+                let expected = crate::cypher::executor::resolve_lookup_key(value)?;
                 let actual_key = format!("{alias}.{property}");
                 if rec.get(&actual_key) != Some(&expected) {
                     return Ok(vec![]);
                 }
                 if let Some(filter) = remaining_filters {
-                    if !eval_predicate(filter, &rec, conn)? {
+                    if !eval_predicate(filter, &rec, crate::cypher::eval::EvalCx::new(conn))? {
                         return Ok(vec![]);
                     }
                 }
@@ -580,7 +580,7 @@ pub(super) fn exec_correlated(
                         merged.set(k.clone(), v.clone());
                     }
                 }
-                if eval_predicate(predicate, &merged, conn)? {
+                if eval_predicate(predicate, &merged, crate::cypher::eval::EvalCx::new(conn))? {
                     results.push(rec);
                 }
             }
@@ -683,7 +683,11 @@ pub(super) fn exec_correlated(
                             } else if let Some(existing) = rec.get(&col) {
                                 existing.clone()
                             } else {
-                                crate::cypher::eval::eval_expr(&item.expr, rec, conn)?
+                                crate::cypher::eval::eval_expr(
+                                    &item.expr,
+                                    rec,
+                                    crate::cypher::eval::EvalCx::new(conn),
+                                )?
                             };
                             projected.set(col, val);
                             // Carry forward internal metadata for bound variables.

@@ -549,4 +549,6 @@ pub(crate) use read::{
     build_compound_binding, compound_binding_vars, expand_record, is_user_visible_field,
 };
 pub use util::{exec_correlated_exists, exec_correlated_subquery, execute_first_match};
-pub(crate) use util::{fetch_and_populate, literal_to_value, node_to_record, node_to_record_pub};
+pub(crate) use util::{
+    fetch_and_populate, literal_to_value, node_to_record, node_to_record_pub, resolve_lookup_key,
+};

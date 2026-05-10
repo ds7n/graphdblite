@@ -225,7 +225,8 @@ pub(in crate::cypher::planner) fn eval_skip_limit(
         _ => {
             // Evaluate the expression at plan time with an empty record.
             let rec = NamedRecord::new();
-            let val = crate::cypher::eval::eval_expr(expr, &rec, conn)?;
+            let val =
+                crate::cypher::eval::eval_expr(expr, &rec, crate::cypher::eval::EvalCx::new(conn))?;
             match val {
                 Value::I64(n) => {
                     if n < 0 {
@@ -646,8 +647,9 @@ pub(in crate::cypher::planner) fn collect_non_aggregate_leaves<'a>(
         ExprKind::Not(inner) | ExprKind::IsNull(inner) | ExprKind::IsNotNull(inner) => {
             collect_non_aggregate_leaves(inner, leaves);
         }
-        // Constants don't need grouping.
-        ExprKind::Literal(_) | ExprKind::Star => {}
+        // Constants and parameters don't need grouping — the param's value
+        // is fixed for the query, same as a literal post-resolve.
+        ExprKind::Literal(_) | ExprKind::Parameter(_) | ExprKind::Star => {}
         // Non-aggregate functions are fine if their args are constants/grouped.
         ExprKind::FunctionCall { args, .. } => {
             for arg in args {
@@ -793,15 +795,25 @@ pub(in crate::cypher::planner) fn try_push_predicate(
     op: &mut LogicalOp,
     predicate: &Expr,
 ) -> Option<LogicalOp> {
-    // Only handle: Property(alias, prop) = Literal(val)
-    let (alias, prop, lit) = match &predicate.kind {
+    // Handle: Property(alias, prop) = Literal(val)  OR  Property = Parameter
+    let (alias, prop, key) = match &predicate.kind {
         ExprKind::BinaryOp {
             left,
             op: BinOp::Eq,
             right,
         } => match (&left.as_ref().kind, &right.as_ref().kind) {
-            (ExprKind::Property(a, p), ExprKind::Literal(l)) => (a.clone(), p.clone(), l.clone()),
-            (ExprKind::Literal(l), ExprKind::Property(a, p)) => (a.clone(), p.clone(), l.clone()),
+            (ExprKind::Property(a, p), ExprKind::Literal(l)) => {
+                (a.clone(), p.clone(), LookupKey::Literal(l.clone()))
+            }
+            (ExprKind::Literal(l), ExprKind::Property(a, p)) => {
+                (a.clone(), p.clone(), LookupKey::Literal(l.clone()))
+            }
+            (ExprKind::Property(a, p), ExprKind::Parameter(n)) => {
+                (a.clone(), p.clone(), LookupKey::Param(n.clone()))
+            }
+            (ExprKind::Parameter(n), ExprKind::Property(a, p)) => {
+                (a.clone(), p.clone(), LookupKey::Param(n.clone()))
+            }
             _ => return None,
         },
         _ => return None,
@@ -809,7 +821,7 @@ pub(in crate::cypher::planner) fn try_push_predicate(
 
     // Check if there's an index for this label+property.
     // Walk the plan tree to find the Scan for this alias.
-    try_replace_scan(conn, op, &alias, &prop, &lit)
+    try_replace_scan(conn, op, &alias, &prop, &key)
 }
 
 /// Recursively search the plan tree for a `Scan` with the given alias and
@@ -820,7 +832,7 @@ pub(in crate::cypher::planner) fn try_replace_scan(
     op: &mut LogicalOp,
     alias: &str,
     prop: &str,
-    lit: &LiteralValue,
+    lit: &LookupKey,
 ) -> Option<LogicalOp> {
     match op {
         LogicalOp::Scan {

@@ -93,7 +93,11 @@ pub struct FilterIter<'a> {
 impl<'a> RecordIter for FilterIter<'a> {
     fn next_record(&mut self) -> Result<Option<NamedRecord>> {
         while let Some(rec) = self.input.next_record()? {
-            if eval_predicate(&self.predicate, &rec, self.conn)? {
+            if eval_predicate(
+                &self.predicate,
+                &rec,
+                crate::cypher::eval::EvalCx::new(self.conn),
+            )? {
                 return Ok(Some(rec));
             }
         }
@@ -200,7 +204,11 @@ impl<'a> RecordIter for ProjectIter<'a> {
                         } else if let Some(existing) = rec.get(&col_name) {
                             projected.set(col_name, existing.clone());
                         } else {
-                            let val = eval_expr(&item.expr, &rec, self.conn)?;
+                            let val = eval_expr(
+                                &item.expr,
+                                &rec,
+                                crate::cypher::eval::EvalCx::new(self.conn),
+                            )?;
                             projected.set(col_name, val);
                         }
                     } else {
@@ -219,7 +227,11 @@ impl<'a> RecordIter for ProjectIter<'a> {
                             propagated_any = true;
                         }
                         if !propagated_any {
-                            let val = eval_expr(&item.expr, &rec, self.conn)?;
+                            let val = eval_expr(
+                                &item.expr,
+                                &rec,
+                                crate::cypher::eval::EvalCx::new(self.conn),
+                            )?;
                             projected.set(col_name, val);
                         }
                     }
@@ -232,7 +244,11 @@ impl<'a> RecordIter for ProjectIter<'a> {
                     let val = if let Some(existing) = rec.get(&col_name) {
                         existing.clone()
                     } else {
-                        eval_expr(&item.expr, &rec, self.conn)?
+                        eval_expr(
+                            &item.expr,
+                            &rec,
+                            crate::cypher::eval::EvalCx::new(self.conn),
+                        )?
                     };
                     projected.set(col_name, val);
                 }
@@ -365,14 +381,14 @@ pub fn build_iter<'a>(
             value,
             remaining_filters,
         } => {
-            let lookup_value = literal_to_value(value);
+            let lookup_value = crate::cypher::executor::resolve_lookup_key(value)?;
             let node_ids = index::index_lookup(conn, label, property, &lookup_value)?;
             let mut records = Vec::new();
             for id in node_ids {
                 let n = node::get_node(conn, id)?;
                 let rec = node_to_record(&n, alias);
                 if let Some(filter) = remaining_filters {
-                    if !eval_predicate(filter, &rec, conn)? {
+                    if !eval_predicate(filter, &rec, crate::cypher::eval::EvalCx::new(conn))? {
                         continue;
                     }
                 }
@@ -479,8 +495,10 @@ pub fn build_iter<'a>(
             let mut records = collect_all(&mut *input_iter)?;
             records.sort_by(|a, b| {
                 for item in items {
-                    let va = eval_expr(&item.expr, a, conn).unwrap_or(Value::Null);
-                    let vb = eval_expr(&item.expr, b, conn).unwrap_or(Value::Null);
+                    let va = eval_expr(&item.expr, a, crate::cypher::eval::EvalCx::new(conn))
+                        .unwrap_or(Value::Null);
+                    let vb = eval_expr(&item.expr, b, crate::cypher::eval::EvalCx::new(conn))
+                        .unwrap_or(Value::Null);
                     let ord = compare_values_for_sort(&va, &vb);
                     let ord = if item.descending { ord.reverse() } else { ord };
                     if ord != std::cmp::Ordering::Equal {

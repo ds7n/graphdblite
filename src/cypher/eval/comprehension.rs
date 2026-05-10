@@ -1,7 +1,5 @@
 //! List, pattern, and quantifier comprehensions.
 
-use rusqlite::Connection;
-
 use crate::cypher::ast::*;
 use crate::cypher::record::NamedRecord;
 use crate::cypher::record_view::{view_to_named, RecordView};
@@ -15,9 +13,9 @@ pub(in crate::cypher::eval) fn eval_list_comprehension(
     filter: Option<&Expr>,
     map_expr: Option<&Expr>,
     record: &dyn RecordView,
-    conn: &Connection,
+    ecx: EvalCx<'_>,
 ) -> crate::types::Result<Value> {
-    let list_val = eval_expr(list_expr, record, conn)?;
+    let list_val = eval_expr(list_expr, record, ecx)?;
     let items = match list_val {
         Value::List(items) => items,
         Value::Null => return Ok(Value::List(vec![])),
@@ -37,13 +35,13 @@ pub(in crate::cypher::eval) fn eval_list_comprehension(
         local.set(variable.to_string(), item.clone());
 
         if let Some(pred) = filter {
-            if !eval_predicate(pred, &local, conn)? {
+            if !eval_predicate(pred, &local, ecx)? {
                 continue;
             }
         }
 
         let val = match map_expr {
-            Some(expr) => eval_expr(expr, &local, conn)?,
+            Some(expr) => eval_expr(expr, &local, ecx)?,
             None => item,
         };
         results.push(val);
@@ -61,9 +59,9 @@ pub(in crate::cypher::eval) fn eval_quantifier(
     list_expr: &Expr,
     predicate: &Expr,
     record: &dyn RecordView,
-    conn: &Connection,
+    ecx: EvalCx<'_>,
 ) -> crate::types::Result<Value> {
-    let list_val = eval_expr(list_expr, record, conn)?;
+    let list_val = eval_expr(list_expr, record, ecx)?;
     let items = match list_val {
         Value::List(items) => items,
         Value::Null => return Ok(Value::Null),
@@ -82,7 +80,7 @@ pub(in crate::cypher::eval) fn eval_quantifier(
     for item in &items {
         let mut local = base.clone();
         local.set(variable.to_string(), item.clone());
-        let val = eval_expr(predicate, &local, conn)?;
+        let val = eval_expr(predicate, &local, ecx)?;
         match val {
             Value::Bool(true) => true_count += 1,
             Value::Bool(false) => false_count += 1,
@@ -140,11 +138,13 @@ pub(in crate::cypher::eval) fn eval_pattern_comprehension(
     where_clause: Option<&Expr>,
     map_expr: &Expr,
     record: &dyn RecordView,
-    conn: &Connection,
+    ecx: EvalCx<'_>,
 ) -> crate::types::Result<Value> {
     use crate::cypher::executor::exec_correlated_subquery;
     use crate::cypher::ir::LogicalOp;
     use crate::cypher::planner::plan_patterns;
+
+    let conn = ecx.conn;
 
     // If a path variable is requested, set it on the pattern so the planner
     // emits a MaterializePath operator.
@@ -213,7 +213,7 @@ pub(in crate::cypher::eval) fn eval_pattern_comprehension(
             merged.set(k.clone(), v.clone());
         }
 
-        let val = eval_expr(map_expr, &merged, conn)?;
+        let val = eval_expr(map_expr, &merged, ecx)?;
         results.push(val);
     }
 

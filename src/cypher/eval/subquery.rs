@@ -1,8 +1,7 @@
 //! EXISTS predicates and EXISTS-subquery evaluation.
 
-use rusqlite::Connection;
-
 use crate::cypher::ast::*;
+use crate::cypher::eval::EvalCx;
 use crate::cypher::record_view::{view_to_named, RecordView};
 use crate::types::Value;
 
@@ -10,8 +9,9 @@ pub(in crate::cypher::eval) fn eval_exists(
     patterns: &[crate::cypher::ast::Pattern],
     where_clause: Option<&Expr>,
     record: &dyn RecordView,
-    conn: &Connection,
+    ecx: EvalCx<'_>,
 ) -> crate::types::Result<Value> {
+    let conn = ecx.conn;
     use crate::cypher::executor::execute_first_match;
     use crate::cypher::ir::LogicalOp;
     use crate::cypher::planner::plan_patterns;
@@ -46,8 +46,9 @@ pub(in crate::cypher::eval) fn eval_exists(
 pub(in crate::cypher::eval) fn eval_exists_subquery(
     stmt: &crate::cypher::ast::Statement,
     record: &dyn RecordView,
-    conn: &Connection,
+    ecx: EvalCx<'_>,
 ) -> crate::types::Result<Value> {
+    let conn = ecx.conn;
     use crate::cypher::executor::exec_correlated_exists;
     use crate::cypher::planner::plan_subquery;
 

@@ -21,7 +21,11 @@ pub(in crate::cypher::executor) fn apply_merge_set_item_node(
             let old = node::get_node(conn, node_id)?;
             let mut a_rec = rec.clone();
             a_rec.set(assignment.variable.clone(), Value::I64(node_id.0 as i64));
-            let val = eval_expr(&assignment.value, &a_rec, conn)?;
+            let val = eval_expr(
+                &assignment.value,
+                &a_rec,
+                crate::cypher::eval::EvalCx::new(conn),
+            )?;
             node::set_node_property(conn, node_id, &assignment.property, val.clone())?;
             let mut new_props = old.properties.clone();
             new_props.insert(assignment.property.clone(), val);
@@ -73,7 +77,11 @@ pub(in crate::cypher::executor) fn apply_merge_set_item_edge(
 ) -> Result<()> {
     match item {
         SetItem::Property(assignment) => {
-            let val = eval_expr(&assignment.value, rec, conn)?;
+            let val = eval_expr(
+                &assignment.value,
+                rec,
+                crate::cypher::eval::EvalCx::new(conn),
+            )?;
             edge::set_edge_property(conn, src_id, dst_id, edge_type, &assignment.property, val)?;
         }
         SetItem::Label { .. } => {
@@ -112,7 +120,11 @@ pub(in crate::cypher::executor) fn apply_merge_set_item_edge_at(
 ) -> Result<()> {
     match item {
         SetItem::Property(assignment) => {
-            let val = eval_expr(&assignment.value, rec, conn)?;
+            let val = eval_expr(
+                &assignment.value,
+                rec,
+                crate::cypher::eval::EvalCx::new(conn),
+            )?;
             edge::set_edge_property_at(
                 conn,
                 src_id,
@@ -152,7 +164,7 @@ pub(in crate::cypher::executor) fn resolve_to_map(
     rec: &NamedRecord,
     conn: &Connection,
 ) -> Result<Properties> {
-    let val = eval_expr(expr, rec, conn)?;
+    let val = eval_expr(expr, rec, crate::cypher::eval::EvalCx::new(conn))?;
     match val {
         Value::Map(map) => Ok(map.into_iter().collect()),
         Value::Node(n) => Ok(n.properties),
@@ -201,7 +213,7 @@ pub(in crate::cypher::executor) fn exec_merge_node(
     let dummy_rec = NamedRecord::new();
     let mut props = Properties::new();
     for (key, expr) in &node_pat.properties {
-        let val = eval_expr(expr, &dummy_rec, conn)?;
+        let val = eval_expr(expr, &dummy_rec, crate::cypher::eval::EvalCx::new(conn))?;
         // Null property in MERGE is MergeReadOwnWrites.
         if val == Value::Null {
             return Err(GraphError::semantic("MERGE with null property value")
@@ -290,7 +302,7 @@ pub(in crate::cypher::executor) fn exec_merge_relationship(
     let mut edge_props = Properties::new();
     let dummy_rec = NamedRecord::new();
     for (key, expr) in &rel.properties {
-        let val = eval_expr(expr, &dummy_rec, conn)?;
+        let val = eval_expr(expr, &dummy_rec, crate::cypher::eval::EvalCx::new(conn))?;
         if val == Value::Null {
             return Err(GraphError::semantic("MERGE with null property value")
                 .with_code(ErrorCode::MergeReadOwnWrites));
@@ -373,7 +385,7 @@ pub(in crate::cypher::executor) fn find_or_create_merge_node(
     let dummy_rec = NamedRecord::new();
     let mut props = Properties::new();
     for (key, expr) in properties {
-        let val = eval_expr(expr, &dummy_rec, conn)?;
+        let val = eval_expr(expr, &dummy_rec, crate::cypher::eval::EvalCx::new(conn))?;
         if val == Value::Null {
             return Err(GraphError::semantic("MERGE with null property value")
                 .with_code(ErrorCode::MergeReadOwnWrites));
@@ -421,7 +433,7 @@ pub(in crate::cypher::executor) fn exec_match_merge(
             let label = node_pat.labels.first().map(|s| s.as_str()).unwrap_or("");
             let mut props = Properties::new();
             for (key, expr) in &node_pat.properties {
-                let val = eval_expr(expr, rec, conn)?;
+                let val = eval_expr(expr, rec, crate::cypher::eval::EvalCx::new(conn))?;
                 // Null property in MERGE is MergeReadOwnWrites.
                 if val == Value::Null {
                     return Err(GraphError::semantic("MERGE with null property value")
@@ -530,7 +542,7 @@ pub(in crate::cypher::executor) fn exec_match_merge(
         // Pre-evaluate merge pattern edge properties.
         let mut merge_edge_props = Properties::new();
         for (key, expr) in &rel.properties {
-            let val = eval_expr(expr, rec, conn)?;
+            let val = eval_expr(expr, rec, crate::cypher::eval::EvalCx::new(conn))?;
             if val == Value::Null {
                 return Err(GraphError::semantic("MERGE with null property value")
                     .with_code(ErrorCode::MergeReadOwnWrites));

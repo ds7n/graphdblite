@@ -57,7 +57,9 @@ pub(crate) fn aggregate_named_records(
     for rec in records {
         let key_vals: Vec<Value> = group_keys
             .iter()
-            .map(|k| eval_expr(k, rec, conn).unwrap_or(Value::Null))
+            .map(|k| {
+                eval_expr(k, rec, crate::cypher::eval::EvalCx::new(conn)).unwrap_or(Value::Null)
+            })
             .collect();
 
         if let Some(group) = group_map.get_mut(&key_vals) {
@@ -116,7 +118,7 @@ pub(in crate::cypher::executor) fn compute_aggregate(
             let mut seen: Vec<Value> = Vec::new();
             let mut kept: Vec<&dyn RecordView> = Vec::new();
             for &rec in records {
-                let val = eval_expr(&agg.input, rec, conn)?;
+                let val = eval_expr(&agg.input, rec, crate::cypher::eval::EvalCx::new(conn))?;
                 if matches!(val, Value::Null) {
                     continue;
                 }
@@ -138,7 +140,12 @@ pub(in crate::cypher::executor) fn compute_aggregate(
             } else {
                 let count = effective_records
                     .iter()
-                    .filter(|&&r| !matches!(eval_expr(&agg.input, r, conn), Ok(Value::Null)))
+                    .filter(|&&r| {
+                        !matches!(
+                            eval_expr(&agg.input, r, crate::cypher::eval::EvalCx::new(conn)),
+                            Ok(Value::Null)
+                        )
+                    })
                     .count();
                 Ok(Value::I64(count as i64))
             }
@@ -148,7 +155,7 @@ pub(in crate::cypher::executor) fn compute_aggregate(
             let mut f64_sum: f64 = 0.0;
             let mut all_integer = true;
             for &rec in effective_records {
-                match eval_expr(&agg.input, rec, conn)? {
+                match eval_expr(&agg.input, rec, crate::cypher::eval::EvalCx::new(conn))? {
                     Value::I64(n) => {
                         i64_sum = i64_sum.wrapping_add(n);
                         f64_sum += n as f64;
@@ -170,7 +177,7 @@ pub(in crate::cypher::executor) fn compute_aggregate(
             let mut sum = 0.0f64;
             let mut count = 0;
             for &rec in effective_records {
-                match eval_expr(&agg.input, rec, conn)? {
+                match eval_expr(&agg.input, rec, crate::cypher::eval::EvalCx::new(conn))? {
                     Value::I64(n) => {
                         sum += n as f64;
                         count += 1;
@@ -191,7 +198,7 @@ pub(in crate::cypher::executor) fn compute_aggregate(
         AggregateFunction::Min => {
             let mut min: Option<Value> = None;
             for &rec in effective_records {
-                let val = eval_expr(&agg.input, rec, conn)?;
+                let val = eval_expr(&agg.input, rec, crate::cypher::eval::EvalCx::new(conn))?;
                 if !matches!(val, Value::Null) {
                     min = Some(match min {
                         None => val,
@@ -210,7 +217,7 @@ pub(in crate::cypher::executor) fn compute_aggregate(
         AggregateFunction::Max => {
             let mut max: Option<Value> = None;
             for &rec in effective_records {
-                let val = eval_expr(&agg.input, rec, conn)?;
+                let val = eval_expr(&agg.input, rec, crate::cypher::eval::EvalCx::new(conn))?;
                 if !matches!(val, Value::Null) {
                     max = Some(match max {
                         None => val,
@@ -229,7 +236,7 @@ pub(in crate::cypher::executor) fn compute_aggregate(
         AggregateFunction::Collect => {
             let mut items = Vec::new();
             for &rec in effective_records {
-                let val = eval_expr(&agg.input, rec, conn)?;
+                let val = eval_expr(&agg.input, rec, crate::cypher::eval::EvalCx::new(conn))?;
                 if !matches!(val, Value::Null) {
                     items.push(val);
                 }
@@ -243,7 +250,7 @@ pub(in crate::cypher::executor) fn compute_aggregate(
                     let empty = NamedRecord::new();
                     let first_rec: &dyn RecordView =
                         effective_records.first().copied().unwrap_or(&empty);
-                    match eval_expr(pct_expr, first_rec, conn)? {
+                    match eval_expr(pct_expr, first_rec, crate::cypher::eval::EvalCx::new(conn))? {
                         Value::F64(v) => v,
                         Value::I64(v) => v as f64,
                         other => {
@@ -273,7 +280,7 @@ pub(in crate::cypher::executor) fn compute_aggregate(
             // Collect numeric values.
             let mut values: Vec<f64> = Vec::new();
             for &rec in effective_records {
-                match eval_expr(&agg.input, rec, conn)? {
+                match eval_expr(&agg.input, rec, crate::cypher::eval::EvalCx::new(conn))? {
                     Value::I64(n) => values.push(n as f64),
                     Value::F64(n) => values.push(n),
                     _ => {}
@@ -305,7 +312,7 @@ pub(in crate::cypher::executor) fn compute_aggregate(
         AggregateFunction::StDev | AggregateFunction::StDevP => {
             let mut values: Vec<f64> = Vec::new();
             for &rec in effective_records {
-                match eval_expr(&agg.input, rec, conn)? {
+                match eval_expr(&agg.input, rec, crate::cypher::eval::EvalCx::new(conn))? {
                     Value::I64(n) => values.push(n as f64),
                     Value::F64(n) => values.push(n),
                     _ => {}
@@ -333,8 +340,10 @@ pub(in crate::cypher::executor) fn exec_sort(
     let mut records = exec(conn, input, ctx)?;
     records.sort_by(|a, b| {
         for item in items {
-            let va = eval_expr(&item.expr, a, conn).unwrap_or(Value::Null);
-            let vb = eval_expr(&item.expr, b, conn).unwrap_or(Value::Null);
+            let va = eval_expr(&item.expr, a, crate::cypher::eval::EvalCx::new(conn))
+                .unwrap_or(Value::Null);
+            let vb = eval_expr(&item.expr, b, crate::cypher::eval::EvalCx::new(conn))
+                .unwrap_or(Value::Null);
             let ord = compare_values_for_sort(&va, &vb);
             let ord = if item.descending { ord.reverse() } else { ord };
             if ord != std::cmp::Ordering::Equal {
@@ -409,7 +418,9 @@ pub(in crate::cypher::executor) fn exec_aggregate_over_records(
     for rec in records {
         let key: Vec<Value> = group_keys
             .iter()
-            .map(|k| eval_expr(k, rec, conn).unwrap_or(Value::Null))
+            .map(|k| {
+                eval_expr(k, rec, crate::cypher::eval::EvalCx::new(conn)).unwrap_or(Value::Null)
+            })
             .collect();
         if let Some(group) = groups.iter_mut().find(|(k, _)| k == &key) {
             group.1.push(rec.clone());
@@ -499,7 +510,9 @@ pub(crate) fn aggregate_slot_records(
         let view = SlotView::new(input_schema, rec);
         let key_vals: Vec<Value> = group_keys
             .iter()
-            .map(|k| eval_expr(k, &view, conn).unwrap_or(Value::Null))
+            .map(|k| {
+                eval_expr(k, &view, crate::cypher::eval::EvalCx::new(conn)).unwrap_or(Value::Null)
+            })
             .collect();
         if let Some(group) = group_map.get_mut(&key_vals) {
             group.push(idx);

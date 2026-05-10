@@ -20,6 +20,23 @@ pub(crate) fn literal_to_value(lit: &LiteralValue) -> Value {
     }
 }
 
+/// Resolve an [`IndexLookup`] key to a concrete `Value`. `Literal` keys
+/// inline; `Param(name)` keys look up the active `$param` map via
+/// [`crate::cypher::eval::lookup_param`] and error with `MissingParameter`
+/// if absent.
+pub(crate) fn resolve_lookup_key(key: &LookupKey) -> Result<Value> {
+    match key {
+        LookupKey::Literal(lv) => Ok(literal_to_value(lv)),
+        LookupKey::Param(name) => crate::cypher::eval::lookup_param(name).ok_or_else(|| {
+            GraphError::query(
+                QueryPhase::Runtime,
+                ErrorCode::MissingParameter,
+                format!("missing parameter: ${name}"),
+            )
+        }),
+    }
+}
+
 /// Cypher type ordering rank for cross-type comparisons.
 /// Order: Map < Node < Relationship < Path < List < String < Bool < Number < Null
 pub(in crate::cypher::executor) fn type_rank(v: &Value) -> u8 {
@@ -156,13 +173,13 @@ pub fn execute_first_match(
             value,
             remaining_filters,
         } => {
-            let lookup_value = literal_to_value(value);
+            let lookup_value = resolve_lookup_key(value)?;
             let node_ids = index::index_lookup(conn, label, property, &lookup_value)?;
             for id in node_ids {
                 let n = node::get_node(conn, id)?;
                 let rec = node_to_record(&n, alias);
                 if let Some(filter) = remaining_filters {
-                    if !eval_predicate(filter, &rec, conn)? {
+                    if !eval_predicate(filter, &rec, crate::cypher::eval::EvalCx::new(conn))? {
                         continue;
                     }
                 }
@@ -178,7 +195,7 @@ pub fn execute_first_match(
             // at a time, applying predicate + bindings check.
             let records = exec(conn, input, &ExecContext::default())?;
             for rec in records {
-                if eval_predicate(predicate, &rec, conn)?
+                if eval_predicate(predicate, &rec, crate::cypher::eval::EvalCx::new(conn))?
                     && record_matches_bindings(&rec, correlated_bindings)
                 {
                     return Ok(true);

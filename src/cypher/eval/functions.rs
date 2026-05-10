@@ -1,7 +1,5 @@
 //! Function-call dispatch (scalar + temporal constructors).
 
-use rusqlite::Connection;
-
 use crate::cypher::ast::*;
 use crate::cypher::record_view::RecordView;
 use crate::types::{ErrorCode, GraphError, QueryError, QueryPhase, Value};
@@ -13,10 +11,10 @@ use super::*;
 pub(in crate::cypher::eval) fn eval_single_arg(
     args: &[Expr],
     record: &dyn RecordView,
-    conn: &Connection,
+    ecx: EvalCx<'_>,
 ) -> crate::types::Result<Value> {
     args.first()
-        .map(|a| eval_expr(a, record, conn))
+        .map(|a| eval_expr(a, record, ecx))
         .transpose()
         .map(|v| v.unwrap_or(Value::Null))
 }
@@ -54,8 +52,9 @@ pub(in crate::cypher::eval) fn eval_function_call(
     args: &[Expr],
     original_text: Option<&str>,
     record: &dyn RecordView,
-    conn: &Connection,
+    ecx: EvalCx<'_>,
 ) -> crate::types::Result<Value> {
+    let conn = ecx.conn;
     let name_lower = name.to_ascii_lowercase();
 
     // Check for deleted entity access in function arguments.
@@ -121,7 +120,7 @@ pub(in crate::cypher::eval) fn eval_function_call(
         "length" => {
             let arg = args
                 .first()
-                .map(|a| eval_expr(a, record, conn))
+                .map(|a| eval_expr(a, record, ecx))
                 .transpose()?;
             match arg {
                 Some(Value::Path(p)) => Ok(Value::I64(p.len() as i64)),
@@ -134,7 +133,7 @@ pub(in crate::cypher::eval) fn eval_function_call(
         "nodes" => {
             let arg = args
                 .first()
-                .map(|a| eval_expr(a, record, conn))
+                .map(|a| eval_expr(a, record, ecx))
                 .transpose()?;
             match arg {
                 Some(Value::Path(p)) => {
@@ -145,7 +144,7 @@ pub(in crate::cypher::eval) fn eval_function_call(
             }
         }
         "tolower" => {
-            let arg = eval_single_arg(args, record, conn)?;
+            let arg = eval_single_arg(args, record, ecx)?;
             match arg {
                 Value::String(s) => Ok(Value::String(s.to_lowercase())),
                 Value::Null => Ok(Value::Null),
@@ -153,7 +152,7 @@ pub(in crate::cypher::eval) fn eval_function_call(
             }
         }
         "toupper" => {
-            let arg = eval_single_arg(args, record, conn)?;
+            let arg = eval_single_arg(args, record, ecx)?;
             match arg {
                 Value::String(s) => Ok(Value::String(s.to_uppercase())),
                 Value::Null => Ok(Value::Null),
@@ -161,7 +160,7 @@ pub(in crate::cypher::eval) fn eval_function_call(
             }
         }
         "tostring" => {
-            let arg = eval_single_arg(args, record, conn)?;
+            let arg = eval_single_arg(args, record, ecx)?;
             match arg {
                 Value::Null => Ok(Value::Null),
                 Value::String(s) => Ok(Value::String(s)),
@@ -178,7 +177,7 @@ pub(in crate::cypher::eval) fn eval_function_call(
             }
         }
         "toboolean" => {
-            let arg = eval_single_arg(args, record, conn)?;
+            let arg = eval_single_arg(args, record, ecx)?;
             match arg {
                 Value::Null => Ok(Value::Null),
                 Value::Bool(_) => Ok(arg),
@@ -191,7 +190,7 @@ pub(in crate::cypher::eval) fn eval_function_call(
             }
         }
         "tointeger" => {
-            let arg = eval_single_arg(args, record, conn)?;
+            let arg = eval_single_arg(args, record, ecx)?;
             match arg {
                 Value::Null => Ok(Value::Null),
                 Value::I64(_) => Ok(arg),
@@ -211,7 +210,7 @@ pub(in crate::cypher::eval) fn eval_function_call(
             }
         }
         "tofloat" => {
-            let arg = eval_single_arg(args, record, conn)?;
+            let arg = eval_single_arg(args, record, ecx)?;
             match arg {
                 Value::Null => Ok(Value::Null),
                 Value::F64(_) => Ok(arg),
@@ -257,7 +256,7 @@ pub(in crate::cypher::eval) fn eval_function_call(
                     return Ok(Value::List(keys.into_iter().map(Value::String).collect()));
                 }
             }
-            let arg = eval_single_arg(args, record, conn)?;
+            let arg = eval_single_arg(args, record, ecx)?;
             match arg {
                 Value::Node(n) => {
                     let mut keys: Vec<String> = n.properties.keys().cloned().collect();
@@ -308,7 +307,7 @@ pub(in crate::cypher::eval) fn eval_function_call(
                 }
             }
             // Handle compound Value::Node.
-            let arg = eval_single_arg(args, record, conn)?;
+            let arg = eval_single_arg(args, record, ecx)?;
             match arg {
                 Value::Node(n) => Ok(Value::List(
                     n.labels.into_iter().map(Value::String).collect(),
@@ -329,7 +328,7 @@ pub(in crate::cypher::eval) fn eval_function_call(
                     return Ok(val.clone());
                 }
             }
-            let arg = eval_single_arg(args, record, conn)?;
+            let arg = eval_single_arg(args, record, ecx)?;
             match arg {
                 Value::I64(_) => Ok(arg),
                 Value::Node(n) => Ok(Value::I64(n.id.0 as i64)),
@@ -360,7 +359,7 @@ pub(in crate::cypher::eval) fn eval_function_call(
                     }
                 }
             }
-            let arg = eval_single_arg(args, record, conn)?;
+            let arg = eval_single_arg(args, record, ecx)?;
             match arg {
                 Value::Edge(e) => Ok(Value::String(e.label)),
                 Value::Null => Ok(Value::Null),
@@ -393,7 +392,7 @@ pub(in crate::cypher::eval) fn eval_function_call(
                     return Ok(Value::Null);
                 }
             }
-            let arg = eval_single_arg(args, record, conn)?;
+            let arg = eval_single_arg(args, record, ecx)?;
             match arg {
                 Value::Node(n) => {
                     let map = n.properties.into_iter().collect();
@@ -412,7 +411,7 @@ pub(in crate::cypher::eval) fn eval_function_call(
             // relationships(p) — return list of edges in a path.
             let arg = args
                 .first()
-                .map(|a| eval_expr(a, record, conn))
+                .map(|a| eval_expr(a, record, ecx))
                 .transpose()?;
             match arg {
                 Some(Value::Path(p)) => {
@@ -426,7 +425,7 @@ pub(in crate::cypher::eval) fn eval_function_call(
         "coalesce" => {
             // coalesce(a, b, c, ...) — return first non-null value.
             for a in args {
-                let val = eval_expr(a, record, conn)?;
+                let val = eval_expr(a, record, ecx)?;
                 if val != Value::Null {
                     return Ok(val);
                 }
@@ -434,21 +433,21 @@ pub(in crate::cypher::eval) fn eval_function_call(
             Ok(Value::Null)
         }
         "head" => {
-            let arg = eval_single_arg(args, record, conn)?;
+            let arg = eval_single_arg(args, record, ecx)?;
             match arg {
                 Value::List(items) => Ok(items.into_iter().next().unwrap_or(Value::Null)),
                 _ => Ok(Value::Null),
             }
         }
         "last" => {
-            let arg = eval_single_arg(args, record, conn)?;
+            let arg = eval_single_arg(args, record, ecx)?;
             match arg {
                 Value::List(items) => Ok(items.into_iter().last().unwrap_or(Value::Null)),
                 _ => Ok(Value::Null),
             }
         }
         "tail" => {
-            let arg = eval_single_arg(args, record, conn)?;
+            let arg = eval_single_arg(args, record, ecx)?;
             match arg {
                 Value::List(mut items) => {
                     if items.is_empty() {
@@ -462,7 +461,7 @@ pub(in crate::cypher::eval) fn eval_function_call(
             }
         }
         "size" => {
-            let arg = eval_single_arg(args, record, conn)?;
+            let arg = eval_single_arg(args, record, ecx)?;
             match arg {
                 Value::List(items) => Ok(Value::I64(items.len() as i64)),
                 Value::String(s) => Ok(Value::I64(s.len() as i64)),
@@ -470,7 +469,7 @@ pub(in crate::cypher::eval) fn eval_function_call(
             }
         }
         "abs" => {
-            let arg = eval_single_arg(args, record, conn)?;
+            let arg = eval_single_arg(args, record, ecx)?;
             match arg {
                 Value::I64(n) => n.checked_abs().map(Value::I64).ok_or_else(|| {
                     GraphError::number_out_of_range(
@@ -483,7 +482,7 @@ pub(in crate::cypher::eval) fn eval_function_call(
             }
         }
         "sqrt" => {
-            let arg = eval_single_arg(args, record, conn)?;
+            let arg = eval_single_arg(args, record, ecx)?;
             match arg {
                 Value::I64(n) => Ok(Value::F64((n as f64).sqrt())),
                 Value::F64(n) => Ok(Value::F64(n.sqrt())),
@@ -492,7 +491,7 @@ pub(in crate::cypher::eval) fn eval_function_call(
             }
         }
         "sign" => {
-            let arg = eval_single_arg(args, record, conn)?;
+            let arg = eval_single_arg(args, record, ecx)?;
             match arg {
                 Value::I64(n) => Ok(Value::I64(n.signum())),
                 Value::F64(n) => Ok(Value::I64(if n.is_nan() { 0 } else { n.signum() as i64 })),
@@ -501,7 +500,7 @@ pub(in crate::cypher::eval) fn eval_function_call(
             }
         }
         "ceil" => {
-            let arg = eval_single_arg(args, record, conn)?;
+            let arg = eval_single_arg(args, record, ecx)?;
             match arg {
                 Value::I64(n) => Ok(Value::F64(n as f64)),
                 Value::F64(n) => Ok(Value::F64(n.ceil())),
@@ -510,7 +509,7 @@ pub(in crate::cypher::eval) fn eval_function_call(
             }
         }
         "floor" => {
-            let arg = eval_single_arg(args, record, conn)?;
+            let arg = eval_single_arg(args, record, ecx)?;
             match arg {
                 Value::I64(n) => Ok(Value::F64(n as f64)),
                 Value::F64(n) => Ok(Value::F64(n.floor())),
@@ -519,7 +518,7 @@ pub(in crate::cypher::eval) fn eval_function_call(
             }
         }
         "round" => {
-            let arg = eval_single_arg(args, record, conn)?;
+            let arg = eval_single_arg(args, record, ecx)?;
             match arg {
                 Value::I64(n) => Ok(Value::F64(n as f64)),
                 Value::F64(n) => Ok(Value::F64(n.round())),
@@ -528,7 +527,7 @@ pub(in crate::cypher::eval) fn eval_function_call(
             }
         }
         "log" => {
-            let arg = eval_single_arg(args, record, conn)?;
+            let arg = eval_single_arg(args, record, ecx)?;
             match arg {
                 Value::I64(n) => Ok(Value::F64((n as f64).ln())),
                 Value::F64(n) => Ok(Value::F64(n.ln())),
@@ -537,7 +536,7 @@ pub(in crate::cypher::eval) fn eval_function_call(
             }
         }
         "log10" => {
-            let arg = eval_single_arg(args, record, conn)?;
+            let arg = eval_single_arg(args, record, ecx)?;
             match arg {
                 Value::I64(n) => Ok(Value::F64((n as f64).log10())),
                 Value::F64(n) => Ok(Value::F64(n.log10())),
@@ -546,7 +545,7 @@ pub(in crate::cypher::eval) fn eval_function_call(
             }
         }
         "exp" => {
-            let arg = eval_single_arg(args, record, conn)?;
+            let arg = eval_single_arg(args, record, ecx)?;
             match arg {
                 Value::I64(n) => Ok(Value::F64((n as f64).exp())),
                 Value::F64(n) => Ok(Value::F64(n.exp())),
@@ -558,15 +557,9 @@ pub(in crate::cypher::eval) fn eval_function_call(
         "pi" => Ok(Value::F64(std::f64::consts::PI)),
         "substring" => {
             // substring(s, start [, length])
-            let s = eval_single_arg(args, record, conn)?;
-            let start = args
-                .get(1)
-                .map(|a| eval_expr(a, record, conn))
-                .transpose()?;
-            let len = args
-                .get(2)
-                .map(|a| eval_expr(a, record, conn))
-                .transpose()?;
+            let s = eval_single_arg(args, record, ecx)?;
+            let start = args.get(1).map(|a| eval_expr(a, record, ecx)).transpose()?;
+            let len = args.get(2).map(|a| eval_expr(a, record, ecx)).transpose()?;
             match (s, start) {
                 (Value::String(s), Some(Value::I64(start))) => {
                     let start = start.max(0) as usize;
@@ -586,15 +579,9 @@ pub(in crate::cypher::eval) fn eval_function_call(
         }
         "replace" => {
             // replace(s, search, replacement)
-            let s = eval_single_arg(args, record, conn)?;
-            let search = args
-                .get(1)
-                .map(|a| eval_expr(a, record, conn))
-                .transpose()?;
-            let replacement = args
-                .get(2)
-                .map(|a| eval_expr(a, record, conn))
-                .transpose()?;
+            let s = eval_single_arg(args, record, ecx)?;
+            let search = args.get(1).map(|a| eval_expr(a, record, ecx)).transpose()?;
+            let replacement = args.get(2).map(|a| eval_expr(a, record, ecx)).transpose()?;
             match (s, search, replacement) {
                 (Value::String(s), Some(Value::String(search)), Some(Value::String(repl))) => {
                     Ok(Value::String(s.replace(&search, &repl)))
@@ -604,11 +591,8 @@ pub(in crate::cypher::eval) fn eval_function_call(
         }
         "split" => {
             // split(s, delimiter)
-            let s = eval_single_arg(args, record, conn)?;
-            let delim = args
-                .get(1)
-                .map(|a| eval_expr(a, record, conn))
-                .transpose()?;
+            let s = eval_single_arg(args, record, ecx)?;
+            let delim = args.get(1).map(|a| eval_expr(a, record, ecx)).transpose()?;
             match (s, delim) {
                 (Value::String(s), Some(Value::String(d))) => {
                     let parts: Vec<Value> =
@@ -619,7 +603,7 @@ pub(in crate::cypher::eval) fn eval_function_call(
             }
         }
         "trim" => {
-            let arg = eval_single_arg(args, record, conn)?;
+            let arg = eval_single_arg(args, record, ecx)?;
             match arg {
                 Value::String(s) => Ok(Value::String(s.trim().to_string())),
                 Value::Null => Ok(Value::Null),
@@ -627,7 +611,7 @@ pub(in crate::cypher::eval) fn eval_function_call(
             }
         }
         "lTrim" | "ltrim" => {
-            let arg = eval_single_arg(args, record, conn)?;
+            let arg = eval_single_arg(args, record, ecx)?;
             match arg {
                 Value::String(s) => Ok(Value::String(s.trim_start().to_string())),
                 Value::Null => Ok(Value::Null),
@@ -635,7 +619,7 @@ pub(in crate::cypher::eval) fn eval_function_call(
             }
         }
         "rTrim" | "rtrim" => {
-            let arg = eval_single_arg(args, record, conn)?;
+            let arg = eval_single_arg(args, record, ecx)?;
             match arg {
                 Value::String(s) => Ok(Value::String(s.trim_end().to_string())),
                 Value::Null => Ok(Value::Null),
@@ -643,11 +627,8 @@ pub(in crate::cypher::eval) fn eval_function_call(
             }
         }
         "left" => {
-            let s = eval_single_arg(args, record, conn)?;
-            let len_val = args
-                .get(1)
-                .map(|a| eval_expr(a, record, conn))
-                .transpose()?;
+            let s = eval_single_arg(args, record, ecx)?;
+            let len_val = args.get(1).map(|a| eval_expr(a, record, ecx)).transpose()?;
             match (s, len_val) {
                 (Value::String(s), Some(Value::I64(n))) => {
                     let n = n.max(0) as usize;
@@ -658,11 +639,8 @@ pub(in crate::cypher::eval) fn eval_function_call(
             }
         }
         "right" => {
-            let s = eval_single_arg(args, record, conn)?;
-            let len_val = args
-                .get(1)
-                .map(|a| eval_expr(a, record, conn))
-                .transpose()?;
+            let s = eval_single_arg(args, record, ecx)?;
+            let len_val = args.get(1).map(|a| eval_expr(a, record, ecx)).transpose()?;
             match (s, len_val) {
                 (Value::String(s), Some(Value::I64(n))) => {
                     let n = n.max(0) as usize;
@@ -690,7 +668,7 @@ pub(in crate::cypher::eval) fn eval_function_call(
                     }
                 }
             }
-            let arg = eval_single_arg(args, record, conn)?;
+            let arg = eval_single_arg(args, record, ecx)?;
             match arg {
                 Value::Edge(e) => match crate::node::get_node(conn, e.src) {
                     Ok(n) => Ok(Value::Node(n)),
@@ -715,7 +693,7 @@ pub(in crate::cypher::eval) fn eval_function_call(
                     }
                 }
             }
-            let arg = eval_single_arg(args, record, conn)?;
+            let arg = eval_single_arg(args, record, ecx)?;
             match arg {
                 Value::Edge(e) => match crate::node::get_node(conn, e.dst) {
                     Ok(n) => Ok(Value::Node(n)),
@@ -726,11 +704,11 @@ pub(in crate::cypher::eval) fn eval_function_call(
             }
         }
         "exists" => {
-            let arg = eval_single_arg(args, record, conn)?;
+            let arg = eval_single_arg(args, record, ecx)?;
             Ok(Value::Bool(arg != Value::Null))
         }
         "reverse" => {
-            let arg = eval_single_arg(args, record, conn)?;
+            let arg = eval_single_arg(args, record, ecx)?;
             match arg {
                 Value::String(s) => Ok(Value::String(s.chars().rev().collect())),
                 Value::List(mut items) => {
@@ -742,15 +720,9 @@ pub(in crate::cypher::eval) fn eval_function_call(
         }
         "range" => {
             // range(start, end [, step])
-            let start = eval_single_arg(args, record, conn)?;
-            let end = args
-                .get(1)
-                .map(|a| eval_expr(a, record, conn))
-                .transpose()?;
-            let step = args
-                .get(2)
-                .map(|a| eval_expr(a, record, conn))
-                .transpose()?;
+            let start = eval_single_arg(args, record, ecx)?;
+            let end = args.get(1).map(|a| eval_expr(a, record, ecx)).transpose()?;
+            let step = args.get(2).map(|a| eval_expr(a, record, ecx)).transpose()?;
             // Validate argument types.
             for (label, val) in [("start", &start)]
                 .into_iter()
@@ -854,7 +826,7 @@ pub(in crate::cypher::eval) fn eval_function_call(
             eval_temporal_constructor(
                 args,
                 record,
-                conn,
+                ecx,
                 |s| crate::temporal::CypherDate::from_iso_string(s).map(Value::Date),
                 |m| crate::temporal::CypherDate::from_map(m).map(Value::Date),
             )
@@ -863,7 +835,7 @@ pub(in crate::cypher::eval) fn eval_function_call(
             eval_temporal_constructor(
                 args,
                 record,
-                conn,
+                ecx,
                 |s| crate::temporal::CypherLocalTime::from_iso_string(s).map(Value::LocalTime),
                 |m| crate::temporal::CypherLocalTime::from_map(m).map(Value::LocalTime),
             )
@@ -872,7 +844,7 @@ pub(in crate::cypher::eval) fn eval_function_call(
             eval_temporal_constructor(
                 args,
                 record,
-                conn,
+                ecx,
                 |s| crate::temporal::CypherTime::from_iso_string(s).map(Value::Time),
                 |m| crate::temporal::CypherTime::from_map(m).map(Value::Time),
             )
@@ -883,7 +855,7 @@ pub(in crate::cypher::eval) fn eval_function_call(
         | "localdatetime.realtime" => eval_temporal_constructor(
             args,
             record,
-            conn,
+            ecx,
             |s| crate::temporal::CypherLocalDateTime::from_iso_string(s).map(Value::LocalDateTime),
             |m| crate::temporal::CypherLocalDateTime::from_map(m).map(Value::LocalDateTime),
         ),
@@ -891,7 +863,7 @@ pub(in crate::cypher::eval) fn eval_function_call(
             eval_temporal_constructor(
                 args,
                 record,
-                conn,
+                ecx,
                 |s| crate::temporal::CypherDateTime::from_iso_string(s).map(Value::DateTime),
                 |m| crate::temporal::CypherDateTime::from_map(m).map(Value::DateTime),
             )
@@ -899,16 +871,13 @@ pub(in crate::cypher::eval) fn eval_function_call(
         "duration" => eval_temporal_constructor(
             args,
             record,
-            conn,
+            ecx,
             |s| crate::temporal::CypherDuration::from_iso_string(s).map(Value::Duration),
             |m| crate::temporal::CypherDuration::from_map(m).map(Value::Duration),
         ),
         "datetime.fromepoch" => {
-            let secs = eval_single_arg(args, record, conn)?;
-            let nanos = args
-                .get(1)
-                .map(|a| eval_expr(a, record, conn))
-                .transpose()?;
+            let secs = eval_single_arg(args, record, ecx)?;
+            let nanos = args.get(1).map(|a| eval_expr(a, record, ecx)).transpose()?;
             match (secs, nanos) {
                 (Value::I64(s), Some(Value::I64(n))) => Ok(Value::DateTime(
                     crate::temporal::CypherDateTime::from_epoch(s, n),
@@ -920,7 +889,7 @@ pub(in crate::cypher::eval) fn eval_function_call(
             }
         }
         "datetime.fromepochmillis" => {
-            let millis = eval_single_arg(args, record, conn)?;
+            let millis = eval_single_arg(args, record, ecx)?;
             match millis {
                 Value::I64(ms) => Ok(Value::DateTime(
                     crate::temporal::CypherDateTime::from_epoch_millis(ms),
@@ -932,8 +901,8 @@ pub(in crate::cypher::eval) fn eval_function_call(
             if args.len() < 2 {
                 return Ok(Value::Null);
             }
-            let lhs = eval_expr(&args[0], record, conn)?;
-            let rhs = eval_expr(&args[1], record, conn)?;
+            let lhs = eval_expr(&args[0], record, ecx)?;
+            let rhs = eval_expr(&args[1], record, ecx)?;
             if lhs == Value::Null || rhs == Value::Null {
                 return Ok(Value::Null);
             }
@@ -951,13 +920,13 @@ pub(in crate::cypher::eval) fn eval_function_call(
             if args.len() < 2 {
                 return Ok(Value::Null);
             }
-            let unit = match eval_expr(&args[0], record, conn)? {
+            let unit = match eval_expr(&args[0], record, ecx)? {
                 Value::String(s) => s,
                 _ => return Ok(Value::Null),
             };
-            let val = eval_expr(&args[1], record, conn)?;
+            let val = eval_expr(&args[1], record, ecx)?;
             let map = if args.len() > 2 {
-                match eval_expr(&args[2], record, conn)? {
+                match eval_expr(&args[2], record, ecx)? {
                     Value::Map(m) => m,
                     _ => std::collections::BTreeMap::new(),
                 }
@@ -971,13 +940,13 @@ pub(in crate::cypher::eval) fn eval_function_call(
             if args.len() < 2 {
                 return Ok(Value::Null);
             }
-            let unit = match eval_expr(&args[0], record, conn)? {
+            let unit = match eval_expr(&args[0], record, ecx)? {
                 Value::String(s) => s,
                 _ => return Ok(Value::Null),
             };
-            let val = eval_expr(&args[1], record, conn)?;
+            let val = eval_expr(&args[1], record, ecx)?;
             let map = if args.len() > 2 {
-                match eval_expr(&args[2], record, conn)? {
+                match eval_expr(&args[2], record, ecx)? {
                     Value::Map(m) => m,
                     _ => std::collections::BTreeMap::new(),
                 }
@@ -991,13 +960,13 @@ pub(in crate::cypher::eval) fn eval_function_call(
             if args.len() < 2 {
                 return Ok(Value::Null);
             }
-            let unit = match eval_expr(&args[0], record, conn)? {
+            let unit = match eval_expr(&args[0], record, ecx)? {
                 Value::String(s) => s,
                 _ => return Ok(Value::Null),
             };
-            let val = eval_expr(&args[1], record, conn)?;
+            let val = eval_expr(&args[1], record, ecx)?;
             let map = if args.len() > 2 {
-                match eval_expr(&args[2], record, conn)? {
+                match eval_expr(&args[2], record, ecx)? {
                     Value::Map(m) => m,
                     _ => std::collections::BTreeMap::new(),
                 }
@@ -1020,13 +989,13 @@ pub(in crate::cypher::eval) fn eval_function_call(
             if args.len() < 2 {
                 return Ok(Value::Null);
             }
-            let unit = match eval_expr(&args[0], record, conn)? {
+            let unit = match eval_expr(&args[0], record, ecx)? {
                 Value::String(s) => s,
                 _ => return Ok(Value::Null),
             };
-            let val = eval_expr(&args[1], record, conn)?;
+            let val = eval_expr(&args[1], record, ecx)?;
             let map = if args.len() > 2 {
-                match eval_expr(&args[2], record, conn)? {
+                match eval_expr(&args[2], record, ecx)? {
                     Value::Map(m) => m,
                     _ => std::collections::BTreeMap::new(),
                 }
@@ -1044,13 +1013,13 @@ pub(in crate::cypher::eval) fn eval_function_call(
             if args.len() < 2 {
                 return Ok(Value::Null);
             }
-            let unit = match eval_expr(&args[0], record, conn)? {
+            let unit = match eval_expr(&args[0], record, ecx)? {
                 Value::String(s) => s,
                 _ => return Ok(Value::Null),
             };
-            let val = eval_expr(&args[1], record, conn)?;
+            let val = eval_expr(&args[1], record, ecx)?;
             let map = if args.len() > 2 {
-                match eval_expr(&args[2], record, conn)? {
+                match eval_expr(&args[2], record, ecx)? {
                     Value::Map(m) => m,
                     _ => std::collections::BTreeMap::new(),
                 }
@@ -1102,14 +1071,14 @@ pub(in crate::cypher::eval) fn eval_function_call(
 pub(in crate::cypher::eval) fn eval_temporal_constructor(
     args: &[Expr],
     record: &dyn RecordView,
-    conn: &Connection,
+    ecx: EvalCx<'_>,
     from_str: impl Fn(&str) -> crate::types::Result<Value>,
     from_map: impl Fn(&std::collections::BTreeMap<String, Value>) -> crate::types::Result<Value>,
 ) -> crate::types::Result<Value> {
     if args.is_empty() {
         return from_map(&std::collections::BTreeMap::new());
     }
-    let arg = eval_single_arg(args, record, conn)?;
+    let arg = eval_single_arg(args, record, ecx)?;
     match arg {
         Value::String(s) => from_str(&s),
         Value::Map(m) => from_map(&m),

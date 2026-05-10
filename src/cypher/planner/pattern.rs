@@ -407,7 +407,8 @@ pub(in crate::cypher::planner) fn plan_node_scan(
             .properties
             .iter()
             .filter(|(key, val)| {
-                indexed_props.contains(&key.as_str()) && matches!(val.kind, ExprKind::Literal(_))
+                indexed_props.contains(&key.as_str())
+                    && matches!(val.kind, ExprKind::Literal(_) | ExprKind::Parameter(_))
             })
             .collect();
 
@@ -449,15 +450,16 @@ pub(in crate::cypher::planner) fn plan_node_scan(
         let indexed_match = candidates.into_iter().next();
 
         if let Some((prop, expr)) = indexed_match {
-            let lit = match &expr.kind {
-                ExprKind::Literal(l) => l.clone(),
-                // Defensive: candidates were filtered to literals upstream;
-                // surface a planner-internal error rather than aborting.
+            let lookup_key = match &expr.kind {
+                ExprKind::Literal(l) => LookupKey::Literal(l.clone()),
+                ExprKind::Parameter(name) => LookupKey::Param(name.clone()),
+                // Defensive: candidates were filtered upstream.
                 _ => {
                     return Err(GraphError::query(
                         crate::types::QueryPhase::SemanticAnalysis,
                         ErrorCode::Other,
-                        "internal: indexed match candidate is not a literal".to_string(),
+                        "internal: indexed match candidate is not a literal or parameter"
+                            .to_string(),
                     ));
                 }
             };
@@ -480,7 +482,7 @@ pub(in crate::cypher::planner) fn plan_node_scan(
                 label,
                 alias: alias.to_string(),
                 property: prop.clone(),
-                value: lit,
+                value: lookup_key,
                 remaining_filters,
             });
         }

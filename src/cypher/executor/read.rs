@@ -74,199 +74,237 @@ pub(in crate::cypher::executor) fn exec_expand(
     let input_records = exec(conn, input, ctx)?;
     let mut results = Vec::new();
 
+    let prop_filter_values: HashMap<String, Value> = var_length_prop_filters
+        .iter()
+        .filter_map(|(k, expr)| match &expr.kind {
+            ExprKind::Literal(lit) => Some((k.clone(), literal_to_value(lit))),
+            _ => None,
+        })
+        .collect();
     for rec in &input_records {
         if let Some(cap) = result_cap {
             if results.len() >= cap {
                 break;
             }
         }
-        let src_id = match rec.get(src_alias).and_then(value_to_node_id) {
-            Some(id) => id,
-            _ => continue,
-        };
+        let per_call_cap = result_cap.map(|c| c.saturating_sub(results.len()));
+        let expanded = expand_record(
+            conn,
+            rec,
+            src_alias,
+            dst_alias,
+            rel_alias,
+            edge_types,
+            direction,
+            min_hops,
+            max_hops,
+            var_length,
+            &prop_filter_values,
+            per_call_cap,
+            ctx.max_traversal_work,
+        )?;
+        results.extend(expanded);
+    }
 
-        // If no types specified, discover all edge types for this node.
-        // For var-length, pass empty labels so traverse_paths discovers
-        // types at each hop (different nodes may have different edge types).
-        let _owned_labels: Vec<String>;
-        let labels: Vec<&str> = if edge_types.is_empty() {
-            let all = edge::get_all_edge_labels(conn, src_id, direction)?;
-            _owned_labels = all.into_iter().map(|(l, _)| l).collect();
-            _owned_labels.iter().map(|s| s.as_str()).collect()
-        } else {
-            edge_types.iter().map(|s| s.as_str()).collect()
-        };
-        let var_length_labels: Vec<&str> = if edge_types.is_empty() {
-            vec![] // signal traverse_paths to discover per-hop
-        } else {
-            labels.clone()
-        };
+    check_row_limit(&results, ctx)?;
+    Ok(results)
+}
 
-        // If the destination alias is already bound in the record (cyclic
-        // pattern like `(a)-[:R]->(b)-[:S]->(a)`), we must only keep
-        // expansions where the destination equals the bound node.
-        let bound_dst_id = rec.get(dst_alias).and_then(value_to_node_id);
+/// Expand one input record into zero or more output records. Handles every
+/// shape `exec_expand` does — labeled or untyped, single-hop or var-length,
+/// any [`Direction`] including [`Direction::Both`] with parallel edges —
+/// so callers (the materialized `exec_expand`, the slot-path `ExpandIter`)
+/// share the same traversal semantics.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn expand_record(
+    conn: &Connection,
+    rec: &NamedRecord,
+    src_alias: &str,
+    dst_alias: &str,
+    rel_alias: Option<&str>,
+    edge_types: &[String],
+    direction: Direction,
+    min_hops: u32,
+    max_hops: u32,
+    var_length: bool,
+    var_length_prop_filters: &HashMap<String, Value>,
+    result_cap: Option<usize>,
+    max_traversal_work: u64,
+) -> Result<Vec<NamedRecord>> {
+    let mut results = Vec::new();
+    let src_id = match rec.get(src_alias).and_then(value_to_node_id) {
+        Some(id) => id,
+        _ => return Ok(results),
+    };
 
-        if var_length {
-            // Variable-length traversal — pass ALL labels at once for mixed-type support.
-            let prop_filter_values: HashMap<String, Value> = var_length_prop_filters
-                .iter()
-                .filter_map(|(k, expr)| match &expr.kind {
-                    ExprKind::Literal(lit) => Some((k.clone(), literal_to_value(lit))),
-                    _ => None,
-                })
-                .collect();
-            // Pass remaining budget so traverse_paths can stop early.
-            let per_call_cap = result_cap.map(|c| c.saturating_sub(results.len()));
-            let paths = edge::traverse_paths(
-                conn,
-                src_id,
-                &var_length_labels,
-                direction,
-                min_hops,
-                max_hops,
-                &prop_filter_values,
-                per_call_cap,
-                ctx.max_traversal_work,
-            )?;
-            for (dst_id, steps) in paths {
+    // If no types specified, discover all edge types for this node.
+    // For var-length, pass empty labels so traverse_paths discovers
+    // types at each hop (different nodes may have different edge types).
+    let _owned_labels: Vec<String>;
+    let labels: Vec<&str> = if edge_types.is_empty() {
+        let all = edge::get_all_edge_labels(conn, src_id, direction)?;
+        _owned_labels = all.into_iter().map(|(l, _)| l).collect();
+        _owned_labels.iter().map(|s| s.as_str()).collect()
+    } else {
+        edge_types.iter().map(|s| s.as_str()).collect()
+    };
+    let var_length_labels: Vec<&str> = if edge_types.is_empty() {
+        vec![] // signal traverse_paths to discover per-hop
+    } else {
+        labels.clone()
+    };
+
+    // If the destination alias is already bound in the record (cyclic
+    // pattern like `(a)-[:R]->(b)-[:S]->(a)`), we must only keep
+    // expansions where the destination equals the bound node.
+    let bound_dst_id = rec.get(dst_alias).and_then(value_to_node_id);
+
+    if var_length {
+        let paths = edge::traverse_paths(
+            conn,
+            src_id,
+            &var_length_labels,
+            direction,
+            min_hops,
+            max_hops,
+            var_length_prop_filters,
+            result_cap,
+            max_traversal_work,
+        )?;
+        for (dst_id, steps) in paths {
+            if let Some(required) = bound_dst_id {
+                if dst_id != required {
+                    continue;
+                }
+            }
+            let mut new_rec = rec.clone();
+            let _dst_node = fetch_and_populate(conn, &mut new_rec, dst_id, dst_alias)?;
+            if let Some(r_alias) = rel_alias {
+                let edge_list: Vec<Value> = steps
+                    .iter()
+                    .map(|step| {
+                        let props = edge::get_edge_properties_at(
+                            conn,
+                            step.edge_src,
+                            step.edge_dst,
+                            &step.edge_label,
+                            step.edge_seq,
+                        )
+                        .unwrap_or_default();
+                        Value::Edge(crate::types::Edge {
+                            src: step.edge_src,
+                            dst: step.edge_dst,
+                            label: step.edge_label.clone(),
+                            properties: props,
+                        })
+                    })
+                    .collect();
+                new_rec.set(r_alias.to_string(), Value::List(edge_list));
+            }
+            results.push(new_rec);
+        }
+    } else {
+        for &label in &labels {
+            let neighbors = edge::get_neighbors(conn, src_id, label, direction)?;
+            for dst_id in neighbors {
                 if let Some(required) = bound_dst_id {
                     if dst_id != required {
                         continue;
                     }
                 }
-                let mut new_rec = rec.clone();
-                let _dst_node = fetch_and_populate(conn, &mut new_rec, dst_id, dst_alias)?;
-                // Bind relationship variable as a list of edges.
-                if let Some(r_alias) = rel_alias {
-                    let edge_list: Vec<Value> = steps
-                        .iter()
-                        .map(|step| {
-                            let props = edge::get_edge_properties_at(
-                                conn,
-                                step.edge_src,
-                                step.edge_dst,
-                                &step.edge_label,
-                                step.edge_seq,
-                            )
-                            .unwrap_or_default();
-                            Value::Edge(crate::types::Edge {
-                                src: step.edge_src,
-                                dst: step.edge_dst,
-                                label: step.edge_label.clone(),
-                                properties: props,
-                            })
-                        })
-                        .collect();
-                    new_rec.set(r_alias.to_string(), Value::List(edge_list));
+
+                // Fast path when the pattern doesn't bind the relationship:
+                // emit one record per neighbor without scanning edge props
+                // or computing edge direction. Mirrors what
+                // `iter::ExpandIter`'s pre-`expand_record` path used to do.
+                if rel_alias.is_none() {
+                    let dst_node = node::get_node(conn, dst_id)?;
+                    let mut new_rec = rec.clone();
+                    populate_node_bindings(&mut new_rec, &dst_node, dst_alias);
+                    results.push(new_rec);
+                    continue;
                 }
-                results.push(new_rec);
-            }
-        } else {
-            for &label in &labels {
-                // Single hop — direct neighbor lookup.
-                let neighbors = edge::get_neighbors(conn, src_id, label, direction)?;
-                for dst_id in neighbors {
-                    // Skip if destination doesn't match the already-bound node.
-                    if let Some(required) = bound_dst_id {
-                        if dst_id != required {
-                            continue;
+
+                let (edge_src, edge_dst) = match direction {
+                    Direction::Incoming => (dst_id, src_id),
+                    Direction::Outgoing => (src_id, dst_id),
+                    Direction::Both => {
+                        if edge::edge_exists(conn, src_id, dst_id, label).unwrap_or(false) {
+                            (src_id, dst_id)
+                        } else {
+                            (dst_id, src_id)
                         }
                     }
+                };
 
-                    let (edge_src, edge_dst) = match direction {
-                        Direction::Incoming => (dst_id, src_id),
-                        Direction::Outgoing => (src_id, dst_id),
-                        Direction::Both => {
-                            if edge::edge_exists(conn, src_id, dst_id, label).unwrap_or(false) {
-                                (src_id, dst_id)
-                            } else {
-                                (dst_id, src_id)
-                            }
-                        }
-                    };
+                let all_edges = edge::get_all_edge_props(conn, edge_src, edge_dst, label)?;
+                let edge_list: Vec<(u64, Properties)> = if all_edges.is_empty() {
+                    vec![(0, Properties::new())]
+                } else {
+                    all_edges
+                };
 
-                    // Get all parallel edges for this (src, dst, label) pair.
-                    let all_edges = edge::get_all_edge_props(conn, edge_src, edge_dst, label)?;
-                    // If no edges found (shouldn't happen since neighbor exists),
-                    // fall back to a single empty-props edge.
-                    let edge_list: Vec<(u64, Properties)> = if all_edges.is_empty() {
-                        vec![(0, Properties::new())]
-                    } else {
-                        all_edges
-                    };
+                let dst_node = node::get_node(conn, dst_id)?;
 
-                    let dst_node = node::get_node(conn, dst_id)?;
+                for (edge_seq, edge_props) in &edge_list {
+                    let mut new_rec = rec.clone();
+                    populate_node_bindings(&mut new_rec, &dst_node, dst_alias);
 
-                    for (edge_seq, edge_props) in &edge_list {
-                        let mut new_rec = rec.clone();
-                        populate_node_bindings(&mut new_rec, &dst_node, dst_alias);
-
-                        if let Some(r_alias) = rel_alias {
-                            // Relationship uniqueness: within a MATCH pattern,
-                            // different named relationship variables must refer to
-                            // different edges. Include edge_seq in the uniqueness key
-                            // so parallel edges are distinguished.
-                            let (es, ed) = (edge_src.0 as i64, edge_dst.0 as i64);
-                            let edge_key = (es.min(ed), es.max(ed), label, *edge_seq);
-                            let mut duplicate = false;
-                            for (key, _val) in &new_rec.fields {
-                                if key.ends_with(".__src") && key != &format!("{r_alias}.__src") {
-                                    let other_alias = &key[..key.len() - 6];
-                                    let other_seq =
-                                        match new_rec.get(&format!("{other_alias}.__edge_seq")) {
-                                            Some(Value::I64(s)) => *s as u64,
-                                            _ => 0,
-                                        };
-                                    if let (
-                                        Some(Value::I64(os)),
-                                        Some(Value::I64(od)),
-                                        Some(Value::String(ot)),
-                                    ) = (
-                                        new_rec.get(key),
-                                        new_rec.get(&format!("{other_alias}.__dst")),
-                                        new_rec.get(&format!("{other_alias}.__type")),
-                                    ) {
-                                        let other_key = (
-                                            (*os).min(*od),
-                                            (*os).max(*od),
-                                            ot.as_str(),
-                                            other_seq,
-                                        );
-                                        if other_key == edge_key {
-                                            duplicate = true;
-                                            break;
-                                        }
+                    if let Some(r_alias) = rel_alias {
+                        let (es, ed) = (edge_src.0 as i64, edge_dst.0 as i64);
+                        let edge_key = (es.min(ed), es.max(ed), label, *edge_seq);
+                        let mut duplicate = false;
+                        for (key, _val) in &new_rec.fields {
+                            if key.ends_with(".__src") && key != &format!("{r_alias}.__src") {
+                                let other_alias = &key[..key.len() - 6];
+                                let other_seq =
+                                    match new_rec.get(&format!("{other_alias}.__edge_seq")) {
+                                        Some(Value::I64(s)) => *s as u64,
+                                        _ => 0,
+                                    };
+                                if let (
+                                    Some(Value::I64(os)),
+                                    Some(Value::I64(od)),
+                                    Some(Value::String(ot)),
+                                ) = (
+                                    new_rec.get(key),
+                                    new_rec.get(&format!("{other_alias}.__dst")),
+                                    new_rec.get(&format!("{other_alias}.__type")),
+                                ) {
+                                    let other_key =
+                                        ((*os).min(*od), (*os).max(*od), ot.as_str(), other_seq);
+                                    if other_key == edge_key {
+                                        duplicate = true;
+                                        break;
                                     }
                                 }
                             }
-                            if duplicate {
-                                continue;
-                            }
-
-                            new_rec.set(r_alias.to_string(), Value::String(label.to_string()));
-                            new_rec.set(format!("{r_alias}.__src"), Value::I64(edge_src.0 as i64));
-                            new_rec.set(format!("{r_alias}.__dst"), Value::I64(edge_dst.0 as i64));
-                            new_rec.set(
-                                format!("{r_alias}.__type"),
-                                Value::String(label.to_string()),
-                            );
-                            new_rec.set(
-                                format!("{r_alias}.__edge_seq"),
-                                Value::I64(*edge_seq as i64),
-                            );
-                            for (key, val) in edge_props {
-                                new_rec.set(format!("{r_alias}.{key}"), val.clone());
-                            }
                         }
-                        results.push(new_rec);
+                        if duplicate {
+                            continue;
+                        }
+
+                        new_rec.set(r_alias.to_string(), Value::String(label.to_string()));
+                        new_rec.set(format!("{r_alias}.__src"), Value::I64(edge_src.0 as i64));
+                        new_rec.set(format!("{r_alias}.__dst"), Value::I64(edge_dst.0 as i64));
+                        new_rec.set(
+                            format!("{r_alias}.__type"),
+                            Value::String(label.to_string()),
+                        );
+                        new_rec.set(
+                            format!("{r_alias}.__edge_seq"),
+                            Value::I64(*edge_seq as i64),
+                        );
+                        for (key, val) in edge_props {
+                            new_rec.set(format!("{r_alias}.{key}"), val.clone());
+                        }
                     }
+                    results.push(new_rec);
                 }
             }
         }
     }
 
-    check_row_limit(&results, ctx)?;
     Ok(results)
 }
 

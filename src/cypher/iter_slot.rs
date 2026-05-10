@@ -127,21 +127,15 @@ pub fn is_slot_supported(plan: &LogicalOp) -> bool {
         }
         LogicalOp::Expand {
             input,
-            edge_types,
-            direction,
             var_length_prop_filters,
             ..
         } => {
-            // The slot path reuses iter::ExpandIter. ExpandIter has known
-            // gaps relative to exec_expand for unlabeled relationships
-            // (`[r]` without a type) — it doesn't discover edge types per
-            // source node — and for `Direction::Both` traversals the
-            // single-hop branch only checks one orientation. Restrict to
-            // the cases ExpandIter handles faithfully; everything else
-            // falls back to the named (exec_expand) path.
-            if edge_types.is_empty() || matches!(direction, crate::types::Direction::Both) {
-                return false;
-            }
+            // ExpandIter now delegates to `executor::read::expand_record`,
+            // which is `exec_expand`'s per-row body — same semantics for
+            // every shape (labeled / untyped, any direction, parallel
+            // edges). The only remaining slot gate: var-length predicates
+            // that reference the per-hop bare variable still need the
+            // named correlated path.
             is_slot_supported(input)
                 && var_length_prop_filters
                     .values()

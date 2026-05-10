@@ -11,13 +11,11 @@ use rusqlite::Connection;
 
 use crate::cypher::ast::{Expr, ExprKind, ReturnItem};
 use crate::cypher::eval::{eval_expr, eval_predicate, expr_to_column_name};
-use crate::cypher::executor::{
-    fetch_and_populate, is_user_visible_field, literal_to_value, node_to_record,
-};
+use crate::cypher::executor::{is_user_visible_field, literal_to_value, node_to_record};
 use crate::cypher::ir::*;
 use crate::cypher::record::NamedRecord;
-use crate::types::{Direction, NodeId, Result, Value};
-use crate::{edge, index, node};
+use crate::types::{Direction, Result, Value};
+use crate::{index, node};
 
 /// Pull-based iterator that yields one record at a time.
 ///
@@ -313,151 +311,25 @@ impl<'a> RecordIter for ExpandIter<'a> {
                 None => return Ok(None),
             };
 
-            let src_id = match rec.get(&self.src_alias) {
-                Some(Value::I64(id)) => NodeId(*id as u64),
-                Some(Value::Node(n)) => n.id,
-                _ => continue,
-            };
-
-            // If the destination alias is already bound (cyclic pattern),
-            // only keep expansions matching the bound node.
-            let bound_dst = rec.get(&self.dst_alias).and_then(|v| match v {
-                Value::I64(id) => Some(NodeId(*id as u64)),
-                Value::Node(n) => Some(n.id),
-                _ => None,
-            });
-
-            let mut expanded = Vec::new();
-
-            if self.var_length {
-                // Variable-length traversal — returns full paths with edge details.
-                // Pass empty labels when no specific types are given, so
-                // traverse_paths discovers types at each hop.
-                let labels: Vec<&str> = if self.edge_types.is_empty() {
-                    vec![]
-                } else {
-                    self.edge_types.iter().map(|s| s.as_str()).collect()
-                };
-                let paths = edge::traverse_paths(
-                    self.conn,
-                    src_id,
-                    &labels,
-                    self.direction,
-                    self.min_hops,
-                    self.max_hops,
-                    &self.var_length_prop_filters,
-                    None,
-                    self.max_traversal_work,
-                )?;
-                for (dst_id, steps) in paths {
-                    if let Some(required) = bound_dst {
-                        if dst_id != required {
-                            continue;
-                        }
-                    }
-                    let mut new_rec = rec.clone();
-                    fetch_and_populate(self.conn, &mut new_rec, dst_id, &self.dst_alias)?;
-                    // Bind relationship variable as a list of edges.
-                    if let Some(ref r_alias) = self.rel_alias {
-                        let edge_list: Vec<Value> = steps
-                            .iter()
-                            .map(|step| {
-                                let props = edge::get_edge_properties_at(
-                                    self.conn,
-                                    step.edge_src,
-                                    step.edge_dst,
-                                    &step.edge_label,
-                                    step.edge_seq,
-                                )
-                                .unwrap_or_default();
-                                Value::Edge(crate::types::Edge {
-                                    src: step.edge_src,
-                                    dst: step.edge_dst,
-                                    label: step.edge_label.clone(),
-                                    properties: props,
-                                })
-                            })
-                            .collect();
-                        new_rec.set(r_alias.to_string(), Value::List(edge_list));
-                    }
-                    expanded.push(new_rec);
-                }
-            } else {
-                // Single-hop expansion.
-                let label = self.edge_types.first().map(|s| s.as_str()).unwrap_or("");
-                let dst_ids = edge::get_neighbors(self.conn, src_id, label, self.direction)?;
-
-                for dst_id in dst_ids {
-                    if let Some(required) = bound_dst {
-                        if dst_id != required {
-                            continue;
-                        }
-                    }
-                    let mut new_rec = rec.clone();
-                    fetch_and_populate(self.conn, &mut new_rec, dst_id, &self.dst_alias)?;
-                    if let Some(ref r_alias) = self.rel_alias {
-                        let (edge_src, edge_dst) = match self.direction {
-                            Direction::Incoming => (dst_id, src_id),
-                            Direction::Outgoing => (src_id, dst_id),
-                            Direction::Both => {
-                                // Determine actual edge direction by checking storage.
-                                if edge::edge_exists(self.conn, src_id, dst_id, label)
-                                    .unwrap_or(false)
-                                {
-                                    (src_id, dst_id)
-                                } else {
-                                    (dst_id, src_id)
-                                }
-                            }
-                        };
-
-                        // Relationship uniqueness: skip if another named rel in
-                        // this record already uses the same edge. Normalize to
-                        // (min, max, type) for direction-independent comparison.
-                        let (es, ed) = (edge_src.0 as i64, edge_dst.0 as i64);
-                        let ek = (es.min(ed), es.max(ed), label);
-                        let mut dup = false;
-                        for (key, _) in &new_rec.fields {
-                            if key.ends_with(".__src") && !key.starts_with(&format!("{r_alias}.")) {
-                                let oa = &key[..key.len() - 6];
-                                if let (
-                                    Some(Value::I64(os)),
-                                    Some(Value::I64(od)),
-                                    Some(Value::String(ot)),
-                                ) = (
-                                    new_rec.get(key),
-                                    new_rec.get(&format!("{oa}.__dst")),
-                                    new_rec.get(&format!("{oa}.__type")),
-                                ) {
-                                    let ok = ((*os).min(*od), (*os).max(*od), ot.as_str());
-                                    if ok == ek {
-                                        dup = true;
-                                        break;
-                                    }
-                                }
-                            }
-                        }
-                        if dup {
-                            continue;
-                        }
-
-                        new_rec.set(format!("{r_alias}.__src"), Value::I64(edge_src.0 as i64));
-                        new_rec.set(format!("{r_alias}.__dst"), Value::I64(edge_dst.0 as i64));
-                        new_rec.set(
-                            format!("{r_alias}.__type"),
-                            Value::String(label.to_string()),
-                        );
-                        if let Ok(props) =
-                            edge::get_edge_properties(self.conn, edge_src, edge_dst, label)
-                        {
-                            for (key, val) in &props {
-                                new_rec.set(format!("{r_alias}.{key}"), val.clone());
-                            }
-                        }
-                    }
-                    expanded.push(new_rec);
-                }
-            }
+            // Delegate to `executor::read::expand_record` so this iterator
+            // matches `exec_expand`'s semantics on every shape — including
+            // untyped relationships, `Direction::Both` parallel edges, and
+            // the `__edge_seq` binding for relationship uniqueness.
+            let expanded = crate::cypher::executor::expand_record(
+                self.conn,
+                &rec,
+                &self.src_alias,
+                &self.dst_alias,
+                self.rel_alias.as_deref(),
+                &self.edge_types,
+                self.direction,
+                self.min_hops,
+                self.max_hops,
+                self.var_length,
+                &self.var_length_prop_filters,
+                None,
+                self.max_traversal_work,
+            )?;
             self.buffer = expanded.into_iter();
         }
     }

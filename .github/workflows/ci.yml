@@ -1,15 +1,12 @@
 name: CI (fast)
 
-# Fast tier — runs on every push and PR to main.
-# Single toolchain version per language (latest stable), ubuntu only.
-# Goal: quick signal (~5 min) catching the common breakage.
-# Full version matrix lives in ci-full.yml (nightly + manual + tags).
+# Fast tier — manual fallback only. Primary CI runs on the self-hosted
+# Forgejo runner (.forgejo/workflows/ci.yml). This workflow is kept as
+# a safety net for when the local runner is unavailable; trigger via
+# the Actions tab → "Run workflow".
 
 on:
-  push:
-    branches: [main]
-  pull_request:
-    branches: [main]
+  workflow_dispatch:
 
 permissions:
   contents: read

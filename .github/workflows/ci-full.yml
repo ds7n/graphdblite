@@ -4,20 +4,12 @@ name: CI (full matrix)
 # plus cross-platform Rust tests. Catches version-floor regressions and
 # platform-specific issues that the fast tier (ci.yml) doesn't cover.
 #
-# Triggers:
-#   - Nightly cron (06:00 UTC)
-#   - Manual via workflow_dispatch
-#   - Tag pushes (v*) — gates releases
-#
-# Wall clock: ~20-30 min depending on cache state.
+# Manual fallback only. Primary CI runs on the self-hosted Forgejo
+# runner (.forgejo/workflows/ci-full.yml). Kept here for cross-platform
+# coverage (macOS/Windows) when needed — trigger via the Actions tab.
 
 on:
-  schedule:
-    - cron: "0 6 * * *"
   workflow_dispatch:
-  push:
-    tags:
-      - "v*"
 
 permissions:
   contents: read

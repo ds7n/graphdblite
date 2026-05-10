@@ -5,6 +5,8 @@ use rusqlite::Connection;
 use crate::cypher::ast::*;
 use crate::cypher::eval::{eval_expr, expr_to_column_name};
 use crate::cypher::record::NamedRecord;
+use crate::cypher::record_v2::{Record as SlotRecord, RecordSchema};
+use crate::cypher::record_view::{RecordView, SlotView};
 use crate::types::*;
 
 use super::util::*;
@@ -36,10 +38,11 @@ pub(crate) fn aggregate_named_records(
 ) -> Result<Vec<NamedRecord>> {
     if group_keys.is_empty() {
         // No grouping — aggregate over all records.
+        let views: Vec<&dyn RecordView> = records.iter().map(|r| r as &dyn RecordView).collect();
         let mut rec = NamedRecord::new();
         for agg in aggregates {
             let col_name = agg_col_name(agg);
-            let val = compute_aggregate(agg, records, conn)?;
+            let val = compute_aggregate(agg, &views, conn)?;
             rec.set(col_name, val);
         }
         return Ok(vec![rec]);
@@ -87,9 +90,11 @@ pub(crate) fn aggregate_named_records(
                 }
             }
         }
+        let group_views: Vec<&dyn RecordView> =
+            group_records.iter().map(|r| r as &dyn RecordView).collect();
         for agg in aggregates {
             let col_name = agg_col_name(agg);
-            let val = compute_aggregate(agg, group_records, conn)?;
+            let val = compute_aggregate(agg, &group_views, conn)?;
             rec.set(col_name, val);
         }
         results.push(rec);
@@ -100,29 +105,31 @@ pub(crate) fn aggregate_named_records(
 
 pub(in crate::cypher::executor) fn compute_aggregate(
     agg: &AggregateExpr,
-    records: &[NamedRecord],
+    records: &[&dyn RecordView],
     conn: &Connection,
 ) -> Result<Value> {
-    // When DISTINCT is set, deduplicate input values (skip nulls).
-    let deduped_records: Vec<NamedRecord>;
-    let effective_records = if agg.distinct && !matches!(agg.input.kind, ExprKind::Star) {
-        let mut seen: Vec<Value> = Vec::new();
-        let mut kept = Vec::new();
-        for rec in records {
-            let val = eval_expr(&agg.input, rec, conn)?;
-            if matches!(val, Value::Null) {
-                continue;
+    // When DISTINCT is set, deduplicate input values (skip nulls). Keep
+    // borrows only — no record-shape clones.
+    let deduped: Vec<&dyn RecordView>;
+    let effective_records: &[&dyn RecordView] =
+        if agg.distinct && !matches!(agg.input.kind, ExprKind::Star) {
+            let mut seen: Vec<Value> = Vec::new();
+            let mut kept: Vec<&dyn RecordView> = Vec::new();
+            for &rec in records {
+                let val = eval_expr(&agg.input, rec, conn)?;
+                if matches!(val, Value::Null) {
+                    continue;
+                }
+                if !seen.contains(&val) {
+                    seen.push(val);
+                    kept.push(rec);
+                }
             }
-            if !seen.contains(&val) {
-                seen.push(val);
-                kept.push(rec.clone());
-            }
-        }
-        deduped_records = kept;
-        &deduped_records
-    } else {
-        records
-    };
+            deduped = kept;
+            &deduped
+        } else {
+            records
+        };
 
     match agg.function {
         AggregateFunction::Count => {
@@ -131,7 +138,7 @@ pub(in crate::cypher::executor) fn compute_aggregate(
             } else {
                 let count = effective_records
                     .iter()
-                    .filter(|r| !matches!(eval_expr(&agg.input, *r, conn), Ok(Value::Null)))
+                    .filter(|&&r| !matches!(eval_expr(&agg.input, r, conn), Ok(Value::Null)))
                     .count();
                 Ok(Value::I64(count as i64))
             }
@@ -140,7 +147,7 @@ pub(in crate::cypher::executor) fn compute_aggregate(
             let mut i64_sum: i64 = 0;
             let mut f64_sum: f64 = 0.0;
             let mut all_integer = true;
-            for rec in effective_records {
+            for &rec in effective_records {
                 match eval_expr(&agg.input, rec, conn)? {
                     Value::I64(n) => {
                         i64_sum = i64_sum.wrapping_add(n);
@@ -162,7 +169,7 @@ pub(in crate::cypher::executor) fn compute_aggregate(
         AggregateFunction::Avg => {
             let mut sum = 0.0f64;
             let mut count = 0;
-            for rec in effective_records {
+            for &rec in effective_records {
                 match eval_expr(&agg.input, rec, conn)? {
                     Value::I64(n) => {
                         sum += n as f64;
@@ -183,7 +190,7 @@ pub(in crate::cypher::executor) fn compute_aggregate(
         }
         AggregateFunction::Min => {
             let mut min: Option<Value> = None;
-            for rec in effective_records {
+            for &rec in effective_records {
                 let val = eval_expr(&agg.input, rec, conn)?;
                 if !matches!(val, Value::Null) {
                     min = Some(match min {
@@ -202,7 +209,7 @@ pub(in crate::cypher::executor) fn compute_aggregate(
         }
         AggregateFunction::Max => {
             let mut max: Option<Value> = None;
-            for rec in effective_records {
+            for &rec in effective_records {
                 let val = eval_expr(&agg.input, rec, conn)?;
                 if !matches!(val, Value::Null) {
                     max = Some(match max {
@@ -221,7 +228,7 @@ pub(in crate::cypher::executor) fn compute_aggregate(
         }
         AggregateFunction::Collect => {
             let mut items = Vec::new();
-            for rec in effective_records {
+            for &rec in effective_records {
                 let val = eval_expr(&agg.input, rec, conn)?;
                 if !matches!(val, Value::Null) {
                     items.push(val);
@@ -233,8 +240,9 @@ pub(in crate::cypher::executor) fn compute_aggregate(
             // Evaluate the percentile parameter from extra_arg.
             let pct = match &agg.extra_arg {
                 Some(pct_expr) => {
-                    let empty_rec = NamedRecord::new();
-                    let first_rec = effective_records.first().unwrap_or(&empty_rec);
+                    let empty = NamedRecord::new();
+                    let first_rec: &dyn RecordView =
+                        effective_records.first().copied().unwrap_or(&empty);
                     match eval_expr(pct_expr, first_rec, conn)? {
                         Value::F64(v) => v,
                         Value::I64(v) => v as f64,
@@ -264,7 +272,7 @@ pub(in crate::cypher::executor) fn compute_aggregate(
             }
             // Collect numeric values.
             let mut values: Vec<f64> = Vec::new();
-            for rec in effective_records {
+            for &rec in effective_records {
                 match eval_expr(&agg.input, rec, conn)? {
                     Value::I64(n) => values.push(n as f64),
                     Value::F64(n) => values.push(n),
@@ -296,7 +304,7 @@ pub(in crate::cypher::executor) fn compute_aggregate(
         }
         AggregateFunction::StDev | AggregateFunction::StDevP => {
             let mut values: Vec<f64> = Vec::new();
-            for rec in effective_records {
+            for &rec in effective_records {
                 match eval_expr(&agg.input, rec, conn)? {
                     Value::I64(n) => values.push(n as f64),
                     Value::F64(n) => values.push(n),
@@ -383,9 +391,10 @@ pub(in crate::cypher::executor) fn exec_aggregate_over_records(
 ) -> Result<Vec<NamedRecord>> {
     if group_keys.is_empty() {
         // Global aggregation over all records.
+        let views: Vec<&dyn RecordView> = records.iter().map(|r| r as &dyn RecordView).collect();
         let mut result = NamedRecord::new();
         for agg in aggregates {
-            let val = compute_aggregate(agg, records, conn)?;
+            let val = compute_aggregate(agg, &views, conn)?;
             let alias = agg
                 .alias
                 .clone()
@@ -431,8 +440,10 @@ pub(in crate::cypher::executor) fn exec_aggregate_over_records(
             }
         }
         // Compute aggregates.
+        let group_views: Vec<&dyn RecordView> =
+            group_recs.iter().map(|r| r as &dyn RecordView).collect();
         for agg in aggregates {
-            let val = compute_aggregate(agg, group_recs, conn)?;
+            let val = compute_aggregate(agg, &group_views, conn)?;
             let alias = agg
                 .alias
                 .clone()
@@ -441,5 +452,104 @@ pub(in crate::cypher::executor) fn exec_aggregate_over_records(
         }
         results.push(result);
     }
+    Ok(results)
+}
+
+/// Slot-native counterpart of [`aggregate_named_records`]. Operates on
+/// `SlotRecord`s under `input_schema`; produces output rows shaped by
+/// `output_schema`. Same column-naming + Variable-group-key prefix
+/// propagation rules; no per-row `NamedRecord` materialization.
+///
+/// `output_schema` must already declare slots for every column the
+/// aggregator emits — `agg_col_name(...)` for each aggregate, plus
+/// `expr_to_column_name(...)` for each group key, plus any `<var>.<…>`
+/// flat keys reachable from the input schema for a Variable group key.
+/// `schema_infer::infer_aggregate` arranges this.
+pub(crate) fn aggregate_slot_records(
+    conn: &Connection,
+    input_schema: &RecordSchema,
+    records: &[SlotRecord],
+    output_schema: &RecordSchema,
+    group_keys: &[Expr],
+    aggregates: &[AggregateExpr],
+) -> Result<Vec<SlotRecord>> {
+    if group_keys.is_empty() {
+        // Global aggregation over all records.
+        let views: Vec<SlotView<'_>> = records
+            .iter()
+            .map(|r| SlotView::new(input_schema, r))
+            .collect();
+        let view_refs: Vec<&dyn RecordView> = views.iter().map(|v| v as &dyn RecordView).collect();
+        let mut out = SlotRecord::with_capacity(output_schema.len());
+        for agg in aggregates {
+            let col_name = agg_col_name(agg);
+            let val = compute_aggregate(agg, &view_refs, conn)?;
+            if let Some(slot) = output_schema.slot(&col_name) {
+                out.set(slot, val);
+            }
+        }
+        return Ok(vec![out]);
+    }
+
+    // Group by keys. We track group→Vec<row index> rather than cloning
+    // SlotRecords, so distinct group bookkeeping costs one usize per row.
+    let mut group_map: HashMap<Vec<Value>, Vec<usize>> = HashMap::new();
+    let mut key_order: Vec<Vec<Value>> = Vec::new();
+    for (idx, rec) in records.iter().enumerate() {
+        let view = SlotView::new(input_schema, rec);
+        let key_vals: Vec<Value> = group_keys
+            .iter()
+            .map(|k| eval_expr(k, &view, conn).unwrap_or(Value::Null))
+            .collect();
+        if let Some(group) = group_map.get_mut(&key_vals) {
+            group.push(idx);
+        } else {
+            key_order.push(key_vals.clone());
+            group_map.insert(key_vals, vec![idx]);
+        }
+    }
+
+    let mut results = Vec::new();
+    for key_vals in &key_order {
+        let group_indices = &group_map[key_vals];
+        let group_views: Vec<SlotView<'_>> = group_indices
+            .iter()
+            .map(|&i| SlotView::new(input_schema, &records[i]))
+            .collect();
+        let view_refs: Vec<&dyn RecordView> =
+            group_views.iter().map(|v| v as &dyn RecordView).collect();
+        let mut out = SlotRecord::with_capacity(output_schema.len());
+        for (i, key_expr) in group_keys.iter().enumerate() {
+            let col_name = expr_to_column_name(key_expr);
+            if let Some(slot) = output_schema.slot(&col_name) {
+                out.set(slot, key_vals[i].clone());
+            }
+            // Propagate flattened property keys from a representative row
+            // when the group key is a bare variable. Mirrors
+            // aggregate_named_records.
+            if let ExprKind::Variable(var) = &key_expr.kind {
+                let prefix = format!("{var}.");
+                if let Some(&first_idx) = group_indices.first() {
+                    let first_rec = &records[first_idx];
+                    for (in_slot, name) in input_schema.iter() {
+                        if name.starts_with(&prefix) {
+                            if let Some(out_slot) = output_schema.slot(name) {
+                                out.set(out_slot, first_rec.get(in_slot).clone());
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        for agg in aggregates {
+            let col_name = agg_col_name(agg);
+            let val = compute_aggregate(agg, &view_refs, conn)?;
+            if let Some(slot) = output_schema.slot(&col_name) {
+                out.set(slot, val);
+            }
+        }
+        results.push(out);
+    }
+
     Ok(results)
 }

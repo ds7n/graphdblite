@@ -544,7 +544,7 @@ use write::{
 // Public surface — anything previously `pub`/`pub(crate)` on mod.rs that
 // moved to a submodule. External callers reach these as
 // `cypher::executor::<name>` exactly as before.
-pub(crate) use aggregate::aggregate_named_records;
+pub(crate) use aggregate::aggregate_slot_records;
 pub(crate) use read::{build_compound_binding, compound_binding_vars, is_user_visible_field};
 pub use util::{exec_correlated_exists, exec_correlated_subquery, execute_first_match};
 pub(crate) use util::{fetch_and_populate, literal_to_value, node_to_record, node_to_record_pub};

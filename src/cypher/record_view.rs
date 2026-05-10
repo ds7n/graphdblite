@@ -42,6 +42,7 @@ impl RecordView for NamedRecord {
 
 /// Borrowed view over a slot record paired with its schema. Constructed
 /// per row at the point eval needs to read fields by name.
+#[derive(Clone, Copy)]
 pub struct SlotView<'a> {
     schema: &'a RecordSchema,
     rec: &'a SlotRecord,

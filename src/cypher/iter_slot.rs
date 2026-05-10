@@ -937,23 +937,21 @@ impl<'a> AggregateSlotIter<'a> {
     }
 
     fn materialize(&mut self) -> Result<()> {
-        // Drain + materialize input.
+        // Drain input slot records — no NamedRecord materialization.
         let input_schema = self.input.schema().clone();
-        let mut named_inputs: Vec<NamedRecord> = Vec::new();
+        let mut slot_inputs: Vec<SlotRecord> = Vec::new();
         while let Some(rec) = self.input.next_slot()? {
-            named_inputs.push(materialize_named(&input_schema, &rec));
+            slot_inputs.push(rec);
         }
-        let agg_results = crate::cypher::executor::aggregate_named_records(
+        let agg_results = crate::cypher::executor::aggregate_slot_records(
             self.conn,
-            &named_inputs,
+            &input_schema,
+            &slot_inputs,
+            &self.output_schema,
             &self.group_keys,
             &self.aggregates,
         )?;
-        let slot_rows: Vec<SlotRecord> = agg_results
-            .iter()
-            .map(|nr| named_to_slot(&self.output_schema, nr))
-            .collect();
-        self.results = Some(slot_rows.into_iter());
+        self.results = Some(agg_results.into_iter());
         Ok(())
     }
 }

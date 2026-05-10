@@ -3,7 +3,9 @@ use std::path::Path;
 
 use rusqlite::{Connection, OpenFlags, TransactionBehavior};
 
-use crate::cypher::{execute_cypher, executor::ExecContext, record::NamedRecord};
+use std::sync::atomic::{AtomicU64, Ordering};
+
+use crate::cypher::{execute_cypher, executor::ExecContext, record::NamedRecord, ExecCaches};
 use crate::schema;
 use crate::transaction::{ReadTransaction, ReadTxGuard, WriteTransaction, WriteTxGuard};
 use crate::types::{GraphError, Result, Value};
@@ -133,6 +135,14 @@ pub struct Database {
     /// `execute*`/`query*` calls; bounded FIFO eviction. See
     /// `cypher::parse_cache` for design rationale.
     parse_cache: crate::cypher::parse_cache::ParseCache,
+    /// Per-`Database` cache of planned (`LogicalOp`) queries. Keyed on
+    /// `(cypher, schema_epoch)` so DDL invalidates entries lazily on
+    /// next lookup. See `cypher::plan_cache` for design rationale.
+    plan_cache: crate::cypher::plan_cache::PlanCache,
+    /// Bumped on every `CREATE INDEX` / `DROP INDEX` so cached plans built
+    /// before the DDL (which may have made different index decisions) are
+    /// not reused.
+    schema_epoch: AtomicU64,
 }
 
 impl Database {
@@ -211,6 +221,8 @@ impl Database {
             max_traversal_depth: config.max_traversal_depth,
             max_traversal_work: config.max_traversal_work,
             parse_cache: crate::cypher::parse_cache::ParseCache::new(),
+            plan_cache: crate::cypher::plan_cache::PlanCache::new(),
+            schema_epoch: AtomicU64::new(0),
         })
     }
 
@@ -241,6 +253,8 @@ impl Database {
             self.max_traversal_depth,
             self.max_traversal_work,
             &self.parse_cache,
+            &self.plan_cache,
+            &self.schema_epoch,
         )))
     }
 
@@ -263,6 +277,8 @@ impl Database {
             self.max_traversal_depth,
             self.max_traversal_work,
             &self.parse_cache,
+            &self.plan_cache,
+            &self.schema_epoch,
         )))
     }
 
@@ -316,7 +332,7 @@ impl Database {
                 require_read_only: self.tx_state == TxState::Read,
                 ..Default::default()
             };
-            return execute_cypher(&self.conn, cypher, params, ctx, Some(&self.parse_cache));
+            return execute_cypher(&self.conn, cypher, params, ctx, self.exec_caches());
         }
 
         // No active txn → auto-begin/auto-commit. Parse + plan once so we can
@@ -324,7 +340,7 @@ impl Database {
         // Same param-handling contract as `execute_cypher`: validate params
         // are present (no-alloc walker) and publish them to the eval
         // thread-local via `ParamScope` instead of baking them into the plan.
-        use crate::cypher::{ast, eval, executor, parser, planner};
+        use crate::cypher::{ast, eval, executor, parser, plan_cache, planner};
         let stmt = self.parse_cache.get_or_parse(cypher)?;
         if let Some(p) = params {
             parser::validate_params(&stmt, p)?;
@@ -336,7 +352,14 @@ impl Database {
             max_traversal_work: self.max_traversal_work,
             ..Default::default()
         };
-        let plan = planner::plan_with_procedures(&self.conn, &stmt, &ctx.procedures, params)?;
+        let plan = if plan_cache::is_plan_cacheable(&stmt) {
+            let epoch = self.schema_epoch.load(Ordering::Acquire);
+            self.plan_cache.get_or_plan(cypher, epoch, || {
+                planner::plan_with_procedures(&self.conn, &stmt, &ctx.procedures, params)
+            })?
+        } else {
+            planner::plan_with_procedures(&self.conn, &stmt, &ctx.procedures, params)?
+        };
         if matches!(stmt, ast::Statement::Explain(_)) {
             return Ok(crate::cypher::cost::format_explain(&self.conn, &plan));
         }
@@ -396,7 +419,9 @@ impl Database {
     /// transaction is active.
     pub fn create_index(&mut self, label: &str, property: &str) -> Result<()> {
         self.require_write_tx("create_index")?;
-        crate::index::create_index(&self.conn, label, property)
+        crate::index::create_index(&self.conn, label, property)?;
+        self.schema_epoch.fetch_add(1, Ordering::AcqRel);
+        Ok(())
     }
 
     /// Drop a secondary index on `(label, property)` inside the active write
@@ -404,7 +429,17 @@ impl Database {
     /// transaction is active.
     pub fn drop_index(&mut self, label: &str, property: &str) -> Result<()> {
         self.require_write_tx("drop_index")?;
-        crate::index::drop_index(&self.conn, label, property)
+        crate::index::drop_index(&self.conn, label, property)?;
+        self.schema_epoch.fetch_add(1, Ordering::AcqRel);
+        Ok(())
+    }
+
+    fn exec_caches(&self) -> ExecCaches<'_> {
+        ExecCaches {
+            parse: Some(&self.parse_cache),
+            plan: Some(&self.plan_cache),
+            schema_epoch: Some(&self.schema_epoch),
+        }
     }
 
     fn require_write_tx(&self, op: &str) -> Result<()> {
@@ -713,5 +748,98 @@ mod identity_tests {
             }
             other => panic!("expected Storage error, got {other:?}"),
         }
+    }
+}
+
+#[cfg(test)]
+mod plan_cache_tests {
+    use super::*;
+    use std::sync::atomic::Ordering;
+
+    #[test]
+    fn repeat_query_caches_plan() {
+        let mut db = Database::open_memory().unwrap();
+        db.execute("CREATE (:Person {name: 'a'}), (:Person {name: 'b'})")
+            .unwrap();
+        let baseline = db.plan_cache.len();
+        let q = "MATCH (n:Person) WHERE n.name = $name RETURN n.name";
+        let mut params = std::collections::HashMap::new();
+        params.insert("name".to_string(), Value::String("a".into()));
+        db.execute_with_params(q, Some(&params)).unwrap();
+        assert_eq!(db.plan_cache.len(), baseline + 1);
+        params.insert("name".to_string(), Value::String("b".into()));
+        let rows = db.execute_with_params(q, Some(&params)).unwrap();
+        assert_eq!(
+            db.plan_cache.len(),
+            baseline + 1,
+            "plan should be reused across param values"
+        );
+        assert_eq!(rows.len(), 1);
+    }
+
+    #[test]
+    fn ddl_bumps_epoch_and_replans() {
+        let mut db = Database::open_memory().unwrap();
+        for i in 0..5 {
+            db.execute(&format!("CREATE (:Person {{name: 'p{i}'}})"))
+                .unwrap();
+        }
+        // First execute populates the plan cache (label scan, no index yet).
+        db.execute("MATCH (n:Person) WHERE n.name = 'p3' RETURN n.name")
+            .unwrap();
+        let len_before = db.plan_cache.len();
+        let epoch_before = db.schema_epoch.load(Ordering::Acquire);
+
+        db.begin_write().unwrap();
+        db.create_index("Person", "name").unwrap();
+        db.commit().unwrap();
+
+        let epoch_after = db.schema_epoch.load(Ordering::Acquire);
+        assert!(epoch_after > epoch_before, "create_index must bump epoch");
+
+        // Re-issue the same query — must miss the cache (different epoch),
+        // pick up the new IndexLookup plan.
+        db.execute("MATCH (n:Person) WHERE n.name = 'p3' RETURN n.name")
+            .unwrap();
+        assert_eq!(
+            db.plan_cache.len(),
+            len_before + 1,
+            "epoch change should add a fresh plan entry"
+        );
+    }
+
+    #[test]
+    fn limit_param_skips_caching() {
+        let mut db = Database::open_memory().unwrap();
+        db.execute("CREATE (:Person), (:Person), (:Person)")
+            .unwrap();
+        let baseline = db.plan_cache.len();
+        let q = "MATCH (n:Person) RETURN n LIMIT $k";
+        let mut params = std::collections::HashMap::new();
+        params.insert("k".to_string(), Value::I64(2));
+        db.execute_with_params(q, Some(&params)).unwrap();
+        assert_eq!(
+            db.plan_cache.len(),
+            baseline,
+            "LIMIT $param must not be cached"
+        );
+    }
+
+    #[test]
+    fn limit_param_resolves_correctly_each_call() {
+        // Regression: with LIMIT $k uncacheable, different $k values must
+        // produce different row counts (no stale plan with baked-in count).
+        let mut db = Database::open_memory().unwrap();
+        for i in 0..10 {
+            db.execute(&format!("CREATE (:Person {{n: {i}}})")).unwrap();
+        }
+        let q = "MATCH (n:Person) RETURN n.n LIMIT $k";
+        let mut params = std::collections::HashMap::new();
+        params.insert("k".to_string(), Value::I64(2));
+        let r2 = db.execute_with_params(q, Some(&params)).unwrap();
+        params.insert("k".to_string(), Value::I64(7));
+        let r7 = db.execute_with_params(q, Some(&params)).unwrap();
+        assert_eq!(r2.len(), 2);
+        assert_eq!(r7.len(), 7);
     }
 }

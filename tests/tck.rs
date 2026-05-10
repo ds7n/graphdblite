@@ -19,6 +19,18 @@ use cucumber::writer::Stats;
 use graphdblite::tck_support::world::World;
 
 fn main() {
+    // The cucumber state-machine future built around `World` is large in
+    // debug builds; run on a dedicated thread with an oversized stack so we
+    // don't blow the default 8 MiB main-thread stack.
+    std::thread::Builder::new()
+        .stack_size(64 * 1024 * 1024)
+        .spawn(run)
+        .expect("spawn TCK runner thread")
+        .join()
+        .expect("TCK runner thread");
+}
+
+fn run() {
     let base = Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("tests")
         .join("tck");

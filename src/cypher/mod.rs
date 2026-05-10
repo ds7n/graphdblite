@@ -7,6 +7,7 @@ pub mod iter;
 pub mod iter_slot;
 pub mod parse_cache;
 pub mod parser;
+pub mod plan_cache;
 pub mod planner;
 pub mod procedure;
 pub mod record;
@@ -17,6 +18,16 @@ pub mod schema_infer;
 use crate::types::{Result, Value};
 use rusqlite::Connection;
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicU64, Ordering};
+
+/// Caches threaded through `execute_cypher`. All fields are optional so
+/// callers without a `Database` (planner test harness, fuzzer) can opt out.
+#[derive(Default, Clone, Copy)]
+pub(crate) struct ExecCaches<'a> {
+    pub parse: Option<&'a parse_cache::ParseCache>,
+    pub plan: Option<&'a plan_cache::PlanCache>,
+    pub schema_epoch: Option<&'a AtomicU64>,
+}
 
 /// Single shared parse → plan → execute pipeline.
 ///
@@ -28,9 +39,9 @@ pub(crate) fn execute_cypher(
     cypher: &str,
     params: Option<&HashMap<String, Value>>,
     ctx: executor::ExecContext,
-    cache: Option<&parse_cache::ParseCache>,
+    caches: ExecCaches<'_>,
 ) -> Result<Vec<record::NamedRecord>> {
-    let stmt = match cache {
+    let stmt = match caches.parse {
         Some(c) => c.get_or_parse(cypher)?,
         None => parser::parse(cypher)?,
     };
@@ -46,7 +57,15 @@ pub(crate) fn execute_cypher(
         parser::validate_params(&stmt, p)?;
     }
     let _scope = eval::ParamScope::enter(params);
-    let plan = planner::plan_with_procedures(conn, &stmt, &ctx.procedures, params)?;
+    let plan = match (caches.plan, caches.schema_epoch) {
+        (Some(pc), Some(epoch)) if plan_cache::is_plan_cacheable(&stmt) => {
+            let e = epoch.load(Ordering::Acquire);
+            pc.get_or_plan(cypher, e, || {
+                planner::plan_with_procedures(conn, &stmt, &ctx.procedures, params)
+            })?
+        }
+        _ => planner::plan_with_procedures(conn, &stmt, &ctx.procedures, params)?,
+    };
     if matches!(stmt, ast::Statement::Explain(_)) {
         return Ok(cost::format_explain(conn, &plan));
     }

@@ -1,5 +1,6 @@
 use crate::cypher::{
-    execute_cypher, executor::ExecContext, parse_cache::ParseCache, record::NamedRecord,
+    execute_cypher, executor::ExecContext, parse_cache::ParseCache, plan_cache::PlanCache,
+    record::NamedRecord, ExecCaches,
 };
 use crate::edge;
 use crate::index;
@@ -7,6 +8,7 @@ use crate::node;
 use crate::types::{
     validate_properties, Direction, GraphError, Node, NodeId, Properties, Result, Value,
 };
+use std::sync::atomic::{AtomicU64, Ordering};
 
 /// Shared read operations — implemented identically on both transaction types.
 macro_rules! impl_read_ops {
@@ -103,7 +105,7 @@ macro_rules! impl_read_ops {
                     require_read_only: $read_only,
                     ..Default::default()
                 };
-                execute_cypher(&self.tx, cypher, params, ctx, Some(self.parse_cache))
+                execute_cypher(&self.tx, cypher, params, ctx, self.exec_caches())
             }
 
             /// Execute a Cypher query with optional parameters and procedure registry.
@@ -120,7 +122,7 @@ macro_rules! impl_read_ops {
                     procedures: procedures.clone(),
                     require_read_only: $read_only,
                 };
-                execute_cypher(&self.tx, cypher, params, ctx, Some(self.parse_cache))
+                execute_cypher(&self.tx, cypher, params, ctx, self.exec_caches())
             }
         }
     };
@@ -137,6 +139,8 @@ pub struct ReadTransaction<'a> {
     max_traversal_depth: u32,
     max_traversal_work: u64,
     parse_cache: &'a ParseCache,
+    plan_cache: &'a PlanCache,
+    schema_epoch: &'a AtomicU64,
 }
 
 impl<'a> ReadTransaction<'a> {
@@ -146,6 +150,8 @@ impl<'a> ReadTransaction<'a> {
         max_traversal_depth: u32,
         max_traversal_work: u64,
         parse_cache: &'a ParseCache,
+        plan_cache: &'a PlanCache,
+        schema_epoch: &'a AtomicU64,
     ) -> Self {
         Self {
             tx,
@@ -153,6 +159,16 @@ impl<'a> ReadTransaction<'a> {
             max_traversal_depth,
             max_traversal_work,
             parse_cache,
+            plan_cache,
+            schema_epoch,
+        }
+    }
+
+    fn exec_caches(&self) -> ExecCaches<'_> {
+        ExecCaches {
+            parse: Some(self.parse_cache),
+            plan: Some(self.plan_cache),
+            schema_epoch: Some(self.schema_epoch),
         }
     }
 
@@ -185,9 +201,12 @@ pub struct WriteTransaction<'a> {
     max_traversal_depth: u32,
     max_traversal_work: u64,
     parse_cache: &'a ParseCache,
+    plan_cache: &'a PlanCache,
+    schema_epoch: &'a AtomicU64,
 }
 
 impl<'a> WriteTransaction<'a> {
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn new(
         tx: rusqlite::Transaction<'a>,
         max_property_value_bytes: usize,
@@ -196,6 +215,8 @@ impl<'a> WriteTransaction<'a> {
         max_traversal_depth: u32,
         max_traversal_work: u64,
         parse_cache: &'a ParseCache,
+        plan_cache: &'a PlanCache,
+        schema_epoch: &'a AtomicU64,
     ) -> Self {
         Self {
             tx,
@@ -205,6 +226,16 @@ impl<'a> WriteTransaction<'a> {
             max_traversal_depth,
             max_traversal_work,
             parse_cache,
+            plan_cache,
+            schema_epoch,
+        }
+    }
+
+    fn exec_caches(&self) -> ExecCaches<'_> {
+        ExecCaches {
+            parse: Some(self.parse_cache),
+            plan: Some(self.plan_cache),
+            schema_epoch: Some(self.schema_epoch),
         }
     }
 
@@ -322,12 +353,16 @@ impl<'a> WriteTransaction<'a> {
 
     /// Create a secondary index.
     pub fn create_index(&self, label: &str, property: &str) -> Result<()> {
-        index::create_index(&self.tx, label, property)
+        index::create_index(&self.tx, label, property)?;
+        self.schema_epoch.fetch_add(1, Ordering::AcqRel);
+        Ok(())
     }
 
     /// Drop a secondary index.
     pub fn drop_index(&self, label: &str, property: &str) -> Result<()> {
-        index::drop_index(&self.tx, label, property)
+        index::drop_index(&self.tx, label, property)?;
+        self.schema_epoch.fetch_add(1, Ordering::AcqRel);
+        Ok(())
     }
 
     /// Commit the transaction.

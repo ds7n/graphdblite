@@ -376,8 +376,8 @@ fn collect_eq_properties(expr: &Expr, alias: &str, out: &mut Vec<String>) {
     }
 }
 
-/// If `prop_side` is `<alias>.<prop>` and `lit_side` is a literal (or a
-/// resolved parameter literal from `resolve_params`), return the property name.
+/// If `prop_side` is `<alias>.<prop>` and `lit_side` is a literal,
+/// return the property name.
 fn property_against_literal(prop_side: &Expr, lit_side: &Expr, alias: &str) -> Option<String> {
     let prop = match &prop_side.kind {
         ExprKind::Property(var, prop) if var == alias => prop.clone(),

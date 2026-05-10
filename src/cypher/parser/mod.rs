@@ -349,7 +349,7 @@ mod pattern;
 mod resolve;
 mod statement;
 
-pub use resolve::resolve_params;
+pub use resolve::validate_params;
 
 use resolve::humanize_pest_error;
 use statement::parse_union_stmt;

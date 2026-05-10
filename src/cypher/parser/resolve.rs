@@ -1,6 +1,13 @@
-//! Parameter resolution and pest error humanization.
+//! Pest error humanization and `$param` reference validation.
+//!
+//! Phase 2 of `plans/plan-cache.md` removed the AST-rewriting parameter
+//! substitution that used to run before planning — the planner now treats
+//! `ExprKind::Parameter` as opaque and the executor resolves it at eval
+//! time via `eval::ParamScope`. This module retains a no-alloc validation
+//! walker so missing `$name` references still fail fast with a
+//! `SemanticAnalysis` error.
 
-use crate::types::{GraphError, Span, Value};
+use crate::types::{GraphError, Result, Value};
 
 use super::*;
 
@@ -78,638 +85,404 @@ pub(in crate::cypher::parser) fn humanize_pest_error(err: pest::error::Error<Rul
 }
 
 // ---------------------------------------------------------------------------
-// Parameter resolution: substitute $name with literal values before planning.
+// Parameter reference validation (no-alloc walker).
 // ---------------------------------------------------------------------------
 
-/// Convert a Value to an Expr, handling all types including List and Map.
-/// `span` is the source span of the parameter being substituted, so the
-/// resulting literal carries the parameter's location for error messages.
-pub(in crate::cypher::parser) fn value_to_expr(
-    val: &Value,
-    span: Span,
-) -> crate::types::Result<Expr> {
-    match val {
-        Value::Null => Ok(Expr::new(ExprKind::Literal(LiteralValue::Null), span)),
-        Value::Bool(b) => Ok(Expr::new(ExprKind::Literal(LiteralValue::Bool(*b)), span)),
-        Value::I64(n) => Ok(Expr::new(ExprKind::Literal(LiteralValue::I64(*n)), span)),
-        Value::F64(n) => Ok(Expr::new(ExprKind::Literal(LiteralValue::F64(*n)), span)),
-        Value::String(s) => Ok(Expr::new(
-            ExprKind::Literal(LiteralValue::String(s.clone())),
-            span,
-        )),
-        Value::List(items) => {
-            let exprs: crate::types::Result<Vec<Expr>> =
-                items.iter().map(|v| value_to_expr(v, span)).collect();
-            Ok(Expr::new(ExprKind::List(exprs?), span))
-        }
-        Value::Map(map) => {
-            let pairs: crate::types::Result<Vec<(String, Expr)>> = map
-                .iter()
-                .map(|(k, v)| value_to_expr(v, span).map(|e| (k.clone(), e)))
-                .collect();
-            Ok(Expr::new(ExprKind::MapLiteral(pairs?), span))
-        }
-        _ => Err(GraphError::argument(
+#[inline]
+fn check_param(name: &str, params: &HashMap<String, Value>) -> Result<()> {
+    if params.contains_key(name) {
+        Ok(())
+    } else {
+        Err(GraphError::argument(
             crate::types::QueryPhase::SemanticAnalysis,
-            "unsupported parameter type",
-        )),
+            format!("missing parameter: ${name}"),
+        ))
     }
 }
 
-pub(in crate::cypher::parser) fn resolve_expr(
-    expr: &Expr,
-    params: &HashMap<String, Value>,
-) -> crate::types::Result<Expr> {
-    let span = expr.span;
+fn validate_expr(expr: &Expr, params: &HashMap<String, Value>) -> Result<()> {
     match &expr.kind {
-        ExprKind::Parameter(name) => {
-            let val = params.get(name).ok_or_else(|| {
-                GraphError::argument(
-                    crate::types::QueryPhase::SemanticAnalysis,
-                    format!("missing parameter: ${name}"),
-                )
-            })?;
-            value_to_expr(val, span)
+        ExprKind::Parameter(name) => check_param(name, params),
+        ExprKind::BinaryOp { left, right, .. } => {
+            validate_expr(left, params)?;
+            validate_expr(right, params)
         }
-        ExprKind::BinaryOp { left, op, right } => Ok(Expr::new(
-            ExprKind::BinaryOp {
-                left: Box::new(resolve_expr(left, params)?),
-                op: *op,
-                right: Box::new(resolve_expr(right, params)?),
-            },
-            span,
-        )),
-        ExprKind::Not(inner) => Ok(Expr::new(
-            ExprKind::Not(Box::new(resolve_expr(inner, params)?)),
-            span,
-        )),
-        ExprKind::IsNull(inner) => Ok(Expr::new(
-            ExprKind::IsNull(Box::new(resolve_expr(inner, params)?)),
-            span,
-        )),
-        ExprKind::IsNotNull(inner) => Ok(Expr::new(
-            ExprKind::IsNotNull(Box::new(resolve_expr(inner, params)?)),
-            span,
-        )),
-        ExprKind::FunctionCall {
-            name,
-            args,
-            distinct,
-            original_text,
-        } => {
-            let resolved: crate::types::Result<Vec<Expr>> =
-                args.iter().map(|a| resolve_expr(a, params)).collect();
-            Ok(Expr::new(
-                ExprKind::FunctionCall {
-                    name: name.clone(),
-                    args: resolved?,
-                    distinct: *distinct,
-                    original_text: original_text.clone(),
-                },
-                span,
-            ))
+        ExprKind::Not(inner) | ExprKind::IsNull(inner) | ExprKind::IsNotNull(inner) => {
+            validate_expr(inner, params)
+        }
+        ExprKind::FunctionCall { args, .. } => {
+            for a in args {
+                validate_expr(a, params)?;
+            }
+            Ok(())
         }
         ExprKind::Case {
             operand,
             alternatives,
             default,
         } => {
-            let resolved_operand = operand
-                .as_ref()
-                .map(|o| resolve_expr(o, params).map(Box::new))
-                .transpose()?;
-            let mut resolved_alts = Vec::new();
-            for (cond, result) in alternatives {
-                resolved_alts.push((
-                    Box::new(resolve_expr(cond, params)?),
-                    Box::new(resolve_expr(result, params)?),
-                ));
+            if let Some(o) = operand {
+                validate_expr(o, params)?;
             }
-            let resolved_default = default
-                .as_ref()
-                .map(|d| resolve_expr(d, params).map(Box::new))
-                .transpose()?;
-            Ok(Expr::new(
-                ExprKind::Case {
-                    operand: resolved_operand,
-                    alternatives: resolved_alts,
-                    default: resolved_default,
-                },
-                span,
-            ))
+            for (cond, result) in alternatives {
+                validate_expr(cond, params)?;
+                validate_expr(result, params)?;
+            }
+            if let Some(d) = default {
+                validate_expr(d, params)?;
+            }
+            Ok(())
         }
         ExprKind::List(items) => {
-            let resolved: crate::types::Result<Vec<Expr>> =
-                items.iter().map(|e| resolve_expr(e, params)).collect();
-            Ok(Expr::new(ExprKind::List(resolved?), span))
+            for e in items {
+                validate_expr(e, params)?;
+            }
+            Ok(())
         }
         ExprKind::ListComprehension {
-            variable,
             list_expr,
             filter,
             map_expr,
-        } => Ok(Expr::new(
-            ExprKind::ListComprehension {
-                variable: variable.clone(),
-                list_expr: Box::new(resolve_expr(list_expr, params)?),
-                filter: filter
-                    .as_ref()
-                    .map(|f| resolve_expr(f, params).map(Box::new))
-                    .transpose()?,
-                map_expr: map_expr
-                    .as_ref()
-                    .map(|m| resolve_expr(m, params).map(Box::new))
-                    .transpose()?,
-            },
-            span,
-        )),
+            ..
+        } => {
+            validate_expr(list_expr, params)?;
+            if let Some(f) = filter {
+                validate_expr(f, params)?;
+            }
+            if let Some(m) = map_expr {
+                validate_expr(m, params)?;
+            }
+            Ok(())
+        }
         ExprKind::PatternComprehension {
-            path_variable,
             pattern,
             where_clause,
             map_expr,
-        } => Ok(Expr::new(
-            ExprKind::PatternComprehension {
-                path_variable: path_variable.clone(),
-                pattern: resolve_pattern(pattern, params)?,
-                where_clause: where_clause
-                    .as_ref()
-                    .map(|w| resolve_expr(w, params).map(Box::new))
-                    .transpose()?,
-                map_expr: Box::new(resolve_expr(map_expr, params)?),
-            },
-            span,
-        )),
+            ..
+        } => {
+            validate_pattern(pattern, params)?;
+            if let Some(w) = where_clause {
+                validate_expr(w, params)?;
+            }
+            validate_expr(map_expr, params)
+        }
         ExprKind::Quantifier {
-            kind,
-            variable,
             list_expr,
             predicate,
-        } => Ok(Expr::new(
-            ExprKind::Quantifier {
-                kind: *kind,
-                variable: variable.clone(),
-                list_expr: Box::new(resolve_expr(list_expr, params)?),
-                predicate: Box::new(resolve_expr(predicate, params)?),
-            },
-            span,
-        )),
+            ..
+        } => {
+            validate_expr(list_expr, params)?;
+            validate_expr(predicate, params)
+        }
         ExprKind::Exists {
             patterns,
             where_clause,
-        } => Ok(Expr::new(
-            ExprKind::Exists {
-                patterns: resolve_patterns(patterns, params)?,
-                where_clause: where_clause
-                    .as_ref()
-                    .map(|w| resolve_expr(w, params).map(Box::new))
-                    .transpose()?,
-            },
-            span,
-        )),
-        ExprKind::ExistsSubquery(stmt) => {
-            // Parameters inside the subquery statement are resolved via
-            // resolve_params which handles all statement types.
-            Ok(Expr::new(
-                ExprKind::ExistsSubquery(Box::new(resolve_params(stmt, params)?)),
-                span,
-            ))
+        } => {
+            for p in patterns {
+                validate_pattern(p, params)?;
+            }
+            if let Some(w) = where_clause {
+                validate_expr(w, params)?;
+            }
+            Ok(())
         }
+        ExprKind::ExistsSubquery(stmt) => validate_params(stmt, params),
         ExprKind::MapLiteral(pairs) => {
-            let resolved: crate::types::Result<Vec<(String, Expr)>> = pairs
-                .iter()
-                .map(|(k, v)| resolve_expr(v, params).map(|r| (k.clone(), r)))
-                .collect();
-            Ok(Expr::new(ExprKind::MapLiteral(resolved?), span))
+            for (_, v) in pairs {
+                validate_expr(v, params)?;
+            }
+            Ok(())
         }
-        ExprKind::Index { expr: e, index } => Ok(Expr::new(
-            ExprKind::Index {
-                expr: Box::new(resolve_expr(e, params)?),
-                index: Box::new(resolve_expr(index, params)?),
-            },
-            span,
-        )),
-        ExprKind::DotAccess { expr: e, key } => Ok(Expr::new(
-            ExprKind::DotAccess {
-                expr: Box::new(resolve_expr(e, params)?),
-                key: key.clone(),
-            },
-            span,
-        )),
+        ExprKind::Index { expr: e, index } => {
+            validate_expr(e, params)?;
+            validate_expr(index, params)
+        }
+        ExprKind::DotAccess { expr: e, .. } => validate_expr(e, params),
         ExprKind::Slice {
             expr: e,
             start,
             end,
-        } => Ok(Expr::new(
-            ExprKind::Slice {
-                expr: Box::new(resolve_expr(e, params)?),
-                start: start
-                    .as_ref()
-                    .map(|s| resolve_expr(s, params).map(Box::new))
-                    .transpose()?,
-                end: end
-                    .as_ref()
-                    .map(|e_val| resolve_expr(e_val, params).map(Box::new))
-                    .transpose()?,
-            },
-            span,
-        )),
-        // Leaf nodes that contain no sub-expressions.
+        } => {
+            validate_expr(e, params)?;
+            if let Some(s) = start {
+                validate_expr(s, params)?;
+            }
+            if let Some(en) = end {
+                validate_expr(en, params)?;
+            }
+            Ok(())
+        }
         ExprKind::Literal(_)
         | ExprKind::Property(_, _)
         | ExprKind::Variable(_)
         | ExprKind::HasLabel(_, _)
         | ExprKind::PatternPredicate(_)
-        | ExprKind::Star => Ok(expr.clone()),
+        | ExprKind::Star => Ok(()),
     }
 }
 
-pub(in crate::cypher::parser) fn resolve_props(
+fn validate_props(
     properties: &HashMap<String, Expr>,
     params: &HashMap<String, Value>,
-) -> crate::types::Result<HashMap<String, Expr>> {
-    properties
-        .iter()
-        .map(|(k, v)| Ok((k.clone(), resolve_expr(v, params)?)))
-        .collect()
+) -> Result<()> {
+    for v in properties.values() {
+        validate_expr(v, params)?;
+    }
+    Ok(())
 }
 
-pub(in crate::cypher::parser) fn resolve_pattern(
-    pattern: &Pattern,
-    params: &HashMap<String, Value>,
-) -> crate::types::Result<Pattern> {
-    let elements: crate::types::Result<Vec<PatternElement>> = pattern
-        .elements
-        .iter()
-        .map(|el| match el {
-            PatternElement::Node(n) => Ok(PatternElement::Node(NodePattern {
-                variable: n.variable.clone(),
-                labels: n.labels.clone(),
-                properties: resolve_props(&n.properties, params)?,
-            })),
-            PatternElement::Relationship(r) => Ok(PatternElement::Relationship(RelPattern {
-                variable: r.variable.clone(),
-                rel_types: r.rel_types.clone(),
-                properties: resolve_props(&r.properties, params)?,
-                direction: r.direction,
-                var_length: r.var_length,
-            })),
-        })
-        .collect();
-    Ok(Pattern {
-        elements: elements?,
-        path_variable: pattern.path_variable.clone(),
-        shortest_path_mode: pattern.shortest_path_mode,
-    })
+fn validate_pattern(pattern: &Pattern, params: &HashMap<String, Value>) -> Result<()> {
+    for el in &pattern.elements {
+        match el {
+            PatternElement::Node(n) => validate_props(&n.properties, params)?,
+            PatternElement::Relationship(r) => validate_props(&r.properties, params)?,
+        }
+    }
+    Ok(())
 }
 
-pub(in crate::cypher::parser) fn resolve_patterns(
-    patterns: &[Pattern],
-    params: &HashMap<String, Value>,
-) -> crate::types::Result<Vec<Pattern>> {
-    patterns
-        .iter()
-        .map(|p| resolve_pattern(p, params))
-        .collect()
+fn validate_patterns(patterns: &[Pattern], params: &HashMap<String, Value>) -> Result<()> {
+    for p in patterns {
+        validate_pattern(p, params)?;
+    }
+    Ok(())
 }
 
-pub(in crate::cypher::parser) fn resolve_optional_match(
-    om: &OptionalMatch,
-    params: &HashMap<String, Value>,
-) -> crate::types::Result<OptionalMatch> {
-    Ok(OptionalMatch {
-        patterns: resolve_patterns(&om.patterns, params)?,
-        where_clause: om
-            .where_clause
-            .as_ref()
-            .map(|e| resolve_expr(e, params))
-            .transpose()?,
-    })
+fn validate_optional_match(om: &OptionalMatch, params: &HashMap<String, Value>) -> Result<()> {
+    validate_patterns(&om.patterns, params)?;
+    if let Some(e) = &om.where_clause {
+        validate_expr(e, params)?;
+    }
+    Ok(())
 }
 
-pub(in crate::cypher::parser) fn resolve_set_items(
-    items: &[SetItem],
-    params: &HashMap<String, Value>,
-) -> crate::types::Result<Vec<SetItem>> {
-    items
-        .iter()
-        .map(|item| match item {
-            SetItem::Property(a) => Ok(SetItem::Property(Assignment {
-                variable: a.variable.clone(),
-                property: a.property.clone(),
-                value: resolve_expr(&a.value, params)?,
-            })),
-            SetItem::Label { variable, labels } => Ok(SetItem::Label {
-                variable: variable.clone(),
-                labels: labels.clone(),
-            }),
-            SetItem::MapOverwrite { variable, value } => Ok(SetItem::MapOverwrite {
-                variable: variable.clone(),
-                value: resolve_expr(value, params)?,
-            }),
-            SetItem::MapMerge { variable, value } => Ok(SetItem::MapMerge {
-                variable: variable.clone(),
-                value: resolve_expr(value, params)?,
-            }),
-        })
-        .collect()
+fn validate_optional_matches(oms: &[OptionalMatch], params: &HashMap<String, Value>) -> Result<()> {
+    for om in oms {
+        validate_optional_match(om, params)?;
+    }
+    Ok(())
 }
 
-pub(in crate::cypher::parser) fn resolve_return_items(
-    items: &[ReturnItem],
-    params: &HashMap<String, Value>,
-) -> crate::types::Result<Vec<ReturnItem>> {
-    items
-        .iter()
-        .map(|item| {
-            Ok(ReturnItem {
-                expr: resolve_expr(&item.expr, params)?,
-                alias: item.alias.clone(),
-            })
-        })
-        .collect()
+fn validate_set_items(items: &[SetItem], params: &HashMap<String, Value>) -> Result<()> {
+    for item in items {
+        match item {
+            SetItem::Property(a) => validate_expr(&a.value, params)?,
+            SetItem::MapOverwrite { value, .. } | SetItem::MapMerge { value, .. } => {
+                validate_expr(value, params)?
+            }
+            SetItem::Label { .. } => {}
+        }
+    }
+    Ok(())
 }
 
-pub(in crate::cypher::parser) fn resolve_sort_items(
-    items: &[SortItem],
-    params: &HashMap<String, Value>,
-) -> crate::types::Result<Vec<SortItem>> {
-    items
-        .iter()
-        .map(|item| {
-            Ok(SortItem {
-                expr: resolve_expr(&item.expr, params)?,
-                descending: item.descending,
-            })
-        })
-        .collect()
+fn validate_return_items(items: &[ReturnItem], params: &HashMap<String, Value>) -> Result<()> {
+    for item in items {
+        validate_expr(&item.expr, params)?;
+    }
+    Ok(())
 }
 
-pub(in crate::cypher::parser) fn resolve_intermediate_clauses(
-    clauses: &[IntermediateClause],
-    params: &HashMap<String, Value>,
-) -> crate::types::Result<Vec<IntermediateClause>> {
-    clauses
-        .iter()
-        .map(|c| match c {
-            IntermediateClause::With(w) => Ok(IntermediateClause::With(WithClause {
-                items: resolve_return_items(&w.items, params)?,
-                distinct: w.distinct,
-                order_by: w.order_by.clone(),
-                skip: w
-                    .skip
-                    .as_ref()
-                    .map(|e| resolve_expr(e, params))
-                    .transpose()?,
-                limit: w
-                    .limit
-                    .as_ref()
-                    .map(|e| resolve_expr(e, params))
-                    .transpose()?,
-                where_clause: w
-                    .where_clause
-                    .as_ref()
-                    .map(|e| resolve_expr(e, params))
-                    .transpose()?,
-            })),
-            IntermediateClause::Unwind(u) => Ok(IntermediateClause::Unwind(UnwindClause {
-                expr: resolve_expr(&u.expr, params)?,
-                alias: u.alias.clone(),
-            })),
-            IntermediateClause::Match(m) => Ok(IntermediateClause::Match(IntermediateMatch {
-                patterns: resolve_patterns(&m.patterns, params)?,
-                optional_patterns: m
-                    .optional_patterns
-                    .iter()
-                    .map(|om| resolve_optional_match(om, params))
-                    .collect::<crate::types::Result<Vec<_>>>()?,
-                where_clause: m
-                    .where_clause
-                    .as_ref()
-                    .map(|e| resolve_expr(e, params))
-                    .transpose()?,
-            })),
-        })
-        .collect()
+fn validate_sort_items(items: &[SortItem], params: &HashMap<String, Value>) -> Result<()> {
+    for item in items {
+        validate_expr(&item.expr, params)?;
+    }
+    Ok(())
 }
 
-type ResolvedReturn = (
-    Option<ReturnClause>,
-    Vec<SortItem>,
-    Option<Expr>,
-    Option<Expr>,
-);
-
-pub(in crate::cypher::parser) fn resolve_optional_return(
+fn validate_return_tail(
     return_clause: &Option<ReturnClause>,
     order_by: &[SortItem],
     skip: &Option<Expr>,
     limit: &Option<Expr>,
     params: &HashMap<String, Value>,
-) -> crate::types::Result<ResolvedReturn> {
-    let rc: Option<ReturnClause> = return_clause
-        .as_ref()
-        .map(|rc| -> crate::types::Result<ReturnClause> {
-            Ok(ReturnClause {
-                items: resolve_return_items(&rc.items, params)?,
-                distinct: rc.distinct,
-            })
-        })
-        .transpose()?;
-    let ob = resolve_sort_items(order_by, params)?;
-    let s = skip.as_ref().map(|e| resolve_expr(e, params)).transpose()?;
-    let l = limit
-        .as_ref()
-        .map(|e| resolve_expr(e, params))
-        .transpose()?;
-    Ok((rc, ob, s, l))
+) -> Result<()> {
+    if let Some(rc) = return_clause {
+        validate_return_items(&rc.items, params)?;
+    }
+    validate_sort_items(order_by, params)?;
+    if let Some(e) = skip {
+        validate_expr(e, params)?;
+    }
+    if let Some(e) = limit {
+        validate_expr(e, params)?;
+    }
+    Ok(())
 }
 
-/// Substitute all `$name` parameters in a parsed statement with literal values.
-///
-/// This must be called before planning so the planner can use literal values
-/// for index selection decisions.
-pub fn resolve_params(
-    stmt: &Statement,
+fn validate_intermediate_clauses(
+    clauses: &[IntermediateClause],
     params: &HashMap<String, Value>,
-) -> crate::types::Result<Statement> {
+) -> Result<()> {
+    for c in clauses {
+        match c {
+            IntermediateClause::With(w) => {
+                validate_return_items(&w.items, params)?;
+                validate_sort_items(&w.order_by, params)?;
+                if let Some(e) = &w.skip {
+                    validate_expr(e, params)?;
+                }
+                if let Some(e) = &w.limit {
+                    validate_expr(e, params)?;
+                }
+                if let Some(e) = &w.where_clause {
+                    validate_expr(e, params)?;
+                }
+            }
+            IntermediateClause::Unwind(u) => validate_expr(&u.expr, params)?,
+            IntermediateClause::Match(m) => {
+                validate_patterns(&m.patterns, params)?;
+                validate_optional_matches(&m.optional_patterns, params)?;
+                if let Some(e) = &m.where_clause {
+                    validate_expr(e, params)?;
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+fn validate_clause(clause: &Clause, params: &HashMap<String, Value>) -> Result<()> {
+    match clause {
+        Clause::Match {
+            patterns,
+            optional_patterns,
+            where_clause,
+        } => {
+            validate_patterns(patterns, params)?;
+            validate_optional_matches(optional_patterns, params)?;
+            if let Some(e) = where_clause {
+                validate_expr(e, params)?;
+            }
+            Ok(())
+        }
+        Clause::Create { patterns } => validate_patterns(patterns, params),
+        Clause::Merge {
+            pattern,
+            on_create,
+            on_match,
+        } => {
+            validate_pattern(pattern, params)?;
+            validate_set_items(on_create, params)?;
+            validate_set_items(on_match, params)
+        }
+        Clause::With(w) => {
+            validate_return_items(&w.items, params)?;
+            validate_sort_items(&w.order_by, params)?;
+            if let Some(e) = &w.skip {
+                validate_expr(e, params)?;
+            }
+            if let Some(e) = &w.limit {
+                validate_expr(e, params)?;
+            }
+            if let Some(e) = &w.where_clause {
+                validate_expr(e, params)?;
+            }
+            Ok(())
+        }
+        Clause::Unwind(u) => validate_expr(&u.expr, params),
+        Clause::Set { items } => validate_set_items(items, params),
+        Clause::Remove { .. } => Ok(()),
+        Clause::Call { args, .. } => {
+            for a in args {
+                validate_expr(a, params)?;
+            }
+            Ok(())
+        }
+        Clause::Delete { exprs, .. } => {
+            for e in exprs {
+                validate_expr(e, params)?;
+            }
+            Ok(())
+        }
+    }
+}
+
+/// Validate that every `$name` reference in `stmt` has a matching entry in `params`.
+///
+/// This is a no-alloc walker — it never clones the AST. Run before planning so
+/// queries with missing parameters fail fast at SemanticAnalysis even when no
+/// row would actually evaluate the reference. Parameter values themselves are
+/// resolved at eval time via `eval::ParamScope` (see `plans/plan-cache.md`).
+pub fn validate_params(stmt: &Statement, params: &HashMap<String, Value>) -> Result<()> {
     match stmt {
-        Statement::Match(m) => Ok(Statement::Match(MatchStatement {
-            patterns: resolve_patterns(&m.patterns, params)?,
-            optional_patterns: m
-                .optional_patterns
-                .iter()
-                .map(|om| resolve_optional_match(om, params))
-                .collect::<crate::types::Result<Vec<_>>>()?,
-            where_clause: m
-                .where_clause
-                .as_ref()
-                .map(|e| resolve_expr(e, params))
-                .transpose()?,
-            intermediate_clauses: resolve_intermediate_clauses(&m.intermediate_clauses, params)?,
-            return_clause: ReturnClause {
-                items: resolve_return_items(&m.return_clause.items, params)?,
-                distinct: m.return_clause.distinct,
-            },
-            order_by: resolve_sort_items(&m.order_by, params)?,
-            skip: m
-                .skip
-                .as_ref()
-                .map(|e| resolve_expr(e, params))
-                .transpose()?,
-            limit: m
-                .limit
-                .as_ref()
-                .map(|e| resolve_expr(e, params))
-                .transpose()?,
-        })),
+        Statement::Match(m) => {
+            validate_patterns(&m.patterns, params)?;
+            validate_optional_matches(&m.optional_patterns, params)?;
+            if let Some(e) = &m.where_clause {
+                validate_expr(e, params)?;
+            }
+            validate_intermediate_clauses(&m.intermediate_clauses, params)?;
+            validate_return_items(&m.return_clause.items, params)?;
+            validate_sort_items(&m.order_by, params)?;
+            if let Some(e) = &m.skip {
+                validate_expr(e, params)?;
+            }
+            if let Some(e) = &m.limit {
+                validate_expr(e, params)?;
+            }
+            Ok(())
+        }
         Statement::Create(c) => {
-            let (return_clause, order_by, skip, limit) =
-                resolve_optional_return(&c.return_clause, &c.order_by, &c.skip, &c.limit, params)?;
-            Ok(Statement::Create(CreateStatement {
-                patterns: resolve_patterns(&c.patterns, params)?,
-                return_clause,
-                order_by,
-                skip,
-                limit,
-            }))
+            validate_patterns(&c.patterns, params)?;
+            validate_return_tail(&c.return_clause, &c.order_by, &c.skip, &c.limit, params)
         }
         Statement::MatchCreate(mc) => {
-            let (return_clause, order_by, skip, limit) = resolve_optional_return(
-                &mc.return_clause,
-                &mc.order_by,
-                &mc.skip,
-                &mc.limit,
-                params,
-            )?;
-            Ok(Statement::MatchCreate(MatchCreateStatement {
-                patterns: resolve_patterns(&mc.patterns, params)?,
-                where_clause: mc
-                    .where_clause
-                    .as_ref()
-                    .map(|e| resolve_expr(e, params))
-                    .transpose()?,
-                create_patterns: resolve_patterns(&mc.create_patterns, params)?,
-                return_clause,
-                order_by,
-                skip,
-                limit,
-            }))
+            validate_patterns(&mc.patterns, params)?;
+            if let Some(e) = &mc.where_clause {
+                validate_expr(e, params)?;
+            }
+            validate_patterns(&mc.create_patterns, params)?;
+            validate_return_tail(&mc.return_clause, &mc.order_by, &mc.skip, &mc.limit, params)
         }
         Statement::MatchMerge(mm) => {
-            let (return_clause, order_by, skip, limit) = resolve_optional_return(
-                &mm.return_clause,
-                &mm.order_by,
-                &mm.skip,
-                &mm.limit,
-                params,
-            )?;
-            Ok(Statement::MatchMerge(MatchMergeStatement {
-                patterns: resolve_patterns(&mm.patterns, params)?,
-                where_clause: mm
-                    .where_clause
-                    .as_ref()
-                    .map(|e| resolve_expr(e, params))
-                    .transpose()?,
-                merge_pattern: resolve_pattern(&mm.merge_pattern, params)?,
-                on_create: resolve_set_items(&mm.on_create, params)?,
-                on_match: resolve_set_items(&mm.on_match, params)?,
-                return_clause,
-                order_by,
-                skip,
-                limit,
-            }))
+            validate_patterns(&mm.patterns, params)?;
+            if let Some(e) = &mm.where_clause {
+                validate_expr(e, params)?;
+            }
+            validate_pattern(&mm.merge_pattern, params)?;
+            validate_set_items(&mm.on_create, params)?;
+            validate_set_items(&mm.on_match, params)?;
+            validate_return_tail(&mm.return_clause, &mm.order_by, &mm.skip, &mm.limit, params)
         }
         Statement::Delete(d) => {
-            let (return_clause, order_by, skip, limit) =
-                resolve_optional_return(&d.return_clause, &d.order_by, &d.skip, &d.limit, params)?;
-            Ok(Statement::Delete(DeleteStatement {
-                patterns: resolve_patterns(&d.patterns, params)?,
-                optional_patterns: d
-                    .optional_patterns
-                    .iter()
-                    .map(|om| resolve_optional_match(om, params))
-                    .collect::<crate::types::Result<Vec<_>>>()?,
-                where_clause: d
-                    .where_clause
-                    .as_ref()
-                    .map(|e| resolve_expr(e, params))
-                    .transpose()?,
-                detach: d.detach,
-                exprs: d
-                    .exprs
-                    .iter()
-                    .map(|e| resolve_expr(e, params))
-                    .collect::<crate::types::Result<Vec<_>>>()?,
-                return_clause,
-                order_by,
-                skip,
-                limit,
-            }))
+            validate_patterns(&d.patterns, params)?;
+            validate_optional_matches(&d.optional_patterns, params)?;
+            if let Some(e) = &d.where_clause {
+                validate_expr(e, params)?;
+            }
+            for e in &d.exprs {
+                validate_expr(e, params)?;
+            }
+            validate_return_tail(&d.return_clause, &d.order_by, &d.skip, &d.limit, params)
         }
         Statement::Set(s) => {
-            let (return_clause, order_by, skip, limit) =
-                resolve_optional_return(&s.return_clause, &s.order_by, &s.skip, &s.limit, params)?;
-            Ok(Statement::Set(SetStatement {
-                patterns: resolve_patterns(&s.patterns, params)?,
-                optional_patterns: s
-                    .optional_patterns
-                    .iter()
-                    .map(|om| resolve_optional_match(om, params))
-                    .collect::<crate::types::Result<Vec<_>>>()?,
-                where_clause: s
-                    .where_clause
-                    .as_ref()
-                    .map(|e| resolve_expr(e, params))
-                    .transpose()?,
-                items: resolve_set_items(&s.items, params)?,
-                intermediate_clauses: resolve_intermediate_clauses(
-                    &s.intermediate_clauses,
-                    params,
-                )?,
-                return_clause,
-                order_by,
-                skip,
-                limit,
-            }))
+            validate_patterns(&s.patterns, params)?;
+            validate_optional_matches(&s.optional_patterns, params)?;
+            if let Some(e) = &s.where_clause {
+                validate_expr(e, params)?;
+            }
+            validate_set_items(&s.items, params)?;
+            validate_intermediate_clauses(&s.intermediate_clauses, params)?;
+            validate_return_tail(&s.return_clause, &s.order_by, &s.skip, &s.limit, params)
         }
         Statement::Remove(r) => {
-            let (return_clause, order_by, skip, limit) =
-                resolve_optional_return(&r.return_clause, &r.order_by, &r.skip, &r.limit, params)?;
-            Ok(Statement::Remove(RemoveStatement {
-                patterns: resolve_patterns(&r.patterns, params)?,
-                optional_patterns: r
-                    .optional_patterns
-                    .iter()
-                    .map(|om| resolve_optional_match(om, params))
-                    .collect::<crate::types::Result<Vec<_>>>()?,
-                where_clause: r
-                    .where_clause
-                    .as_ref()
-                    .map(|e| resolve_expr(e, params))
-                    .transpose()?,
-                items: r.items.clone(),
-                return_clause,
-                order_by,
-                skip,
-                limit,
-            }))
+            validate_patterns(&r.patterns, params)?;
+            validate_optional_matches(&r.optional_patterns, params)?;
+            if let Some(e) = &r.where_clause {
+                validate_expr(e, params)?;
+            }
+            validate_return_tail(&r.return_clause, &r.order_by, &r.skip, &r.limit, params)
         }
         Statement::Merge(m) => {
-            let (return_clause, order_by, skip, limit) =
-                resolve_optional_return(&m.return_clause, &m.order_by, &m.skip, &m.limit, params)?;
-            Ok(Statement::Merge(MergeStatement {
-                pattern: resolve_pattern(&m.pattern, params)?,
-                on_create: resolve_set_items(&m.on_create, params)?,
-                on_match: resolve_set_items(&m.on_match, params)?,
-                return_clause,
-                order_by,
-                skip,
-                limit,
-            }))
+            validate_pattern(&m.pattern, params)?;
+            validate_set_items(&m.on_create, params)?;
+            validate_set_items(&m.on_match, params)?;
+            validate_return_tail(&m.return_clause, &m.order_by, &m.skip, &m.limit, params)
         }
         Statement::Unwind(u) => {
-            let body = match &u.body {
+            validate_expr(&u.expr, params)?;
+            match &u.body {
                 UnwindBody::Return {
                     where_clause,
                     intermediate_clauses,
@@ -717,26 +490,21 @@ pub fn resolve_params(
                     order_by,
                     skip,
                     limit,
-                } => UnwindBody::Return {
-                    where_clause: where_clause
-                        .as_ref()
-                        .map(|e| resolve_expr(e, params))
-                        .transpose()?,
-                    intermediate_clauses: resolve_intermediate_clauses(
-                        intermediate_clauses,
-                        params,
-                    )?,
-                    return_clause: ReturnClause {
-                        items: resolve_return_items(&return_clause.items, params)?,
-                        distinct: return_clause.distinct,
-                    },
-                    order_by: resolve_sort_items(order_by, params)?,
-                    skip: skip.as_ref().map(|e| resolve_expr(e, params)).transpose()?,
-                    limit: limit
-                        .as_ref()
-                        .map(|e| resolve_expr(e, params))
-                        .transpose()?,
-                },
+                } => {
+                    if let Some(e) = where_clause {
+                        validate_expr(e, params)?;
+                    }
+                    validate_intermediate_clauses(intermediate_clauses, params)?;
+                    validate_return_items(&return_clause.items, params)?;
+                    validate_sort_items(order_by, params)?;
+                    if let Some(e) = skip {
+                        validate_expr(e, params)?;
+                    }
+                    if let Some(e) = limit {
+                        validate_expr(e, params)?;
+                    }
+                    Ok(())
+                }
                 UnwindBody::Create {
                     patterns,
                     intermediate_clauses,
@@ -745,216 +513,68 @@ pub fn resolve_params(
                     skip,
                     limit,
                 } => {
-                    let (rc, ob, s, l) =
-                        resolve_optional_return(return_clause, order_by, skip, limit, params)?;
-                    UnwindBody::Create {
-                        patterns: resolve_patterns(patterns, params)?,
-                        intermediate_clauses: resolve_intermediate_clauses(
-                            intermediate_clauses,
-                            params,
-                        )?,
-                        return_clause: rc,
-                        order_by: ob,
-                        skip: s,
-                        limit: l,
-                    }
+                    validate_patterns(patterns, params)?;
+                    validate_intermediate_clauses(intermediate_clauses, params)?;
+                    validate_return_tail(return_clause, order_by, skip, limit, params)
                 }
-            };
-            Ok(Statement::Unwind(UnwindStatement {
-                expr: resolve_expr(&u.expr, params)?,
-                alias: u.alias.clone(),
-                body,
-            }))
+            }
         }
-        Statement::Return(r) => Ok(Statement::Return(ReturnStatement {
-            return_clause: ReturnClause {
-                items: resolve_return_items(&r.return_clause.items, params)?,
-                distinct: r.return_clause.distinct,
-            },
-            order_by: resolve_sort_items(&r.order_by, params)?,
-            skip: r
-                .skip
-                .as_ref()
-                .map(|e| resolve_expr(e, params))
-                .transpose()?,
-            limit: r
-                .limit
-                .as_ref()
-                .map(|e| resolve_expr(e, params))
-                .transpose()?,
-        })),
+        Statement::Return(r) => {
+            validate_return_items(&r.return_clause.items, params)?;
+            validate_sort_items(&r.order_by, params)?;
+            if let Some(e) = &r.skip {
+                validate_expr(e, params)?;
+            }
+            if let Some(e) = &r.limit {
+                validate_expr(e, params)?;
+            }
+            Ok(())
+        }
         Statement::MultiClause(mc) => {
-            let clauses = mc
-                .clauses
-                .iter()
-                .map(|c| resolve_clause(c, params))
-                .collect::<crate::types::Result<Vec<_>>>()?;
-            Ok(Statement::MultiClause(MultiClauseStatement {
-                clauses,
-                return_clause: mc
-                    .return_clause
-                    .as_ref()
-                    .map(|rc| {
-                        Ok::<_, GraphError>(ReturnClause {
-                            items: resolve_return_items(&rc.items, params)?,
-                            distinct: rc.distinct,
-                        })
-                    })
-                    .transpose()?,
-                order_by: resolve_sort_items(&mc.order_by, params)?,
-                skip: mc
-                    .skip
-                    .as_ref()
-                    .map(|e| resolve_expr(e, params))
-                    .transpose()?,
-                limit: mc
-                    .limit
-                    .as_ref()
-                    .map(|e| resolve_expr(e, params))
-                    .transpose()?,
-            }))
+            for c in &mc.clauses {
+                validate_clause(c, params)?;
+            }
+            if let Some(rc) = &mc.return_clause {
+                validate_return_items(&rc.items, params)?;
+            }
+            validate_sort_items(&mc.order_by, params)?;
+            if let Some(e) = &mc.skip {
+                validate_expr(e, params)?;
+            }
+            if let Some(e) = &mc.limit {
+                validate_expr(e, params)?;
+            }
+            Ok(())
         }
-        Statement::Explain(inner) => {
-            Ok(Statement::Explain(Box::new(resolve_params(inner, params)?)))
-        }
-        Statement::Union { statements, all } => {
-            let resolved: crate::types::Result<Vec<Statement>> = statements
-                .iter()
-                .map(|s| resolve_params(s, params))
-                .collect();
-            Ok(Statement::Union {
-                statements: resolved?,
-                all: *all,
-            })
+        Statement::Explain(inner) => validate_params(inner, params),
+        Statement::Union { statements, .. } => {
+            for s in statements {
+                validate_params(s, params)?;
+            }
+            Ok(())
         }
         Statement::Call {
-            procedure_name,
             args,
-            implicit_args,
-            yield_items,
-            yield_star,
             return_clause,
             order_by,
             skip,
             limit,
+            ..
         } => {
-            let resolved_args: crate::types::Result<Vec<_>> =
-                args.iter().map(|a| resolve_expr(a, params)).collect();
-            Ok(Statement::Call {
-                procedure_name: procedure_name.clone(),
-                args: resolved_args?,
-                implicit_args: *implicit_args,
-                yield_items: yield_items.clone(),
-                yield_star: *yield_star,
-                return_clause: return_clause
-                    .as_ref()
-                    .map(|rc| {
-                        Ok::<_, GraphError>(ReturnClause {
-                            items: resolve_return_items(&rc.items, params)?,
-                            distinct: rc.distinct,
-                        })
-                    })
-                    .transpose()?,
-                order_by: resolve_sort_items(order_by, params)?,
-                skip: skip
-                    .as_ref()
-                    .map(|e| resolve_expr(e, params).map(Box::new))
-                    .transpose()?,
-                limit: limit
-                    .as_ref()
-                    .map(|e| resolve_expr(e, params).map(Box::new))
-                    .transpose()?,
-            })
+            for a in args {
+                validate_expr(a, params)?;
+            }
+            if let Some(rc) = return_clause {
+                validate_return_items(&rc.items, params)?;
+            }
+            validate_sort_items(order_by, params)?;
+            if let Some(e) = skip {
+                validate_expr(e, params)?;
+            }
+            if let Some(e) = limit {
+                validate_expr(e, params)?;
+            }
+            Ok(())
         }
-    }
-}
-
-/// Resolve parameters in a multi-clause Clause.
-pub(in crate::cypher::parser) fn resolve_clause(
-    clause: &Clause,
-    params: &HashMap<String, Value>,
-) -> crate::types::Result<Clause> {
-    match clause {
-        Clause::Match {
-            patterns,
-            optional_patterns,
-            where_clause,
-        } => Ok(Clause::Match {
-            patterns: resolve_patterns(patterns, params)?,
-            optional_patterns: optional_patterns
-                .iter()
-                .map(|om| resolve_optional_match(om, params))
-                .collect::<crate::types::Result<Vec<_>>>()?,
-            where_clause: where_clause
-                .as_ref()
-                .map(|e| resolve_expr(e, params))
-                .transpose()?,
-        }),
-        Clause::Create { patterns } => Ok(Clause::Create {
-            patterns: resolve_patterns(patterns, params)?,
-        }),
-        Clause::Merge {
-            pattern,
-            on_create,
-            on_match,
-        } => Ok(Clause::Merge {
-            pattern: resolve_pattern(pattern, params)?,
-            on_create: resolve_set_items(on_create, params)?,
-            on_match: resolve_set_items(on_match, params)?,
-        }),
-        Clause::With(with) => Ok(Clause::With(WithClause {
-            items: resolve_return_items(&with.items, params)?,
-            distinct: with.distinct,
-            order_by: resolve_sort_items(&with.order_by, params)?,
-            skip: with
-                .skip
-                .as_ref()
-                .map(|e| resolve_expr(e, params))
-                .transpose()?,
-            limit: with
-                .limit
-                .as_ref()
-                .map(|e| resolve_expr(e, params))
-                .transpose()?,
-            where_clause: with
-                .where_clause
-                .as_ref()
-                .map(|e| resolve_expr(e, params))
-                .transpose()?,
-        })),
-        Clause::Unwind(uw) => Ok(Clause::Unwind(UnwindClause {
-            expr: resolve_expr(&uw.expr, params)?,
-            alias: uw.alias.clone(),
-        })),
-        Clause::Set { items } => Ok(Clause::Set {
-            items: resolve_set_items(items, params)?,
-        }),
-        Clause::Remove { items } => Ok(Clause::Remove {
-            items: items.clone(),
-        }),
-        Clause::Call {
-            procedure_name,
-            args,
-            implicit_args,
-            yield_items,
-            yield_star,
-        } => {
-            let resolved_args: crate::types::Result<Vec<_>> =
-                args.iter().map(|a| resolve_expr(a, params)).collect();
-            Ok(Clause::Call {
-                procedure_name: procedure_name.clone(),
-                args: resolved_args?,
-                implicit_args: *implicit_args,
-                yield_items: yield_items.clone(),
-                yield_star: *yield_star,
-            })
-        }
-        Clause::Delete { exprs, detach } => Ok(Clause::Delete {
-            exprs: exprs
-                .iter()
-                .map(|e| resolve_expr(e, params))
-                .collect::<crate::types::Result<Vec<_>>>()?,
-            detach: *detach,
-        }),
     }
 }

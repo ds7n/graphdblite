@@ -11,13 +11,12 @@
 //! Only the parser output (the AST [`Statement`]) is stored. Two reasons:
 //!
 //! - The AST is index-independent. Plans, by contrast, depend on which
-//!   indexes exist on which `(label, property)` pairs — and plans embed
-//!   resolved literal values from `$param` substitution. Caching plans would
-//!   require invalidation on `CREATE INDEX`/`DROP INDEX` *and* per-parameter
-//!   keying. The AST has neither concern.
-//! - The AST is parameter-agnostic. `parser::resolve_params` is called after
-//!   we hand back the cached AST, so two callers passing different params
-//!   for the same query string both benefit.
+//!   indexes exist on which `(label, property)` pairs. Caching plans would
+//!   require invalidation on `CREATE INDEX`/`DROP INDEX` (Phase 4 of
+//!   `plans/plan-cache.md` adds that). The AST has no such concern.
+//! - The AST is parameter-agnostic. `parser::validate_params` runs against
+//!   the cached AST without rewriting it, so two callers passing different
+//!   params for the same query string both benefit.
 //!
 //! ## Eviction policy
 //!
@@ -65,7 +64,7 @@ impl ParseCache {
 
     /// Resolve `cypher` to a parsed [`Statement`], reusing a cached result
     /// when available. Returns a fresh `Statement` (clone of the cached
-    /// entry) so callers can freely apply `resolve_params` without
+    /// entry) so callers can freely walk it for validation without
     /// affecting subsequent cache hits.
     pub(crate) fn get_or_parse(&self, cypher: &str) -> Result<Statement> {
         // Fast path: hit. Clone the cached AST under the lock; the parser is

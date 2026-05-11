@@ -293,7 +293,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: actions/setup-go@v5
         with:
-          go-version: "1.22"
+          go-version: "1.26"
       - name: Build FFI and run Go tests
         run: make -C bindings/go test
 

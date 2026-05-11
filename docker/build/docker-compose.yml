@@ -4,26 +4,26 @@ services:
   native:
     build: native
     volumes:
-      - ..:/src:ro
-      - ../dist:/dist
+      - ../..:/src:ro
+      - ../../dist:/dist
 
   zig-bins:
     build: zig-bins
     volumes:
-      - ..:/src:ro
-      - ../dist:/dist
+      - ../..:/src:ro
+      - ../../dist:/dist
 
   zig-wheels:
     build: zig-wheels
     volumes:
-      - ..:/src:ro
-      - ../dist:/dist
+      - ../..:/src:ro
+      - ../../dist:/dist
 
   xwin:
     build: xwin
     volumes:
-      - ..:/src:ro
-      - ../dist:/dist
+      - ../..:/src:ro
+      - ../../dist:/dist
 
   macos:
     build:
@@ -31,7 +31,7 @@ services:
       args:
         SDK: MacOSX14.0.sdk.tar.xz
     volumes:
-      - ..:/src:ro
-      - ../dist:/dist
+      - ../..:/src:ro
+      - ../../dist:/dist
     profiles:
       - macos

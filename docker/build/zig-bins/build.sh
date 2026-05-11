@@ -42,4 +42,19 @@ for f in *.linux-arm64-gnu.node; do
 done
 cd /build
 
+# Windows-gnu FFI (for Go cgo — gcc-style static archive).
+# We don't ship CLI/Node/Python for windows-gnu; those stay MSVC (via xwin).
+WIN_TARGET="x86_64-pc-windows-gnu"
+echo "==> Building FFI (${WIN_TARGET})"
+cargo zigbuild --release -p graphdblite-ffi --target "$WIN_TARGET"
+staging=$(mktemp -d)
+cp bindings/ffi/graphdblite.h "$staging/"
+cp "target/${WIN_TARGET}/release"/libgraphdblite_ffi.a "$staging/" 2>/dev/null || true
+cp "target/${WIN_TARGET}/release"/graphdblite_ffi.dll "$staging/" 2>/dev/null || true
+cp "target/${WIN_TARGET}/release"/libgraphdblite_ffi.dll.a "$staging/" 2>/dev/null || true
+(cd "$staging" && zip -q "/dist/ffi/graphdblite-ffi-${VERSION}-${WIN_TARGET}.zip" ./*)
+sha256sum "/dist/ffi/graphdblite-ffi-${VERSION}-${WIN_TARGET}.zip" \
+    > "/dist/ffi/graphdblite-ffi-${VERSION}-${WIN_TARGET}.zip.sha256"
+rm -rf "$staging"
+
 echo "==> Done (zig-bins)"

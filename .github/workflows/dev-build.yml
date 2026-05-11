@@ -123,8 +123,14 @@ jobs:
             cross: true
           - os: macos-latest
             target: aarch64-apple-darwin
+          # Two Windows builds:
+          #   - MSVC: for C consumers, Node addon, Python wheel — Windows-native ABI.
+          #   - GNU/MinGW: for Go cgo, which uses gcc-style linker invocations and
+          #     expects a `libgraphdblite_ffi.a` static archive.
           - os: windows-latest
             target: x86_64-pc-windows-msvc
+          - os: windows-latest
+            target: x86_64-pc-windows-gnu
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
@@ -160,10 +166,14 @@ jobs:
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Path staging
-          Copy-Item crates\ffi\graphdblite.h staging\
-          Copy-Item target\${{ matrix.target }}\release\graphdblite_ffi.dll staging\
+          Copy-Item bindings\ffi\graphdblite.h staging\
+          # MSVC outputs (x86_64-pc-windows-msvc): .dll, .dll.lib, .lib
+          Copy-Item target\${{ matrix.target }}\release\graphdblite_ffi.dll staging\ -ErrorAction SilentlyContinue
           Copy-Item target\${{ matrix.target }}\release\graphdblite_ffi.dll.lib staging\ -ErrorAction SilentlyContinue
           Copy-Item target\${{ matrix.target }}\release\graphdblite_ffi.lib staging\ -ErrorAction SilentlyContinue
+          # MinGW outputs (x86_64-pc-windows-gnu): libgraphdblite_ffi.a, .dll, .dll.a — for Go cgo
+          Copy-Item target\${{ matrix.target }}\release\libgraphdblite_ffi.a staging\ -ErrorAction SilentlyContinue
+          Copy-Item target\${{ matrix.target }}\release\libgraphdblite_ffi.dll.a staging\ -ErrorAction SilentlyContinue
           Compress-Archive -Path staging\* -DestinationPath graphdblite-ffi-${{ matrix.target }}.zip
 
       - name: Checksum

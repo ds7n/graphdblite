@@ -198,17 +198,79 @@ each triple's native runner and pushes to npm via `NPM_TOKEN` secret.
 
 ## pkg.go.dev (Go module)
 
-**No publish step.** Go modules are discovered from git tags.
+**No publish step.** Go modules are discovered from git tags. But `go get`
+will fail unless the per-platform `libgraphdblite_ffi.a` archives are
+*committed* under the tag — see "Go binding lib population" below.
 
-After pushing `vX.Y.Z` to the GitHub mirror (`git push github vX.Y.Z`),
+After pushing `vX.Y.Z-go` to the GitHub mirror (`git push github vX.Y.Z-go`),
 `pkg.go.dev` indexes the module within a few minutes. Trigger indexing manually
-by visiting `https://pkg.go.dev/github.com/ds7n/graphdblite/bindings/go@vX.Y.Z`.
+by visiting `https://pkg.go.dev/github.com/ds7n/graphdblite/bindings/go@vX.Y.Z-go`.
 
 **Caveat:** Go modules versioned at v2 or higher require a `/vN` suffix on the
 import path. Until then, stay on `v0.*` / `v1.*`.
 
 The `bindings/go/LICENSE` file (copy of root LICENSE) is what `pkg.go.dev` reads
 for the license badge.
+
+### Go binding lib population
+
+The Go binding statically links a per-platform `libgraphdblite_ffi.a` via cgo.
+`bindings/go/lib/<os_arch>/libgraphdblite_ffi.a` files are gitignored in normal
+development (only `.gitkeep` placeholders are tracked) so the working tree
+stays lean. **For `go get` to work on a clean machine with no Rust toolchain,
+those archives must be present in the tag a Go consumer pulls.**
+
+Sequence:
+
+1. Tag `vX.Y.Z` and push to both remotes (this triggers the FFI builds):
+   ```bash
+   git tag vX.Y.Z
+   git push origin vX.Y.Z
+   git push github vX.Y.Z
+   ```
+2. Wait for CI (`.github/workflows/dev-build.yml` → `build-ffi` job) to attach
+   the four FFI archives to the GitHub release:
+   - `graphdblite-ffi-x86_64-unknown-linux-gnu.tar.gz`
+   - `graphdblite-ffi-aarch64-unknown-linux-gnu.tar.gz`
+   - `graphdblite-ffi-aarch64-apple-darwin.tar.gz`
+   - `graphdblite-ffi-x86_64-pc-windows-gnu.zip` (MinGW — Go cgo needs `.a`)
+3. Run the populate script locally:
+   ```bash
+   scripts/populate-go-libs.sh vX.Y.Z              # pulls from forgejo
+   scripts/populate-go-libs.sh --github vX.Y.Z     # pulls from github
+   ```
+   It extracts each archive's `libgraphdblite_ffi.a` into
+   `bindings/go/lib/<os_arch>/` and force-stages the files
+   (they're gitignored, so `git add -f` is required).
+4. Commit + tag with a `-go` suffix so the lib-bearing commit has its own tag
+   distinct from `vX.Y.Z`:
+   ```bash
+   git commit -m "release: vX.Y.Z Go FFI libs"
+   git tag -a vX.Y.Z-go -m "Go FFI libs for vX.Y.Z"
+   git push origin vX.Y.Z-go
+   git push github vX.Y.Z-go
+   ```
+5. Users `go get github.com/ds7n/graphdblite/bindings/go@vX.Y.Z-go`.
+
+**Module weight.** Each `libgraphdblite_ffi.a` is ~35 MB, so the four
+platforms add ~140 MB to the committed module. This is acceptable as long as
+the main repo stays usable; if module size becomes a problem, consider hosting
+the libs in a separate `graphdblite-go-libs` repo and pulling them via
+`go:generate`, or moving them to `git-lfs` (cgo still resolves LFS-fetched
+files at build time).
+
+**Env overrides** (defaults match `scripts/publish-release.sh`):
+
+```bash
+FORGEJO_URL=http://forgejo.example.com \
+FORGEJO_OWNER=your-org FORGEJO_REPO=graphdblite \
+GITHUB_OWNER=ds7n GITHUB_REPO=graphdblite \
+  scripts/populate-go-libs.sh vX.Y.Z
+```
+
+**Alternative to evaluate:** an automated GitHub Actions job that runs
+populate + commit + tag on release, removing the manual step at the cost of a
+workflow with write access to the repo.
 
 ---
 
@@ -257,8 +319,10 @@ and uploaded alongside artifacts.
 4. **GitHub Actions**: tag push triggers `python-wheels.yml` → PyPI upload.
 5. **npm**: build + publish from `bindings/node/` (manual until automated).
 6. **Forgejo + GitHub releases**: `just publish vX.Y.Z && just publish-github vX.Y.Z`
-7. **pkg.go.dev**: nothing — happens automatically once the GitHub tag is
-   visible.
+7. **Go FFI libs**: `scripts/populate-go-libs.sh vX.Y.Z`, commit, tag `vX.Y.Z-go`,
+   push to both remotes. See "Go binding lib population" above.
+8. **pkg.go.dev**: nothing — happens automatically once the `vX.Y.Z-go` tag is
+   visible on GitHub.
 
 Verify each landed:
 

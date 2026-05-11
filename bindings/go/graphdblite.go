@@ -28,7 +28,10 @@
 package graphdblite
 
 /*
-#cgo LDFLAGS: -L${SRCDIR}/lib -lgraphdblite_ffi -lm -ldl -lpthread
+#cgo linux,amd64   LDFLAGS: -L${SRCDIR}/lib/linux_amd64   -lgraphdblite_ffi -lm -ldl -lpthread
+#cgo linux,arm64   LDFLAGS: -L${SRCDIR}/lib/linux_arm64   -lgraphdblite_ffi -lm -ldl -lpthread
+#cgo darwin,arm64  LDFLAGS: -L${SRCDIR}/lib/darwin_arm64  -lgraphdblite_ffi -lm
+#cgo windows,amd64 LDFLAGS: -L${SRCDIR}/lib/windows_amd64 -lgraphdblite_ffi -lws2_32 -luserenv -lntdll -ladvapi32 -lbcrypt
 #include "../ffi/graphdblite.h"
 #include <stdlib.h>
 */

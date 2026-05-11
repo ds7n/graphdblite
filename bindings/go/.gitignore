@@ -1,1 +1,9 @@
-lib/
+# Locally-built static/dynamic libs are ignored everywhere under lib/.
+# At release time, per-platform `libgraphdblite_ffi.a` files are staged
+# explicitly via `git add -f bindings/go/lib/<os_arch>/libgraphdblite_ffi.a`
+# (the populate-go-libs script handles this).
+lib/**/*.a
+lib/**/*.so
+lib/**/*.dylib
+lib/**/*.dll
+lib/**/*.lib

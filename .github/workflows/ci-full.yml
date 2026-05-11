@@ -47,10 +47,9 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
-      - uses: actions/setup-python@v5
-        with:
-          python-version: ${{ matrix.python-version }}
       - uses: astral-sh/setup-uv@v3
+        # uv auto-installs the requested Python via python-build-standalone,
+        # so no separate actions/setup-python step is needed.
       - name: Build and install Python binding
         working-directory: bindings/python
         run: |

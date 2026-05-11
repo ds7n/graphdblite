@@ -40,10 +40,9 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.13"
       - uses: astral-sh/setup-uv@v3
+        # No setup-python — uv ships python-build-standalone and
+        # auto-installs whatever version `uv venv --python X.Y` asks for.
       - name: Build and install Python binding
         working-directory: bindings/python
         run: |

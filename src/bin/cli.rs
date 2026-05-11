@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: MIT
+// Copyright (c) 2026 ds7n
+
 use std::io::{self, BufRead, Write};
 
 use graphdblite::{Database, Edge, Node, PathValue, Value};

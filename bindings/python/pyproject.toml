@@ -6,6 +6,8 @@ build-backend = "maturin"
 name = "graphdblite"
 dynamic = ["version"]
 description = "Embedded graph database with Cypher support"
+license = "MIT"
+license-files = ["LICENSE"]
 requires-python = ">=3.10"
 
 [tool.maturin]

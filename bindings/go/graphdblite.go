@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: MIT
+// Copyright (c) 2026 ds7n
+
 // Package graphdblite provides Go bindings for the graphdblite embedded graph database.
 //
 // graphdblite is an embedded graph database with Cypher query support,

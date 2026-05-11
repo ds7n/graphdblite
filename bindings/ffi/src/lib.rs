@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: MIT
+// Copyright (c) 2026 ds7n
+
 //! C FFI bindings for graphdblite.
 //!
 //! All functions return 0 on success, non-zero on error.

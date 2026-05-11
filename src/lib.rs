@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: MIT
+// Copyright (c) 2026 ds7n
+
 //! Embedded graph database with a Cypher query interface, backed by SQLite.
 //!
 //! Single-file, zero-config, multi-process safe (WAL mode). The Cypher

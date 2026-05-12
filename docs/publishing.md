@@ -191,8 +191,9 @@ npm publish --access public            # main package
 }
 ```
 
-**TODO (future):** wire up `.github/workflows/npm-publish.yml` that builds on
-each triple's native runner and pushes to npm via `NPM_TOKEN` secret.
+**Future work:** an `.github/workflows/npm-publish.yml` that builds on each
+triple's native runner and pushes to npm via `NPM_TOKEN` secret would let
+this step ride the tag-push trigger like the wheels workflow does.
 
 ---
 

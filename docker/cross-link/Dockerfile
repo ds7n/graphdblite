@@ -12,6 +12,7 @@ FROM golang:1.24-bookworm
 RUN apt-get update && apt-get install -y --no-install-recommends \
         gcc-mingw-w64-x86-64 \
         gcc-aarch64-linux-gnu \
+        libc6-dev-arm64-cross \
         ca-certificates \
         file \
     && rm -rf /var/lib/apt/lists/*

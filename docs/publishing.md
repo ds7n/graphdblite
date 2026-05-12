@@ -268,9 +268,24 @@ GITHUB_OWNER=ds7n GITHUB_REPO=graphdblite \
   scripts/populate-go-libs.sh vX.Y.Z
 ```
 
-**Alternative to evaluate:** an automated GitHub Actions job that runs
-populate + commit + tag on release, removing the manual step at the cost of a
-workflow with write access to the repo.
+**Automated path.** `.github/workflows/release-go.yml` runs on
+`release: published` (and via manual `workflow_dispatch` with a tag
+input). It downloads the FFI assets from the just-published GitHub
+release, runs `populate-go-libs.sh --github`, commits on a detached
+HEAD off the released tag's commit, and pushes a parallel `vX.Y.Z-go`
+tag. The commit is *not* pushed to main — only the tag.
+
+Forgejo doesn't run GitHub Actions, so the `-go` tag reaches forgejo
+via mirror push (`git push origin vX.Y.Z-go` from a clone that already
+has the tag fetched from github), or run the populate flow manually
+against forgejo:
+
+```bash
+scripts/populate-go-libs.sh vX.Y.Z   # forgejo default
+git commit -m "release: vX.Y.Z Go FFI libs"
+git tag -a vX.Y.Z-go -m "Go FFI libs for vX.Y.Z"
+git push origin vX.Y.Z-go
+```
 
 ---
 
@@ -319,8 +334,10 @@ and uploaded alongside artifacts.
 4. **GitHub Actions**: tag push triggers `python-wheels.yml` → PyPI upload.
 5. **npm**: build + publish from `bindings/node/` (manual until automated).
 6. **Forgejo + GitHub releases**: `just publish vX.Y.Z && just publish-github vX.Y.Z`
-7. **Go FFI libs**: `scripts/populate-go-libs.sh vX.Y.Z`, commit, tag `vX.Y.Z-go`,
-   push to both remotes. See "Go binding lib population" above.
+7. **Go FFI libs (GitHub)**: automatic — `.github/workflows/release-go.yml`
+   fires on `release: published`, populates libs, pushes `vX.Y.Z-go`.
+   For forgejo, also run `scripts/populate-go-libs.sh vX.Y.Z` + commit +
+   tag locally. See "Go binding lib population" above.
 8. **pkg.go.dev**: nothing — happens automatically once the `vX.Y.Z-go` tag is
    visible on GitHub.
 

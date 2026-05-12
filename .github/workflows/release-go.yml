@@ -1,0 +1,100 @@
+name: Publish Go FFI libs
+
+# Automates step 7 of docs/publishing.md "Order of operations for a clean
+# release": once the GitHub release for vX.Y.Z is published (with its four
+# graphdblite-ffi-*.{tar.gz,zip} assets already attached), this workflow
+# downloads those assets, extracts each platform's libgraphdblite_ffi.a
+# into bindings/go/lib/<os_arch>/, commits the result on a detached HEAD
+# (off the released tag), and pushes a parallel vX.Y.Z-go tag. That tag
+# is what `go get github.com/ds7n/graphdblite/bindings/go@vX.Y.Z-go`
+# resolves to — the libs need to be present in its tree.
+#
+# The commit is NOT pushed to main — only the tag is. Forgejo gets the
+# -go tag via mirror or manual `git push origin vX.Y.Z-go`.
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag (e.g. v0.1.0)"
+        required: true
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-go-${{ github.event.release.tag_name || inputs.tag }}
+  cancel-in-progress: false
+
+jobs:
+  populate-and-tag:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Determine tag
+        id: tag
+        env:
+          INPUT_TAG: ${{ inputs.tag }}
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
+        run: |
+          tag="${INPUT_TAG:-$RELEASE_TAG}"
+          if [[ -z "$tag" ]]; then
+            echo "::error::No tag from inputs or release event"
+            exit 1
+          fi
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "Resolved tag: $tag"
+
+      - name: Filter non-version tags
+        id: filter
+        env:
+          TAG: ${{ steps.tag.outputs.tag }}
+        run: |
+          # Skip rolling dev tags and any retriggers on -go itself.
+          if [[ "$TAG" != v* ]] || [[ "$TAG" == *-go ]] || [[ "$TAG" == dev-* ]]; then
+            echo "::notice::Skipping $TAG — not a versioned release tag"
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - uses: actions/checkout@v4
+        if: steps.filter.outputs.skip == 'false'
+        with:
+          ref: ${{ steps.tag.outputs.tag }}
+          fetch-depth: 1
+          # Use the workflow token; it can push tags to the same repo.
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Populate FFI libs from GitHub release
+        if: steps.filter.outputs.skip == 'false'
+        env:
+          GITHUB_OWNER: ${{ github.repository_owner }}
+          GITHUB_REPO: ${{ github.event.repository.name }}
+        run: scripts/populate-go-libs.sh --github "${{ steps.tag.outputs.tag }}"
+
+      - name: Verify libs were staged
+        if: steps.filter.outputs.skip == 'false'
+        run: |
+          if git diff --cached --quiet; then
+            echo "::error::populate-go-libs.sh staged no files"
+            exit 1
+          fi
+          git diff --cached --stat
+
+      - name: Configure git identity
+        if: steps.filter.outputs.skip == 'false'
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+      - name: Commit + tag
+        if: steps.filter.outputs.skip == 'false'
+        env:
+          TAG: ${{ steps.tag.outputs.tag }}
+        run: |
+          git commit -m "release: $TAG Go FFI libs"
+          git tag -a "$TAG-go" -m "Go FFI libs for $TAG"
+          git push origin "$TAG-go"
+          echo "::notice::Pushed $TAG-go (commit $(git rev-parse HEAD))"

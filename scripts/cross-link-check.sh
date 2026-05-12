@@ -21,6 +21,16 @@
 # Targets without a populated .a or a cross compiler are reported as SKIP,
 # not failures — populate libs with scripts/populate-go-libs.sh first.
 #
+# Building the .a files locally (instead of pulling from a release):
+#   - Use `cross rustc --release --target <triple> -p graphdblite-ffi \
+#         --crate-type=staticlib --target-dir target-cross`
+#   - The `--crate-type=staticlib` matters for x86_64-pc-windows-gnu: the
+#     default build also emits a cdylib, which fails to link from a Linux
+#     host (mingw can't resolve GetHostNameW the way MSVC auto-resolves
+#     it from the platform SDK). Our Go binding only consumes the .a.
+#   - A separate --target-dir avoids glibc mismatches between host cargo
+#     (new glibc) and the cross container (older glibc) sharing target/.
+#
 # Usage:
 #   scripts/cross-link-check.sh                    # check all platforms (host toolchains)
 #   scripts/cross-link-check.sh linux/amd64 windows/amd64

@@ -10,18 +10,25 @@
 # libgraphdblite_ffi.a into bindings/go/lib/<os_arch>/. Stages the results
 # with `git add -f` so they can be committed.
 #
-# Env overrides (defaults shown):
-#   FORGEJO_URL=http://forgejo.example.com
+# Forgejo settings — required from env when --forgejo (the default).
+# Example (typically sourced from .env at repo root):
+#   FORGEJO_URL=https://forgejo.example.com
 #   FORGEJO_OWNER=your-org   FORGEJO_REPO=graphdblite
-#   GITHUB_OWNER=ds7n        GITHUB_REPO=graphdblite
+# GitHub settings — defaults to ds7n/graphdblite; override with:
+#   GITHUB_OWNER=your-org    GITHUB_REPO=graphdblite
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 LIB_DIR="$REPO_ROOT/bindings/go/lib"
 
-# Forgejo settings — override via env (defaults match scripts/publish-release.sh).
-FORGEJO_URL="${FORGEJO_URL:-http://forgejo.example.com}"
-FORGEJO_OWNER="${FORGEJO_OWNER:-your-org}"
+# Forgejo settings — required from env when --forgejo is selected.
+# Source .env if present so callers don't have to export manually.
+if [[ -f "$REPO_ROOT/.env" ]]; then
+  # shellcheck disable=SC1090
+  source "$REPO_ROOT/.env"
+fi
+FORGEJO_URL="${FORGEJO_URL:-}"
+FORGEJO_OWNER="${FORGEJO_OWNER:-}"
 FORGEJO_REPO="${FORGEJO_REPO:-graphdblite}"
 
 # GitHub settings — override via env.
@@ -58,6 +65,17 @@ done
 if [[ -z "$TAG" ]]; then
   err "Missing release tag (e.g. v0.1.0)"
   exit 1
+fi
+
+if [[ "$TARGET" == "forgejo" ]]; then
+  if [[ -z "$FORGEJO_URL" ]]; then
+    err "FORGEJO_URL not set — add it to .env (e.g. https://forgejo.example.com)"
+    exit 1
+  fi
+  if [[ -z "$FORGEJO_OWNER" ]]; then
+    err "FORGEJO_OWNER not set — add it to .env"
+    exit 1
+  fi
 fi
 
 # triple -> os_arch directory under bindings/go/lib

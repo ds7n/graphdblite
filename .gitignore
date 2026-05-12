@@ -1,5 +1,6 @@
 /target
 /target-cross
+docker/forgejo-runner/
 .env
 *.db
 .venv/

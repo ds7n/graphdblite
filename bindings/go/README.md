@@ -37,17 +37,17 @@ on the consumer's machine.
 ## Local development (`make build`)
 
 `make build` detects the host triple via `uname` and drops the freshly
-compiled `libgraphdblite_ffi.{a,so,dylib}` into `lib/<os_arch>/`. The
-flat `lib/*.a` is `.gitignore`'d so a local rebuild never pollutes the
-tracked tree; the committed `lib/<os_arch>/libgraphdblite_ffi.a` files
-are protected by `!lib/<os_arch>/` rules in `.gitignore`.
+compiled `libgraphdblite_ffi.{a,so,dylib}` into `lib/<os_arch>/`. Any
+`lib/**/*.{a,so,dylib,dll,lib}` is gitignored, so local rebuilds never
+pollute the tracked tree; release-time per-platform archives are
+staged explicitly via `git add -f`.
 
 ## Release lib population
 
-At release time, `scripts/populate-go-libs.sh` (TODO) downloads the
-four `graphdblite-ffi-<triple>.tar.gz` archives from the GitHub release
-and unpacks each one into the right `lib/<os_arch>/` subdir, then
-stages them for the release commit (`git add -f`). The full release
+At release time, `scripts/populate-go-libs.sh` downloads the four
+`graphdblite-ffi-<triple>.{tar.gz,zip}` archives from the GitHub
+release and unpacks each one into the right `lib/<os_arch>/` subdir,
+then force-stages them for the release commit. The full release
 sequence lives in [`docs/publishing.md`](../../docs/publishing.md).
 
 ## Supported platforms
@@ -60,5 +60,6 @@ sequence lives in [`docs/publishing.md`](../../docs/publishing.md).
 | `windows` | `amd64` | supported (uses MinGW-built FFI, `x86_64-pc-windows-gnu`) |
 
 Out of scope for now: Intel Macs (`darwin/amd64`), 32-bit Linux,
-`armv7`. See [TODO.md](../../TODO.md) for the rationale and what'd be
-required to add them.
+`armv7`. Adding any of these requires (a) cross-build coverage in
+`.github/workflows/dev-build.yml` and (b) a matching cgo `LDFLAGS`
+line in `graphdblite.go`.

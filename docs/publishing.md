@@ -259,10 +259,11 @@ the libs in a separate `graphdblite-go-libs` repo and pulling them via
 `go:generate`, or moving them to `git-lfs` (cgo still resolves LFS-fetched
 files at build time).
 
-**Env overrides** (defaults match `scripts/publish-release.sh`):
+**Env overrides** (populate-go-libs.sh and publish-release.sh both
+source `.env` at the repo root if present):
 
 ```bash
-FORGEJO_URL=http://forgejo.example.com \
+FORGEJO_URL=https://forgejo.example.com \
 FORGEJO_OWNER=your-org FORGEJO_REPO=graphdblite \
 GITHUB_OWNER=ds7n GITHUB_REPO=graphdblite \
   scripts/populate-go-libs.sh vX.Y.Z

@@ -18,10 +18,19 @@ DEV=false
 TAG=""
 TARGET="forgejo"  # forgejo | github
 
-# Forgejo settings
-FORGEJO_URL="http://forgejo.example.com"
-FORGEJO_OWNER="your-org"
-FORGEJO_REPO="graphdblite"
+# Forgejo settings — required from env when TARGET=forgejo.
+# Example (typically sourced from .env at repo root):
+#   FORGEJO_URL=https://forgejo.example.com
+#   FORGEJO_OWNER=your-org
+#   FORGEJO_REPO=graphdblite
+FORGEJO_URL="${FORGEJO_URL:-}"
+FORGEJO_OWNER="${FORGEJO_OWNER:-}"
+FORGEJO_REPO="${FORGEJO_REPO:-graphdblite}"
+
+# GitHub settings — override via env when forking.
+GITHUB_OWNER="${GITHUB_OWNER:-ds7n}"
+GITHUB_REPO="${GITHUB_REPO:-graphdblite}"
+GH_FULL_REPO="$GITHUB_OWNER/$GITHUB_REPO"
 
 # ── Colours ──────────────────────────────────────────────────────────────────
 RED='\033[0;31m'
@@ -68,10 +77,8 @@ parse_args() {
 }
 
 # ── Prerequisites ────────────────────────────────────────────────────────────
-load_forgejo_token() {
-  if [[ -n "${FORGEJO_TOKEN:-}" ]]; then
-    return
-  fi
+load_forgejo_env() {
+  # Source .env first so URL/OWNER/TOKEN can all come from there.
   local envfile="$REPO_ROOT/.env"
   if [[ -f "$envfile" ]]; then
     # shellcheck disable=SC1090
@@ -79,6 +86,14 @@ load_forgejo_token() {
   fi
   if [[ -z "${FORGEJO_TOKEN:-}" ]]; then
     err "FORGEJO_TOKEN not set — add it to .env or export it"
+    exit 1
+  fi
+  if [[ -z "${FORGEJO_URL:-}" ]]; then
+    err "FORGEJO_URL not set — add it to .env (e.g. https://forgejo.example.com)"
+    exit 1
+  fi
+  if [[ -z "${FORGEJO_OWNER:-}" ]]; then
+    err "FORGEJO_OWNER not set — add it to .env"
     exit 1
   fi
 }
@@ -94,7 +109,7 @@ check_prereqs() {
       exit 1
     fi
   else
-    load_forgejo_token
+    load_forgejo_env
     # Quick connectivity check.
     local status
     status=$(curl -s -o /dev/null -w '%{http_code}' --max-time 5 \
@@ -313,7 +328,7 @@ github_publish_dev() {
   log "Publishing dev-latest prerelease to GitHub"
 
   log "  Deleting existing dev-latest (if any)"
-  run gh release delete dev-latest --yes --cleanup-tag --repo ds7n/graphdblite 2>/dev/null || true
+  run gh release delete dev-latest --yes --cleanup-tag --repo "$GH_FULL_REPO" 2>/dev/null || true
 
   local sha date
   sha=$(git -C "$REPO_ROOT" rev-parse HEAD)
@@ -333,7 +348,7 @@ Date: $date
 - **Node.js addons**: Linux (x86_64, arm64)" \
     --prerelease \
     --target "$sha" \
-    --repo ds7n/graphdblite \
+    --repo "$GH_FULL_REPO" \
     "${ARTIFACTS[@]}"
 
   ok "Published dev-latest to GitHub"
@@ -355,7 +370,7 @@ github_publish_tagged() {
   run gh release create "$TAG" \
     --title "$TAG" \
     --generate-notes \
-    --repo ds7n/graphdblite \
+    --repo "$GH_FULL_REPO" \
     "${ARTIFACTS[@]}"
 
   ok "Published $TAG to GitHub"

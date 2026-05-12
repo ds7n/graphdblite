@@ -285,3 +285,20 @@ calling into the C library.
 - The `graphdblite.h` FFI header is included automatically via the binding's `#include`
   directive — no manual header setup required.
 - Cross-compilation requires a cross-compiled version of the shared library.
+
+## Supported platforms
+
+| OS      | Arch    | Triple                       | Status        |
+|---------|---------|------------------------------|---------------|
+| Linux   | x86_64  | `x86_64-unknown-linux-gnu`   | ✅ Supported   |
+| Linux   | aarch64 | `aarch64-unknown-linux-gnu`  | ✅ Supported   |
+| macOS   | arm64   | `aarch64-apple-darwin`       | ✅ Supported   |
+| Windows | x86_64  | `x86_64-pc-windows-gnu`      | ✅ Supported (MinGW) |
+| macOS   | x86_64  | `x86_64-apple-darwin`        | ❌ Not built — Intel Macs are not in the FFI release matrix. Build `libgraphdblite_ffi.a` from source and drop it into `bindings/go/lib/darwin_amd64/` if you need it. |
+| Linux   | i686 / armv7 | 32-bit Linux | ❌ Not built — no release artifacts. Build from source if needed. |
+| Windows | x86_64 (MSVC) | `x86_64-pc-windows-msvc` | ❌ Not used by Go — cgo expects MinGW-style linking (`libgraphdblite_ffi.a`), so the MSVC build is shipped only for C/Node/Python consumers. |
+
+The supported triples correspond to the per-platform directories under
+`bindings/go/lib/{linux_amd64,linux_arm64,darwin_arm64,windows_amd64}/`, which
+are populated at release time by `scripts/populate-go-libs.sh` (see
+`docs/publishing.md`).

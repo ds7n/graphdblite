@@ -33,7 +33,12 @@ jobs:
       fail-fast: false
       matrix:
         rust: ["1.85", "stable", "beta"]
-        os: [ubuntu-latest, macos-latest, windows-latest]
+        # macos-latest temporarily commented out — burns 10x credits per
+        # minute vs ubuntu. Re-enable when darwin-specific coverage matters.
+        os:
+          - ubuntu-latest
+          # - macos-latest
+          - windows-latest
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v6

@@ -20,15 +20,15 @@ files instead of asserting against them.
 ## Reproducible release builds
 
 `Cargo.lock` is committed and the workspace pins an MSRV
-(`rust-version = "1.82"`), so a checkout at a given commit resolves to the
+(`rust-version = "1.85"`), so a checkout at a given commit resolves to the
 same dependency versions on any machine that has the pinned toolchain.
 
 For a deterministic release binary:
 
 ```bash
 # 1. Pin the toolchain (matches the workspace MSRV).
-rustup toolchain install 1.82.0
-rustup override set 1.82.0
+rustup toolchain install 1.85.0
+rustup override set 1.85.0
 
 # 2. Build with --locked so Cargo refuses to update Cargo.lock,
 #    and --frozen so it also refuses any network access.

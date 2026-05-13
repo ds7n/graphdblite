@@ -1,11 +1,14 @@
 name: CI (fast)
 
-# Fast tier — manual fallback only. Primary CI runs on the self-hosted
-# Forgejo runner (.forgejo/workflows/ci.yml). This workflow is kept as
-# a safety net for when the local runner is unavailable; trigger via
-# the Actions tab → "Run workflow".
+# Fast tier — runs on every push to main and every PR. Mirrors the
+# self-hosted Forgejo workflow (.forgejo/workflows/ci.yml) so external
+# contributors see green/red checks on their GitHub PRs even when the
+# Forgejo runner is unavailable.
 
 on:
+  push:
+    branches: [main]
+  pull_request:
   workflow_dispatch:
 
 permissions:

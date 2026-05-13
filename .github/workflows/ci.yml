@@ -43,7 +43,7 @@ jobs:
     steps:
       - uses: actions/checkout@v6
       - uses: dtolnay/rust-toolchain@stable
-      - uses: astral-sh/setup-uv@v8
+      - uses: astral-sh/setup-uv@v8.1.0
         # No setup-python — uv ships python-build-standalone and
         # auto-installs whatever version `uv venv --python X.Y` asks for.
       - name: Build and install Python binding

@@ -269,7 +269,7 @@ jobs:
     steps:
       - uses: actions/checkout@v6
 
-      - uses: astral-sh/setup-uv@v8
+      - uses: astral-sh/setup-uv@v8.1.0
         # PyO3/maturin-action drives cibuildwheel which brings its own
         # per-target Pythons, but a host Python is still needed for the
         # action's prelude. uv installs one via python-build-standalone.
@@ -334,7 +334,7 @@ jobs:
     steps:
       - uses: actions/checkout@v6
       - uses: dtolnay/rust-toolchain@stable
-      - uses: astral-sh/setup-uv@v8
+      - uses: astral-sh/setup-uv@v8.1.0
         # uv handles Python install — no separate actions/setup-python step.
       - name: Build and install Python binding
         working-directory: bindings/python

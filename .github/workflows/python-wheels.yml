@@ -30,7 +30,7 @@ jobs:
     steps:
       - uses: actions/checkout@v6
 
-      - uses: astral-sh/setup-uv@v8
+      - uses: astral-sh/setup-uv@v8.1.0
         # PyO3/maturin-action drives cibuildwheel (which brings its own
         # per-target Pythons), but a host Python is needed for the prelude.
         # uv installs one via python-build-standalone.

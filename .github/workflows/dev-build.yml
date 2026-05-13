@@ -22,7 +22,7 @@ jobs:
   lint-workflows:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - name: actionlint
         run: |
           bash <(curl -fsSL https://raw.githubusercontent.com/rhysd/actionlint/main/scripts/download-actionlint.bash)
@@ -35,7 +35,7 @@ jobs:
         os: [ubuntu-latest, macos-latest, windows-latest]
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy, rustfmt
@@ -68,7 +68,7 @@ jobs:
             ext: zip
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: ${{ matrix.target }}
@@ -104,7 +104,7 @@ jobs:
           sha256sum graphdblite-${{ matrix.target }}.${{ matrix.ext }} \
             > graphdblite-${{ matrix.target }}.${{ matrix.ext }}.sha256
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: cli-${{ matrix.target }}
           path: |
@@ -133,7 +133,7 @@ jobs:
             target: x86_64-pc-windows-gnu
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: ${{ matrix.target }}
@@ -184,7 +184,7 @@ jobs:
             sha256sum "$f" > "$f.sha256"
           done
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: ffi-${{ matrix.target }}
           path: |
@@ -212,11 +212,11 @@ jobs:
       run:
         working-directory: bindings/node
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: ${{ matrix.target }}
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v6
         with:
           node-version: "20"
       - run: npm install
@@ -234,7 +234,7 @@ jobs:
         run: |
           npx napi build --platform --release --target ${{ matrix.target }} --zig
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: node-${{ matrix.target }}
           path: bindings/node/*.node
@@ -267,9 +267,9 @@ jobs:
             manylinux: auto
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
-      - uses: astral-sh/setup-uv@v3
+      - uses: astral-sh/setup-uv@v8
         # PyO3/maturin-action drives cibuildwheel which brings its own
         # per-target Pythons, but a host Python is still needed for the
         # action's prelude. uv installs one via python-build-standalone.
@@ -281,7 +281,7 @@ jobs:
           args: --release --out dist --manifest-path bindings/python/Cargo.toml
           manylinux: ${{ matrix.manylinux }}
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: wheels-${{ matrix.os }}-${{ matrix.target }}-${{ matrix.manylinux }}
           path: dist/*.whl
@@ -290,11 +290,12 @@ jobs:
     needs: build-ffi
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - uses: dtolnay/rust-toolchain@stable
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@v6
         with:
           go-version: "1.26"
+          cache: false  # binding has no non-stdlib deps; no go.sum to key on
       - name: Build FFI and run Go tests
         run: make -C bindings/go test
 
@@ -302,7 +303,7 @@ jobs:
     needs: [test, lint-workflows]
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - uses: dtolnay/rust-toolchain@stable
       - name: Install cargo-public-api
         run: cargo install cargo-public-api --locked --version 0.51.0
@@ -322,7 +323,7 @@ jobs:
     needs: [test, lint-workflows]
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - uses: dtolnay/rust-toolchain@stable
       - name: Build FFI and run C conformance suite
         run: make -C bindings/ffi conformance
@@ -331,9 +332,9 @@ jobs:
     needs: [test, lint-workflows]
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - uses: dtolnay/rust-toolchain@stable
-      - uses: astral-sh/setup-uv@v3
+      - uses: astral-sh/setup-uv@v8
         # uv handles Python install — no separate actions/setup-python step.
       - name: Build and install Python binding
         working-directory: bindings/python
@@ -352,9 +353,9 @@ jobs:
       run:
         working-directory: bindings/node
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - uses: dtolnay/rust-toolchain@stable
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v6
         with:
           node-version: "20"
       - run: npm install
@@ -369,27 +370,27 @@ jobs:
     env:
       GH_TOKEN: ${{ github.token }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           pattern: cli-*
           merge-multiple: true
           path: cli/
 
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           pattern: ffi-*
           merge-multiple: true
           path: ffi/
 
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           pattern: node-*
           merge-multiple: true
           path: node/
 
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           pattern: wheels-*
           merge-multiple: true

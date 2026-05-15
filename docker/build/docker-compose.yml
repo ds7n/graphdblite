@@ -13,8 +13,57 @@ services:
       - ../..:/src:ro
       - ../../dist:/dist
 
-  zig-wheels:
-    build: zig-wheels
+  # Linux Python wheels — PyPA manylinux/musllinux containers, one per
+  # (arch, libc) combination. aarch64 services run via qemu binfmt when
+  # the host is x86_64 (install with:
+  #   docker run --privileged --rm tonistiigi/binfmt --install all
+  # ).
+  wheels-x86_64-gnu:
+    build:
+      context: wheels
+      args:
+        BASE_IMAGE: quay.io/pypa/manylinux_2_28_x86_64
+    environment:
+      TARGET: x86_64-unknown-linux-gnu
+      MANYLINUX: "2_28"
+    volumes:
+      - ../..:/src:ro
+      - ../../dist:/dist
+
+  wheels-x86_64-musl:
+    build:
+      context: wheels
+      args:
+        BASE_IMAGE: quay.io/pypa/musllinux_1_2_x86_64
+    environment:
+      TARGET: x86_64-unknown-linux-musl
+      MANYLINUX: musllinux_1_2
+    volumes:
+      - ../..:/src:ro
+      - ../../dist:/dist
+
+  wheels-aarch64-gnu:
+    platform: linux/arm64
+    build:
+      context: wheels
+      args:
+        BASE_IMAGE: quay.io/pypa/manylinux_2_28_aarch64
+    environment:
+      TARGET: aarch64-unknown-linux-gnu
+      MANYLINUX: "2_28"
+    volumes:
+      - ../..:/src:ro
+      - ../../dist:/dist
+
+  wheels-aarch64-musl:
+    platform: linux/arm64
+    build:
+      context: wheels
+      args:
+        BASE_IMAGE: quay.io/pypa/musllinux_1_2_aarch64
+    environment:
+      TARGET: aarch64-unknown-linux-musl
+      MANYLINUX: musllinux_1_2
     volumes:
       - ../..:/src:ro
       - ../../dist:/dist

@@ -60,7 +60,7 @@ is done by emailing the SQLite maintainer with a patch.
    # (no output) → still free
    ```
 
-2. **Email the patch.** Send `docs/sqlite-magic.patch` (in this directory)
+2. **Email the patch.** Send `sqlite-magic.patch` (in the repo root)
    as an attachment or inline diff to **drh@sqlite.org** (D. Richard Hipp).
    A short message is sufficient — for example:
 

@@ -1,39 +1,78 @@
-name: Python Wheels (macOS + PyPI)
+name: Python Wheels (PyPI)
 
-# Builds macOS wheels and sdist, then publishes all wheels to PyPI.
-# Linux and Windows wheels are built locally via scripts/build-release.sh
-# and uploaded to the GitHub release via scripts/publish-release.sh.
+# On tag push (or manual dispatch with a tag), builds wheels for every
+# supported (os, arch) combination plus an sdist, then publishes all of
+# them to PyPI as one atomic release. CI is the canonical source for
+# PyPI wheels; the locally-built dist/wheels/ artifacts in
+# scripts/publish-release.sh are uploaded to the GitHub/Forgejo release
+# pages as a convenience but are not what `pip install graphdblite`
+# resolves to.
 #
-# Disabled for now — uncomment the tag trigger when macOS wheels are needed.
+# Publishing uses PyPI trusted publishing (OIDC) via the `pypi`
+# environment. To enable for the first release:
+#   1. PyPI → Account → Publishing → Add pending publisher:
+#      owner=ds7n, repo=graphdblite, workflow=python-wheels.yml,
+#      environment=pypi.
+#   2. GitHub → Settings → Environments → New environment "pypi".
+# Token-based fallback: set PYPI_API_TOKEN as a secret and add
+#   `password: ${{ secrets.PYPI_API_TOKEN }}` to the publish step.
 
 on:
-  workflow_dispatch: # manual only for now
-  # push:
-  #   tags:
-  #     - "v*"
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Tag to publish (e.g. v0.1.0). Required for manual runs."
+        required: true
 
 permissions:
   contents: read
 
+concurrency:
+  group: python-wheels-${{ github.ref }}
+  cancel-in-progress: false
+
 jobs:
-  build-wheels-macos:
+  build-wheels:
+    name: build (${{ matrix.os }}, ${{ matrix.target }}, ${{ matrix.manylinux }})
     strategy:
+      fail-fast: false
       matrix:
         include:
+          # Linux glibc (manylinux_2_28)
+          - os: ubuntu-latest
+            target: x86_64
+            manylinux: "2_28"
+          - os: ubuntu-latest
+            target: aarch64
+            manylinux: "2_28"
+          # Linux musl (musllinux_1_2)
+          - os: ubuntu-latest
+            target: x86_64
+            manylinux: musllinux_1_2
+          - os: ubuntu-latest
+            target: aarch64
+            manylinux: musllinux_1_2
+          # macOS (universal2 would be ideal but maturin builds per-arch)
           - os: macos-latest
             target: x86_64
             manylinux: auto
           - os: macos-latest
             target: aarch64
             manylinux: auto
+          # Windows
+          - os: windows-latest
+            target: x64
+            manylinux: auto
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v6
 
       - uses: astral-sh/setup-uv@v8.1.0
-        # PyO3/maturin-action drives cibuildwheel (which brings its own
-        # per-target Pythons), but a host Python is needed for the prelude.
-        # uv installs one via python-build-standalone.
+        # PyO3/maturin-action drives cibuildwheel (brings its own per-target
+        # Pythons), but a host Python is needed for the action prelude.
 
       - name: Build wheels
         uses: PyO3/maturin-action@v1
@@ -44,7 +83,7 @@ jobs:
 
       - uses: actions/upload-artifact@v7
         with:
-          name: wheels-${{ matrix.os }}-${{ matrix.target }}
+          name: wheels-${{ matrix.os }}-${{ matrix.target }}-${{ matrix.manylinux }}
           path: dist/*.whl
 
   build-sdist:
@@ -64,11 +103,11 @@ jobs:
           path: dist/*.tar.gz
 
   publish:
-    needs: [build-wheels-macos, build-sdist]
+    needs: [build-wheels, build-sdist]
     runs-on: ubuntu-latest
     environment: pypi
     permissions:
-      id-token: write  # trusted publishing
+      id-token: write  # trusted publishing — no token needed
     steps:
       - uses: actions/download-artifact@v8
         with:
@@ -80,6 +119,9 @@ jobs:
         with:
           name: sdist
           path: dist/
+
+      - name: List artifacts to publish
+        run: ls -lh dist/
 
       - name: Publish to PyPI
         uses: pypa/gh-action-pypi-publish@release/v1

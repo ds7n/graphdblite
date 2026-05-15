@@ -7,6 +7,10 @@ ships.
 
 ## [Unreleased]
 
+## [0.1.0] - 2026-05-15
+
+First public release.
+
 ### Added
 - Database files now stamp `application_id = 0x4744424C` ("GDBL") and
   `user_version = 1` in the SQLite header. `file(1)` reports the ID;
@@ -43,7 +47,7 @@ ships.
   `UndefinedVariable`.
 - CALL procedure support; list-order comparison; var-length limit pushdown.
 - 100% openCypher TCK conformance (3895/3895 scenarios pass).
-- MSRV declared: Rust 1.82 (required by `Option::is_none_or` in `planner.rs`).
+- MSRV declared: Rust 1.90.
 - Per-`Database` parsed-AST cache (`cypher::parse_cache`). Repeated
   `db.execute(cypher)` / `tx.query(cypher)` calls with the same query
   string skip the pest parse, going straight to plan + execute. Bounded

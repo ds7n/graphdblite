@@ -9,6 +9,28 @@ description = "Embedded graph database with Cypher support"
 license = "MIT"
 license-files = ["LICENSE"]
 requires-python = ">=3.10"
+authors = [{ name = "ds7n" }]
+keywords = ["graph", "database", "cypher", "embedded", "sqlite"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Rust",
+    "Topic :: Database :: Database Engines/Servers",
+    "Operating System :: POSIX :: Linux",
+    "Operating System :: MacOS",
+    "Operating System :: Microsoft :: Windows",
+]
+
+[project.urls]
+Repository = "https://github.com/ds7n/graphdblite"
+Documentation = "https://github.com/ds7n/graphdblite/blob/main/docs/python.md"
+Issues = "https://github.com/ds7n/graphdblite/issues"
+Changelog = "https://github.com/ds7n/graphdblite/blob/main/CHANGELOG.md"
 
 [tool.maturin]
 module-name = "graphdblite._graphdblite"

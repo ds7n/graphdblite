@@ -2,6 +2,16 @@
   "name": "graphdblite",
   "version": "0.1.0",
   "description": "Embedded graph database with Cypher support",
+  "author": "ds7n",
+  "keywords": ["graph", "database", "cypher", "embedded", "sqlite"],
+  "homepage": "https://github.com/ds7n/graphdblite#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/ds7n/graphdblite.git"
+  },
+  "bugs": {
+    "url": "https://github.com/ds7n/graphdblite/issues"
+  },
   "main": "wrapper.js",
   "types": "wrapper.d.ts",
   "napi": {

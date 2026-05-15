@@ -7,6 +7,12 @@ version = "0.1.0"
 edition = "2021"
 license = "MIT"
 rust-version = "1.90"
+repository = "https://github.com/ds7n/graphdblite"
+homepage = "https://github.com/ds7n/graphdblite"
+documentation = "https://docs.rs/graphdblite"
+readme = "README.md"
+keywords = ["graph", "database", "cypher", "embedded", "sqlite"]
+categories = ["database", "database-implementations"]
 
 [package]
 name = "graphdblite"
@@ -15,6 +21,12 @@ edition.workspace = true
 rust-version.workspace = true
 description = "Embedded graph database with Cypher support. SQLite-grade simplicity, graph-native performance."
 license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+documentation.workspace = true
+readme.workspace = true
+keywords.workspace = true
+categories.workspace = true
 
 [lib]
 crate-type = ["lib"]

@@ -984,7 +984,7 @@ Return6 - Implicit grouping with aggregates::[11] Counting matches	count(*)
 Return6 - Implicit grouping with aggregates::[12] Counting matches per group	a|count(*)
 Return6 - Implicit grouping with aggregates::[13] Returning the minimum length of paths	name|others|len
 Return6 - Implicit grouping with aggregates::[16] Aggregation on complex expressions	me|you|sum
-Return6 - Implicit grouping with aggregates::[17] Handle constants and parameters inside an expression which contains an aggregation expression	38 + avg(person.age) - 1000
+Return6 - Implicit grouping with aggregates::[17] Handle constants and parameters inside an expression which contains an aggregation expression	$age + avg(person.age) - 1000
 Return6 - Implicit grouping with aggregates::[18] Handle returned variables inside an expression which contains an aggregation expression	<EMPTY>
 Return6 - Implicit grouping with aggregates::[19] Handle returned property accesses inside an expression which contains an aggregation expression	<EMPTY>
 Return6 - Implicit grouping with aggregates::[1] Return count aggregation over nodes	n|count

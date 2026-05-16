@@ -1,10 +1,18 @@
-name: Dev Build
+name: Build & Release
+
+# Two trigger modes:
+#   - workflow_dispatch  → republishes the rolling `dev-latest` prerelease.
+#   - push of a v* tag   → publishes a fixed release at that tag.
+# Both modes run the full 7-platform binary matrix (CLI, FFI, Node addon,
+# Python wheels). Wheels are also pushed to PyPI by python-wheels.yml on
+# the same tag-push event — kept in a separate workflow so the PyPI
+# publishing step doesn't gate the GitHub release artifacts.
 
 on:
-  workflow_dispatch:  # manual only — local builds replace this (scripts/build-release.sh)
-  # push:
-  #   branches:
-  #     - main
+  workflow_dispatch:
+  push:
+    tags:
+      - "v*"
 
 permissions:
   contents: write
@@ -51,6 +59,7 @@ jobs:
   build-cli:
     needs: [test, lint-workflows]
     strategy:
+      fail-fast: false
       matrix:
         include:
           - os: ubuntu-latest
@@ -60,8 +69,19 @@ jobs:
             target: aarch64-unknown-linux-gnu
             ext: tar.gz
             cross: true
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-musl
+            ext: tar.gz
+            cross: true
+          - os: ubuntu-latest
+            target: aarch64-unknown-linux-musl
+            ext: tar.gz
+            cross: true
           - os: macos-latest
             target: aarch64-apple-darwin
+            ext: tar.gz
+          - os: macos-latest
+            target: x86_64-apple-darwin
             ext: tar.gz
           - os: windows-latest
             target: x86_64-pc-windows-msvc
@@ -114,6 +134,7 @@ jobs:
   build-ffi:
     needs: [test, lint-workflows]
     strategy:
+      fail-fast: false
       matrix:
         include:
           - os: ubuntu-latest
@@ -121,8 +142,16 @@ jobs:
           - os: ubuntu-latest
             target: aarch64-unknown-linux-gnu
             cross: true
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-musl
+            cross: true
+          - os: ubuntu-latest
+            target: aarch64-unknown-linux-musl
+            cross: true
           - os: macos-latest
             target: aarch64-apple-darwin
+          - os: macos-latest
+            target: x86_64-apple-darwin
           # Two Windows builds:
           #   - MSVC: for C consumers, Node addon, Python wheel — Windows-native ABI.
           #   - GNU/MinGW: for Go cgo, which uses gcc-style linker invocations and
@@ -200,6 +229,12 @@ jobs:
             target: x86_64-unknown-linux-gnu
           - os: ubuntu-latest
             target: aarch64-unknown-linux-gnu
+            use_zig: true
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-musl
+            use_zig: true
+          - os: ubuntu-latest
+            target: aarch64-unknown-linux-musl
             use_zig: true
           - os: macos-latest
             target: aarch64-apple-darwin
@@ -344,46 +379,60 @@ jobs:
       - name: Run conformance suite
         run: npm test
 
-  publish:
+  # Common artifact-collection job — runs for both dev-latest and tag releases.
+  # Publishes nothing on its own; the two publish-* jobs below consume its
+  # uploaded artifacts.
+  collect-artifacts:
     needs: [build-cli, build-ffi, build-node, build-wheels, test-go, test-ffi-conformance, test-python-conformance, test-node-conformance]
     runs-on: ubuntu-latest
-    env:
-      GH_TOKEN: ${{ github.token }}
     steps:
-      - uses: actions/checkout@v6
-
       - uses: actions/download-artifact@v8
         with:
           pattern: cli-*
           merge-multiple: true
           path: cli/
-
       - uses: actions/download-artifact@v8
         with:
           pattern: ffi-*
           merge-multiple: true
           path: ffi/
-
       - uses: actions/download-artifact@v8
         with:
           pattern: node-*
           merge-multiple: true
           path: node/
-
       - uses: actions/download-artifact@v8
         with:
           pattern: wheels-*
           merge-multiple: true
           path: wheels/
-
       - name: Combine checksums
         run: cat cli/*.sha256 ffi/*.sha256 > sha256sums.txt
+      - uses: actions/upload-artifact@v7
+        with:
+          name: release-bundle
+          path: |
+            cli/
+            ffi/
+            node/
+            wheels/
+            sha256sums.txt
 
-      - name: Delete existing dev-latest release
-        run: gh release delete dev-latest --yes --cleanup-tag || true
-
-      - name: Create dev-latest release
+  publish-dev-latest:
+    if: github.event_name == 'workflow_dispatch'
+    needs: collect-artifacts
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/download-artifact@v8
+        with:
+          name: release-bundle
+          path: bundle/
+      - name: Replace rolling dev-latest release
         run: |
+          gh release delete dev-latest --yes --cleanup-tag || true
           gh release create dev-latest \
             --title "Dev Build (latest main)" \
             --notes "Rolling development build from main branch.
@@ -391,13 +440,44 @@ jobs:
           Date: $(date -u +%Y-%m-%d)
 
           ## Artifacts
-          - **CLI binaries**: Linux (x86_64, arm64), macOS (arm64), Windows (x86_64)
-          - **Python wheels**: glibc + musl Linux, macOS, Windows — abi3 (Python 3.10+)
-          - **C FFI libraries**: Linux (x86_64, arm64), macOS (arm64), Windows (x86_64)
-          - **Node.js addons**: Linux (x86_64, arm64), macOS (x86_64, arm64), Windows (x86_64)" \
+          - **CLI binaries**: Linux (x86_64, arm64, musl x86_64, musl arm64), macOS (x86_64, arm64), Windows (x86_64)
+          - **Python wheels**: full PyPI matrix (glibc + musl Linux, macOS, Windows)
+          - **C FFI libraries**: same 7 targets as CLI, plus Windows MinGW for Go cgo
+          - **Node.js addons**: same 7 targets as CLI" \
             --prerelease \
             --target ${{ github.sha }} \
-            cli/graphdblite-*.tar.gz cli/graphdblite-*.zip sha256sums.txt \
-            ffi/graphdblite-ffi-*.tar.gz ffi/graphdblite-ffi-*.zip \
-            node/*.node \
-            wheels/*.whl
+            bundle/cli/graphdblite-*.tar.gz bundle/cli/graphdblite-*.zip bundle/sha256sums.txt \
+            bundle/ffi/graphdblite-ffi-*.tar.gz bundle/ffi/graphdblite-ffi-*.zip \
+            bundle/node/*.node \
+            bundle/wheels/*.whl
+
+  publish-tag-release:
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    needs: collect-artifacts
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/download-artifact@v8
+        with:
+          name: release-bundle
+          path: bundle/
+      - name: Create release for ${{ github.ref_name }}
+        run: |
+          gh release create "${{ github.ref_name }}" \
+            --title "${{ github.ref_name }}" \
+            --notes "Release ${{ github.ref_name }}.
+          Commit: ${{ github.sha }}
+
+          ## Artifacts
+          - **CLI binaries**: Linux (x86_64, arm64, musl x86_64, musl arm64), macOS (x86_64, arm64), Windows (x86_64)
+          - **Python wheels**: full PyPI matrix (glibc + musl Linux, macOS, Windows)
+          - **C FFI libraries**: same 7 targets as CLI, plus Windows MinGW for Go cgo
+          - **Node.js addons**: same 7 targets as CLI
+
+          See [CHANGELOG.md](https://github.com/${{ github.repository }}/blob/${{ github.ref_name }}/CHANGELOG.md) for details." \
+            bundle/cli/graphdblite-*.tar.gz bundle/cli/graphdblite-*.zip bundle/sha256sums.txt \
+            bundle/ffi/graphdblite-ffi-*.tar.gz bundle/ffi/graphdblite-ffi-*.zip \
+            bundle/node/*.node \
+            bundle/wheels/*.whl

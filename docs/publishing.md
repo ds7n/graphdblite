@@ -291,40 +291,43 @@ git push origin vX.Y.Z-go
 
 ---
 
-## GitHub / Forgejo releases (binary artifacts)
+## GitHub releases (binary artifacts)
 
-**Automated** via `scripts/publish-release.sh`.
+**Automated** via `.github/workflows/dev-build.yml` ("Build & Release"),
+which runs the full 7-platform binary matrix on every tag push:
 
-These releases host pre-built binaries for users who don't want to compile:
+- `graphdblite` CLI — 7 targets (Linux x86_64/aarch64 glibc + musl, macOS
+  x86_64/aarch64, Windows x86_64-MSVC)
+- `libgraphdblite_ffi.{so,a,dylib,dll}` + `graphdblite.h` — same 7 targets,
+  plus Windows MinGW (`.a` static archive for Go cgo)
+- `.node` addons — same 7 targets
+- Python `.whl` files — full PyPI matrix (also pushed to PyPI by
+  `python-wheels.yml` separately so the PyPI publish step doesn't gate
+  the GitHub release)
 
-- `graphdblite` CLI: Linux x86_64/aarch64, Windows x86_64 (macOS via the
-  optional `.github/workflows/release.yml`, currently disabled)
-- `libgraphdblite_ffi.{so,a,dll}` + `graphdblite.h`
-- `.node` addons (one per triple)
-- Python `.whl` files (also pushed to PyPI separately)
-
-**Each release:**
+**Each release** (canonical path):
 
 ```bash
-# 1. Build all artifacts into dist/ (Docker-based, multi-platform).
-docker compose -f docker/build/docker-compose.yml up --build
-
-# 2. Publish to Forgejo (default — uses FORGEJO_TOKEN from .env).
-scripts/publish-release.sh vX.Y.Z
-
-# 3. Also publish to GitHub.
-scripts/publish-release.sh --github vX.Y.Z
+# 1. Tag locally.
+git tag vX.Y.Z
+git push origin vX.Y.Z            # forgejo
+git push github vX.Y.Z            # github — triggers Build & Release
+# 2. Watch the workflow finish; it creates the GitHub release automatically.
 ```
 
 **Rolling dev build** from `main`:
 
-```bash
-scripts/publish-release.sh --dev          # forgejo dev-latest prerelease
-scripts/publish-release.sh --github --dev # github dev-latest prerelease
-```
+Trigger the "Build & Release" workflow via `workflow_dispatch`. It
+republishes the `dev-latest` prerelease on every manual run.
 
-Both are overwritten on each invocation. `dist/sha256sums.txt` is regenerated
-and uploaded alongside artifacts.
+**Forgejo mirror:** GitHub Actions doesn't run on forgejo. To mirror the
+binaries onto a forgejo release, download the assets from the GitHub
+release and re-upload via `scripts/publish-release.sh` (still supported
+for forgejo only):
+
+```bash
+scripts/publish-release.sh vX.Y.Z            # uploads dist/ to forgejo
+```
 
 ---
 

@@ -10,7 +10,7 @@
 
 use std::collections::HashMap;
 
-use crate::procedures::{Def as ProcedureDef, Param as ProcParam};
+use crate::cypher::procedure::{ProcParam, ProcedureDef, ProcedureRegistry};
 use crate::{Database, Value};
 use cucumber::{gherkin::Step, given, then, when};
 
@@ -173,7 +173,7 @@ fn run_query(
     db: &mut Database,
     query: &str,
     params: Option<&HashMap<String, Value>>,
-    procedures: &crate::procedures::Registry,
+    procedures: &ProcedureRegistry,
     is_write: bool,
 ) -> Result<Vec<crate::cypher::record::NamedRecord>, crate::GraphError> {
     if is_write {

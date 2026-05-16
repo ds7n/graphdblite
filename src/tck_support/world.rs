@@ -5,8 +5,8 @@
 use std::collections::{HashMap, HashSet};
 use std::hash::{Hash, Hasher};
 
+use crate::cypher::procedure::ProcedureRegistry;
 use crate::cypher::record::NamedRecord;
-use crate::procedures::Registry as ProcedureRegistry;
 use crate::{Database, GraphError, Value};
 use cucumber::World as CucumberWorld;
 use rusqlite::Connection;

@@ -19,6 +19,13 @@ cargo fmt --check --all
 echo "  cargo clippy --all-targets -- -D warnings"
 cargo clippy --all-targets -- -D warnings
 
+# Compile-check feature-gated code (tck-support, dhat-heap, fuzzing). The
+# `cargo test --workspace` step below does not enable any features, so
+# without this gate the tck harness and alloc-regression test can break
+# silently on master.
+echo "  cargo check --workspace --all-targets --all-features"
+cargo check --workspace --all-targets --all-features
+
 echo "  cargo test --workspace"
 cargo test --workspace
 

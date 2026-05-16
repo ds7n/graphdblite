@@ -203,9 +203,15 @@ this step ride the tag-push trigger like the wheels workflow does.
 will fail unless the per-platform `libgraphdblite_ffi.a` archives are
 *committed* under the tag — see "Go binding lib population" below.
 
-After pushing `vX.Y.Z-go` to the GitHub mirror (`git push github vX.Y.Z-go`),
-`pkg.go.dev` indexes the module within a few minutes. Trigger indexing manually
-by visiting `https://pkg.go.dev/github.com/ds7n/graphdblite/bindings/go@vX.Y.Z-go`.
+Tag format: the Go module lives at `github.com/ds7n/graphdblite/bindings/go`,
+so Go requires the tag to be **prefixed with the subdirectory path** —
+`bindings/go/vX.Y.Z`, *not* a bare `vX.Y.Z-go` (which Go's proxy does not
+recognize for subdirectory modules).
+
+After pushing `bindings/go/vX.Y.Z` to the GitHub mirror
+(`git push github bindings/go/vX.Y.Z`), `pkg.go.dev` indexes the module
+within a few minutes. Trigger indexing manually by visiting
+`https://pkg.go.dev/github.com/ds7n/graphdblite/bindings/go@vX.Y.Z`.
 
 **Caveat:** Go modules versioned at v2 or higher require a `/vN` suffix on the
 import path. Until then, stay on `v0.*` / `v1.*`.
@@ -243,15 +249,15 @@ Sequence:
    It extracts each archive's `libgraphdblite_ffi.a` into
    `bindings/go/lib/<os_arch>/` and force-stages the files
    (they're gitignored, so `git add -f` is required).
-4. Commit + tag with a `-go` suffix so the lib-bearing commit has its own tag
-   distinct from `vX.Y.Z`:
+4. Commit + tag with the Go module subdir prefix so the lib-bearing commit
+   has its own tag, separate from `vX.Y.Z`:
    ```bash
    git commit -m "release: vX.Y.Z Go FFI libs"
-   git tag -a vX.Y.Z-go -m "Go FFI libs for vX.Y.Z"
-   git push origin vX.Y.Z-go
-   git push github vX.Y.Z-go
+   git tag -a bindings/go/vX.Y.Z -m "Go binding vX.Y.Z — see CHANGELOG.md"
+   git push origin bindings/go/vX.Y.Z
+   git push github bindings/go/vX.Y.Z
    ```
-5. Users `go get github.com/ds7n/graphdblite/bindings/go@vX.Y.Z-go`.
+5. Users `go get github.com/ds7n/graphdblite/bindings/go@vX.Y.Z`.
 
 **Module weight.** Each `libgraphdblite_ffi.a` is ~35 MB, so the four
 platforms add ~140 MB to the committed module. This is acceptable as long as
@@ -274,19 +280,29 @@ GITHUB_OWNER=ds7n GITHUB_REPO=graphdblite \
 `release: published` (and via manual `workflow_dispatch` with a tag
 input). It downloads the FFI assets from the just-published GitHub
 release, runs `populate-go-libs.sh --github`, commits on a detached
-HEAD off the released tag's commit, and pushes a parallel `vX.Y.Z-go`
-tag. The commit is *not* pushed to main — only the tag.
+HEAD off the released tag's commit, and pushes `bindings/go/vX.Y.Z`.
+The commit is *not* pushed to main — only the tag.
 
-Forgejo doesn't run GitHub Actions, so the `-go` tag reaches forgejo
-via mirror push (`git push origin vX.Y.Z-go` from a clone that already
-has the tag fetched from github), or run the populate flow manually
-against forgejo:
+**Caveat:** GitHub Actions does *not* fire `release: published` for
+releases created by another workflow's `GITHUB_TOKEN` (loop-prevention
+behaviour). Since `dev-build.yml`'s `publish-tag-release` job creates
+the v0.1.0 release that way, you may need to dispatch `release-go.yml`
+manually for the first release after a tag-push:
+
+```bash
+gh workflow run release-go.yml -f tag=vX.Y.Z --ref main
+```
+
+Forgejo doesn't run GitHub Actions, so the Go-module tag reaches forgejo
+via mirror push (`git push origin bindings/go/vX.Y.Z` from a clone that
+already has the tag fetched from github), or run the populate flow
+manually against forgejo:
 
 ```bash
 scripts/populate-go-libs.sh vX.Y.Z   # forgejo default
 git commit -m "release: vX.Y.Z Go FFI libs"
-git tag -a vX.Y.Z-go -m "Go FFI libs for vX.Y.Z"
-git push origin vX.Y.Z-go
+git tag -a bindings/go/vX.Y.Z -m "Go binding vX.Y.Z — see CHANGELOG.md"
+git push origin bindings/go/vX.Y.Z
 ```
 
 ---
@@ -334,17 +350,26 @@ scripts/publish-release.sh vX.Y.Z            # uploads dist/ to forgejo
 ## Order of operations for a clean release
 
 1. Bump versions + CHANGELOG, commit.
-2. Tag `vX.Y.Z`, push to both remotes.
-3. **crates.io**: `cargo publish -p graphdblite`
-4. **GitHub Actions**: tag push triggers `python-wheels.yml` → PyPI upload.
-5. **npm**: build + publish from `bindings/node/` (manual until automated).
-6. **Forgejo + GitHub releases**: `scripts/publish-release.sh vX.Y.Z && scripts/publish-release.sh --github vX.Y.Z`
-7. **Go FFI libs (GitHub)**: automatic — `.github/workflows/release-go.yml`
-   fires on `release: published`, populates libs, pushes `vX.Y.Z-go`.
-   For forgejo, also run `scripts/populate-go-libs.sh vX.Y.Z` + commit +
-   tag locally. See "Go binding lib population" above.
-8. **pkg.go.dev**: nothing — happens automatically once the `vX.Y.Z-go` tag is
-   visible on GitHub.
+2. Tag `vX.Y.Z`, push to both remotes (`git push origin vX.Y.Z && git push github vX.Y.Z`).
+3. **GitHub Actions** (tag push fires automatically):
+   - `python-wheels.yml` → builds wheel matrix, publishes to PyPI via OIDC.
+   - `dev-build.yml` → builds CLI/FFI/Node/wheels across 7 platforms, creates
+     the GitHub release, and runs the `publish-npm` job to push npm sub-
+     packages + main wrapper.
+4. **crates.io** (manual): `cargo publish` from the repo root.
+5. **release-go.yml** (manual dispatch for the first release after a tag —
+   the `release: published` trigger doesn't fire for releases created by
+   another workflow's `GITHUB_TOKEN`):
+   ```bash
+   gh workflow run release-go.yml -f tag=vX.Y.Z --ref main
+   ```
+   It populates `bindings/go/lib/<os_arch>/libgraphdblite_ffi.a` and pushes
+   `bindings/go/vX.Y.Z`.
+6. **Forgejo mirror** (optional): `scripts/publish-release.sh vX.Y.Z` to
+   mirror the GitHub release assets onto a forgejo release. Forgejo also
+   needs the Go-module tag pushed (`git push origin bindings/go/vX.Y.Z`).
+7. **pkg.go.dev**: nothing — auto-indexes from the `bindings/go/vX.Y.Z`
+   tag within a few minutes. Trigger the fetch by visiting the package URL.
 
 Verify each landed:
 

@@ -1,16 +1,23 @@
 name: Publish Go FFI libs
 
 # Automates step 7 of docs/publishing.md "Order of operations for a clean
-# release": once the GitHub release for vX.Y.Z is published (with its four
+# release": once the GitHub release for vX.Y.Z is published (with its
 # graphdblite-ffi-*.{tar.gz,zip} assets already attached), this workflow
 # downloads those assets, extracts each platform's libgraphdblite_ffi.a
 # into bindings/go/lib/<os_arch>/, commits the result on a detached HEAD
-# (off the released tag), and pushes a parallel vX.Y.Z-go tag. That tag
-# is what `go get github.com/ds7n/graphdblite/bindings/go@vX.Y.Z-go`
-# resolves to — the libs need to be present in its tree.
+# (off the released tag), and pushes the Go-module tag
+# `bindings/go/vX.Y.Z`. That tag is what
+# `go get github.com/ds7n/graphdblite/bindings/go@vX.Y.Z` resolves to —
+# the libs need to be present in its tree.
+#
+# Tag format note: Go's module spec requires subdirectory modules to be
+# tagged with the subdir path as a prefix (`bindings/go/vX.Y.Z`), not a
+# bare or suffix-style tag (`vX.Y.Z-go`). Earlier revisions of this
+# workflow used `vX.Y.Z-go`; pkg.go.dev and proxy.golang.org do not
+# recognize that format for subdir modules.
 #
 # The commit is NOT pushed to main — only the tag is. Forgejo gets the
-# -go tag via mirror or manual `git push origin vX.Y.Z-go`.
+# tag via mirror or manual `git push origin bindings/go/vX.Y.Z`.
 
 on:
   release:
@@ -51,8 +58,9 @@ jobs:
         env:
           TAG: ${{ steps.tag.outputs.tag }}
         run: |
-          # Skip rolling dev tags and any retriggers on -go itself.
-          if [[ "$TAG" != v* ]] || [[ "$TAG" == *-go ]] || [[ "$TAG" == dev-* ]]; then
+          # Skip rolling dev tags, prior -go-suffix tags (legacy), and
+          # any retriggers on the bindings/go/* tags this workflow creates.
+          if [[ "$TAG" != v* ]] || [[ "$TAG" == *-go ]] || [[ "$TAG" == dev-* ]] || [[ "$TAG" == bindings/go/* ]]; then
             echo "::notice::Skipping $TAG — not a versioned release tag"
             echo "skip=true" >> "$GITHUB_OUTPUT"
           else
@@ -95,6 +103,9 @@ jobs:
           TAG: ${{ steps.tag.outputs.tag }}
         run: |
           git commit -m "release: $TAG Go FFI libs"
-          git tag -a "$TAG-go" -m "Go FFI libs for $TAG"
-          git push origin "$TAG-go"
-          echo "::notice::Pushed $TAG-go (commit $(git rev-parse HEAD))"
+          # Go-module tag for the bindings/go/ subdirectory module.
+          # See header comment for why this format (not $TAG-go).
+          MODTAG="bindings/go/$TAG"
+          git tag -a "$MODTAG" -m "Go binding $TAG — see CHANGELOG.md"
+          git push origin "$MODTAG"
+          echo "::notice::Pushed $MODTAG (commit $(git rev-parse HEAD))"

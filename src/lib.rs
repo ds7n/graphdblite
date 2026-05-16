@@ -75,12 +75,7 @@ pub mod __fuzz {
     }
 }
 
-/// Procedure-registration types for `CALL <name>(...)` support.
-///
-/// Bindings register procedure definitions on a `Registry` and pass it
-/// through to the executor.
-pub mod procedures {
-    pub use crate::cypher::procedure::ProcParam as Param;
-    pub use crate::cypher::procedure::ProcedureDef as Def;
-    pub use crate::cypher::procedure::ProcedureRegistry as Registry;
-}
+// Procedure-registration types for `CALL <name>(...)` support are not part
+// of the public API in 0.1.0. The TCK harness reaches them via
+// `crate::cypher::procedure` directly. Will be revisited when a first-party
+// binding has a concrete use case.

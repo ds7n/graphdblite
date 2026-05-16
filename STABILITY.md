@@ -87,9 +87,10 @@ Bindings should treat unknown error kinds defensively.
 
 ### Procedures (CALL support)
 
-`graphdblite::procedures::{Registry, Def, Param}` for callers that need
-to register custom procedures (primarily the TCK harness). This is the
-only public form — there is no top-level alias.
+Not part of the 0.1.0 public surface. The TCK harness uses the procedure
+registry internally, but it is reachable only through `pub(crate)` paths.
+A public form will be added when a first-party binding has a concrete
+use case; until then, no `procedures::*` import is supported.
 
 ## Stability guarantees by item
 
@@ -103,7 +104,7 @@ only public form — there is no top-level alias.
 | Error enums | Adding variants is breaking. Display format is best-effort, not stable. |
 | `Config` fields | Adding fields with sensible defaults is non-breaking when constructed via `Config::default()` / struct update syntax. |
 | `Record` | Stable. Accessed only through `new`/`get`/`set`/`remove`/`len`/`is_empty`/`iter`/`keys`/`values`/`name_at`/`value_at`. The underlying storage is `IndexMap<String, Value>` but the field is `pub(crate)` to keep the dependency out of the public API. |
-| `procedures::{Registry, Def, Param}` | Pre-1.0 surface for callers that need to register custom procedures. The TCK harness is the only current consumer; first-party bindings do not yet use it. Treat as experimental — likely to change before `1.0.0`. |
+| `procedures::*` | **Not public** in 0.1.0. Will be added when a first-party binding consumes it. |
 | `cypher::*`, `storage`, `index`, `node`, `edge`, `temporal` | **Not public.** May change at any time. |
 | `Database::connection()` | **Not public** (`pub(crate)`). |
 

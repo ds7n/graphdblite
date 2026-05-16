@@ -27,6 +27,11 @@ documentation.workspace = true
 readme.workspace = true
 keywords.workspace = true
 categories.workspace = true
+exclude = [
+    "tests/tck/features/**",
+    "tests/tck/graphs/**",
+    "tests/tck/skiplist.txt",
+]
 
 [lib]
 crate-type = ["lib"]

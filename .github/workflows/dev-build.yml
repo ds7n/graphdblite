@@ -299,6 +299,53 @@ jobs:
           name: node-${{ matrix.target }}
           path: bindings/node/*.node
 
+  # On tag push, publish the per-platform .node packages and the main
+  # wrapper to npm. Uses a long-lived NPM_TOKEN; first publish; future
+  # versions can migrate to npm trusted publishing once the package
+  # exists on npm.
+  publish-npm:
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    needs: build-node
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: "22"
+          registry-url: "https://registry.npmjs.org"
+      - name: Install Node deps
+        working-directory: bindings/node
+        run: npm install
+      - uses: actions/download-artifact@v8
+        with:
+          path: bindings/node/artifacts
+          pattern: node-*
+          merge-multiple: true
+      - name: List downloaded artifacts
+        working-directory: bindings/node
+        run: ls -R artifacts
+      - name: Stage per-platform npm packages
+        working-directory: bindings/node
+        run: |
+          npx napi create-npm-dirs
+          npx napi artifacts --dir artifacts
+          echo "--- npm tree ---"
+          ls -R npm
+      - name: Publish per-platform packages
+        working-directory: bindings/node
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          for d in npm/*/; do
+            echo "Publishing $d"
+            (cd "$d" && npm publish --access public)
+          done
+      - name: Publish main wrapper
+        working-directory: bindings/node
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: npm publish --access public
+
   build-wheels:
     needs: [test, lint-workflows]
     strategy:

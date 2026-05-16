@@ -34,8 +34,9 @@ mod transaction;
 // `crate::index`. The primitives now live under `storage/`; re-export here
 // so the move stays contained to the mod files (no churn in callers).
 pub(crate) use storage::{edge, index, node};
-/// Public value, error, and identifier types used throughout the API.
-pub mod types;
+// Value, error, and identifier types used throughout the API. Module is
+// crate-internal; the stable surface is the re-exports below.
+pub(crate) mod types;
 
 #[cfg(feature = "tck-support")]
 #[doc(hidden)]
@@ -48,7 +49,7 @@ pub use db::{Config, Database, SyncMode};
 pub use transaction::{ReadTxGuard, WriteTxGuard};
 pub use types::{
     Direction, Edge, ErrorCode, GraphError, Node, NodeId, PathValue, Properties, QueryError,
-    QueryPhase, Span, Value,
+    QueryPhase, Result, Span, Value,
 };
 
 /// Hidden re-exports for `cargo fuzz` targets in `fuzz/`. Enabled by the

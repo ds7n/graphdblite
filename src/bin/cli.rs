@@ -218,7 +218,7 @@ fn mode_name(mode: OutputMode) -> &'static str {
 }
 
 fn visible_columns(rec: &graphdblite::Record) -> Vec<&String> {
-    let mut cols: Vec<&String> = rec.fields.keys().filter(|k| !k.contains(".__")).collect();
+    let mut cols: Vec<&String> = rec.keys().filter(|k| !k.contains(".__")).collect();
     cols.sort();
     cols
 }
@@ -242,7 +242,7 @@ fn print_records_json(records: &[graphdblite::Record]) {
             }
             json_escape_into(col, &mut s);
             s.push(':');
-            value_to_json(rec.fields.get(*col).unwrap_or(&Value::Null), &mut s);
+            value_to_json(rec.get(col).unwrap_or(&Value::Null), &mut s);
         }
         s.push('}');
         let _ = writeln!(out, "{s}");
@@ -266,7 +266,7 @@ fn print_records_table(records: &[graphdblite::Record]) {
     let mut widths: Vec<usize> = columns.iter().map(|c| c.len()).collect();
     for rec in records {
         for (i, col) in columns.iter().enumerate() {
-            let val_str = format_value(rec.fields.get(*col));
+            let val_str = format_value(rec.get(col));
             widths[i] = widths[i].max(val_str.len());
         }
     }
@@ -294,7 +294,7 @@ fn print_records_table(records: &[graphdblite::Record]) {
             .iter()
             .enumerate()
             .map(|(i, col)| {
-                let val_str = format_value(rec.fields.get(*col));
+                let val_str = format_value(rec.get(col));
                 format!("{:width$}", val_str, width = widths[i])
             })
             .collect::<Vec<_>>()

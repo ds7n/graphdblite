@@ -7,9 +7,8 @@ use crate::types::Value;
 /// Uses `IndexMap` to preserve insertion order, giving deterministic column
 /// ordering in query results.
 #[derive(Debug, Clone, PartialEq)]
-#[allow(missing_docs)]
 pub struct NamedRecord {
-    pub fields: IndexMap<String, Value>,
+    pub(crate) fields: IndexMap<String, Value>,
 }
 
 impl NamedRecord {
@@ -33,6 +32,41 @@ impl NamedRecord {
     /// Remove a key from the record.
     pub fn remove(&mut self, key: &str) {
         self.fields.swap_remove(key);
+    }
+
+    /// Number of fields in the record.
+    pub fn len(&self) -> usize {
+        self.fields.len()
+    }
+
+    /// Whether the record has no fields.
+    pub fn is_empty(&self) -> bool {
+        self.fields.is_empty()
+    }
+
+    /// Iterate `(name, value)` pairs in column (insertion) order.
+    pub fn iter(&self) -> impl Iterator<Item = (&String, &Value)> {
+        self.fields.iter()
+    }
+
+    /// Iterate column names in column order.
+    pub fn keys(&self) -> impl Iterator<Item = &String> {
+        self.fields.keys()
+    }
+
+    /// Iterate values in column order.
+    pub fn values(&self) -> impl Iterator<Item = &Value> {
+        self.fields.values()
+    }
+
+    /// Column name at the given positional index.
+    pub fn name_at(&self, index: usize) -> Option<&String> {
+        self.fields.get_index(index).map(|(k, _)| k)
+    }
+
+    /// Value at the given positional index.
+    pub fn value_at(&self, index: usize) -> Option<&Value> {
+        self.fields.get_index(index).map(|(_, v)| v)
     }
 }
 

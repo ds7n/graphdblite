@@ -88,7 +88,7 @@ fn records_to_py(py: Python, records: &[Record]) -> PyResult<Vec<PyObject>> {
     let mut result = Vec::new();
     for rec in records {
         let dict = PyDict::new_bound(py);
-        for (key, val) in &rec.fields {
+        for (key, val) in rec.iter() {
             dict.set_item(key, value_to_py(py, val)?)?;
         }
         result.push(dict.to_object(py));
@@ -432,7 +432,7 @@ impl PyWriteTransaction {
         let _py = py;
         records
             .into_iter()
-            .map(|r| match r.fields.get("id") {
+            .map(|r| match r.get("id") {
                 Some(Value::I64(n)) => Ok(*n as u64),
                 _ => Err(PyRuntimeError::new_err(
                     "batch_create_nodes: expected id column",

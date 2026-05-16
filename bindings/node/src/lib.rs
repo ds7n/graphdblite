@@ -95,7 +95,7 @@ fn records_to_napi(env: &Env, records: &[Record]) -> Result<Vec<napi::JsObject>>
     let mut result = Vec::with_capacity(records.len());
     for rec in records {
         let mut obj = env.create_object()?;
-        for (key, val) in &rec.fields {
+        for (key, val) in rec.iter() {
             obj.set(key.as_str(), value_to_napi(env, val)?)?;
         }
         result.push(obj);

@@ -26,8 +26,13 @@ contributors can preview the current surface locally with
 
 Anything reachable through the items in this list is public. Anything
 else (including `cypher::*`, `storage`, `index`, `node`, `edge`,
-`temporal`, and `Database::connection()`) is `pub(crate)` and may
-change between any two commits.
+`temporal`, `types` (as a module path), and `Database::connection()`)
+is `pub(crate)` and may change between any two commits.
+
+The `types` module itself is not part of the public path; downstream
+consumers must reach the value, error, and identifier types through the
+flat re-exports at the crate root (`graphdblite::Value`, etc.). Naming
+`graphdblite::types::*` is not supported.
 
 ### Core types
 
@@ -52,18 +57,21 @@ The Rust RAII API (recommended for in-tree Rust callers):
 
 The two styles are mutually exclusive on a single handle: starting one
 while the other is active returns `GraphError::Transaction`. The
-underlying `WriteTransaction` / `ReadTransaction` types are
-`pub(crate)`-only — they live in a private module and are not
-re-exported, so they are unnameable from outside the crate. Their
-methods reach external code via `Deref` on the guards.
+underlying `WriteTransaction` / `ReadTransaction` types live in a
+private module and are not re-exported; their methods reach external
+code via `Deref` on the guards. They are nameable only through
+`<WriteTxGuard<'_> as Deref>::Target` (and the read equivalent) — that
+indirection is intentional and is not a stable API. Construct
+transactions through `Database::{write_tx,read_tx}`.
 
 ### Value & graph types
 
 `Value`, `Node`, `Edge`, `NodeId`, `Direction`, `PathValue`,
-`Properties`, `Record` — see `src/types.rs` and `src/cypher/record.rs`.
-Variants of `Value` and fields of the structs are public. Adding new
-variants to `Value` is a breaking change; reordering or removing
-variants likewise.
+`Properties`, `Record`, `Result` — re-exported at the crate root from
+`src/types.rs` and `src/cypher/record.rs`. Variants of `Value` and named
+struct fields are public; `Record` only exposes its accessor methods.
+Adding new variants to `Value` is a breaking change; reordering or
+removing variants likewise.
 
 ### Temporal types
 
@@ -94,8 +102,8 @@ only public form — there is no top-level alias.
 | `Value` enum | Adding variants is breaking; treat as exhaustive at the source level. |
 | Error enums | Adding variants is breaking. Display format is best-effort, not stable. |
 | `Config` fields | Adding fields with sensible defaults is non-breaking when constructed via `Config::default()` / struct update syntax. |
-| `Record` | Stable. `fields: HashMap<String, Value>` is the row representation. |
-| `procedures::{Registry, Def, Param}` | Stable. |
+| `Record` | Stable. Accessed only through `new`/`get`/`set`/`remove`/`len`/`is_empty`/`iter`/`keys`/`values`/`name_at`/`value_at`. The underlying storage is `IndexMap<String, Value>` but the field is `pub(crate)` to keep the dependency out of the public API. |
+| `procedures::{Registry, Def, Param}` | Pre-1.0 surface for callers that need to register custom procedures. The TCK harness is the only current consumer; first-party bindings do not yet use it. Treat as experimental — likely to change before `1.0.0`. |
 | `cypher::*`, `storage`, `index`, `node`, `edge`, `temporal` | **Not public.** May change at any time. |
 | `Database::connection()` | **Not public** (`pub(crate)`). |
 

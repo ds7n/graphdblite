@@ -372,7 +372,7 @@ pub unsafe extern "C" fn graphdb_result_column_count(result: *const GraphResult)
         return 0;
     }
     let r = unsafe { &*result };
-    r.records.first().map_or(0, |rec| rec.fields.len()) as i64
+    r.records.first().map_or(0, |rec| rec.len()) as i64
 }
 
 /// Get a column name by index. Returns NULL if out of bounds.
@@ -392,7 +392,6 @@ pub unsafe extern "C" fn graphdb_result_column_name(
     if r.columns.is_empty() {
         if let Some(rec) = r.records.first() {
             r.columns = rec
-                .fields
                 .keys()
                 .filter_map(|k| CString::new(k.as_str()).ok())
                 .collect();
@@ -426,7 +425,7 @@ pub unsafe extern "C" fn graphdb_result_value_str(
         None => return ptr::null(),
     };
 
-    let val = match rec.fields.values().nth(col_idx) {
+    let val = match rec.value_at(col_idx) {
         Some(val) => val,
         None => return ptr::null(),
     };
@@ -469,7 +468,7 @@ pub unsafe extern "C" fn graphdb_result_value_type(
         Some(rec) => rec,
         None => return 0,
     };
-    match rec.fields.values().nth(col as usize) {
+    match rec.value_at(col as usize) {
         Some(Value::Null) | None => 0,
         Some(Value::Bool(_)) => 1,
         Some(Value::I64(_)) => 2,
@@ -504,7 +503,7 @@ pub unsafe extern "C" fn graphdb_result_value_i64(
         Some(rec) => rec,
         None => return 0,
     };
-    match rec.fields.values().nth(col as usize) {
+    match rec.value_at(col as usize) {
         Some(Value::I64(n)) => *n,
         _ => 0,
     }
@@ -525,7 +524,7 @@ pub unsafe extern "C" fn graphdb_result_value_f64(
         Some(rec) => rec,
         None => return 0.0,
     };
-    match rec.fields.values().nth(col as usize) {
+    match rec.value_at(col as usize) {
         Some(Value::F64(n)) => *n,
         _ => 0.0,
     }
@@ -546,7 +545,7 @@ pub unsafe extern "C" fn graphdb_result_value_bool(
         Some(rec) => rec,
         None => return 0,
     };
-    match rec.fields.values().nth(col as usize) {
+    match rec.value_at(col as usize) {
         Some(Value::Bool(b)) => *b as i32,
         _ => 0,
     }
@@ -619,7 +618,7 @@ fn records_to_json(records: &[Record]) -> String {
             out.push_str(", ");
         }
         out.push('{');
-        for (j, (key, val)) in rec.fields.iter().enumerate() {
+        for (j, (key, val)) in rec.iter().enumerate() {
             if j > 0 {
                 out.push_str(", ");
             }

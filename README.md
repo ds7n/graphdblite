@@ -14,6 +14,8 @@ graphdblite uses SQLite strictly as a crash-safe key-value store; graph data, qu
 
 ## Quick start
 
+`cargo install` builds the standalone `graphdblite` CLI. For the Rust library, see [Language bindings](#language-bindings) below — `cargo add graphdblite`.
+
 ```bash
 cargo install graphdblite
 

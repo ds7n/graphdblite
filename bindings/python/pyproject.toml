@@ -6,6 +6,7 @@ build-backend = "maturin"
 name = "graphdblite"
 dynamic = ["version"]
 description = "Embedded graph database with Cypher support"
+readme = "README.md"
 license = "MIT"
 # LICENSE is inherited from the workspace root via Cargo (license.workspace
 # = true). Maturin pulls it into the sdist automatically; no per-package

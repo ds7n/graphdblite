@@ -293,7 +293,7 @@ git push origin vX.Y.Z-go
 
 ## GitHub / Forgejo releases (binary artifacts)
 
-**Automated** via `scripts/publish-release.sh` and the `just publish*` targets.
+**Automated** via `scripts/publish-release.sh`.
 
 These releases host pre-built binaries for users who don't want to compile:
 
@@ -306,21 +306,21 @@ These releases host pre-built binaries for users who don't want to compile:
 **Each release:**
 
 ```bash
-# 1. Build all artifacts into dist/ (uses cross-rs for non-host triples).
-just build-release
+# 1. Build all artifacts into dist/ (Docker-based, multi-platform).
+docker compose -f docker/build/docker-compose.yml up --build
 
 # 2. Publish to Forgejo (default — uses FORGEJO_TOKEN from .env).
-just publish vX.Y.Z
+scripts/publish-release.sh vX.Y.Z
 
 # 3. Also publish to GitHub.
-just publish-github vX.Y.Z
+scripts/publish-release.sh --github vX.Y.Z
 ```
 
 **Rolling dev build** from `main`:
 
 ```bash
-just publish-dev          # forgejo dev-latest prerelease
-just publish-github-dev   # github dev-latest prerelease
+scripts/publish-release.sh --dev          # forgejo dev-latest prerelease
+scripts/publish-release.sh --github --dev # github dev-latest prerelease
 ```
 
 Both are overwritten on each invocation. `dist/sha256sums.txt` is regenerated
@@ -335,7 +335,7 @@ and uploaded alongside artifacts.
 3. **crates.io**: `cargo publish -p graphdblite`
 4. **GitHub Actions**: tag push triggers `python-wheels.yml` → PyPI upload.
 5. **npm**: build + publish from `bindings/node/` (manual until automated).
-6. **Forgejo + GitHub releases**: `just publish vX.Y.Z && just publish-github vX.Y.Z`
+6. **Forgejo + GitHub releases**: `scripts/publish-release.sh vX.Y.Z && scripts/publish-release.sh --github vX.Y.Z`
 7. **Go FFI libs (GitHub)**: automatic — `.github/workflows/release-go.yml`
    fires on `release: published`, populates libs, pushes `vX.Y.Z-go`.
    For forgejo, also run `scripts/populate-go-libs.sh vX.Y.Z` + commit +

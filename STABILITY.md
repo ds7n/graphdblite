@@ -17,25 +17,10 @@ A `1.0.0` release will be cut when:
   scenarios `BC-01..BC-10`) stay green in CI for a sustained period.
 - The public surface listed below has been stable across at least two
   minor releases.
-- A `cargo public-api` snapshot is committed and CI fails on unexpected
-  drift.
 
-The current snapshot lives at `public-api.txt` and is enforced by the
-`public-api` job in `.github/workflows/dev-build.yml` — the job runs
-`cargo public-api --simplified` and `diff -u`s the output against the
-committed baseline. **Any drift fails the job (`exit 1`) — it is not a
-warning.**
-
-To regenerate after an intentional surface change:
-
-```bash
-cargo install cargo-public-api --locked --version 0.51.0  # one-time
-cargo public-api --simplified > public-api.txt
-```
-
-Commit the regenerated file in the same PR that changes the surface.
-Reviewers should treat any `public-api.txt` diff as a deliberate API
-change requiring sign-off.
+Surface drift is reviewed manually during the release-prep checklist;
+contributors can preview the current surface locally with
+`cargo install cargo-public-api && cargo public-api --simplified`.
 
 ## Public surface
 

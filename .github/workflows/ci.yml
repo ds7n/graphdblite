@@ -1,9 +1,9 @@
 name: CI (fast)
 
-# Fast tier — runs on every push to main and every PR. Mirrors the
-# self-hosted Forgejo workflow (.forgejo/workflows/ci.yml) so external
-# contributors see green/red checks on their GitHub PRs even when the
-# Forgejo runner is unavailable.
+# Fast tier — runs on every push to main and every PR. Single-toolchain
+# coverage per language, ubuntu only. Full matrix (3 OS, 3 Rust versions,
+# per-language matrix) lives in ci-full.yml on a weekly cron + push to
+# main.
 
 on:
   push:

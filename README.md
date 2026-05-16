@@ -68,6 +68,10 @@ cargo test --test tck --features tck-support
 
 Reproducible release builds, benchmarks, and the audit workflow: [Build guide](docs/building.md).
 
+## Design
+
+Architecture, layering, and the rationale behind the storage and execution model: [Specification](docs/spec.md).
+
 ## Stability
 
 Pre-`1.0.0`. Public API surface and stability guarantees are documented in [Stability](STABILITY.md); binding authors should also read [Binding conformance](docs/BINDING_CONFORMANCE.md).

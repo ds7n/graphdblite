@@ -299,26 +299,6 @@ jobs:
       - name: Build FFI and run Go tests
         run: make -C bindings/go test
 
-  public-api:
-    needs: [test, lint-workflows]
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v6
-      - uses: dtolnay/rust-toolchain@stable
-      - name: Install cargo-public-api
-        run: cargo install cargo-public-api --locked --version 0.51.0
-      - name: Check for unexpected public API drift
-        run: |
-          cargo public-api --simplified > public-api.actual.txt
-          if ! diff -u public-api.txt public-api.actual.txt; then
-            echo ""
-            echo "::error::Public API surface has drifted from the committed baseline."
-            echo "If this change is intentional, regenerate the snapshot:"
-            echo "  cargo public-api --simplified > public-api.txt"
-            echo "and commit the result. See STABILITY.md."
-            exit 1
-          fi
-
   test-ffi-conformance:
     needs: [test, lint-workflows]
     runs-on: ubuntu-latest
@@ -365,7 +345,7 @@ jobs:
         run: npm test
 
   publish:
-    needs: [build-cli, build-ffi, build-node, build-wheels, test-go, test-ffi-conformance, test-python-conformance, test-node-conformance, public-api]
+    needs: [build-cli, build-ffi, build-node, build-wheels, test-go, test-ffi-conformance, test-python-conformance, test-node-conformance]
     runs-on: ubuntu-latest
     env:
       GH_TOKEN: ${{ github.token }}

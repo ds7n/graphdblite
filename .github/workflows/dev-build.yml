@@ -327,7 +327,10 @@ jobs:
       - name: Stage per-platform npm packages
         working-directory: bindings/node
         run: |
-          npx napi create-npm-dirs
+          # napi-rs v2 CLI: command is `create-npm-dir` (singular).
+          # Passing `-t .` makes it iterate the triples from package.json
+          # rather than expecting a single target.
+          npx napi create-npm-dir -t .
           npx napi artifacts --dir artifacts
           echo "--- npm tree ---"
           ls -R npm

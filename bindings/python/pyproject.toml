@@ -7,7 +7,10 @@ name = "graphdblite"
 dynamic = ["version"]
 description = "Embedded graph database with Cypher support"
 license = "MIT"
-license-files = ["LICENSE"]
+# LICENSE is inherited from the workspace root via Cargo (license.workspace
+# = true). Maturin pulls it into the sdist automatically; no per-package
+# LICENSE file is needed (and a local one would collide with the root
+# file during sdist build).
 requires-python = ">=3.10"
 authors = [{ name = "ds7n" }]
 keywords = ["graph", "database", "cypher", "embedded", "sqlite"]

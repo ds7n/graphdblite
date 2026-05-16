@@ -269,13 +269,29 @@ jobs:
         if: ${{ !matrix.use_zig }}
         run: npx napi build --platform --release --target ${{ matrix.target }}
 
+      # Inline zig install (only on the ubuntu cross-compile legs of this
+      # matrix). Previously used mlugg/setup-zig@v2, but that action's
+      # JavaScript runtime is Node 20, which GitHub Actions force-migrates
+      # to Node 24 on 2026-06-02 and removes entirely 2026-09-16. The
+      # setup-zig project also moved primary hosting off GitHub, so the
+      # GitHub mirror is unlikely to ship a Node-24 release in time.
+      # Zig is a single static binary — install by hand.
       - name: Install zig
         if: matrix.use_zig
-        uses: mlugg/setup-zig@v2
+        working-directory: ${{ runner.temp }}
+        run: |
+          ZIG_VERSION=0.14.1
+          # Note: official filename is `zig-x86_64-linux-X.Y.Z.tar.xz`
+          # (target-host order, not host-target).
+          curl -fsSL "https://ziglang.org/download/${ZIG_VERSION}/zig-x86_64-linux-${ZIG_VERSION}.tar.xz" \
+            -o zig.tar.xz
+          tar -xJf zig.tar.xz
+          echo "${{ runner.temp }}/zig-x86_64-linux-${ZIG_VERSION}" >> "$GITHUB_PATH"
 
       - name: Build (zig cross)
         if: matrix.use_zig
         run: |
+          zig version
           npx napi build --platform --release --target ${{ matrix.target }} --zig
 
       - uses: actions/upload-artifact@v7

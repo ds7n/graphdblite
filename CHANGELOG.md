@@ -7,6 +7,57 @@ ships.
 
 ## [Unreleased]
 
-## [0.1.0] - 2026-05-15
+## [0.1.0] - 2026-05-16
 
 First public release.
+
+### Core
+
+- Embedded graph database backed by SQLite (WAL mode; multi-process safe).
+- ACID semantics, crash-safe — provided by the SQLite engine.
+- Single-file storage; zero configuration.
+
+### Query language
+
+- Cypher: parse → plan → execute pipeline with parse cache and plan cache.
+- **openCypher TCK conformance: 100%** (3895/3895 scenarios).
+- 50+ functions across string, list, map, math, temporal, predicate, and aggregation categories.
+- Variable-length paths, shortest path, all-shortest-paths.
+- Pattern comprehensions, list comprehensions, quantifier predicates.
+- CALL procedures with YIELD (registry-based; internal use today).
+- EXPLAIN for plan inspection.
+
+### Types
+
+- Full Cypher temporal types: Date, Time, LocalTime, DateTime, LocalDateTime, Duration.
+- Named-timezone DateTime survives storage round-trips.
+- Node and edge property values: i64, f64, bool, string, list, map, path, plus all temporal types.
+
+### Transactions
+
+- Two coexisting APIs on `Database`:
+  - Stateful: `begin_write` / `begin_read` / `execute` / `commit` / `rollback`.
+  - RAII guards: `write_tx()` / `read_tx()` returning `WriteTxGuard` / `ReadTxGuard`.
+- Auto-tx on bare `Database::execute` calls (chooses read or write mode by query class).
+- Read-only enforcement: write Cypher inside a read transaction is rejected.
+
+### Storage
+
+- Adjacency-list edge storage; traversals are direct key lookups.
+- Parallel edges per `(src, dst, type)` triple, tracked by `__edge_seq`.
+- Per-label secondary indexes; index-aware planner picks `IndexLookup` over `Scan` when applicable.
+
+### Language bindings
+
+- Rust (this crate).
+- Python — `pip install graphdblite`, full PyPI wheel matrix (glibc + musl Linux, macOS, Windows).
+- Node.js — `npm install graphdblite`, native addons for all 7 supported platforms.
+- Go — `go get github.com/ds7n/graphdblite/bindings/go`.
+- C / FFI — `libgraphdblite_ffi.{so,a,dylib,dll}` + `graphdblite.h` on the GitHub release page.
+- Binding conformance contract (`BC-01..BC-10`) documented in `docs/BINDING_CONFORMANCE.md`.
+
+### Public API surface
+
+- Locked down ahead of `1.0.0`: only `graphdblite::*` is public; internal modules are `pub(crate)`. See `STABILITY.md`.
+- `Record` exposes accessors only (no public field).
+- API surface verifiable via `cargo public-api --simplified`.

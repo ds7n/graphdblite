@@ -171,6 +171,15 @@ jobs:
         if: matrix.cross
         run: cargo install cross --locked
 
+      # bindings/ffi/build.rs skips cbindgen when HOST != TARGET (cross
+      # compile guard) and falls back to copying a pre-existing
+      # bindings/ffi/graphdblite.h. Generate that header now via a host
+      # `cargo check` — runs build.rs on the host arch and writes the
+      # header to the crate root, where the cross build will pick it up.
+      - name: Pre-generate FFI header (host)
+        shell: bash
+        run: cargo check -p graphdblite-ffi
+
       - name: Build (native)
         if: ${{ !matrix.cross }}
         run: cargo build --release -p graphdblite-ffi --target ${{ matrix.target }}

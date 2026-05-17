@@ -1,19 +1,8 @@
 use std::collections::HashMap;
 use std::process::{Command, Stdio};
-use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
-use graphdblite::{Database, NodeId, Value};
-
-/// Both multi-process stress tests in this file spawn many child processes
-/// (4 and 10 respectively) that all hammer one SQLite file. Cargo runs the
-/// tests within a binary in parallel by default, so without serialization
-/// the host would see 14 contending writer/reader children plus whatever
-/// the rest of `cargo test --workspace` is doing — enough CPU/IO pressure
-/// to trip the WAL writer lock's default 5 s busy-timeout and surface as
-/// flakes. The fix is to keep these two scenarios from racing *each
-/// other*; we still verify multi-process safety within each scenario.
-static MULTIPROCESS_TEST_LOCK: Mutex<()> = Mutex::new(());
+use graphdblite::{Database, GraphError, NodeId, Value};
 
 /// Run a child process, capturing stderr so a panicking child surfaces its
 /// panic message instead of the bare `exit status: 101`. Returns an Err
@@ -32,15 +21,57 @@ fn wait_child(kind: &str, child: std::process::Child) -> Result<(), String> {
     ))
 }
 
+/// Is this a `SQLITE_BUSY` (or `SQLITE_BUSY_*`) — a recoverable
+/// "writer-lock held, try again" signal? These are normal under
+/// multi-process contention and well-behaved callers retry. They are
+/// NOT correctness failures and the stress tests must not treat them
+/// as fatal — see `with_busy_retry` for the loop that wraps each
+/// per-transaction unit of work.
+fn is_busy(err: &GraphError) -> bool {
+    matches!(
+        err,
+        GraphError::Storage {
+            source: rusqlite::Error::SqliteFailure(e, _),
+            ..
+        } if matches!(
+            e.code,
+            rusqlite::ErrorCode::DatabaseBusy | rusqlite::ErrorCode::DatabaseLocked
+        )
+    )
+}
+
+/// Run `f` (a "do one transaction" closure) with retry on
+/// `SQLITE_BUSY`. Mirrors how real applications use SQLite under
+/// multi-process contention. Returns a non-busy error or a non-busy
+/// final result; panics only after a generous retry budget elapses,
+/// which would itself indicate a real bug (lock leak, deadlock, or
+/// catastrophic host starvation beyond any reasonable timeout).
+fn with_busy_retry<T>(label: &str, mut f: impl FnMut() -> Result<T, GraphError>) -> T {
+    let deadline = Instant::now() + Duration::from_secs(120);
+    let mut attempt = 0u32;
+    loop {
+        match f() {
+            Ok(v) => return v,
+            Err(e) if is_busy(&e) => {
+                if Instant::now() >= deadline {
+                    panic!("{label}: SQLITE_BUSY after 120 s and {attempt} attempts: {e}");
+                }
+                attempt += 1;
+                // Modest randomized backoff so retries don't dogpile.
+                let backoff_ms = std::cmp::min(50 + attempt as u64 * 10, 500);
+                std::thread::sleep(Duration::from_millis(backoff_ms));
+            }
+            Err(e) => panic!("{label}: non-busy error: {e}"),
+        }
+    }
+}
+
 /// Multi-process concurrency test.
 ///
 /// Spawns N child processes that each write nodes to the same database file.
 /// Verifies all nodes are present after all processes complete.
 #[test]
 fn concurrent_writers() {
-    let _guard = MULTIPROCESS_TEST_LOCK
-        .lock()
-        .unwrap_or_else(|e| e.into_inner());
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("concurrent.db");
 
@@ -107,15 +138,17 @@ fn child_writer() {
     let mut db = Database::open(&path).unwrap();
 
     for i in 0..count {
-        let tx = db.write_tx().unwrap();
-        tx.create_node("Writer", {
-            let mut props = HashMap::new();
-            props.insert("writer_id".to_string(), Value::I64(writer_id as i64));
-            props.insert("seq".to_string(), Value::I64(i as i64));
-            props
-        })
-        .unwrap();
-        tx.commit().unwrap();
+        with_busy_retry("child_writer iter", || {
+            let tx = db.write_tx()?;
+            tx.create_node("Writer", {
+                let mut props = HashMap::new();
+                props.insert("writer_id".to_string(), Value::I64(writer_id as i64));
+                props.insert("seq".to_string(), Value::I64(i as i64));
+                props
+            })?;
+            tx.commit()?;
+            Ok(())
+        });
     }
 }
 
@@ -134,9 +167,6 @@ fn child_writer() {
 /// audit checklist.
 #[test]
 fn stress_writers_with_readers() {
-    let _guard = MULTIPROCESS_TEST_LOCK
-        .lock()
-        .unwrap_or_else(|e| e.into_inner());
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("stress.db");
 
@@ -228,22 +258,25 @@ fn stress_child_writer() {
     let mut db = Database::open(&path).unwrap();
     for chain in 0..chains {
         // One transaction per chain — guarantees the chain becomes visible
-        // atomically and exercises commit-time WAL contention.
-        let tx = db.write_tx().unwrap();
-        let mut ids: Vec<NodeId> = Vec::with_capacity(chain_len as usize);
-        for seq in 0..chain_len {
-            let mut props = HashMap::new();
-            props.insert("writer_id".to_string(), Value::I64(writer_id as i64));
-            props.insert("chain".to_string(), Value::I64(chain as i64));
-            props.insert("seq".to_string(), Value::I64(seq as i64));
-            let id = tx.create_node("Account", props).unwrap();
-            ids.push(id);
-        }
-        for win in ids.windows(2) {
-            tx.create_edge(win[0], win[1], "LINKS", HashMap::new())
-                .unwrap();
-        }
-        tx.commit().unwrap();
+        // atomically and exercises commit-time WAL contention. Retry on
+        // SQLITE_BUSY: that's what real applications do.
+        with_busy_retry("stress_child_writer chain", || {
+            let tx = db.write_tx()?;
+            let mut ids: Vec<NodeId> = Vec::with_capacity(chain_len as usize);
+            for seq in 0..chain_len {
+                let mut props = HashMap::new();
+                props.insert("writer_id".to_string(), Value::I64(writer_id as i64));
+                props.insert("chain".to_string(), Value::I64(chain as i64));
+                props.insert("seq".to_string(), Value::I64(seq as i64));
+                let id = tx.create_node("Account", props)?;
+                ids.push(id);
+            }
+            for win in ids.windows(2) {
+                tx.create_edge(win[0], win[1], "LINKS", HashMap::new())?;
+            }
+            tx.commit()?;
+            Ok(())
+        });
     }
 }
 
@@ -262,14 +295,16 @@ fn stress_child_reader() {
     let mut iterations = 0u64;
 
     while Instant::now() < deadline {
-        let tx = db.read_tx().unwrap();
-
-        // Within a single read tx, snapshot isolation must hold: count is
-        // stable, and every edge endpoint resolves.
-        let nodes = tx.find_nodes_by_label("Account").unwrap();
-        let edges = tx
-            .query("MATCH (a:Account)-[:LINKS]->(b:Account) RETURN a.__id, b.__id")
-            .unwrap();
+        let (nodes, edges) = with_busy_retry("stress_child_reader iter", || {
+            let tx = db.read_tx()?;
+            // Within a single read tx, snapshot isolation must hold: count is
+            // stable, and every edge endpoint resolves.
+            let nodes = tx.find_nodes_by_label("Account")?;
+            let edges =
+                tx.query("MATCH (a:Account)-[:LINKS]->(b:Account) RETURN a.__id, b.__id")?;
+            tx.commit()?;
+            Ok((nodes, edges))
+        });
 
         // Edges must never outnumber what their chain structure allows: each
         // chain of N nodes contributes N-1 edges, so edges < nodes always.
@@ -289,7 +324,6 @@ fn stress_child_reader() {
             nodes.len()
         );
         last_count = nodes.len();
-        tx.commit().unwrap();
         iterations += 1;
     }
 

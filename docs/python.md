@@ -176,6 +176,19 @@ db.execute("""
 """)
 ```
 
+### Single-file snapshot / export
+
+```python
+# Write a consistent, single-file copy of the live DB.
+db.snapshot_to("backup.db")
+```
+
+`snapshot_to(path)` uses SQLite's `VACUUM INTO` under the hood. The
+output is one self-contained file with no `-wal` / `-shm` sidecars,
+defragmented and compacted, suitable for atomic-swap deploys or
+backup snapshots. Raises if a transaction is active on the handle or
+if `path` already exists — pick a fresh path or delete it first.
+
 ## Error handling
 
 Both `query()` and `execute()` raise `RuntimeError` on failure (parse errors, constraint

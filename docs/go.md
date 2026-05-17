@@ -96,6 +96,21 @@ db.Close()
 Closes the database and frees its resources. Safe to call multiple times. A runtime
 finalizer will call `Close` if the caller forgets, but explicit close is preferred.
 
+### SnapshotTo
+
+```go
+if err := db.SnapshotTo("backup.db"); err != nil {
+    return err
+}
+```
+
+`SnapshotTo(path string) error` writes a consistent, single-file copy of the live
+DB to `path`. Uses SQLite's `VACUUM INTO` under the hood: the output is one
+self-contained file with no `-wal` / `-shm` sidecars, defragmented and compacted,
+suitable for atomic-swap deploys or backup snapshots. Returns an error if a
+transaction is active on the handle or if `path` already exists — pick a fresh
+path or delete it first.
+
 ## Result type
 
 Results are accessed by zero-based `(row, col)` index. Column names can be looked up

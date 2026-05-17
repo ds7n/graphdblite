@@ -62,6 +62,20 @@ let mut db = Database::open_memory()?;
 | `busy_timeout_ms` | `u32` | `5000` | Milliseconds to wait for write lock |
 | `synchronous` | `String` | `"NORMAL"` | SQLite sync mode (`"NORMAL"` or `"FULL"`) |
 
+### Snapshot / export
+
+```rust
+// Write a consistent, single-file copy of the live DB.
+db.snapshot_to("backup.db")?;
+```
+
+`Database::snapshot_to(path)` uses SQLite's `VACUUM INTO` under the
+hood. The output is one self-contained file with no `-wal` / `-shm`
+sidecars, defragmented and compacted, suitable for atomic-swap
+deploys or backup snapshots. Returns an error if a transaction is
+active on the handle or if `path` already exists — pick a fresh path
+or delete it first.
+
 ## Transactions
 
 The Rust API exposes two transaction styles backed by the same engine.

@@ -7,6 +7,8 @@ ships.
 
 ## [Unreleased]
 
+## [0.1.1] - 2026-05-17
+
 ### Added
 
 - `Database::snapshot_to(path)` — write a consistent, single-file snapshot of
@@ -25,6 +27,15 @@ ships.
   can drop their `# type: ignore[import-untyped]` workarounds. Also
   re-exports the transaction classes and exceptions from the top-level
   `graphdblite` package.
+
+### Documentation
+
+- Document the `MERGE (a)-[:R]->(b)` edge-upsert pattern with
+  `ON CREATE SET r += $props` / `ON MATCH SET r += $props` in the
+  Cypher reference (`docs/cypher.md`) and the Python / Node guides.
+  Regression tests in `tests/e2e_query_tests.rs` cover the upsert
+  flow and inline-prop discrimination of parallel edges. No behavior
+  change — just confirms and documents what already worked.
 
 ## [0.1.0] - 2026-05-16
 

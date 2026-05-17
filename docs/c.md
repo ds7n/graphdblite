@@ -90,6 +90,13 @@ Close the database and free all resources. Passing `NULL` is a no-op. The handle
 
 ---
 
+```c
+int graphdb_snapshot_to(GraphDB *db, const char *path);
+```
+Write a consistent, single-file copy of the live DB to `path`. Uses SQLite's `VACUUM INTO` under the hood — the output is one self-contained file with no `-wal` / `-shm` sidecars, defragmented and compacted, suitable for atomic-swap deploys or backup snapshots. Returns non-zero if a transaction is active on the handle or if `path` already exists; call `graphdb_last_error()` for details.
+
+---
+
 ### Query and execute
 
 ```c

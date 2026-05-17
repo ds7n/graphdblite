@@ -339,13 +339,27 @@ DETACH DELETE n
 
 ### MERGE
 
-Match-or-create semantics. Creates the pattern if it doesn't exist.
+Match-or-create semantics. Works on both nodes and relationships.
+Creates the pattern atomically if no match exists.
 
 ```cypher
+-- Node upsert
 MERGE (n:Person {name: 'Alice'})
 ON CREATE SET n.created = true
 ON MATCH SET n.seen = true
+
+-- Edge upsert — replaces a manual "DELETE existing + CREATE new" workaround
+MATCH (a:Fn {name: $src}), (b:Fn {name: $dst})
+MERGE (a)-[r:CALLS]->(b)
+ON CREATE SET r += $props
+ON MATCH  SET r += $props
 ```
+
+Edge identity: `MERGE (a)-[:R]->(b)` finds an existing `(a)-[:R]->(b)`
+edge if any exists, otherwise creates one. `MERGE (a)-[:R {x: 1}]->(b)`
+is constrained by the inline properties — a parallel
+`(a)-[:R {x: 2}]->(b)` edge will not be matched, and a new one is
+created. Direction is significant.
 
 ## Query planning
 

@@ -231,6 +231,19 @@ db.execute(`
 `);
 ```
 
+### Single-file snapshot / export
+
+```js
+// Write a consistent, single-file copy of the live DB.
+db.snapshotTo('backup.db');
+```
+
+`snapshotTo(path)` uses SQLite's `VACUUM INTO` under the hood. The
+output is one self-contained file with no `-wal` / `-shm` sidecars,
+defragmented and compacted, suitable for atomic-swap deploys or
+backup snapshots. Throws if a transaction is active on the handle or
+if `path` already exists — pick a fresh path or delete it first.
+
 ## Error handling
 
 All methods throw a `Error` on failure (parse errors, constraint violations, etc.).

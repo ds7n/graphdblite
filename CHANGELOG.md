@@ -12,7 +12,19 @@ ships.
 - `Database::snapshot_to(path)` — write a consistent, single-file snapshot of
   the database via `VACUUM INTO`. Produces a self-contained SQLite file (no
   `-wal` / `-shm` sidecars), defragmented and compacted. Rejects when a
-  transaction is active or the destination path already exists.
+  transaction is active or the destination path already exists. Exposed
+  in every binding (Python `snapshot_to`, Node `snapshotTo`, C
+  `graphdb_snapshot_to`, Go `SnapshotTo`).
+
+### Python bindings
+
+- PEP 561 type information: ship a `py.typed` marker plus a complete
+  `__init__.pyi` covering `Database`, `WriteTransaction`,
+  `ReadTransaction`, the exception hierarchy, batch APIs, and the
+  optional `params` argument on `query` / `execute`. Downstream callers
+  can drop their `# type: ignore[import-untyped]` workarounds. Also
+  re-exports the transaction classes and exceptions from the top-level
+  `graphdblite` package.
 
 ## [0.1.0] - 2026-05-16
 

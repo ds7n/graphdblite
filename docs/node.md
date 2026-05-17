@@ -196,13 +196,31 @@ const results = db.query(`
 
 ### MERGE (upsert)
 
+`MERGE` works on both nodes and relationships. The pattern is matched
+atomically; if nothing matches it is created. Pair with `ON CREATE` /
+`ON MATCH` to set different properties on the create vs. match branches.
+
 ```js
+// Node upsert
 db.execute(`
   MERGE (n:Person {name: 'Alice'})
   ON CREATE SET n.created = true
   ON MATCH SET n.seen = true
 `);
+
+// Edge upsert — replaces a manual "DELETE existing + CREATE new" workaround
+db.execute(`
+  MATCH (a:Fn {name: 'foo'}), (b:Fn {name: 'bar'})
+  MERGE (a)-[r:CALLS]->(b)
+  ON CREATE SET r += {lineno: 10, col: 5}
+  ON MATCH  SET r += {lineno: 10, col: 5}
+`);
 ```
+
+Edge identity: `MERGE (a)-[:R]->(b)` finds an existing `(a)-[:R]->(b)`
+edge if any exists. `MERGE (a)-[:R {x: 1}]->(b)` is constrained by the
+inline properties — a parallel `(a)-[:R {x: 2}]->(b)` will not be
+matched, and a new edge is created. Direction is significant.
 
 ### Bulk insert with UNWIND
 

@@ -3671,6 +3671,85 @@ fn merge_relationship_with_edge_properties() {
     tx.commit().unwrap();
 }
 
+#[test]
+fn merge_edge_upsert_on_create_then_on_match() {
+    // Mirrors a downstream "atomic upsert" pattern: a single MERGE that
+    // CREATES with one set of props on first call and UPDATES a subset on
+    // subsequent calls — replacing the older DELETE-then-CREATE workaround.
+    let mut db = Database::open_memory().unwrap();
+    {
+        let tx = db.write_tx().unwrap();
+        tx.query("CREATE (:Fn {name: 'foo'}), (:Fn {name: 'bar'})")
+            .unwrap();
+        tx.commit().unwrap();
+    }
+    let upsert = "MATCH (a:Fn {name: 'foo'}), (b:Fn {name: 'bar'}) \
+                  MERGE (a)-[r:CALLS]->(b) \
+                  ON CREATE SET r += {lineno: 10, kind: 'direct'} \
+                  ON MATCH SET r += {lineno: 42}";
+
+    // First call: takes the ON CREATE branch.
+    {
+        let tx = db.write_tx().unwrap();
+        tx.query(upsert).unwrap();
+        tx.commit().unwrap();
+    }
+    {
+        let tx = db.read_tx().unwrap();
+        let rows = tx
+            .query("MATCH ()-[r:CALLS]->() RETURN r.lineno AS l, r.kind AS k")
+            .unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].get("l"), Some(&Value::I64(10)));
+        assert_eq!(rows[0].get("k"), Some(&Value::String("direct".into())));
+        tx.commit().unwrap();
+    }
+
+    // Second call: takes the ON MATCH branch, partial update preserves `kind`.
+    {
+        let tx = db.write_tx().unwrap();
+        tx.query(upsert).unwrap();
+        tx.commit().unwrap();
+    }
+    {
+        let tx = db.read_tx().unwrap();
+        let rows = tx
+            .query("MATCH ()-[r:CALLS]->() RETURN r.lineno AS l, r.kind AS k, count(r) AS c")
+            .unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].get("l"), Some(&Value::I64(42)));
+        assert_eq!(rows[0].get("k"), Some(&Value::String("direct".into())));
+        assert_eq!(rows[0].get("c"), Some(&Value::I64(1)));
+        tx.commit().unwrap();
+    }
+}
+
+#[test]
+fn merge_edge_with_inline_props_distinguishes_parallel_edges() {
+    // `MERGE (a)-[:R {x: 1}]->(b)` matches by props — an edge with a
+    // different `x` is a distinct parallel edge, not a candidate for update.
+    let mut db = Database::open_memory().unwrap();
+    {
+        let tx = db.write_tx().unwrap();
+        tx.query("CREATE (:N {k: 'a'}), (:N {k: 'b'})").unwrap();
+        tx.query("MATCH (a:N {k: 'a'}), (b:N {k: 'b'}) MERGE (a)-[:R {x: 1}]->(b)")
+            .unwrap();
+        tx.query("MATCH (a:N {k: 'a'}), (b:N {k: 'b'}) MERGE (a)-[:R {x: 1}]->(b)")
+            .unwrap();
+        tx.query("MATCH (a:N {k: 'a'}), (b:N {k: 'b'}) MERGE (a)-[:R {x: 2}]->(b)")
+            .unwrap();
+        tx.commit().unwrap();
+    }
+    let tx = db.read_tx().unwrap();
+    let rows = tx
+        .query("MATCH ()-[r:R]->() RETURN r.x AS x ORDER BY x")
+        .unwrap();
+    assert_eq!(rows.len(), 2);
+    assert_eq!(rows[0].get("x"), Some(&Value::I64(1)));
+    assert_eq!(rows[1].get("x"), Some(&Value::I64(2)));
+    tx.commit().unwrap();
+}
+
 // ===========================================================================
 // Parameterized query tests
 // ===========================================================================

@@ -137,13 +137,35 @@ results = db.query("""
 
 ### MERGE (upsert)
 
+`MERGE` works on both nodes and relationships. The pattern is matched
+atomically; if nothing matches it is created. Pair with `ON CREATE` /
+`ON MATCH` clauses to set different properties on the create vs. match
+branches.
+
 ```python
+# Node upsert
 db.execute("""
     MERGE (n:Person {name: 'Alice'})
     ON CREATE SET n.created = true
     ON MATCH SET n.seen = true
 """)
+
+# Edge upsert — replaces a manual "DELETE existing + CREATE new" workaround
+db.execute(
+    """
+    MATCH (a:Fn {name: $src}), (b:Fn {name: $dst})
+    MERGE (a)-[r:CALLS]->(b)
+    ON CREATE SET r += $props
+    ON MATCH  SET r += $props
+    """,
+    {"src": "foo", "dst": "bar", "props": {"lineno": 10, "col": 5}},
+)
 ```
+
+Edge identity: `MERGE (a)-[:R]->(b)` finds an existing `(a)-[:R]->(b)`
+edge if any exists. `MERGE (a)-[:R {x: 1}]->(b)` is constrained by the
+inline properties — a parallel `(a)-[:R {x: 2}]->(b)` edge will not be
+matched, and a new one is created. Direction is significant.
 
 ### Bulk insert with UNWIND
 

@@ -1,8 +1,36 @@
 use std::collections::HashMap;
-use std::process::Command;
+use std::process::{Command, Stdio};
+use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
 use graphdblite::{Database, NodeId, Value};
+
+/// Both multi-process stress tests in this file spawn many child processes
+/// (4 and 10 respectively) that all hammer one SQLite file. Cargo runs the
+/// tests within a binary in parallel by default, so without serialization
+/// the host would see 14 contending writer/reader children plus whatever
+/// the rest of `cargo test --workspace` is doing — enough CPU/IO pressure
+/// to trip the WAL writer lock's default 5 s busy-timeout and surface as
+/// flakes. The fix is to keep these two scenarios from racing *each
+/// other*; we still verify multi-process safety within each scenario.
+static MULTIPROCESS_TEST_LOCK: Mutex<()> = Mutex::new(());
+
+/// Run a child process, capturing stderr so a panicking child surfaces its
+/// panic message instead of the bare `exit status: 101`. Returns an Err
+/// describing the failure (kind, status, captured stderr) when the child
+/// did not exit cleanly.
+fn wait_child(kind: &str, child: std::process::Child) -> Result<(), String> {
+    let output = child.wait_with_output().expect("wait child");
+    if output.status.success() {
+        return Ok(());
+    }
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    Err(format!(
+        "{kind} child failed: {}\n--- child stderr ---\n{}\n--- end stderr ---",
+        output.status,
+        stderr.trim_end()
+    ))
+}
 
 /// Multi-process concurrency test.
 ///
@@ -10,6 +38,9 @@ use graphdblite::{Database, NodeId, Value};
 /// Verifies all nodes are present after all processes complete.
 #[test]
 fn concurrent_writers() {
+    let _guard = MULTIPROCESS_TEST_LOCK
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("concurrent.db");
 
@@ -31,15 +62,17 @@ fn concurrent_writers() {
             .env("GRAPHDB_TEST_PATH", path.to_str().unwrap())
             .env("GRAPHDB_WRITER_ID", writer_id.to_string())
             .env("GRAPHDB_NODES_COUNT", nodes_per_writer.to_string())
+            .stderr(Stdio::piped())
             .spawn()
             .expect("failed to spawn child process");
         children.push(child);
     }
 
-    // Wait for all children.
-    for mut child in children {
-        let status = child.wait().expect("failed to wait on child");
-        assert!(status.success(), "child process failed: {status}");
+    // Wait for all children — surface their stderr if any panic.
+    for child in children {
+        if let Err(msg) = wait_child("writer", child) {
+            panic!("{msg}");
+        }
     }
 
     // Verify all nodes were written.
@@ -101,6 +134,9 @@ fn child_writer() {
 /// audit checklist.
 #[test]
 fn stress_writers_with_readers() {
+    let _guard = MULTIPROCESS_TEST_LOCK
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("stress.db");
 
@@ -125,6 +161,7 @@ fn stress_writers_with_readers() {
             .env("GRAPHDB_WRITER_ID", writer_id.to_string())
             .env("GRAPHDB_CHAINS", chains_per_writer.to_string())
             .env("GRAPHDB_CHAIN_LEN", nodes_per_chain.to_string())
+            .stderr(Stdio::piped())
             .spawn()
             .expect("spawn writer");
         children.push(("writer", child));
@@ -137,14 +174,16 @@ fn stress_writers_with_readers() {
             .env("GRAPHDB_TEST_PATH", path.to_str().unwrap())
             .env("GRAPHDB_READER_ID", reader_id.to_string())
             .env("GRAPHDB_READ_SECS", reader_duration_secs.to_string())
+            .stderr(Stdio::piped())
             .spawn()
             .expect("spawn reader");
         children.push(("reader", child));
     }
 
-    for (kind, mut child) in children {
-        let status = child.wait().expect("wait child");
-        assert!(status.success(), "stress {kind} failed: {status}");
+    for (kind, child) in children {
+        if let Err(msg) = wait_child(kind, child) {
+            panic!("{msg}");
+        }
     }
 
     // Final invariants.

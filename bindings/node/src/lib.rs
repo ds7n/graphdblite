@@ -192,6 +192,18 @@ impl Database {
         })
     }
 
+    /// Write a consistent single-file snapshot of this database to `path`.
+    ///
+    /// Uses SQLite's `VACUUM INTO`: produces a self-contained file (no
+    /// `-wal` / `-shm` sidecars), defragmented and compacted. Throws when a
+    /// transaction is active on this handle or when `path` already exists.
+    #[napi]
+    pub fn snapshot_to(&self, path: String) -> Result<()> {
+        let mut guard = self.inner.lock().expect("Database mutex poisoned");
+        let db = guard.as_mut().ok_or_else(closed_err)?;
+        db.snapshot_to(&path).map_err(to_napi_err)
+    }
+
     /// Close the database connection.
     #[napi]
     pub fn close(&self) {

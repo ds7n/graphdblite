@@ -282,6 +282,61 @@ out:
     return rc;
 }
 
+/* ----------------------------------------------------------------------- */
+/* snapshot — graphdb_snapshot_to                                           */
+/* ----------------------------------------------------------------------- */
+static int snap_basic(const char *tmpdir) {
+    const char *tag = "SNAP-basic";
+    GraphDB *db = fresh_db(tmpdir, "snap_src.db");
+    if (!db) return fail(tag, "open");
+    int rc = 1;
+    char dst[1024];
+    snprintf(dst, sizeof(dst), "%s/snap_dst.db", tmpdir);
+    unlink(dst);
+    char wal[1100], shm[1100];
+    snprintf(wal, sizeof(wal), "%s-wal", dst);
+    snprintf(shm, sizeof(shm), "%s-shm", dst);
+    unlink(wal); unlink(shm);
+
+    GraphResult *seed = NULL;
+    if (graphdb_execute(db, "CREATE (:Person {name: 'Alice'}), (:Person {name: 'Bob'})", &seed) != 0) {
+        rc = fail(tag, "seed execute"); goto out;
+    }
+    graphdb_result_free(seed);
+    if (graphdb_snapshot_to(db, dst) != 0) { rc = fail(tag, "snapshot_to"); goto out; }
+
+    struct stat st;
+    if (stat(dst, &st) != 0) { rc = fail(tag, "dst missing"); goto out; }
+    if (stat(wal, &st) == 0) { rc = fail(tag, "dst-wal should not exist"); goto out; }
+    if (stat(shm, &st) == 0) { rc = fail(tag, "dst-shm should not exist"); goto out; }
+
+    GraphDB *snap = NULL;
+    if (graphdb_open(dst, &snap) != 0) { rc = fail(tag, "open snapshot"); goto out; }
+    if (count_persons(snap) != 2) { rc = fail(tag, "person count != 2"); graphdb_close(snap); goto out; }
+    graphdb_close(snap);
+    rc = pass(tag);
+out:
+    graphdb_close(db);
+    unlink(dst); unlink(wal); unlink(shm);
+    return rc;
+}
+
+static int snap_rejects_existing(const char *tmpdir) {
+    const char *tag = "SNAP-rejects-existing";
+    GraphDB *db = fresh_db(tmpdir, "snap_src2.db");
+    if (!db) return fail(tag, "open");
+    int rc = 1;
+    char dst[1024];
+    snprintf(dst, sizeof(dst), "%s/snap_existing.db", tmpdir);
+    FILE *f = fopen(dst, "w"); if (f) fclose(f);
+    if (graphdb_snapshot_to(db, dst) == 0) { rc = fail(tag, "should have failed on existing target"); goto out; }
+    rc = pass(tag);
+out:
+    graphdb_close(db);
+    unlink(dst);
+    return rc;
+}
+
 int main(int argc, char **argv) {
     const char *tmpdir = (argc >= 2) ? argv[1] : "/tmp/graphdblite-bc";
     if (mkdir(tmpdir, 0700) != 0) {
@@ -297,6 +352,8 @@ int main(int argc, char **argv) {
         bc_07_use_after_commit,
         bc_09_close_with_open_tx,
         bc_10_result_after_commit,
+        snap_basic,
+        snap_rejects_existing,
     };
     size_t n = sizeof(scenarios) / sizeof(scenarios[0]);
     int failures = 0;

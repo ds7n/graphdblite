@@ -39,6 +39,6 @@
   "scripts": {
     "build": "napi build --platform --release",
     "build-debug": "napi build --platform",
-    "test": "node --test test/conformance.test.mjs test/wrapper.test.mjs"
+    "test": "node --test test/conformance.test.mjs test/wrapper.test.mjs test/snapshot.test.mjs"
   }
 }

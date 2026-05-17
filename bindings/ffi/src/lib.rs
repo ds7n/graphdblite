@@ -163,6 +163,36 @@ pub unsafe extern "C" fn graphdb_open_memory(out: *mut *mut GraphDB) -> i32 {
     })
 }
 
+/// Write a consistent single-file snapshot of the database to `path`.
+///
+/// Uses SQLite's `VACUUM INTO`: produces a self-contained file (no
+/// `-wal` / `-shm` sidecars), defragmented and compacted. Returns non-zero
+/// when a transaction is active on this handle or when `path` already exists;
+/// call `graphdb_last_error` for details.
+#[no_mangle]
+pub unsafe extern "C" fn graphdb_snapshot_to(db: *mut GraphDB, path: *const c_char) -> i32 {
+    if db.is_null() || path.is_null() {
+        set_error("null pointer argument");
+        return -1;
+    }
+    let handle = unsafe { &*db };
+    let path_str = match unsafe { CStr::from_ptr(path) }.to_str() {
+        Ok(s) => s,
+        Err(e) => {
+            set_error(&format!("invalid UTF-8 path: {e}"));
+            return -1;
+        }
+    };
+    let mut guard = match lock_db(handle) {
+        Ok(g) => g,
+        Err(e) => {
+            set_error(&e.to_string());
+            return -1;
+        }
+    };
+    wrap_result(guard.snapshot_to(path_str), |_| {})
+}
+
 /// Close a database and free its resources.
 ///
 /// After this call, the pointer is invalid. Passing NULL is a no-op.

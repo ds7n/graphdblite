@@ -434,6 +434,44 @@ impl Database {
         Ok(())
     }
 
+    /// Write a consistent snapshot of this database to `path` as a single
+    /// self-contained SQLite file (no `-wal` / `-shm` sidecars). Uses
+    /// `VACUUM INTO` under the hood, which also defragments and compacts the
+    /// output. The destination must not already exist.
+    ///
+    /// Rejects when a transaction is active on this handle: `VACUUM INTO`
+    /// requires no open transaction.
+    pub fn snapshot_to<P: AsRef<Path>>(&mut self, path: P) -> Result<()> {
+        self.ensure_no_active_tx("snapshot_to")?;
+        let target = path.as_ref();
+        if target.exists() {
+            return Err(GraphError::Storage {
+                source: rusqlite::Error::SqliteFailure(
+                    rusqlite::ffi::Error::new(rusqlite::ffi::SQLITE_CANTOPEN),
+                    Some(format!(
+                        "snapshot target already exists: {}",
+                        target.display()
+                    )),
+                ),
+                hint: Some("VACUUM INTO requires the destination path to not exist; pick a fresh path or delete it first".to_string()),
+            });
+        }
+        let target_str = target.to_str().ok_or_else(|| GraphError::Storage {
+            source: rusqlite::Error::SqliteFailure(
+                rusqlite::ffi::Error::new(rusqlite::ffi::SQLITE_CANTOPEN),
+                Some("snapshot target path is not valid UTF-8".to_string()),
+            ),
+            hint: None,
+        })?;
+        self.conn.execute("VACUUM INTO ?", [target_str])?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let _ = std::fs::set_permissions(target, std::fs::Permissions::from_mode(0o600));
+        }
+        Ok(())
+    }
+
     fn exec_caches(&self) -> ExecCaches<'_> {
         ExecCaches {
             parse: Some(&self.parse_cache),
@@ -655,6 +693,69 @@ mod stateful_tx_tests {
             db.rollback().unwrap_err(),
             GraphError::Transaction { .. }
         ));
+    }
+}
+
+#[cfg(test)]
+mod snapshot_tests {
+    use super::*;
+
+    #[test]
+    fn snapshot_to_produces_single_file_with_data() {
+        let src_path = tempfile::NamedTempFile::new().unwrap().into_temp_path();
+        let mut db = Database::open(&src_path).unwrap();
+        db.execute("CREATE (:Person {name: 'Alice'}), (:Person {name: 'Bob'})")
+            .unwrap();
+
+        let dst_dir = tempfile::tempdir().unwrap();
+        let dst_path = dst_dir.path().join("snapshot.db");
+        db.snapshot_to(&dst_path).unwrap();
+
+        // Target exists; no -wal/-shm sidecars next to it.
+        assert!(dst_path.exists());
+        let wal = dst_path.with_extension("db-wal");
+        let shm = dst_path.with_extension("db-shm");
+        assert!(!wal.exists());
+        assert!(!shm.exists());
+
+        // Snapshot is a valid graphdblite database with the source's data.
+        let mut snap = Database::open(&dst_path).unwrap();
+        let rows = snap
+            .execute("MATCH (n:Person) RETURN n.name AS name")
+            .unwrap();
+        assert_eq!(rows.len(), 2);
+    }
+
+    #[test]
+    fn snapshot_to_rejects_existing_target() {
+        let mut db = Database::open_memory().unwrap();
+        let existing = tempfile::NamedTempFile::new().unwrap();
+        let err = db.snapshot_to(existing.path()).unwrap_err();
+        assert!(matches!(err, GraphError::Storage { .. }));
+    }
+
+    #[test]
+    fn snapshot_to_rejects_when_tx_active() {
+        let mut db = Database::open_memory().unwrap();
+        db.begin_write().unwrap();
+        let dst_dir = tempfile::tempdir().unwrap();
+        let dst_path = dst_dir.path().join("snap.db");
+        let err = db.snapshot_to(&dst_path).unwrap_err();
+        assert!(matches!(err, GraphError::Transaction { .. }));
+        db.rollback().unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn snapshot_to_sets_owner_only_permissions() {
+        use std::os::unix::fs::PermissionsExt;
+        let mut db = Database::open_memory().unwrap();
+        db.execute("CREATE (:X)").unwrap();
+        let dst_dir = tempfile::tempdir().unwrap();
+        let dst_path = dst_dir.path().join("snap.db");
+        db.snapshot_to(&dst_path).unwrap();
+        let mode = std::fs::metadata(&dst_path).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o600);
     }
 }
 

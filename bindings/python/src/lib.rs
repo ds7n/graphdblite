@@ -294,6 +294,22 @@ impl PyDatabase {
         PyReadTransaction::start(db, slf.clone().unbind())
     }
 
+    /// Write a consistent single-file snapshot of this database to ``path``.
+    ///
+    /// Uses SQLite's ``VACUUM INTO`` under the hood: produces a self-contained
+    /// file (no ``-wal`` / ``-shm`` sidecars), defragmented and compacted.
+    /// Raises if a transaction is active on this handle or if ``path`` already
+    /// exists.
+    fn snapshot_to(&mut self, py: Python, path: &str) -> PyResult<()> {
+        let db = self
+            .inner
+            .as_mut()
+            .ok_or_else(|| PyRuntimeError::new_err("database is closed"))?;
+        let path_owned = path.to_string();
+        py.allow_threads(|| db.snapshot_to(&path_owned))
+            .map_err(to_py_err)
+    }
+
     /// Close the database connection.
     fn close(&mut self) {
         self.inner.take();

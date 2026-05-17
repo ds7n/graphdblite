@@ -105,6 +105,23 @@ func OpenMemory() (*Database, error) {
 	return db, nil
 }
 
+// SnapshotTo writes a consistent single-file snapshot of this database to path.
+//
+// Uses SQLite's VACUUM INTO under the hood: produces a self-contained file
+// (no -wal / -shm sidecars), defragmented and compacted. Returns an error
+// when a transaction is active on this handle or when path already exists.
+func (db *Database) SnapshotTo(path string) error {
+	if db.ptr == nil {
+		return errors.New("database is closed")
+	}
+	cpath := C.CString(path)
+	defer C.free(unsafe.Pointer(cpath))
+	if rc := C.graphdb_snapshot_to(db.ptr, cpath); rc != 0 {
+		return fmt.Errorf("graphdblite snapshot_to: %w", lastError())
+	}
+	return nil
+}
+
 // Close closes the database and frees its resources.
 // It is safe to call Close multiple times.
 func (db *Database) Close() {

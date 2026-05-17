@@ -7,6 +7,13 @@ ships.
 
 ## [Unreleased]
 
+### Added
+
+- `Database::snapshot_to(path)` — write a consistent, single-file snapshot of
+  the database via `VACUUM INTO`. Produces a self-contained SQLite file (no
+  `-wal` / `-shm` sidecars), defragmented and compacted. Rejects when a
+  transaction is active or the destination path already exists.
+
 ## [0.1.0] - 2026-05-16
 
 First public release.

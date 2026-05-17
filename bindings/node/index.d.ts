@@ -23,6 +23,14 @@ export declare class Database {
   beginWrite(): WriteTransaction
   /** Begin a read transaction. Pair with `commit()`. */
   beginRead(): ReadTransaction
+  /**
+   * Write a consistent single-file snapshot of this database to `path`.
+   *
+   * Uses SQLite's `VACUUM INTO`: produces a self-contained file (no
+   * `-wal` / `-shm` sidecars), defragmented and compacted. Throws when a
+   * transaction is active on this handle or when `path` already exists.
+   */
+  snapshotTo(path: string): void
   /** Close the database connection. */
   close(): void
 }

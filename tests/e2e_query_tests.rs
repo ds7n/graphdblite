@@ -4067,3 +4067,116 @@ fn large_duration_in_seconds() {
     let dur = rows[0].get("duration").unwrap();
     assert_eq!(format!("{dur}"), "PT1761935H59M59S");
 }
+
+#[test]
+fn id_lookup_planner_rewrites_unlabeled_id_equality_to_idlookup() {
+    // Sanity: the rewrite plus exec dispatch produces the right row, and
+    // (more importantly) does so without scanning the whole node table.
+    // The latter is verified by the perf regression test below.
+    let mut db = Database::open_memory().unwrap();
+    let target_id;
+    {
+        let tx = db.write_tx().unwrap();
+        for i in 0..200 {
+            tx.query(&format!("CREATE (:Filler {{i: {i}}})")).unwrap();
+        }
+        let rows = tx
+            .query("CREATE (n:Target {tag: 'hit'}) RETURN id(n) AS id")
+            .unwrap();
+        target_id = match rows[0].get("id") {
+            Some(Value::I64(v)) => *v,
+            other => panic!("expected i64 id, got {other:?}"),
+        };
+        tx.commit().unwrap();
+    }
+    let tx = db.read_tx().unwrap();
+    let rows = tx
+        .query(&format!(
+            "MATCH (n) WHERE id(n) = {target_id} RETURN n.tag AS tag"
+        ))
+        .unwrap();
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].get("tag"), Some(&Value::String("hit".into())));
+    tx.commit().unwrap();
+}
+
+#[test]
+fn id_lookup_planner_supports_parameterized_id_equality() {
+    let mut db = Database::open_memory().unwrap();
+    let target_id;
+    {
+        let tx = db.write_tx().unwrap();
+        let rows = tx
+            .query("CREATE (n:Target {tag: 'hit'}) RETURN id(n) AS id")
+            .unwrap();
+        target_id = match rows[0].get("id") {
+            Some(Value::I64(v)) => *v,
+            other => panic!("expected i64 id, got {other:?}"),
+        };
+        tx.commit().unwrap();
+    }
+    let mut params = std::collections::HashMap::new();
+    params.insert("x".to_string(), Value::I64(target_id));
+    let tx = db.read_tx().unwrap();
+    let rows = tx
+        .query_with_params(
+            "MATCH (n) WHERE id(n) = $x RETURN n.tag AS tag",
+            Some(&params),
+        )
+        .unwrap();
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].get("tag"), Some(&Value::String("hit".into())));
+    tx.commit().unwrap();
+}
+
+#[test]
+fn id_lookup_planner_returns_no_rows_for_nonexistent_id() {
+    let mut db = Database::open_memory().unwrap();
+    let tx = db.read_tx().unwrap();
+    let rows = tx.query("MATCH (n) WHERE id(n) = 99999 RETURN n").unwrap();
+    assert_eq!(rows.len(), 0);
+    tx.commit().unwrap();
+}
+
+#[test]
+fn id_lookup_avoids_full_scan_under_unwind_batch() {
+    // Perf regression test for the `batch_create_edges` pathology.
+    // Without the IdLookup rewrite this is O(N_rows * N_nodes_in_graph)
+    // (full scan per row, twice) and times out spectacularly. With the
+    // rewrite each row is O(1). 200-node graph * 500 edge rows is enough
+    // contrast that a regression would dominate the timeout budget.
+    use std::time::Instant;
+    let mut db = Database::open_memory().unwrap();
+    let tx = db.write_tx().unwrap();
+    for i in 0..200 {
+        tx.query(&format!("CREATE (:N {{i: {i}}})")).unwrap();
+    }
+    // Build src/dst pairs over the existing ids 0..200, cycling.
+    let mut rows: Vec<Value> = Vec::with_capacity(500);
+    for i in 0..500u64 {
+        let mut row = std::collections::BTreeMap::new();
+        row.insert("s".to_string(), Value::I64((i % 200) as i64));
+        row.insert("d".to_string(), Value::I64(((i + 1) % 200) as i64));
+        rows.push(Value::Map(row));
+    }
+    let mut params = std::collections::HashMap::new();
+    params.insert("rows".to_string(), Value::List(rows));
+    let start = Instant::now();
+    tx.query_with_params(
+        "UNWIND $rows AS row \
+         MATCH (a) WHERE id(a) = row.s \
+         MATCH (b) WHERE id(b) = row.d \
+         CREATE (a)-[:R]->(b)",
+        Some(&params),
+    )
+    .unwrap();
+    let elapsed = start.elapsed();
+    tx.commit().unwrap();
+    // Generous bound: without the rewrite this takes seconds on a 200-node
+    // graph; with the rewrite it's milliseconds. 3 s catches a regression
+    // without being flaky under cargo test load.
+    assert!(
+        elapsed.as_secs() < 3,
+        "id-lookup batch took {elapsed:?}, expected <3s (regression to full-scan path?)"
+    );
+}

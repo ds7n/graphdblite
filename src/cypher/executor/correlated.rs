@@ -16,7 +16,7 @@ use crate::types::{Direction, NodeId, Result, Value};
 
 use super::{
     build_compound_binding, check_row_limit, collect_flat_edge_ids, compound_binding_vars, exec,
-    exec_aggregate_over_records, exec_index_lookup, exec_scan, fetch_and_populate,
+    exec_aggregate_over_records, exec_id_lookup, exec_index_lookup, exec_scan, fetch_and_populate,
     has_duplicate_relationships, literal_to_value, node_to_record, ExecContext,
 };
 
@@ -157,6 +157,20 @@ pub(super) fn exec_correlated(
             } else {
                 exec_scan(conn, label, alias, ctx)
             }
+        }
+
+        LogicalOp::IdLookup { alias, value_expr } => {
+            // If the alias is already bound in the outer record, that
+            // takes precedence — match the existing Scan/IndexLookup
+            // handling for re-bound variables.
+            if let Some(node_id) = outer.get(alias).and_then(value_to_node_id) {
+                let node = node::get_node(conn, node_id)?;
+                return Ok(vec![node_to_record(&node, alias)]);
+            }
+            if outer.get(alias) == Some(&Value::Null) {
+                return Ok(vec![]);
+            }
+            exec_id_lookup(conn, alias, value_expr, outer)
         }
 
         LogicalOp::IndexLookup {

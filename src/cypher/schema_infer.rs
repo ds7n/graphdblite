@@ -74,6 +74,13 @@ pub fn infer_with_props(op: &LogicalOp, props: &HashMap<String, BTreeSet<String>
             s
         }
 
+        IdLookup { alias, .. } => {
+            let mut s = RecordSchema::new();
+            add_node_metadata(&mut s, alias);
+            add_referenced_props(&mut s, alias, props);
+            s
+        }
+
         Expand {
             input,
             dst_alias,
@@ -419,7 +426,7 @@ fn populate_pattern_bindings(
 pub fn collect_property_refs(op: &LogicalOp, out: &mut HashMap<String, BTreeSet<String>>) {
     use LogicalOp::*;
     match op {
-        SingleRow | EmptyRow | Scan { .. } => {}
+        SingleRow | EmptyRow | Scan { .. } | IdLookup { .. } => {}
 
         IndexLookup {
             remaining_filters, ..

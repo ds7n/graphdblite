@@ -28,6 +28,27 @@ pub(in crate::cypher::executor) fn exec_scan(
     Ok(records)
 }
 
+pub(in crate::cypher::executor) fn exec_id_lookup(
+    conn: &Connection,
+    alias: &str,
+    value_expr: &Expr,
+    record: &NamedRecord,
+) -> Result<Vec<NamedRecord>> {
+    let evaluated = eval_expr(value_expr, record, crate::cypher::eval::EvalCx::new(conn))?;
+    let id = match evaluated {
+        Value::I64(n) if n >= 0 => NodeId(n as u64),
+        // Anything else (negative, null, non-integer, error) yields zero
+        // rows rather than an error — matches the semantics of an
+        // unmatched WHERE predicate.
+        _ => return Ok(Vec::new()),
+    };
+    match node::get_node(conn, id) {
+        Ok(n) => Ok(vec![node_to_record(&n, alias)]),
+        Err(GraphError::NodeNotFound { .. }) => Ok(Vec::new()),
+        Err(e) => Err(e),
+    }
+}
+
 pub(in crate::cypher::executor) fn exec_index_lookup(
     conn: &Connection,
     label: &str,

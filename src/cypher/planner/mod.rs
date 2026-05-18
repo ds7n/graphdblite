@@ -18,8 +18,160 @@ static ANON_COUNTER: AtomicUsize = AtomicUsize::new(0);
 /// vaguely similar.
 pub fn plan(conn: &Connection, stmt: &Statement) -> crate::types::Result<LogicalOp> {
     let mut op = plan_inner(conn, stmt, false)?;
-    push_limit_into_var_length_expand(&mut op);
+    apply_post_passes(&mut op);
     Ok(op)
+}
+
+/// Run the standard post-planning rewrites in order. Kept as a single
+/// helper so every plan entry point (`plan`, `plan_with_procedures`,
+/// `plan_subquery`) applies the same set without drift.
+pub(in crate::cypher::planner) fn apply_post_passes(op: &mut LogicalOp) {
+    push_limit_into_var_length_expand(op);
+    rewrite_id_filter_to_lookup(op);
+}
+
+/// Optimization: rewrite `Filter(Scan { label: "", alias }, id(alias) = X)`
+/// into `IdLookup { alias, value: X }`. Critical for `WHERE id(n) = $x`
+/// usage (e.g. the Python binding's `batch_create_edges` helper, which
+/// otherwise full-scans the entire node table per UNWIND row). Recurses
+/// into all child operators so nested patterns benefit too.
+///
+/// Only rewrites the unlabeled-scan form for simplicity. A labeled
+/// `MATCH (a:Foo) WHERE id(a) = $x` is a much rarer pattern and we leave
+/// it on the existing Scan+Filter path; adding it would need a "verify
+/// label after lookup" wrapper that this pass doesn't yet emit.
+pub(in crate::cypher::planner) fn rewrite_id_filter_to_lookup(op: &mut LogicalOp) {
+    // First recurse so inner subtrees are optimized before we try to
+    // pattern-match this node.
+    walk_children_mut(op, rewrite_id_filter_to_lookup);
+
+    if !matches!(op, LogicalOp::Filter { .. }) {
+        return;
+    }
+
+    // Take ownership of the Filter so we can rebuild freely.
+    let placeholder = LogicalOp::SingleRow;
+    let LogicalOp::Filter { input, predicate } = std::mem::replace(op, placeholder) else {
+        unreachable!()
+    };
+
+    // Case 1 — non-correlated: Filter(Scan{"", alias}, id(alias) = expr).
+    if let LogicalOp::Scan { label, alias } = input.as_ref() {
+        if label.is_empty() {
+            if let Some(value_expr) = extract_id_eq_alias(&predicate, alias) {
+                if !expr_references_var(&value_expr, alias) {
+                    *op = LogicalOp::IdLookup {
+                        alias: alias.clone(),
+                        value_expr,
+                    };
+                    return;
+                }
+            }
+        }
+    }
+
+    // Case 2 — correlated: Filter(CorrelatedJoin{ input, right: Scan{"", alias} }, id(alias) = expr).
+    // The WHERE filter sits *outside* the join in multi-clause statements
+    // (UNWIND + MATCH ... WHERE id(a) = row.s + MATCH ...). Push the
+    // id-predicate down into the right side as an IdLookup, drop the Filter.
+    //
+    // Safe because `id(alias) = expr`:
+    //   - constrains only `alias` (a binding produced by the right side)
+    //   - uses `expr` which references only outer/input-side bindings (we
+    //     check `expr_references_var(&value_expr, alias)` to enforce this)
+    if let LogicalOp::CorrelatedJoin { right, .. } = input.as_ref() {
+        if let LogicalOp::Scan { label, alias } = right.as_ref() {
+            if label.is_empty() {
+                if let Some(value_expr) = extract_id_eq_alias(&predicate, alias) {
+                    if !expr_references_var(&value_expr, alias) {
+                        let alias = alias.clone();
+                        // Rebuild: replace right with IdLookup, drop Filter.
+                        let LogicalOp::CorrelatedJoin {
+                            input: join_input,
+                            same_match,
+                            ..
+                        } = *input
+                        else {
+                            unreachable!("matched above")
+                        };
+                        *op = LogicalOp::CorrelatedJoin {
+                            input: join_input,
+                            right: Box::new(LogicalOp::IdLookup { alias, value_expr }),
+                            same_match,
+                        };
+                        return;
+                    }
+                }
+            }
+        }
+    }
+
+    // No rewrite applied — restore the Filter we took ownership of.
+    *op = LogicalOp::Filter { input, predicate };
+}
+
+/// If `predicate` is `id(alias) = <expr>` (in either operand order),
+/// return the other side as an `Expr`. The caller decides whether the
+/// expression is safe to hoist (e.g. doesn't reference the alias itself).
+fn extract_id_eq_alias(predicate: &Expr, alias: &str) -> Option<Expr> {
+    let (left, right) = match &predicate.kind {
+        ExprKind::BinaryOp {
+            left,
+            op: BinOp::Eq,
+            right,
+        } => (left.as_ref(), right.as_ref()),
+        _ => return None,
+    };
+
+    if matches_id_of_alias(left, alias) {
+        return Some(right.clone());
+    }
+    if matches_id_of_alias(right, alias) {
+        return Some(left.clone());
+    }
+    None
+}
+
+fn matches_id_of_alias(expr: &Expr, alias: &str) -> bool {
+    let ExprKind::FunctionCall { name, args, .. } = &expr.kind else {
+        return false;
+    };
+    if !name.eq_ignore_ascii_case("id") || args.len() != 1 {
+        return false;
+    }
+    matches!(&args[0].kind, ExprKind::Variable(v) if v == alias)
+}
+
+/// Return true if `expr` references the named variable anywhere in its tree.
+/// Used to reject self-referential id-lookups like `WHERE id(a) = id(a)`.
+fn expr_references_var(expr: &Expr, name: &str) -> bool {
+    use ExprKind::*;
+    match &expr.kind {
+        Variable(v) => v == name,
+        Property(v, _) => v == name,
+        BinaryOp { left, right, .. } => {
+            expr_references_var(left, name) || expr_references_var(right, name)
+        }
+        Not(inner) | IsNull(inner) | IsNotNull(inner) => expr_references_var(inner, name),
+        FunctionCall { args, .. } => args.iter().any(|a| expr_references_var(a, name)),
+        Case {
+            operand,
+            alternatives,
+            default,
+        } => {
+            operand
+                .as_deref()
+                .is_some_and(|e| expr_references_var(e, name))
+                || alternatives
+                    .iter()
+                    .any(|(c, r)| expr_references_var(c, name) || expr_references_var(r, name))
+                || default
+                    .as_deref()
+                    .is_some_and(|e| expr_references_var(e, name))
+        }
+        List(items) => items.iter().any(|e| expr_references_var(e, name)),
+        _ => false,
+    }
 }
 
 /// Optimization: push a `LIMIT N` cap down into a var-length `Expand` when the
@@ -104,6 +256,7 @@ pub(in crate::cypher::planner) fn walk_children_mut(op: &mut LogicalOp, f: fn(&m
         LogicalOp::SingleRow
         | LogicalOp::Scan { .. }
         | LogicalOp::IndexLookup { .. }
+        | LogicalOp::IdLookup { .. }
         | LogicalOp::CreateNode { .. }
         | LogicalOp::CreateEdge { .. }
         | LogicalOp::Merge { .. }
@@ -114,7 +267,9 @@ pub(in crate::cypher::planner) fn walk_children_mut(op: &mut LogicalOp, f: fn(&m
 /// Plan a statement that may be inside a subquery (EXISTS).
 /// Subquery context disables certain validations that require full scope.
 pub fn plan_subquery(conn: &Connection, stmt: &Statement) -> crate::types::Result<LogicalOp> {
-    plan_inner(conn, stmt, true)
+    let mut op = plan_inner(conn, stmt, true)?;
+    apply_post_passes(&mut op);
+    Ok(op)
 }
 
 /// Plan a statement with a procedure registry for CALL validation.
@@ -153,7 +308,7 @@ pub fn plan_with_procedures(
         _ => plan(conn, stmt),
     }
     .map(|mut op| {
-        push_limit_into_var_length_expand(&mut op);
+        apply_post_passes(&mut op);
         op
     })
 }

@@ -70,6 +70,11 @@ fn estimate_rows(conn: &Connection, plan: &LogicalOp) -> f64 {
             1.0
         }
 
+        LogicalOp::IdLookup { .. } => {
+            // Direct id lookup — exactly 1 row (or 0 if the id doesn't exist).
+            1.0
+        }
+
         LogicalOp::Expand { input, .. } => estimate_rows(conn, input) * DEFAULT_EXPAND_FAN_OUT,
 
         LogicalOp::CrossProduct { left, right, .. }
@@ -179,6 +184,9 @@ fn format_plan_tree(conn: &Connection, plan: &LogicalOp, depth: usize, lines: &m
                 LookupKey::Param(name) => format!("${name}"),
             };
             format!("IndexLookup :{label}.{property} = {v} AS {alias}")
+        }
+        LogicalOp::IdLookup { alias, value_expr } => {
+            format!("IdLookup id({alias}) = {value_expr:?}")
         }
         LogicalOp::Expand {
             src_alias,

@@ -127,6 +127,7 @@ pub(in crate::cypher::executor) fn check_depth_recursive(op: &LogicalOp, cap: u3
         LogicalOp::SingleRow
         | LogicalOp::Scan { .. }
         | LogicalOp::IndexLookup { .. }
+        | LogicalOp::IdLookup { .. }
         | LogicalOp::CreateNode { .. }
         | LogicalOp::CreateEdge { .. }
         | LogicalOp::Merge { .. }
@@ -226,6 +227,7 @@ pub(crate) fn is_read_only(plan: &LogicalOp) -> bool {
     match plan {
         LogicalOp::Scan { .. }
         | LogicalOp::IndexLookup { .. }
+        | LogicalOp::IdLookup { .. }
         | LogicalOp::EmptyRow
         | LogicalOp::SingleRow => true,
 
@@ -307,6 +309,13 @@ pub(in crate::cypher::executor) fn exec(
             value,
             remaining_filters.as_ref(),
         ),
+
+        LogicalOp::IdLookup { alias, value_expr } => {
+            // Top-level (non-correlated) — evaluate against an empty record.
+            // Constant exprs (literal/param/etc.) work fine; anything that
+            // references row state at this level would be a planner bug.
+            exec_id_lookup(conn, alias, value_expr, &NamedRecord::new())
+        }
 
         LogicalOp::Expand {
             input,
@@ -533,8 +542,8 @@ use call::exec_call;
 use merge::{exec_match_merge, exec_merge};
 use path::{exec_materialize_path, exec_shortest_path};
 use read::{
-    collect_flat_edge_ids, exec_cross_product, exec_expand, exec_filter, exec_index_lookup,
-    exec_project, exec_scan, exec_unwind, has_duplicate_relationships,
+    collect_flat_edge_ids, exec_cross_product, exec_expand, exec_filter, exec_id_lookup,
+    exec_index_lookup, exec_project, exec_scan, exec_unwind, has_duplicate_relationships,
 };
 use write::{
     exec_create_edge, exec_create_node, exec_create_sequence, exec_delete, exec_match_create,

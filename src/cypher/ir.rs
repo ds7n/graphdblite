@@ -26,6 +26,19 @@ pub enum LogicalOp {
     /// Scan all nodes with a label.
     Scan { label: String, alias: String },
 
+    /// O(1) lookup of a single node by its internal id. Produced by the
+    /// planner from `MATCH (n) WHERE id(n) = <expr>`. Bypasses both `Scan`
+    /// and `IndexLookup` — directly fetches by primary key via
+    /// `node::get_node`.
+    ///
+    /// `value_expr` is evaluated against the current record (in correlated
+    /// contexts the outer row provides the bindings; in non-correlated
+    /// contexts it must be a literal/param/etc. that resolves without
+    /// any record). A non-integer or negative result yields zero rows
+    /// rather than an error — matches the semantics of an unmatched
+    /// `WHERE id(n) = ...` predicate.
+    IdLookup { alias: String, value_expr: Expr },
+
     /// Index-based lookup: use a secondary index instead of a full label scan.
     IndexLookup {
         label: String,
@@ -261,6 +274,7 @@ impl LogicalOp {
         match self {
             Self::SingleRow => "SingleRow",
             Self::Scan { .. } => "Scan",
+            Self::IdLookup { .. } => "IdLookup",
             Self::IndexLookup { .. } => "IndexLookup",
             Self::Expand { .. } => "Expand",
             Self::CrossProduct { .. } => "CrossProduct",

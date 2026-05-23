@@ -7,6 +7,8 @@ ships.
 
 ## [Unreleased]
 
+## [0.1.1] - 2026-05-23
+
 ### Performance
 
 - **`WHERE id(n) = expr` now plans as an O(1) `IdLookup`** instead of a
@@ -19,8 +21,6 @@ ships.
   inside `CorrelatedJoin` (predicate-pushdown into the join's right
   side). Empty-label `MATCH (n)` only; labeled `MATCH (n:Foo) WHERE
   id(n) = ...` still uses the scan path.
-
-## [0.1.1] - 2026-05-17
 
 ### Added
 

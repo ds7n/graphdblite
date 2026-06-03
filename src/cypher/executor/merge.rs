@@ -6,7 +6,7 @@ use crate::cypher::ast::*;
 use crate::cypher::eval::eval_expr;
 use crate::cypher::record::NamedRecord;
 use crate::types::*;
-use crate::{edge, index, node};
+use crate::{edge, fts, index, node};
 
 use super::*;
 
@@ -30,6 +30,13 @@ pub(in crate::cypher::executor) fn apply_merge_set_item_node(
             let mut new_props = old.properties.clone();
             new_props.insert(assignment.property.clone(), val);
             index::update_indexes_for_node(
+                conn,
+                node_id,
+                old.labels.first().map(|s| s.as_str()).unwrap_or(""),
+                Some(&old.properties),
+                &new_props,
+            )?;
+            fts::update_fts_for_node(
                 conn,
                 node_id,
                 old.labels.first().map(|s| s.as_str()).unwrap_or(""),
@@ -239,6 +246,7 @@ pub(in crate::cypher::executor) fn exec_merge_node(
             // Update indexes for every label.
             for lbl in &all_labels {
                 index::update_indexes_for_node(conn, id, lbl, None, &props)?;
+                fts::update_fts_for_node(conn, id, lbl, None, &props)?;
             }
 
             let rec = NamedRecord::new();
@@ -403,6 +411,7 @@ pub(in crate::cypher::executor) fn find_or_create_merge_node(
             };
             let id = node::create_node(conn, &labels, props.clone())?;
             index::update_indexes_for_node(conn, id, label, None, &props)?;
+            fts::update_fts_for_node(conn, id, label, None, &props)?;
             Ok(id)
         }
     }
@@ -453,6 +462,7 @@ pub(in crate::cypher::executor) fn exec_match_merge(
                 };
                 let id = node::create_node(conn, &labels, props.clone())?;
                 index::update_indexes_for_node(conn, id, label, None, &props)?;
+                fts::update_fts_for_node(conn, id, label, None, &props)?;
                 for item in on_create {
                     apply_merge_set_item_node(conn, item, id, rec)?;
                 }

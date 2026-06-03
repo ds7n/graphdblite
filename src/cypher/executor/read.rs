@@ -49,6 +49,150 @@ pub(in crate::cypher::executor) fn exec_id_lookup(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn exec_fulltext_lookup(
+    conn: &Connection,
+    label: &str,
+    alias: &str,
+    property: &str,
+    op: crate::cypher::ir::FullTextOp,
+    term_expr: &Expr,
+    remaining_filters: Option<&Expr>,
+    record: &NamedRecord,
+) -> Result<Vec<NamedRecord>> {
+    let evaluated = eval_expr(term_expr, record, crate::cypher::eval::EvalCx::new(conn))?;
+    let term = match evaluated {
+        Value::String(s) => s,
+        Value::Null => return Ok(Vec::new()),
+        other => {
+            return Err(GraphError::type_error(
+                QueryPhase::Runtime,
+                format!(
+                    "fulltext predicate on '{}' requires a String term, got {}",
+                    property,
+                    fts_value_type_name(&other),
+                ),
+            ));
+        }
+    };
+
+    let candidates = crate::fts::fulltext_lookup(conn, label, property, &term)?;
+    let node_ids = match candidates {
+        Some(ids) => ids,
+        None => {
+            // Term is below the trigram floor (<3 codepoints). Fall back to
+            // a full label scan with per-row predicate evaluation.
+            return exec_fulltext_fallback(
+                conn,
+                label,
+                alias,
+                property,
+                op,
+                &term,
+                remaining_filters,
+            );
+        }
+    };
+
+    let mut records = Vec::new();
+    for id in node_ids {
+        let n = node::get_node(conn, id)?;
+        // Anchored post-filter: CONTAINS needs no check (trigram is exact);
+        // STARTS WITH / ENDS WITH need a position check.
+        if !fts_anchor_matches(&n.properties, property, op, &term) {
+            continue;
+        }
+        let rec = node_to_record(&n, alias);
+        if let Some(filter) = remaining_filters {
+            if !eval_predicate(filter, &rec, crate::cypher::eval::EvalCx::new(conn))? {
+                continue;
+            }
+        }
+        records.push(rec);
+    }
+    Ok(records)
+}
+
+/// Returns true if the node's property value satisfies the anchored string op.
+///
+/// For `Contains` always returns true — the trigram lookup guarantees the
+/// substring is present. For `StartsWith`/`EndsWith` we re-check position.
+fn fts_anchor_matches(
+    properties: &crate::types::Properties,
+    property: &str,
+    op: crate::cypher::ir::FullTextOp,
+    term: &str,
+) -> bool {
+    use crate::cypher::ir::FullTextOp;
+    let Some(Value::String(s)) = properties.get(property) else {
+        return false;
+    };
+    match op {
+        FullTextOp::Contains => true,
+        FullTextOp::StartsWith => s.starts_with(term),
+        FullTextOp::EndsWith => s.ends_with(term),
+    }
+}
+
+/// Fallback for when the term is below the trigram floor (<3 codepoints).
+/// Performs a full label scan with per-row string predicate evaluation.
+fn exec_fulltext_fallback(
+    conn: &Connection,
+    label: &str,
+    alias: &str,
+    property: &str,
+    op: crate::cypher::ir::FullTextOp,
+    term: &str,
+    remaining_filters: Option<&Expr>,
+) -> Result<Vec<NamedRecord>> {
+    use crate::cypher::ir::FullTextOp;
+    let nodes = node::find_nodes_by_label(conn, label)?;
+    let mut records = Vec::new();
+    for n in nodes {
+        let Some(Value::String(s)) = n.properties.get(property) else {
+            continue;
+        };
+        let matches = match op {
+            FullTextOp::Contains => s.contains(term),
+            FullTextOp::StartsWith => s.starts_with(term),
+            FullTextOp::EndsWith => s.ends_with(term),
+        };
+        if !matches {
+            continue;
+        }
+        let rec = node_to_record(&n, alias);
+        if let Some(filter) = remaining_filters {
+            if !eval_predicate(filter, &rec, crate::cypher::eval::EvalCx::new(conn))? {
+                continue;
+            }
+        }
+        records.push(rec);
+    }
+    Ok(records)
+}
+
+/// Returns a human-readable type name for a `Value` — used in FTS type-error messages.
+fn fts_value_type_name(v: &Value) -> &'static str {
+    match v {
+        Value::Null => "Null",
+        Value::Bool(_) => "Boolean",
+        Value::I64(_) => "Integer",
+        Value::F64(_) => "Float",
+        Value::String(_) => "String",
+        Value::List(_) => "List",
+        Value::Map(_) => "Map",
+        Value::Node(_) => "Node",
+        Value::Edge(_) => "Relationship",
+        Value::Path(_) => "Path",
+        Value::Date(_) => "Date",
+        Value::Time(_) => "Time",
+        Value::LocalTime(_) => "LocalTime",
+        Value::DateTime(_) => "DateTime",
+        Value::LocalDateTime(_) => "LocalDateTime",
+        Value::Duration(_) => "Duration",
+    }
+}
+
 pub(in crate::cypher::executor) fn exec_index_lookup(
     conn: &Connection,
     label: &str,

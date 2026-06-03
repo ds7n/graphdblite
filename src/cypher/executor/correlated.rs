@@ -14,6 +14,7 @@ use crate::edge;
 use crate::node;
 use crate::types::{Direction, NodeId, Result, Value};
 
+use super::read::exec_fulltext_lookup;
 use super::{
     build_compound_binding, check_row_limit, collect_flat_edge_ids, compound_binding_vars, exec,
     exec_aggregate_over_records, exec_id_lookup, exec_index_lookup, exec_scan, fetch_and_populate,
@@ -171,6 +172,28 @@ pub(super) fn exec_correlated(
                 return Ok(vec![]);
             }
             exec_id_lookup(conn, alias, value_expr, outer)
+        }
+
+        LogicalOp::FullTextLookup {
+            label,
+            alias,
+            property,
+            op,
+            term,
+            remaining_filters,
+        } => {
+            // Pass `outer` so the term expression can resolve variables from
+            // the enclosing scope (e.g. an UNWIND'd value).
+            exec_fulltext_lookup(
+                conn,
+                label,
+                alias,
+                property,
+                *op,
+                term,
+                remaining_filters.as_ref(),
+                outer,
+            )
         }
 
         LogicalOp::IndexLookup {

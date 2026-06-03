@@ -201,6 +201,25 @@ except RuntimeError as e:
     print(f"Query failed: {e}")
 ```
 
+### Fulltext indexes
+
+```python
+db.begin_write()
+db.execute("CREATE (n:Doc {body: 'hello world'})")
+db.commit()
+
+# Create a fulltext index via WriteTransaction
+tx = db.write_tx()
+tx.create_fulltext_index("Doc", "body")
+tx.commit()
+
+# Queries are unchanged — the planner picks up the index automatically.
+rows = db.query("MATCH (n:Doc) WHERE n.body CONTAINS 'hello' RETURN n.body")
+```
+
+See `docs/cypher.md` "Full-text indexes" for semantics, storage
+cost, and limitations.
+
 ## Rust API
 
 For lower-level access (direct node/edge CRUD, index management, traversal), use the

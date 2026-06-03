@@ -104,6 +104,34 @@ active transaction.
 
 ---
 
+## Index DDL
+
+### BC-11 — fulltext index create + use + drop
+
+Each binding that exposes secondary-index DDL (`create_index` /
+`drop_index`) MUST also expose the parallel fulltext-index DDL.
+The smoke test creates a fulltext index on a `(label, property)`
+pair, runs a `CONTAINS` query that returns the expected row through
+the planner-rewritten `FullTextLookup` path, then drops the index.
+
+In language-idiomatic terms:
+
+| Binding | Method names |
+| ------- | ------------ |
+| Python  | `tx.create_fulltext_index(label, property)` / `tx.drop_fulltext_index(label, property)` |
+| Node    | *Not yet exposed — Node binding has no `createIndex` either. Tracked for a future index-DDL parity project.* |
+| Go      | *Not yet exposed — Go binding has no `CreateIndex` either. Tracked for a future index-DDL parity project.* |
+| C/FFI   | *Not yet exposed — C binding has no `graphdb_create_index` either. Tracked for a future index-DDL parity project.* |
+
+The core enforces case-sensitive substring matching (matches the
+openCypher spec exactly), skips non-string property values silently,
+and falls back to a label scan for search terms shorter than 3
+codepoints (FTS5 trigram tokenizer floor). Bindings need only wire
+the two methods through — they don't enforce these semantics
+themselves.
+
+---
+
 ## Coverage matrix
 
 | Scenario | Python | Go | C/FFI | Node |
@@ -118,6 +146,7 @@ active transaction.
 | BC-08    | ✓      | —² | —²    | ✓    |
 | BC-09    | ✓      | ✓  | ✓     | ✓    |
 | BC-10    | —³     | ✓  | ✓     | —³   |
+| BC-11    | ✓      | —⁴ | —⁴    | —⁴   |
 
 BC-05 enforcement lives in `cypher::execute_cypher` (`src/cypher/mod.rs`):
 when `ExecContext::require_read_only` is set, the planner's output tree is
@@ -136,6 +165,10 @@ value once the Python runner confirms the binding doesn't shortcut WAL.
 
 ³ Python and Node don't surface a separate result-handle object — query
 results are plain lists/arrays. Not applicable.
+
+⁴ BC-11 (fulltext-index DDL) is deferred for Node/Go/C. Those bindings
+do not expose `create_index` / `drop_index` yet, so fulltext-index DDL
+will be added in a future index-DDL parity project.
 
 ---
 

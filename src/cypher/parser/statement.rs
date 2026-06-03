@@ -85,6 +85,8 @@ pub(in crate::cypher::parser) fn parse_explain(
         Rule::match_stmt => parse_match(inner).map(Statement::Match)?,
         Rule::match_create_stmt => parse_match_create(inner).map(Statement::MatchCreate)?,
         Rule::unwind_stmt => parse_unwind(inner).map(Statement::Unwind)?,
+        Rule::with_stmt => parse_with_stmt(inner).map(Statement::Match)?,
+        Rule::multi_clause_stmt => parse_multi_clause(inner).map(Statement::MultiClause)?,
         _ => {
             return Err(GraphError::syntax(format!(
                 "EXPLAIN not supported for {:?}",

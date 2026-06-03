@@ -434,6 +434,33 @@ impl Database {
         Ok(())
     }
 
+    /// Create a fulltext index on `(label, property)` inside the active
+    /// write transaction. Accelerates `CONTAINS` / `STARTS WITH` /
+    /// `ENDS WITH` predicates on the indexed property via SQLite FTS5's
+    /// trigram tokenizer. Backfills from existing nodes; only string
+    /// values are indexed.
+    ///
+    /// Returns `GraphError::Transaction` when no write transaction is
+    /// active. Returns `GraphError::IndexAlreadyExists` when a fulltext
+    /// index on this pair already exists (regular indexes on the same
+    /// pair do not conflict).
+    pub fn create_fulltext_index(&mut self, label: &str, property: &str) -> Result<()> {
+        self.require_write_tx("create_fulltext_index")?;
+        crate::fts::create_fulltext_index(&self.conn, label, property)?;
+        self.schema_epoch.fetch_add(1, Ordering::AcqRel);
+        Ok(())
+    }
+
+    /// Drop a fulltext index on `(label, property)` inside the active
+    /// write transaction. Returns `GraphError::IndexNotFound` when no
+    /// fulltext index exists on the pair.
+    pub fn drop_fulltext_index(&mut self, label: &str, property: &str) -> Result<()> {
+        self.require_write_tx("drop_fulltext_index")?;
+        crate::fts::drop_fulltext_index(&self.conn, label, property)?;
+        self.schema_epoch.fetch_add(1, Ordering::AcqRel);
+        Ok(())
+    }
+
     /// Write a consistent snapshot of this database to `path` as a single
     /// self-contained SQLite file (no `-wal` / `-shm` sidecars). Uses
     /// `VACUUM INTO` under the hood, which also defragments and compacts the
@@ -907,6 +934,38 @@ mod plan_cache_tests {
             len_before + 1,
             "epoch change should add a fresh plan entry"
         );
+    }
+
+    #[test]
+    fn create_fulltext_index_requires_write_tx() {
+        let mut db = Database::open_memory().unwrap();
+        match db.create_fulltext_index("Doc", "body") {
+            Err(GraphError::Transaction { .. }) => {}
+            other => panic!("expected Transaction error, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn create_fulltext_index_bumps_schema_epoch() {
+        let mut db = Database::open_memory().unwrap();
+        db.begin_write().unwrap();
+        let epoch_before = db.schema_epoch.load(std::sync::atomic::Ordering::Acquire);
+        db.create_fulltext_index("Doc", "body").unwrap();
+        let epoch_after = db.schema_epoch.load(std::sync::atomic::Ordering::Acquire);
+        assert!(epoch_after > epoch_before);
+        db.commit().unwrap();
+    }
+
+    #[test]
+    fn drop_fulltext_index_bumps_schema_epoch() {
+        let mut db = Database::open_memory().unwrap();
+        db.begin_write().unwrap();
+        db.create_fulltext_index("Doc", "body").unwrap();
+        let epoch_before = db.schema_epoch.load(std::sync::atomic::Ordering::Acquire);
+        db.drop_fulltext_index("Doc", "body").unwrap();
+        let epoch_after = db.schema_epoch.load(std::sync::atomic::Ordering::Acquire);
+        assert!(epoch_after > epoch_before);
+        db.commit().unwrap();
     }
 
     #[test]

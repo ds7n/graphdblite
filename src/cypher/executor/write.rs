@@ -6,7 +6,7 @@ use crate::cypher::ast::*;
 use crate::cypher::eval::eval_expr;
 use crate::cypher::record::NamedRecord;
 use crate::types::*;
-use crate::{edge, index, node};
+use crate::{edge, fts, index, node};
 
 use super::*;
 
@@ -29,6 +29,7 @@ pub(in crate::cypher::executor) fn exec_create_node(
     let id = node::create_node(conn, labels, props.clone())?;
     let primary_label = labels.first().map(|s| s.as_str()).unwrap_or("");
     index::update_indexes_for_node(conn, id, primary_label, None, &props)?;
+    fts::update_fts_for_node(conn, id, primary_label, None, &props)?;
 
     let mut rec = NamedRecord::new();
     if let Some(alias) = alias {
@@ -86,6 +87,7 @@ pub(in crate::cypher::executor) fn exec_create_sequence(
                 let id = node::create_node(conn, labels, props.clone())?;
                 let primary_label = labels.first().map(|s| s.as_str()).unwrap_or("");
                 index::update_indexes_for_node(conn, id, primary_label, None, &props)?;
+                fts::update_fts_for_node(conn, id, primary_label, None, &props)?;
                 if let Some(alias) = alias {
                     bindings.insert(alias.clone(), id);
                     last_record.set(alias.clone(), Value::I64(id.0 as i64));
@@ -189,6 +191,7 @@ pub(in crate::cypher::executor) fn exec_match_create(
                     let id = node::create_node(conn, labels, props.clone())?;
                     let primary_label = labels.first().map(|s| s.as_str()).unwrap_or("");
                     index::update_indexes_for_node(conn, id, primary_label, None, &props)?;
+                    fts::update_fts_for_node(conn, id, primary_label, None, &props)?;
                     if let Some(alias) = alias {
                         bindings.insert(alias.clone(), id);
                         out_rec.set(alias.clone(), Value::I64(id.0 as i64));
@@ -434,6 +437,13 @@ pub(in crate::cypher::executor) fn exec_set_property(
                     Some(&old.properties),
                     &new_props,
                 )?;
+                fts::update_fts_for_node(
+                    conn,
+                    node_id,
+                    old.labels.first().map(|s| s.as_str()).unwrap_or(""),
+                    Some(&old.properties),
+                    &new_props,
+                )?;
                 // Update record so downstream RETURN sees the new value.
                 let prop_key = format!("{var}.{}", assignment.property);
                 if val == Value::Null {
@@ -659,6 +669,13 @@ pub(in crate::cypher::executor) fn exec_set_properties(
                 Some(&old_props),
                 &new_props,
             )?;
+            fts::update_fts_for_node(
+                conn,
+                node_id,
+                old.labels.first().map(|s| s.as_str()).unwrap_or(""),
+                Some(&old_props),
+                &new_props,
+            )?;
 
             // Update the record: remove old property keys, add new ones.
             // First, remove all old flattened property keys.
@@ -737,6 +754,13 @@ pub(in crate::cypher::executor) fn exec_remove(
                         let mut new_props = old.properties.clone();
                         new_props.remove(property);
                         index::update_indexes_for_node(
+                            conn,
+                            node_id,
+                            old.labels.first().map(|s| s.as_str()).unwrap_or(""),
+                            Some(&old.properties),
+                            &new_props,
+                        )?;
+                        fts::update_fts_for_node(
                             conn,
                             node_id,
                             old.labels.first().map(|s| s.as_str()).unwrap_or(""),

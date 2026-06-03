@@ -382,3 +382,52 @@ let tx = db.begin_write()?;
 tx.create_index("Person", "name")?;
 tx.commit()?;
 ```
+
+## Full-text indexes
+
+Full-text indexes accelerate substring predicates (`CONTAINS`,
+`STARTS WITH`, `ENDS WITH`) on opted-in `(label, property)` pairs.
+Declare via the Rust API (`Database::create_fulltext_index(label,
+property)`) or the Python binding's `WriteTransaction.create_fulltext_index`.
+The Cypher query syntax does not change — the planner detects the
+index and rewrites matching predicates to use it.
+
+**Semantics:**
+
+- **Case-sensitive.** Matches the openCypher spec exactly.
+- **String properties only.** Non-string values for an indexed
+  property are silently skipped at index-write time.
+- **Term-length floor.** Search terms shorter than 3 codepoints
+  bypass the index and fall through to a label scan with per-row
+  evaluation. Same result set, no perf win.
+- **Equality not accelerated.** `=` predicates use the regular
+  `IndexLookup` path (or full scan if no regular index exists). A
+  regular and fulltext index on the same `(label, property)` are
+  both allowed; they serve different operator sets.
+
+**Storage cost:** approximately 3× the size of indexed text. The
+trigram tokenizer stores every 3-character substring; avoid
+declaring fulltext indexes on very large text columns unless you
+need substring search on them.
+
+**Example (Rust):**
+
+```rust
+db.begin_write()?;
+db.create_fulltext_index("Doc", "body")?;
+db.commit()?;
+
+// Queries are unchanged — the planner picks up the index.
+let rows = db.execute(
+    "MATCH (n:Doc) WHERE n.body CONTAINS 'foo' RETURN n.body"
+)?;
+```
+
+**Known limitations (v1):**
+
+- OR-chains across multiple FTS indexes do not rewrite
+  (`WHERE n.title CONTAINS 'x' OR n.body CONTAINS 'x'` runs as a
+  scan even when both columns are indexed). Workaround: use
+  separate queries per field and union at the Cypher level.
+- No phrase queries, no prefix-with-`*`, no ranking / BM25. Use
+  the existing operators only.

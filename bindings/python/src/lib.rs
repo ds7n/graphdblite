@@ -2,6 +2,10 @@
 // Copyright (c) 2026 ds7n
 
 #![allow(unexpected_cfgs)]
+// pyo3 0.22's `PyResult<T>` (= `Result<T, PyErr>`) trips clippy 1.95's
+// `useless_conversion` lint at every fn boundary. Upstream pyo3 fix
+// would require a version bump; suppress at the module level until then.
+#![allow(clippy::useless_conversion)]
 
 use std::path::PathBuf;
 
@@ -415,6 +419,20 @@ impl PyWriteTransaction {
     fn drop_index(&mut self, label: &str, property: &str) -> PyResult<()> {
         let db = self.get_db_mut()?;
         db.drop_index(label, property).map_err(to_py_err)
+    }
+
+    /// Create a fulltext index on (label, property). Accelerates
+    /// `CONTAINS` / `STARTS WITH` / `ENDS WITH` Cypher predicates via
+    /// SQLite FTS5 (trigram tokenizer, case-sensitive).
+    fn create_fulltext_index(&mut self, label: &str, property: &str) -> PyResult<()> {
+        let db = self.get_db_mut()?;
+        db.create_fulltext_index(label, property).map_err(to_py_err)
+    }
+
+    /// Drop a fulltext index on (label, property).
+    fn drop_fulltext_index(&mut self, label: &str, property: &str) -> PyResult<()> {
+        let db = self.get_db_mut()?;
+        db.drop_fulltext_index(label, property).map_err(to_py_err)
     }
 
     /// Create multiple nodes with the same label in a single batch.

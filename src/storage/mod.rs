@@ -5,5 +5,6 @@ pub mod encoding;
 pub mod kv;
 
 pub(crate) mod edge;
+pub(crate) mod fts;
 pub(crate) mod index;
 pub(crate) mod node;

@@ -70,6 +70,11 @@ fn estimate_rows(conn: &Connection, plan: &LogicalOp) -> f64 {
             1.0
         }
 
+        LogicalOp::FullTextLookup { .. } => {
+            // FTS lookup — estimate a small number of rows (filled in Task 13).
+            10.0
+        }
+
         LogicalOp::IdLookup { .. } => {
             // Direct id lookup — exactly 1 row (or 0 if the id doesn't exist).
             1.0
@@ -280,6 +285,12 @@ fn format_plan_tree(conn: &Connection, plan: &LogicalOp, depth: usize, lines: &m
             format!("{kind} ({} branches)", inputs.len())
         }
         LogicalOp::Call { procedure_name, .. } => format!("Call {procedure_name}"),
+        LogicalOp::FullTextLookup {
+            label,
+            alias,
+            property,
+            ..
+        } => format!("FullTextLookup :{label}.{property} AS {alias}"),
     };
 
     lines.push(format!("{indent}{desc} (est. {rows:.0} rows)"));

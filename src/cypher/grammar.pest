@@ -10,7 +10,7 @@ union_stmt = { single_stmt ~ (union_op ~ single_stmt)* }
 union_op = { ^"UNION" ~ ^"ALL"? }
 single_stmt = { explain_stmt | multi_clause_stmt | match_stmt | unwind_stmt | with_stmt | match_create_stmt | match_merge_stmt | delete_stmt | set_stmt | remove_stmt | create_stmt | merge_stmt | call_stmt | return_stmt }
 
-explain_stmt = { ^"EXPLAIN" ~ (match_create_stmt | match_stmt | unwind_stmt) }
+explain_stmt = { ^"EXPLAIN" ~ (multi_clause_stmt | match_create_stmt | with_stmt | match_stmt | unwind_stmt) }
 
 // === Multi-clause statement (arbitrary sequences of updating + reading clauses) ===
 // Handles query forms that specialized rules cannot parse:

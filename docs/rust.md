@@ -141,8 +141,27 @@ Reachable via deref on `WriteTxGuard`. All `ReadTransaction` methods, plus:
 | `delete_edge(src: NodeId, dst: NodeId, label: &str) -> Result<()>` | Delete an edge |
 | `create_index(label: &str, property: &str) -> Result<()>` | Create a secondary property index |
 | `drop_index(label: &str, property: &str) -> Result<()>` | Drop a secondary property index |
+| `create_fulltext_index(label: &str, property: &str) -> Result<()>` | Create a fulltext (FTS5 trigram) index |
+| `drop_fulltext_index(label: &str, property: &str) -> Result<()>` | Drop a fulltext index |
 | `commit(self) -> Result<()>` | Commit and release write lock |
 | `rollback(self) -> Result<()>` | Explicitly rollback |
+
+### Fulltext indexes
+
+Fulltext indexes accelerate `CONTAINS` / `STARTS WITH` / `ENDS WITH`
+predicates on the indexed property. They are case-sensitive and only
+cover string-valued properties. See `docs/cypher.md` for full
+semantics.
+
+```rust
+db.begin_write()?;
+db.create_fulltext_index("Doc", "body")?;
+db.commit()?;
+```
+
+Drop with `db.drop_fulltext_index("Doc", "body")`. Inside a typed
+`WriteTransaction`, the same methods are available as
+`tx.create_fulltext_index(...)` / `tx.drop_fulltext_index(...)`.
 
 ## Types
 

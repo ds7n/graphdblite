@@ -7,6 +7,22 @@ ships.
 
 ## [Unreleased]
 
+### Added
+
+- **Full-text indexes.** New `Database::create_fulltext_index(label,
+  property)` and `Database::drop_fulltext_index(...)` plus matching
+  `WriteTransaction` methods. Python binding gains parity
+  (`WriteTransaction.create_fulltext_index` /
+  `.drop_fulltext_index`). Backed by SQLite FTS5 with the trigram
+  tokenizer (`case_sensitive 1`). The planner transparently rewrites
+  `CONTAINS`, `STARTS WITH`, and `ENDS WITH` predicates on indexed
+  `(label, property)` pairs to a `FullTextLookup` operator, with a
+  position post-filter for the two anchored ops. Term-length floor
+  (`<3` codepoints) falls back to a scan. See `docs/cypher.md` for
+  storage-cost trade-offs. Node, Go, and C bindings do not yet
+  expose this surface; they will gain it alongside a future
+  index-DDL parity project.
+
 ## [0.1.1] - 2026-05-23
 
 ### Performance

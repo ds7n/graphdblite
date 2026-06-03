@@ -510,11 +510,37 @@ pub fn build_iter<'a>(
             Ok(Box::new(VecIter::new(records)))
         }
 
+        // FullTextLookup: materialize via exec_fulltext_lookup directly
+        // (avoids routing through execute() which would call build_iter again
+        // and loop since FullTextLookup is read-only).
+        LogicalOp::FullTextLookup {
+            label,
+            alias,
+            property,
+            op,
+            term,
+            remaining_filters,
+        } => {
+            use crate::cypher::executor::exec_fulltext_lookup;
+            let records = exec_fulltext_lookup(
+                conn,
+                label,
+                alias,
+                property,
+                *op,
+                term,
+                remaining_filters.as_ref(),
+                &NamedRecord::new(),
+            )?;
+            Ok(Box::new(VecIter::new(records)))
+        }
+
         // For all other operators (Aggregate, write ops, etc.), fall back to
         // the existing `exec()` and wrap in VecIter.
         _ => {
-            use crate::cypher::executor::execute;
-            let records = execute(conn, plan)?;
+            use crate::cypher::executor::exec_pub;
+            use crate::cypher::executor::ExecContext;
+            let records = exec_pub(conn, plan, &ExecContext::default())?;
             Ok(Box::new(VecIter::new(records)))
         }
     }

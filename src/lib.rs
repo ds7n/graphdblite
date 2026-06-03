@@ -33,7 +33,8 @@ mod transaction;
 // Existing crate-internal callers refer to `crate::node`, `crate::edge`,
 // `crate::index`. The primitives now live under `storage/`; re-export here
 // so the move stays contained to the mod files (no churn in callers).
-pub(crate) use storage::{edge, index, node};
+#[allow(unused_imports)]
+pub(crate) use storage::{edge, fts, index, node};
 // Value, error, and identifier types used throughout the API. Module is
 // crate-internal; the stable surface is the re-exports below.
 pub(crate) mod types;

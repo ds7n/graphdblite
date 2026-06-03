@@ -74,6 +74,13 @@ pub fn infer_with_props(op: &LogicalOp, props: &HashMap<String, BTreeSet<String>
             s
         }
 
+        FullTextLookup { alias, .. } => {
+            let mut s = RecordSchema::new();
+            add_node_metadata(&mut s, alias);
+            add_referenced_props(&mut s, alias, props);
+            s
+        }
+
         IdLookup { alias, .. } => {
             let mut s = RecordSchema::new();
             add_node_metadata(&mut s, alias);
@@ -431,6 +438,17 @@ pub fn collect_property_refs(op: &LogicalOp, out: &mut HashMap<String, BTreeSet<
         IndexLookup {
             remaining_filters, ..
         } => {
+            if let Some(f) = remaining_filters {
+                walk_expr(f, out);
+            }
+        }
+
+        FullTextLookup {
+            term,
+            remaining_filters,
+            ..
+        } => {
+            walk_expr(term, out);
             if let Some(f) = remaining_filters {
                 walk_expr(f, out);
             }

@@ -128,6 +128,7 @@ pub(in crate::cypher::executor) fn check_depth_recursive(op: &LogicalOp, cap: u3
         | LogicalOp::Scan { .. }
         | LogicalOp::IndexLookup { .. }
         | LogicalOp::IdLookup { .. }
+        | LogicalOp::FullTextLookup { .. }
         | LogicalOp::CreateNode { .. }
         | LogicalOp::CreateEdge { .. }
         | LogicalOp::Merge { .. }
@@ -228,6 +229,7 @@ pub(crate) fn is_read_only(plan: &LogicalOp) -> bool {
         LogicalOp::Scan { .. }
         | LogicalOp::IndexLookup { .. }
         | LogicalOp::IdLookup { .. }
+        | LogicalOp::FullTextLookup { .. }
         | LogicalOp::EmptyRow
         | LogicalOp::SingleRow => true,
 
@@ -316,6 +318,24 @@ pub(in crate::cypher::executor) fn exec(
             // references row state at this level would be a planner bug.
             exec_id_lookup(conn, alias, value_expr, &NamedRecord::new())
         }
+
+        LogicalOp::FullTextLookup {
+            label,
+            alias,
+            property,
+            op,
+            term,
+            remaining_filters,
+        } => read::exec_fulltext_lookup(
+            conn,
+            label,
+            alias,
+            property,
+            *op,
+            term,
+            remaining_filters.as_ref(),
+            &NamedRecord::new(),
+        ),
 
         LogicalOp::Expand {
             input,
@@ -555,7 +575,8 @@ use write::{
 // `cypher::executor::<name>` exactly as before.
 pub(crate) use aggregate::aggregate_slot_records;
 pub(crate) use read::{
-    build_compound_binding, compound_binding_vars, expand_record, is_user_visible_field,
+    build_compound_binding, compound_binding_vars, exec_fulltext_lookup, expand_record,
+    is_user_visible_field,
 };
 pub use util::{exec_correlated_exists, exec_correlated_subquery, execute_first_match};
 pub(crate) use util::{

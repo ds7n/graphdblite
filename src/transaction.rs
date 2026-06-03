@@ -3,6 +3,7 @@ use crate::cypher::{
     record::NamedRecord, ExecCaches,
 };
 use crate::edge;
+use crate::fts;
 use crate::index;
 use crate::node;
 use crate::types::{
@@ -266,6 +267,7 @@ impl<'a> WriteTransaction<'a> {
         )?;
         let id = node::create_node(&self.tx, labels, properties.clone())?;
         index::update_indexes_for_node(&self.tx, id, primary_label, None, &properties)?;
+        fts::update_fts_for_node(&self.tx, id, primary_label, None, &properties)?;
         Ok(id)
     }
 
@@ -274,6 +276,7 @@ impl<'a> WriteTransaction<'a> {
         let n = node::get_node(&self.tx, id)?;
         let primary_label = n.labels.first().map(|s| s.as_str()).unwrap_or("");
         index::remove_indexes_for_node(&self.tx, id, primary_label, &n.properties)?;
+        fts::remove_fts_for_node(&self.tx, id, primary_label, &n.properties)?;
         node::delete_node(&self.tx, id)
     }
 
@@ -297,6 +300,13 @@ impl<'a> WriteTransaction<'a> {
             Some(&old.properties),
             &new_props,
         )?;
+        fts::update_fts_for_node(
+            &self.tx,
+            id,
+            old.labels.first().map(|s| s.as_str()).unwrap_or(""),
+            Some(&old.properties),
+            &new_props,
+        )?;
         Ok(())
     }
 
@@ -307,6 +317,13 @@ impl<'a> WriteTransaction<'a> {
         let mut new_props = old.properties.clone();
         new_props.remove(key);
         index::update_indexes_for_node(
+            &self.tx,
+            id,
+            old.labels.first().map(|s| s.as_str()).unwrap_or(""),
+            Some(&old.properties),
+            &new_props,
+        )?;
+        fts::update_fts_for_node(
             &self.tx,
             id,
             old.labels.first().map(|s| s.as_str()).unwrap_or(""),
@@ -361,6 +378,22 @@ impl<'a> WriteTransaction<'a> {
     /// Drop a secondary index.
     pub fn drop_index(&self, label: &str, property: &str) -> Result<()> {
         index::drop_index(&self.tx, label, property)?;
+        self.schema_epoch.fetch_add(1, Ordering::AcqRel);
+        Ok(())
+    }
+
+    /// Create a fulltext index on `(label, property)`. See
+    /// `Database::create_fulltext_index` for semantics.
+    pub fn create_fulltext_index(&self, label: &str, property: &str) -> Result<()> {
+        fts::create_fulltext_index(&self.tx, label, property)?;
+        self.schema_epoch.fetch_add(1, Ordering::AcqRel);
+        Ok(())
+    }
+
+    /// Drop a fulltext index on `(label, property)`. See
+    /// `Database::drop_fulltext_index` for semantics.
+    pub fn drop_fulltext_index(&self, label: &str, property: &str) -> Result<()> {
+        fts::drop_fulltext_index(&self.tx, label, property)?;
         self.schema_epoch.fetch_add(1, Ordering::AcqRel);
         Ok(())
     }
@@ -595,5 +628,25 @@ mod tx_guard_tests {
         assert!(db.write_tx().is_err());
         assert!(db.read_tx().is_err());
         db.rollback().unwrap();
+    }
+
+    #[test]
+    fn write_tx_create_and_drop_fulltext_index() {
+        let mut db = Database::open_memory().unwrap();
+        {
+            let tx = db.write_tx().unwrap();
+            tx.create_fulltext_index("Doc", "body").unwrap();
+            tx.commit().unwrap();
+        }
+        {
+            let tx = db.write_tx().unwrap();
+            tx.query("CREATE (n:Doc {body: 'hello world'})").unwrap();
+            tx.commit().unwrap();
+        }
+        {
+            let tx = db.write_tx().unwrap();
+            tx.drop_fulltext_index("Doc", "body").unwrap();
+            tx.commit().unwrap();
+        }
     }
 }

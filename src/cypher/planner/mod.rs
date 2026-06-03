@@ -18,16 +18,17 @@ static ANON_COUNTER: AtomicUsize = AtomicUsize::new(0);
 /// vaguely similar.
 pub fn plan(conn: &Connection, stmt: &Statement) -> crate::types::Result<LogicalOp> {
     let mut op = plan_inner(conn, stmt, false)?;
-    apply_post_passes(&mut op);
+    apply_post_passes(conn, &mut op);
     Ok(op)
 }
 
 /// Run the standard post-planning rewrites in order. Kept as a single
 /// helper so every plan entry point (`plan`, `plan_with_procedures`,
 /// `plan_subquery`) applies the same set without drift.
-pub(in crate::cypher::planner) fn apply_post_passes(op: &mut LogicalOp) {
+pub(in crate::cypher::planner) fn apply_post_passes(conn: &Connection, op: &mut LogicalOp) {
     push_limit_into_var_length_expand(op);
     rewrite_id_filter_to_lookup(op);
+    rewrite_text_filter_to_fts(conn, op);
 }
 
 /// Optimization: rewrite `Filter(Scan { label: "", alias }, id(alias) = X)`
@@ -140,6 +141,231 @@ fn matches_id_of_alias(expr: &Expr, alias: &str) -> bool {
         return false;
     }
     matches!(&args[0].kind, ExprKind::Variable(v) if v == alias)
+}
+
+/// Optimization: rewrite `Filter(Scan{label, alias}, alias.prop OP term)`
+/// into `FullTextLookup` when an FTS index exists on `(label, prop)`
+/// and `OP` is one of `CONTAINS` / `STARTS WITH` / `ENDS WITH`.
+///
+/// Handles conjunction: when the filter is `A AND B AND ...`, picks
+/// the first FTS-eligible conjunct, rebuilds the rest as a residual
+/// filter carried inside the `FullTextLookup`.
+///
+/// Only handles the non-correlated form: `Filter(Scan{label, alias}, ...)`.
+/// The correlated form is handled in Task 14.
+pub(in crate::cypher::planner) fn rewrite_text_filter_to_fts(
+    conn: &Connection,
+    op: &mut LogicalOp,
+) {
+    // Recurse first so inner subtrees are optimized before pattern-matching.
+    match op {
+        LogicalOp::Expand { input, .. }
+        | LogicalOp::Filter { input, .. }
+        | LogicalOp::Project { input, .. }
+        | LogicalOp::Aggregate { input, .. }
+        | LogicalOp::Sort { input, .. }
+        | LogicalOp::Distinct { input }
+        | LogicalOp::Skip { input, .. }
+        | LogicalOp::Limit { input, .. }
+        | LogicalOp::MatchCreate { input, .. }
+        | LogicalOp::Delete { input, .. }
+        | LogicalOp::SetProperty { input, .. }
+        | LogicalOp::SetLabel { input, .. }
+        | LogicalOp::SetProperties { input, .. }
+        | LogicalOp::Remove { input, .. }
+        | LogicalOp::MatchMerge { input, .. }
+        | LogicalOp::MaterializePath { input, .. }
+        | LogicalOp::Unwind { input, .. }
+        | LogicalOp::Call { input, .. }
+        | LogicalOp::ShortestPath { input, .. } => rewrite_text_filter_to_fts(conn, input),
+        LogicalOp::CrossProduct { left, right, .. } => {
+            rewrite_text_filter_to_fts(conn, left);
+            rewrite_text_filter_to_fts(conn, right);
+        }
+        LogicalOp::CorrelatedJoin { input, right, .. }
+        | LogicalOp::LeftOuterJoin { input, right, .. } => {
+            rewrite_text_filter_to_fts(conn, input);
+            rewrite_text_filter_to_fts(conn, right);
+        }
+        LogicalOp::Union { inputs, .. } => {
+            for inp in inputs {
+                rewrite_text_filter_to_fts(conn, inp);
+            }
+        }
+        LogicalOp::CreateSequence { ops } => {
+            for inner in ops {
+                rewrite_text_filter_to_fts(conn, inner);
+            }
+        }
+        LogicalOp::SingleRow
+        | LogicalOp::Scan { .. }
+        | LogicalOp::IndexLookup { .. }
+        | LogicalOp::IdLookup { .. }
+        | LogicalOp::FullTextLookup { .. }
+        | LogicalOp::CreateNode { .. }
+        | LogicalOp::CreateEdge { .. }
+        | LogicalOp::Merge { .. }
+        | LogicalOp::EmptyRow => {}
+    }
+
+    if !matches!(op, LogicalOp::Filter { .. }) {
+        return;
+    }
+
+    // Take ownership of the Filter to potentially rebuild.
+    let placeholder = LogicalOp::SingleRow;
+    let LogicalOp::Filter { input, predicate } = std::mem::replace(op, placeholder) else {
+        unreachable!()
+    };
+
+    // Non-correlated: Filter(Scan{label, alias}, alias.prop OP term).
+    if let LogicalOp::Scan { label, alias } = input.as_ref() {
+        if !label.is_empty() {
+            if let Some((prop, fts_op, term, residual)) = extract_fts_predicate(&predicate, alias) {
+                if fts_index_exists(conn, label, &prop) {
+                    *op = LogicalOp::FullTextLookup {
+                        label: label.clone(),
+                        alias: alias.clone(),
+                        property: prop,
+                        op: fts_op,
+                        term,
+                        remaining_filters: residual,
+                    };
+                    return;
+                }
+            }
+        }
+    }
+
+    // Correlated: Filter(CorrelatedJoin{ input, right: Scan{label, alias} },
+    //                    alias.prop OP term).
+    // Mirrors the IdLookup correlated case — push the FTS lookup into the
+    // right side of the join, dropping the outer Filter.
+    if let LogicalOp::CorrelatedJoin { right, .. } = input.as_ref() {
+        if let LogicalOp::Scan { label, alias } = right.as_ref() {
+            if !label.is_empty() {
+                if let Some((prop, fts_op, term, residual)) =
+                    extract_fts_predicate(&predicate, alias)
+                {
+                    if fts_index_exists(conn, label, &prop) {
+                        let label = label.clone();
+                        let alias = alias.clone();
+                        let LogicalOp::CorrelatedJoin {
+                            input: join_input,
+                            same_match,
+                            ..
+                        } = *input
+                        else {
+                            unreachable!("matched above")
+                        };
+                        let new_right = LogicalOp::FullTextLookup {
+                            label,
+                            alias,
+                            property: prop,
+                            op: fts_op,
+                            term,
+                            remaining_filters: residual,
+                        };
+                        *op = LogicalOp::CorrelatedJoin {
+                            input: join_input,
+                            right: Box::new(new_right),
+                            same_match,
+                        };
+                        return;
+                    }
+                }
+            }
+        }
+    }
+
+    // No rewrite applied — restore the Filter we took ownership of.
+    *op = LogicalOp::Filter { input, predicate };
+}
+
+/// Check if an FTS index exists on `(label, property)` by querying sqlite_master.
+fn fts_index_exists(conn: &Connection, label: &str, property: &str) -> bool {
+    crate::fts::list_fulltext_indexes_for_label(conn, label)
+        .map(|v| v.iter().any(|(_, p)| p == property))
+        .unwrap_or(false)
+}
+
+/// Try to extract an FTS-eligible predicate from `predicate` (or a
+/// top-level conjunction). Returns `(property, fts_op, term, residual)`.
+/// The residual carries any conjuncts not consumed by the rewrite.
+fn extract_fts_predicate(
+    predicate: &Expr,
+    alias: &str,
+) -> Option<(String, crate::cypher::ir::FullTextOp, Expr, Option<Expr>)> {
+    let conjuncts = flatten_top_level_and(predicate);
+    for (idx, c) in conjuncts.iter().enumerate() {
+        if let Some((prop, fts_op, term)) = match_fts_binop(c, alias) {
+            let residual_parts: Vec<&Expr> = conjuncts
+                .iter()
+                .enumerate()
+                .filter(|(i, _)| *i != idx)
+                .map(|(_, e)| *e)
+                .collect();
+            let residual = rebuild_and(&residual_parts);
+            return Some((prop, fts_op, term, residual));
+        }
+    }
+    None
+}
+
+/// Match an FTS binary op: `alias.prop CONTAINS|STARTS WITH|ENDS WITH term`.
+fn match_fts_binop(e: &Expr, alias: &str) -> Option<(String, crate::cypher::ir::FullTextOp, Expr)> {
+    use crate::cypher::ir::FullTextOp;
+    let ExprKind::BinaryOp { left, op, right } = &e.kind else {
+        return None;
+    };
+    let fts_op = match op {
+        BinOp::Contains => FullTextOp::Contains,
+        BinOp::StartsWith => FullTextOp::StartsWith,
+        BinOp::EndsWith => FullTextOp::EndsWith,
+        _ => return None,
+    };
+    // ExprKind::Property is a tuple (variable_name, property_name).
+    let ExprKind::Property(var, prop) = &left.kind else {
+        return None;
+    };
+    if var != alias {
+        return None;
+    }
+    Some((prop.clone(), fts_op, (**right).clone()))
+}
+
+/// Flatten a top-level `AND` chain into individual conjuncts.
+fn flatten_top_level_and(e: &Expr) -> Vec<&Expr> {
+    let mut out = Vec::new();
+    fn walk<'a>(e: &'a Expr, out: &mut Vec<&'a Expr>) {
+        if let ExprKind::BinaryOp {
+            left,
+            op: BinOp::And,
+            right,
+        } = &e.kind
+        {
+            walk(left, out);
+            walk(right, out);
+        } else {
+            out.push(e);
+        }
+    }
+    walk(e, &mut out);
+    out
+}
+
+/// Rebuild an `AND` chain from a slice of expression references.
+/// Returns `None` if the slice is empty.
+fn rebuild_and(parts: &[&Expr]) -> Option<Expr> {
+    let mut iter = parts.iter().copied().cloned();
+    let first = iter.next()?;
+    Some(iter.fold(first, |acc, e| {
+        Expr::synthetic(ExprKind::BinaryOp {
+            left: Box::new(acc),
+            op: BinOp::And,
+            right: Box::new(e),
+        })
+    }))
 }
 
 /// Return true if `expr` references the named variable anywhere in its tree.
@@ -257,6 +483,7 @@ pub(in crate::cypher::planner) fn walk_children_mut(op: &mut LogicalOp, f: fn(&m
         | LogicalOp::Scan { .. }
         | LogicalOp::IndexLookup { .. }
         | LogicalOp::IdLookup { .. }
+        | LogicalOp::FullTextLookup { .. }
         | LogicalOp::CreateNode { .. }
         | LogicalOp::CreateEdge { .. }
         | LogicalOp::Merge { .. }
@@ -268,7 +495,7 @@ pub(in crate::cypher::planner) fn walk_children_mut(op: &mut LogicalOp, f: fn(&m
 /// Subquery context disables certain validations that require full scope.
 pub fn plan_subquery(conn: &Connection, stmt: &Statement) -> crate::types::Result<LogicalOp> {
     let mut op = plan_inner(conn, stmt, true)?;
-    apply_post_passes(&mut op);
+    apply_post_passes(conn, &mut op);
     Ok(op)
 }
 
@@ -308,7 +535,7 @@ pub fn plan_with_procedures(
         _ => plan(conn, stmt),
     }
     .map(|mut op| {
-        apply_post_passes(&mut op);
+        apply_post_passes(conn, &mut op);
         op
     })
 }

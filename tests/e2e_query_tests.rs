@@ -4180,3 +4180,244 @@ fn id_lookup_avoids_full_scan_under_unwind_batch() {
         "id-lookup batch took {elapsed:?}, expected <3s (regression to full-scan path?)"
     );
 }
+
+#[test]
+fn contains_predicate_uses_fulltext_index_when_present() {
+    let mut db = graphdblite::Database::open_memory().unwrap();
+    db.begin_write().unwrap();
+    for s in ["alpha bravo", "charlie delta", "echo foxtrot golf"] {
+        db.execute(&format!("CREATE (:Doc {{body: '{s}'}})"))
+            .unwrap();
+    }
+    db.create_fulltext_index("Doc", "body").unwrap();
+    db.commit().unwrap();
+
+    // Check EXPLAIN plan shape — the planner must emit FullTextLookup.
+    // We do NOT run the CONTAINS query itself because exec_fulltext_lookup
+    // is a panic stub until Task 13.
+    let rows = db
+        .execute("EXPLAIN MATCH (n:Doc) WHERE n.body CONTAINS 'bravo' RETURN n")
+        .unwrap();
+    assert_eq!(rows.len(), 1, "EXPLAIN returns exactly one row");
+    let plan = match rows[0].get("plan").unwrap() {
+        Value::String(s) => s.clone(),
+        other => panic!("expected string plan, got {other:?}"),
+    };
+    assert!(
+        plan.contains("FullTextLookup"),
+        "expected FullTextLookup in EXPLAIN plan, got: {plan}"
+    );
+}
+
+#[test]
+fn fts_contains_returns_correct_rows_via_planner_rewrite() {
+    let mut db = graphdblite::Database::open_memory().unwrap();
+    db.begin_write().unwrap();
+    for s in ["alpha bravo", "charlie delta", "echo foxtrot golf"] {
+        db.execute(&format!("CREATE (:Doc {{body: '{s}'}})"))
+            .unwrap();
+    }
+    db.create_fulltext_index("Doc", "body").unwrap();
+    db.commit().unwrap();
+
+    let rows = db
+        .execute("MATCH (n:Doc) WHERE n.body CONTAINS 'bravo' RETURN n.body AS b")
+        .unwrap();
+    assert_eq!(rows.len(), 1);
+    let b = match rows[0].get("b").unwrap() {
+        Value::String(s) => s.clone(),
+        v => panic!("expected string, got {v:?}"),
+    };
+    assert_eq!(b, "alpha bravo");
+}
+
+#[test]
+fn fts_starts_with_uses_index() {
+    let mut db = graphdblite::Database::open_memory().unwrap();
+    db.begin_write().unwrap();
+    for s in ["foobar", "barfoo", "foo bar"] {
+        db.execute(&format!("CREATE (:Doc {{body: '{s}'}})"))
+            .unwrap();
+    }
+    db.create_fulltext_index("Doc", "body").unwrap();
+    db.commit().unwrap();
+
+    let rows = db
+        .execute("MATCH (n:Doc) WHERE n.body STARTS WITH 'foo' RETURN n.body AS b")
+        .unwrap();
+    let mut got: Vec<String> = rows
+        .iter()
+        .map(|r| match r.get("b").unwrap() {
+            Value::String(s) => s.clone(),
+            _ => unreachable!(),
+        })
+        .collect();
+    got.sort();
+    assert_eq!(got, vec!["foo bar".to_string(), "foobar".to_string()]);
+}
+
+#[test]
+fn fts_ends_with_uses_index() {
+    let mut db = graphdblite::Database::open_memory().unwrap();
+    db.begin_write().unwrap();
+    for s in ["foobar", "barfoo", "foo bar"] {
+        db.execute(&format!("CREATE (:Doc {{body: '{s}'}})"))
+            .unwrap();
+    }
+    db.create_fulltext_index("Doc", "body").unwrap();
+    db.commit().unwrap();
+
+    let rows = db
+        .execute("MATCH (n:Doc) WHERE n.body ENDS WITH 'foo' RETURN n.body AS b")
+        .unwrap();
+    let got: Vec<String> = rows
+        .iter()
+        .map(|r| match r.get("b").unwrap() {
+            Value::String(s) => s.clone(),
+            _ => unreachable!(),
+        })
+        .collect();
+    assert_eq!(got, vec!["barfoo".to_string()]);
+}
+
+#[test]
+fn fts_contains_short_term_falls_back_to_scan() {
+    let mut db = graphdblite::Database::open_memory().unwrap();
+    db.begin_write().unwrap();
+    db.execute("CREATE (:Doc {body: 'ab'})").unwrap();
+    db.execute("CREATE (:Doc {body: 'cd'})").unwrap();
+    db.create_fulltext_index("Doc", "body").unwrap();
+    db.commit().unwrap();
+
+    // 2-char term: below the trigram floor. Must still return correct rows.
+    let rows = db
+        .execute("MATCH (n:Doc) WHERE n.body CONTAINS 'ab' RETURN n.body AS b")
+        .unwrap();
+    assert_eq!(rows.len(), 1);
+}
+
+#[test]
+fn fts_contains_param_term_works() {
+    let mut db = graphdblite::Database::open_memory().unwrap();
+    db.begin_write().unwrap();
+    db.execute("CREATE (:Doc {body: 'hello world'})").unwrap();
+    db.execute("CREATE (:Doc {body: 'goodbye'})").unwrap();
+    db.create_fulltext_index("Doc", "body").unwrap();
+    db.commit().unwrap();
+
+    use std::collections::HashMap;
+    let mut params = HashMap::new();
+    params.insert("term".to_string(), Value::String("world".into()));
+    let rows = db
+        .execute_with_params(
+            "MATCH (n:Doc) WHERE n.body CONTAINS $term RETURN n.body AS b",
+            Some(&params),
+        )
+        .unwrap();
+    assert_eq!(rows.len(), 1);
+}
+
+#[test]
+fn fts_contains_uses_index_in_correlated_position() {
+    // WITH ... AS term MATCH ... WHERE n.body CONTAINS term exercises
+    // the correlated plan: Filter(CorrelatedJoin{right: Scan}, predicate)
+    // which should rewrite to CorrelatedJoin{right: FullTextLookup}.
+    let mut db = graphdblite::Database::open_memory().unwrap();
+    db.begin_write().unwrap();
+    for s in ["alpha bravo", "charlie", "echo bravo foxtrot"] {
+        db.execute(&format!("CREATE (:Doc {{body: '{s}'}})"))
+            .unwrap();
+    }
+    db.create_fulltext_index("Doc", "body").unwrap();
+    db.commit().unwrap();
+
+    let rows = db
+        .execute(
+            "WITH 'bravo' AS term \
+             MATCH (n:Doc) WHERE n.body CONTAINS term \
+             RETURN n.body AS b",
+        )
+        .unwrap();
+    let mut got: Vec<String> = rows
+        .iter()
+        .map(|r| match r.get("b").unwrap() {
+            graphdblite::Value::String(s) => s.clone(),
+            _ => unreachable!(),
+        })
+        .collect();
+    got.sort();
+    assert_eq!(
+        got,
+        vec!["alpha bravo".to_string(), "echo bravo foxtrot".to_string()]
+    );
+}
+
+#[test]
+fn fts_correlated_explain_shows_fulltext_lookup_in_right_side() {
+    // EXPLAIN WITH ... AS term MATCH ... WHERE CONTAINS exercises the correlated
+    // planner rewrite. The plan should show FullTextLookup inside the join.
+    let mut db = graphdblite::Database::open_memory().unwrap();
+    db.begin_write().unwrap();
+    db.create_fulltext_index("Doc", "body").unwrap();
+    db.commit().unwrap();
+
+    let rows = db
+        .execute(
+            "EXPLAIN WITH 'bravo' AS term \
+             MATCH (n:Doc) WHERE n.body CONTAINS term \
+             RETURN n.body AS b",
+        )
+        .unwrap();
+    let plan = format!("{rows:?}");
+    assert!(
+        plan.contains("FullTextLookup"),
+        "correlated form must rewrite to FullTextLookup; plan: {plan}"
+    );
+}
+
+#[test]
+fn fts_equality_uses_regular_index_even_when_fulltext_exists() {
+    // When both regular and fulltext indexes exist on the same (label, property),
+    // equality (=) should pick the regular IndexLookup, not FullTextLookup.
+    let mut db = graphdblite::Database::open_memory().unwrap();
+    db.begin_write().unwrap();
+    db.create_index("Doc", "body").unwrap();
+    db.create_fulltext_index("Doc", "body").unwrap();
+    db.execute("CREATE (:Doc {body: 'hello world'})").unwrap();
+    db.commit().unwrap();
+
+    let plan = db
+        .execute("EXPLAIN MATCH (n:Doc) WHERE n.body = 'hello world' RETURN n")
+        .unwrap();
+    let plan_str = format!("{plan:?}");
+    assert!(
+        plan_str.contains("IndexLookup") && !plan_str.contains("FullTextLookup"),
+        "equality should pick regular IndexLookup; got: {plan_str}"
+    );
+}
+
+#[test]
+fn fts_contains_uses_fulltext_index_when_both_exist() {
+    // When both regular and fulltext indexes exist on the same (label, property),
+    // substring operators (CONTAINS, STARTS WITH, ENDS WITH) should pick FullTextLookup.
+    let mut db = graphdblite::Database::open_memory().unwrap();
+    db.begin_write().unwrap();
+    db.create_index("Doc", "body").unwrap();
+    db.create_fulltext_index("Doc", "body").unwrap();
+    db.execute("CREATE (:Doc {body: 'hello world'})").unwrap();
+    db.commit().unwrap();
+
+    let plan = db
+        .execute("EXPLAIN MATCH (n:Doc) WHERE n.body CONTAINS 'hello' RETURN n")
+        .unwrap();
+    let plan_str = format!("{plan:?}");
+    assert!(
+        plan_str.contains("FullTextLookup"),
+        "CONTAINS should pick FullTextLookup; got: {plan_str}"
+    );
+    // Sanity: equality form does not appear in this plan.
+    assert!(
+        !plan_str.contains("IndexLookup"),
+        "this CONTAINS plan should not include IndexLookup; got: {plan_str}"
+    );
+}

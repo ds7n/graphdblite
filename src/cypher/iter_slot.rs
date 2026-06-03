@@ -73,6 +73,8 @@ pub fn is_slot_supported(plan: &LogicalOp) -> bool {
     match plan {
         LogicalOp::EmptyRow | LogicalOp::SingleRow => true,
         LogicalOp::Scan { .. } => true,
+        // FullTextLookup is not slot-supported in v1 (Task 17 codifies this).
+        LogicalOp::FullTextLookup { .. } => false,
         LogicalOp::IndexLookup {
             remaining_filters, ..
         } => match remaining_filters {

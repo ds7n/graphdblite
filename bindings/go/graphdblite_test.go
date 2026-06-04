@@ -230,3 +230,84 @@ func TestClosedDatabaseError(t *testing.T) {
 		t.Error("expected error querying closed database")
 	}
 }
+
+func TestCreateAndDropIndex(t *testing.T) {
+	db, err := OpenMemory()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	tx, err := db.BeginWrite()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := tx.CreateIndex("Person", "name"); err != nil {
+		_ = tx.Rollback()
+		t.Fatalf("CreateIndex: %v", err)
+	}
+	if err := tx.CreateIndex("Person", "name"); err == nil {
+		_ = tx.Rollback()
+		t.Fatal("expected duplicate create_index to error")
+	}
+	if err := tx.DropIndex("Person", "name"); err != nil {
+		_ = tx.Rollback()
+		t.Fatalf("DropIndex: %v", err)
+	}
+	if err := tx.Commit(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestCreateAndDropFulltextIndex(t *testing.T) {
+	db, err := OpenMemory()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	tx, err := db.BeginWrite()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := tx.CreateFulltextIndex("Doc", "body"); err != nil {
+		_ = tx.Rollback()
+		t.Fatalf("CreateFulltextIndex: %v", err)
+	}
+	res, err := tx.Execute("CREATE (:Doc {body: 'hello world'})")
+	if err != nil {
+		_ = tx.Rollback()
+		t.Fatalf("insert: %v", err)
+	}
+	res.Free()
+	if err := tx.Commit(); err != nil {
+		t.Fatal(err)
+	}
+
+	// CONTAINS query should hit the FTS rewrite path.
+	res, err = db.Query("MATCH (n:Doc) WHERE n.body CONTAINS 'hello' RETURN n.body")
+	if err != nil {
+		t.Fatalf("contains query: %v", err)
+	}
+	if got := res.RowCount(); got != 1 {
+		res.Free()
+		t.Fatalf("expected 1 row, got %d", got)
+	}
+	res.Free()
+
+	tx, err = db.BeginWrite()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := tx.DropFulltextIndex("Doc", "body"); err != nil {
+		_ = tx.Rollback()
+		t.Fatalf("DropFulltextIndex: %v", err)
+	}
+	if err := tx.DropFulltextIndex("Doc", "body"); err == nil {
+		_ = tx.Rollback()
+		t.Fatal("expected drop-of-missing to error")
+	}
+	if err := tx.Rollback(); err != nil {
+		t.Fatal(err)
+	}
+}

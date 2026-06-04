@@ -283,6 +283,109 @@ out:
 }
 
 /* ----------------------------------------------------------------------- */
+/* BC-11 — fulltext index DDL: create, use via CONTAINS, drop              */
+/* ----------------------------------------------------------------------- */
+static int bc_11_fulltext_ddl(const char *tmpdir) {
+    GraphDB *db = fresh_db(tmpdir, "bc11.db");
+    if (!db) return fail("BC-11", "open failed");
+
+    /* Open a write tx and create a fulltext index inside it. */
+    if (graphdb_tx_begin_write(db) != 0) {
+        graphdb_close(db);
+        return fail("BC-11", "tx_begin_write failed");
+    }
+    if (graphdb_create_fulltext_index(db, "Doc", "body") != 0) {
+        graphdb_tx_rollback(db);
+        graphdb_close(db);
+        return fail("BC-11", "create_fulltext_index failed");
+    }
+
+    /* Insert a row through the same tx. */
+    GraphResult *res = NULL;
+    if (graphdb_tx_execute(db,
+            "CREATE (:Doc {body: 'hello world'})", &res) != 0) {
+        graphdb_tx_rollback(db);
+        graphdb_close(db);
+        return fail("BC-11", "insert failed");
+    }
+    graphdb_result_free(res);
+
+    if (graphdb_tx_commit(db) != 0) {
+        graphdb_close(db);
+        return fail("BC-11", "commit failed");
+    }
+
+    /* CONTAINS query must route through FTS and return the row. */
+    if (graphdb_query(db,
+            "MATCH (n:Doc) WHERE n.body CONTAINS 'hello' RETURN n.body",
+            &res) != 0) {
+        graphdb_close(db);
+        return fail("BC-11", "contains query failed");
+    }
+    if (graphdb_result_row_count(res) != 1) {
+        graphdb_result_free(res);
+        graphdb_close(db);
+        return fail("BC-11", "expected 1 row from CONTAINS");
+    }
+    graphdb_result_free(res);
+
+    /* Drop the index inside a fresh tx. */
+    if (graphdb_tx_begin_write(db) != 0) {
+        graphdb_close(db);
+        return fail("BC-11", "second tx_begin_write failed");
+    }
+    if (graphdb_drop_fulltext_index(db, "Doc", "body") != 0) {
+        graphdb_tx_rollback(db);
+        graphdb_close(db);
+        return fail("BC-11", "drop_fulltext_index failed");
+    }
+    if (graphdb_tx_commit(db) != 0) {
+        graphdb_close(db);
+        return fail("BC-11", "second commit failed");
+    }
+
+    /* Dropping again must error. */
+    if (graphdb_tx_begin_write(db) != 0) {
+        graphdb_close(db);
+        return fail("BC-11", "third tx_begin_write failed");
+    }
+    if (graphdb_drop_fulltext_index(db, "Doc", "body") == 0) {
+        graphdb_tx_rollback(db);
+        graphdb_close(db);
+        return fail("BC-11", "expected error dropping missing index");
+    }
+    graphdb_tx_rollback(db);
+
+    /* Secondary index round-trip. */
+    if (graphdb_tx_begin_write(db) != 0) {
+        graphdb_close(db);
+        return fail("BC-11", "secondary tx_begin_write failed");
+    }
+    if (graphdb_create_index(db, "Doc", "body") != 0) {
+        graphdb_tx_rollback(db);
+        graphdb_close(db);
+        return fail("BC-11", "create_index failed");
+    }
+    if (graphdb_create_index(db, "Doc", "body") == 0) {
+        graphdb_tx_rollback(db);
+        graphdb_close(db);
+        return fail("BC-11", "expected error on duplicate create_index");
+    }
+    if (graphdb_drop_index(db, "Doc", "body") != 0) {
+        graphdb_tx_rollback(db);
+        graphdb_close(db);
+        return fail("BC-11", "drop_index failed");
+    }
+    if (graphdb_tx_commit(db) != 0) {
+        graphdb_close(db);
+        return fail("BC-11", "secondary commit failed");
+    }
+
+    graphdb_close(db);
+    return pass("BC-11");
+}
+
+/* ----------------------------------------------------------------------- */
 /* snapshot — graphdb_snapshot_to                                           */
 /* ----------------------------------------------------------------------- */
 static int snap_basic(const char *tmpdir) {
@@ -352,6 +455,7 @@ int main(int argc, char **argv) {
         bc_07_use_after_commit,
         bc_09_close_with_open_tx,
         bc_10_result_after_commit,
+        bc_11_fulltext_ddl,
         snap_basic,
         snap_rejects_existing,
     };

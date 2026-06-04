@@ -119,9 +119,9 @@ In language-idiomatic terms:
 | Binding | Method names |
 | ------- | ------------ |
 | Python  | `tx.create_fulltext_index(label, property)` / `tx.drop_fulltext_index(label, property)` |
-| Node    | *Not yet exposed — Node binding has no `createIndex` either. Tracked for a future index-DDL parity project.* |
-| Go      | *Not yet exposed — Go binding has no `CreateIndex` either. Tracked for a future index-DDL parity project.* |
-| C/FFI   | *Not yet exposed — C binding has no `graphdb_create_index` either. Tracked for a future index-DDL parity project.* |
+| Node    | `tx.createFulltextIndex(label, property)` / `tx.dropFulltextIndex(label, property)` |
+| Go      | `tx.CreateFulltextIndex(label, property)` / `tx.DropFulltextIndex(label, property)` |
+| C/FFI   | `graphdb_create_fulltext_index(db, label, property)` / `graphdb_drop_fulltext_index(db, label, property)` |
 
 The core enforces case-sensitive substring matching (matches the
 openCypher spec exactly), skips non-string property values silently,
@@ -146,7 +146,7 @@ themselves.
 | BC-08    | ✓      | —² | —²    | ✓    |
 | BC-09    | ✓      | ✓  | ✓     | ✓    |
 | BC-10    | —³     | ✓  | ✓     | —³   |
-| BC-11    | ✓      | —⁴ | —⁴    | —⁴   |
+| BC-11    | ✓      | ✓  | ✓     | ✓    |
 
 BC-05 enforcement lives in `cypher::execute_cypher` (`src/cypher/mod.rs`):
 when `ExecContext::require_read_only` is set, the planner's output tree is
@@ -165,10 +165,6 @@ value once the Python runner confirms the binding doesn't shortcut WAL.
 
 ³ Python and Node don't surface a separate result-handle object — query
 results are plain lists/arrays. Not applicable.
-
-⁴ BC-11 (fulltext-index DDL) is deferred for Node/Go/C. Those bindings
-do not expose `create_index` / `drop_index` yet, so fulltext-index DDL
-will be added in a future index-DDL parity project.
 
 ---
 

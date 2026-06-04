@@ -26,6 +26,12 @@ ships.
   backed by the Rust `regex` crate. Per-query compiled-regex cache,
   NULL propagation, ReDoS-safe by construction. See
   `docs/cypher.md` for the full feature/limitation matrix.
+- **Index DDL parity across Node / Go / C/FFI bindings.** Each
+  binding's `WriteTransaction` wrapper now exposes
+  `create_index` / `drop_index` / `create_fulltext_index` /
+  `drop_fulltext_index` (case-converted per language idiom).
+  Closes BC-11 in `docs/BINDING_CONFORMANCE.md`. Python's surface
+  is unchanged.
 
 ## [0.1.1] - 2026-05-23
 

@@ -193,6 +193,87 @@ pub unsafe extern "C" fn graphdb_snapshot_to(db: *mut GraphDB, path: *const c_ch
     wrap_result(guard.snapshot_to(path_str), |_| {})
 }
 
+/// Create a secondary index on `(label, property)` for faster lookups.
+///
+/// If a write transaction is open on this handle, the index DDL runs
+/// inside it. Otherwise the call uses the stateful auto-tx path.
+/// Returns non-zero on error; call `graphdb_last_error` for details.
+#[no_mangle]
+pub unsafe extern "C" fn graphdb_create_index(
+    db: *mut GraphDB,
+    label: *const c_char,
+    property: *const c_char,
+) -> i32 {
+    ddl_call(db, label, property, |d, l, p| d.create_index(l, p))
+}
+
+/// Drop a secondary index on `(label, property)`.
+#[no_mangle]
+pub unsafe extern "C" fn graphdb_drop_index(
+    db: *mut GraphDB,
+    label: *const c_char,
+    property: *const c_char,
+) -> i32 {
+    ddl_call(db, label, property, |d, l, p| d.drop_index(l, p))
+}
+
+/// Create a fulltext index on `(label, property)`. Accelerates
+/// `CONTAINS` / `STARTS WITH` / `ENDS WITH` via SQLite FTS5 trigram.
+#[no_mangle]
+pub unsafe extern "C" fn graphdb_create_fulltext_index(
+    db: *mut GraphDB,
+    label: *const c_char,
+    property: *const c_char,
+) -> i32 {
+    ddl_call(db, label, property, |d, l, p| d.create_fulltext_index(l, p))
+}
+
+/// Drop a fulltext index on `(label, property)`.
+#[no_mangle]
+pub unsafe extern "C" fn graphdb_drop_fulltext_index(
+    db: *mut GraphDB,
+    label: *const c_char,
+    property: *const c_char,
+) -> i32 {
+    ddl_call(db, label, property, |d, l, p| d.drop_fulltext_index(l, p))
+}
+
+/// Shared scaffold for the four DDL exports above.
+fn ddl_call(
+    db: *mut GraphDB,
+    label: *const c_char,
+    property: *const c_char,
+    op: impl FnOnce(&mut Database, &str, &str) -> Result<(), GraphError>,
+) -> i32 {
+    if db.is_null() || label.is_null() || property.is_null() {
+        set_error("null pointer argument");
+        return -1;
+    }
+    let handle = unsafe { &*db };
+    let label_str = match unsafe { CStr::from_ptr(label) }.to_str() {
+        Ok(s) => s,
+        Err(e) => {
+            set_error(&format!("invalid UTF-8 label: {e}"));
+            return -1;
+        }
+    };
+    let property_str = match unsafe { CStr::from_ptr(property) }.to_str() {
+        Ok(s) => s,
+        Err(e) => {
+            set_error(&format!("invalid UTF-8 property: {e}"));
+            return -1;
+        }
+    };
+    let mut guard = match lock_db(handle) {
+        Ok(g) => g,
+        Err(e) => {
+            set_error(&e.to_string());
+            return -1;
+        }
+    };
+    wrap_result(op(&mut *guard, label_str, property_str), |_| {})
+}
+
 /// Close a database and free its resources.
 ///
 /// After this call, the pointer is invalid. Passing NULL is a no-op.

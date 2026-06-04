@@ -240,6 +240,53 @@ impl WriteTransaction {
         self.execute(env, cypher)
     }
 
+    /// Create a secondary index on (label, property) for faster lookups.
+    #[napi]
+    pub fn create_index(&mut self, label: String, property: String) -> Result<()> {
+        if self.finished {
+            return Err(finished_err());
+        }
+        let mut guard = self.inner.lock().expect("Database mutex poisoned");
+        let db = guard.as_mut().ok_or_else(closed_err)?;
+        db.create_index(&label, &property).map_err(to_napi_err)
+    }
+
+    /// Drop a secondary index on (label, property).
+    #[napi]
+    pub fn drop_index(&mut self, label: String, property: String) -> Result<()> {
+        if self.finished {
+            return Err(finished_err());
+        }
+        let mut guard = self.inner.lock().expect("Database mutex poisoned");
+        let db = guard.as_mut().ok_or_else(closed_err)?;
+        db.drop_index(&label, &property).map_err(to_napi_err)
+    }
+
+    /// Create a fulltext index on (label, property). Accelerates
+    /// CONTAINS / STARTS WITH / ENDS WITH via SQLite FTS5 (trigram, case-sensitive).
+    #[napi]
+    pub fn create_fulltext_index(&mut self, label: String, property: String) -> Result<()> {
+        if self.finished {
+            return Err(finished_err());
+        }
+        let mut guard = self.inner.lock().expect("Database mutex poisoned");
+        let db = guard.as_mut().ok_or_else(closed_err)?;
+        db.create_fulltext_index(&label, &property)
+            .map_err(to_napi_err)
+    }
+
+    /// Drop a fulltext index on (label, property).
+    #[napi]
+    pub fn drop_fulltext_index(&mut self, label: String, property: String) -> Result<()> {
+        if self.finished {
+            return Err(finished_err());
+        }
+        let mut guard = self.inner.lock().expect("Database mutex poisoned");
+        let db = guard.as_mut().ok_or_else(closed_err)?;
+        db.drop_fulltext_index(&label, &property)
+            .map_err(to_napi_err)
+    }
+
     /// Commit the transaction.
     #[napi]
     pub fn commit(&mut self) -> Result<()> {

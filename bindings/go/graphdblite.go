@@ -225,6 +225,53 @@ func (tx *WriteTransaction) Execute(cypher string) (*Result, error) {
 	return tx.Query(cypher)
 }
 
+// CreateIndex creates a secondary index on (label, property) for faster
+// equality and STARTS WITH lookups. Must be called inside an active
+// write transaction.
+func (tx *WriteTransaction) CreateIndex(label, property string) error {
+	return tx.ddl("create_index", label, property, func(clabel, cprop *C.char) C.int32_t {
+		return C.graphdb_create_index(tx.db.ptr, clabel, cprop)
+	})
+}
+
+// DropIndex drops a secondary index on (label, property).
+func (tx *WriteTransaction) DropIndex(label, property string) error {
+	return tx.ddl("drop_index", label, property, func(clabel, cprop *C.char) C.int32_t {
+		return C.graphdb_drop_index(tx.db.ptr, clabel, cprop)
+	})
+}
+
+// CreateFulltextIndex creates a fulltext index on (label, property).
+// Accelerates CONTAINS / STARTS WITH / ENDS WITH via SQLite FTS5
+// (trigram tokenizer, case-sensitive).
+func (tx *WriteTransaction) CreateFulltextIndex(label, property string) error {
+	return tx.ddl("create_fulltext_index", label, property, func(clabel, cprop *C.char) C.int32_t {
+		return C.graphdb_create_fulltext_index(tx.db.ptr, clabel, cprop)
+	})
+}
+
+// DropFulltextIndex drops a fulltext index on (label, property).
+func (tx *WriteTransaction) DropFulltextIndex(label, property string) error {
+	return tx.ddl("drop_fulltext_index", label, property, func(clabel, cprop *C.char) C.int32_t {
+		return C.graphdb_drop_fulltext_index(tx.db.ptr, clabel, cprop)
+	})
+}
+
+// ddl is the shared scaffold for the four index-DDL methods above.
+func (tx *WriteTransaction) ddl(op, label, property string, call func(clabel, cprop *C.char) C.int32_t) error {
+	if tx.db == nil || tx.db.ptr == nil {
+		return errors.New("transaction is finished")
+	}
+	clabel := C.CString(label)
+	defer C.free(unsafe.Pointer(clabel))
+	cprop := C.CString(property)
+	defer C.free(unsafe.Pointer(cprop))
+	if rc := call(clabel, cprop); rc != 0 {
+		return fmt.Errorf("graphdblite %s: %w", op, lastError())
+	}
+	return nil
+}
+
 // Commit commits the write transaction.
 func (tx *WriteTransaction) Commit() error {
 	if tx.db == nil || tx.db.ptr == nil {

@@ -40,6 +40,17 @@ export declare class WriteTransaction {
   execute(cypher: string): Array<object>
   /** Execute a Cypher query within this transaction (alias for `execute`). */
   query(cypher: string): Array<object>
+  /** Create a secondary index on (label, property) for faster lookups. */
+  createIndex(label: string, property: string): void
+  /** Drop a secondary index on (label, property). */
+  dropIndex(label: string, property: string): void
+  /**
+   * Create a fulltext index on (label, property). Accelerates
+   * CONTAINS / STARTS WITH / ENDS WITH via SQLite FTS5 (trigram, case-sensitive).
+   */
+  createFulltextIndex(label: string, property: string): void
+  /** Drop a fulltext index on (label, property). */
+  dropFulltextIndex(label: string, property: string): void
   /** Commit the transaction. */
   commit(): void
   /** Rollback the transaction. */

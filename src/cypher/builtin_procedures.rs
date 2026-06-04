@@ -11,6 +11,7 @@ use std::collections::HashMap;
 use rusqlite::Connection;
 
 use crate::cypher::procedure::ProcParam;
+use crate::stats;
 use crate::storage::{fts, index};
 use crate::types::{Result, Value};
 
@@ -43,6 +44,23 @@ pub fn builtin_signature(name: &str) -> Option<BuiltinSig> {
                 },
             ],
         }),
+        "db.counts" => Some(BuiltinSig {
+            inputs: Vec::new(),
+            outputs: vec![
+                ProcParam {
+                    name: "kind".to_string(),
+                    type_name: "STRING?".to_string(),
+                },
+                ProcParam {
+                    name: "name".to_string(),
+                    type_name: "STRING?".to_string(),
+                },
+                ProcParam {
+                    name: "count".to_string(),
+                    type_name: "INTEGER?".to_string(),
+                },
+            ],
+        }),
         _ => None,
     }
 }
@@ -52,6 +70,7 @@ pub fn builtin_signature(name: &str) -> Option<BuiltinSig> {
 pub fn execute_builtin(name: &str, conn: &Connection) -> Result<Vec<HashMap<String, Value>>> {
     match name {
         "db.indexes" => exec_db_indexes(conn),
+        "db.counts" => exec_db_counts(conn),
         other => unreachable!("execute_builtin called with unknown name `{other}`"),
     }
 }
@@ -74,6 +93,27 @@ fn row(label: &str, property: &str, kind: &str) -> HashMap<String, Value> {
     m.insert("label".to_string(), Value::String(label.to_string()));
     m.insert("property".to_string(), Value::String(property.to_string()));
     m.insert("kind".to_string(), Value::String(kind.to_string()));
+    m
+}
+
+fn exec_db_counts(conn: &Connection) -> Result<Vec<HashMap<String, Value>>> {
+    let labels = stats::get_all_label_counts(conn)?;
+    let edge_types = stats::get_all_edge_type_counts(conn)?;
+    let mut rows = Vec::with_capacity(labels.len() + edge_types.len());
+    for (name, count) in labels {
+        rows.push(count_row("label", &name, count));
+    }
+    for (name, count) in edge_types {
+        rows.push(count_row("edge_type", &name, count));
+    }
+    Ok(rows)
+}
+
+fn count_row(kind: &str, name: &str, count: u64) -> HashMap<String, Value> {
+    let mut m = HashMap::with_capacity(3);
+    m.insert("kind".to_string(), Value::String(kind.to_string()));
+    m.insert("name".to_string(), Value::String(name.to_string()));
+    m.insert("count".to_string(), Value::I64(count as i64));
     m
 }
 
@@ -172,6 +212,70 @@ mod tests {
             ["btree".to_string(), "fulltext".to_string()]
                 .into_iter()
                 .collect()
+        );
+    }
+
+    #[test]
+    fn signature_for_db_counts() {
+        let sig = builtin_signature("db.counts").unwrap();
+        assert!(sig.inputs.is_empty());
+        let names: Vec<&str> = sig.outputs.iter().map(|p| p.name.as_str()).collect();
+        assert_eq!(names, vec!["kind", "name", "count"]);
+        let types: Vec<&str> = sig.outputs.iter().map(|p| p.type_name.as_str()).collect();
+        assert_eq!(types, vec!["STRING?", "STRING?", "INTEGER?"]);
+    }
+
+    #[test]
+    fn exec_db_counts_empty_on_fresh_db() {
+        let conn = fresh_conn();
+        let rows = execute_builtin("db.counts", &conn).unwrap();
+        assert!(rows.is_empty());
+    }
+
+    #[test]
+    fn exec_db_counts_returns_labels_and_edge_types() {
+        let conn = fresh_conn();
+        let a =
+            crate::storage::node::create_node(&conn, &["Person".to_string()], Default::default())
+                .unwrap();
+        let _b =
+            crate::storage::node::create_node(&conn, &["Person".to_string()], Default::default())
+                .unwrap();
+        let c =
+            crate::storage::node::create_node(&conn, &["Company".to_string()], Default::default())
+                .unwrap();
+        crate::storage::edge::create_edge(&conn, a, c, "WORKS_AT", Default::default()).unwrap();
+        crate::storage::edge::create_edge(&conn, a, c, "KNOWS", Default::default()).unwrap();
+        crate::storage::edge::create_edge(&conn, a, c, "KNOWS", Default::default()).unwrap();
+
+        let rows = execute_builtin("db.counts", &conn).unwrap();
+        let mut tuples: Vec<(String, String, i64)> = rows
+            .into_iter()
+            .map(|r| {
+                let kind = match r.get("kind").unwrap() {
+                    Value::String(s) => s.clone(),
+                    v => panic!("kind was {v:?}"),
+                };
+                let name = match r.get("name").unwrap() {
+                    Value::String(s) => s.clone(),
+                    v => panic!("name was {v:?}"),
+                };
+                let count = match r.get("count").unwrap() {
+                    Value::I64(n) => *n,
+                    v => panic!("count was {v:?}"),
+                };
+                (kind, name, count)
+            })
+            .collect();
+        tuples.sort();
+        assert_eq!(
+            tuples,
+            vec![
+                ("edge_type".to_string(), "KNOWS".to_string(), 2),
+                ("edge_type".to_string(), "WORKS_AT".to_string(), 1),
+                ("label".to_string(), "Company".to_string(), 1),
+                ("label".to_string(), "Person".to_string(), 2),
+            ]
         );
     }
 }

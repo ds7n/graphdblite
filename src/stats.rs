@@ -91,11 +91,7 @@ pub fn increment_edge_type_count(conn: &Connection, type_name: &str) -> Result<(
 ///
 /// When the resulting count is 0, removes the metadata row entirely so that
 /// `get_all_edge_type_counts` no longer reports the (now-defunct) type.
-pub fn decrement_edge_type_count_by(
-    conn: &Connection,
-    type_name: &str,
-    n: u64,
-) -> Result<()> {
+pub fn decrement_edge_type_count_by(conn: &Connection, type_name: &str, n: u64) -> Result<()> {
     let count = get_edge_type_count(conn, type_name)?;
     let new_count = count.saturating_sub(n);
     if new_count == 0 {
@@ -131,9 +127,8 @@ pub fn get_all_edge_type_counts(conn: &Connection) -> Result<Vec<(String, u64)>>
 
 fn collect_counts(conn: &Connection, prefix: &str) -> Result<Vec<(String, u64)>> {
     let like = format!("{prefix}%");
-    let mut stmt = conn.prepare_cached(
-        "SELECT key, value FROM metadata WHERE key LIKE ?1 ORDER BY key",
-    )?;
+    let mut stmt =
+        conn.prepare_cached("SELECT key, value FROM metadata WHERE key LIKE ?1 ORDER BY key")?;
     let rows = stmt
         .query_map([&like], |row| {
             Ok((row.get::<_, String>(0)?, row.get::<_, Vec<u8>>(1)?))
@@ -149,10 +144,7 @@ fn collect_counts(conn: &Connection, prefix: &str) -> Result<Vec<(String, u64)>>
             source: "corrupt stats count bytes".into(),
             hint: None,
         })?;
-        let name = key
-            .strip_prefix(prefix)
-            .unwrap_or(&key)
-            .to_string();
+        let name = key.strip_prefix(prefix).unwrap_or(&key).to_string();
         out.push((name, u64::from_be_bytes(bytes)));
     }
     Ok(out)

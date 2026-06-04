@@ -111,6 +111,20 @@ pub(in crate::cypher::executor) fn exec_call(
     Ok(results)
 }
 
+/// Compare two values for procedure row filtering, with numeric coercion.
+pub(in crate::cypher::executor) fn values_match(row_val: &Value, arg_val: &Value) -> bool {
+    match (row_val, arg_val) {
+        (Value::I64(a), Value::I64(b)) => a == b,
+        (Value::F64(a), Value::F64(b)) => a == b,
+        (Value::I64(a), Value::F64(b)) => (*a as f64) == *b,
+        (Value::F64(a), Value::I64(b)) => *a == (*b as f64),
+        (Value::String(a), Value::String(b)) => a == b,
+        (Value::Bool(a), Value::Bool(b)) => a == b,
+        (Value::Null, Value::Null) => true,
+        _ => row_val == arg_val,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use crate::Database;
@@ -129,19 +143,5 @@ mod tests {
             .execute("CALL db.indexes() YIELD label, property, kind RETURN *")
             .unwrap();
         assert_eq!(rows.len(), 2);
-    }
-}
-
-/// Compare two values for procedure row filtering, with numeric coercion.
-pub(in crate::cypher::executor) fn values_match(row_val: &Value, arg_val: &Value) -> bool {
-    match (row_val, arg_val) {
-        (Value::I64(a), Value::I64(b)) => a == b,
-        (Value::F64(a), Value::F64(b)) => a == b,
-        (Value::I64(a), Value::F64(b)) => (*a as f64) == *b,
-        (Value::F64(a), Value::I64(b)) => *a == (*b as f64),
-        (Value::String(a), Value::String(b)) => a == b,
-        (Value::Bool(a), Value::Bool(b)) => a == b,
-        (Value::Null, Value::Null) => true,
-        _ => row_val == arg_val,
     }
 }

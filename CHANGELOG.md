@@ -9,6 +9,12 @@ ships.
 
 ### Added
 
+- **OR-chain rewrite across FTS indexes.** `WHERE A OR B OR …` where
+  every disjunct is a text predicate (`CONTAINS` / `STARTS WITH` /
+  `ENDS WITH`) against an FTS-indexed property of the same label now
+  plans as `Union(FullTextLookup, FullTextLookup, …)` with row dedup.
+  Mixed AND/OR and a single non-FTS-eligible disjunct still fall back
+  to a label scan.
 - **Full-text indexes.** New `Database::create_fulltext_index(label,
   property)` and `Database::drop_fulltext_index(...)` plus matching
   `WriteTransaction` methods. Python binding gains parity

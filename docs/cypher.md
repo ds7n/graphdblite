@@ -452,12 +452,23 @@ let rows = db.execute(
 )?;
 ```
 
+### OR-chain optimization
+
+A WHERE clause that is a chain of `OR`-connected text predicates
+(`CONTAINS` / `STARTS WITH` / `ENDS WITH`) against indexed properties
+of the same label plans as a `Union` of FTS lookups, with row dedup:
+
+```cypher
+MATCH (n:Doc) WHERE n.title CONTAINS 'x' OR n.body CONTAINS 'x'
+RETURN n
+```
+
+A single non-FTS-eligible disjunct (e.g. `n.score = 5`) disables the
+rewrite — the query falls back to a label scan. Mixed `(A OR B) AND C`
+forms are not rewritten in this pass.
+
 **Known limitations (v1):**
 
-- OR-chains across multiple FTS indexes do not rewrite
-  (`WHERE n.title CONTAINS 'x' OR n.body CONTAINS 'x'` runs as a
-  scan even when both columns are indexed). Workaround: use
-  separate queries per field and union at the Cypher level.
 - No phrase queries, no prefix-with-`*`, no ranking / BM25. Use
   the existing operators only.
 

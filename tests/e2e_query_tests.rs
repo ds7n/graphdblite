@@ -4580,3 +4580,98 @@ fn call_unknown_builtin_errors() {
         "expected ProcedureNotFound, got: {msg}"
     );
 }
+
+#[test]
+fn or_chain_fts_returns_dedup_union() {
+    let mut db = graphdblite::Database::open_memory().unwrap();
+    {
+        let tx = db.write_tx().unwrap();
+        tx.create_fulltext_index("Doc", "title").unwrap();
+        tx.create_fulltext_index("Doc", "body").unwrap();
+        tx.commit().unwrap();
+    }
+    {
+        let tx = db.write_tx().unwrap();
+        tx.query("CREATE (:Doc {title: 'hello', body: 'goodbye'})")
+            .unwrap();
+        tx.query("CREATE (:Doc {title: 'goodbye', body: 'hello'})")
+            .unwrap();
+        tx.query("CREATE (:Doc {title: 'hello', body: 'hello'})")
+            .unwrap();
+        tx.query("CREATE (:Doc {title: 'goodbye', body: 'goodbye'})")
+            .unwrap();
+        tx.commit().unwrap();
+    }
+
+    let rows = db
+        .execute(
+            "MATCH (n:Doc) \
+             WHERE n.title CONTAINS 'hello' OR n.body CONTAINS 'hello' \
+             RETURN id(n) AS id",
+        )
+        .unwrap();
+    // Three distinct nodes match; the third matches both predicates but
+    // appears exactly once thanks to Union dedup.
+    assert_eq!(rows.len(), 3, "got rows: {rows:?}");
+}
+
+#[test]
+fn or_chain_fts_mixed_predicates_returns_correct_results() {
+    let mut db = graphdblite::Database::open_memory().unwrap();
+    {
+        let tx = db.write_tx().unwrap();
+        tx.create_fulltext_index("Doc", "title").unwrap();
+        tx.create_fulltext_index("Doc", "body").unwrap();
+        tx.commit().unwrap();
+    }
+    {
+        let tx = db.write_tx().unwrap();
+        tx.query("CREATE (:Doc {title: 'hello world', body: 'lorem'})")
+            .unwrap();
+        tx.query("CREATE (:Doc {title: 'lorem', body: 'goodbye now'})")
+            .unwrap();
+        tx.query("CREATE (:Doc {title: 'lorem', body: 'lorem'})")
+            .unwrap();
+        tx.commit().unwrap();
+    }
+
+    let rows = db
+        .execute(
+            "MATCH (n:Doc) \
+             WHERE n.title CONTAINS 'hello' OR n.body STARTS WITH 'good' \
+             RETURN id(n) AS id",
+        )
+        .unwrap();
+    assert_eq!(rows.len(), 2);
+}
+
+#[test]
+fn or_chain_fts_falls_back_to_scan_for_non_fts_disjunct() {
+    let mut db = graphdblite::Database::open_memory().unwrap();
+    {
+        let tx = db.write_tx().unwrap();
+        tx.create_fulltext_index("Doc", "title").unwrap();
+        tx.commit().unwrap();
+    }
+    {
+        let tx = db.write_tx().unwrap();
+        tx.query("CREATE (:Doc {title: 'hello', score: 5})")
+            .unwrap();
+        tx.query("CREATE (:Doc {title: 'goodbye', score: 5})")
+            .unwrap();
+        tx.query("CREATE (:Doc {title: 'lorem', score: 9})")
+            .unwrap();
+        tx.commit().unwrap();
+    }
+
+    // `score = 5` is not FTS-eligible — rewrite must abort and the
+    // fallback Filter path must still return correct rows.
+    let rows = db
+        .execute(
+            "MATCH (n:Doc) \
+             WHERE n.title CONTAINS 'hello' OR n.score = 5 \
+             RETURN id(n) AS id",
+        )
+        .unwrap();
+    assert_eq!(rows.len(), 2);
+}

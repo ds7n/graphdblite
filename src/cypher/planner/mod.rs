@@ -221,6 +221,7 @@ pub(in crate::cypher::planner) fn rewrite_text_filter_to_fts(
     // Non-correlated: Filter(Scan{label, alias}, alias.prop OP term).
     if let LogicalOp::Scan { label, alias } = input.as_ref() {
         if !label.is_empty() {
+            // 1) Single-predicate / AND-chain rewrite (existing).
             if let Some((prop, fts_op, term, residual)) = extract_fts_predicate(&predicate, alias) {
                 if fts_index_exists(conn, label, &prop) {
                     *op = LogicalOp::FullTextLookup {
@@ -233,6 +234,11 @@ pub(in crate::cypher::planner) fn rewrite_text_filter_to_fts(
                     };
                     return;
                 }
+            }
+            // 2) Pure OR-chain → Union of FullTextLookups.
+            if let Some(union) = try_rewrite_or_chain_to_union(conn, label, alias, &predicate) {
+                *op = union;
+                return;
             }
         }
     }
@@ -312,6 +318,43 @@ fn extract_fts_predicate(
     None
 }
 
+/// Try to rewrite a pure OR-chain of FTS-eligible predicates into a
+/// `Union` of `FullTextLookup` nodes. Returns `None` if:
+/// - the predicate is not a top-level OR (single disjunct)
+/// - any disjunct is not an FTS-eligible binop against `alias.<prop>`
+/// - any disjunct's `(label, prop)` lacks an FTS index
+///
+/// Caller falls back to the existing `Filter(Scan, …)` plan on `None`.
+fn try_rewrite_or_chain_to_union(
+    conn: &Connection,
+    label: &str,
+    alias: &str,
+    predicate: &Expr,
+) -> Option<LogicalOp> {
+    let disjuncts = flatten_top_level_or(predicate);
+    if disjuncts.len() < 2 {
+        return None;
+    }
+
+    let mut inputs: Vec<LogicalOp> = Vec::with_capacity(disjuncts.len());
+    for d in disjuncts {
+        let (prop, fts_op, term) = match_fts_binop(d, alias)?;
+        if !fts_index_exists(conn, label, &prop) {
+            return None;
+        }
+        inputs.push(LogicalOp::FullTextLookup {
+            label: label.to_string(),
+            alias: alias.to_string(),
+            property: prop,
+            op: fts_op,
+            term,
+            remaining_filters: None,
+        });
+    }
+
+    Some(LogicalOp::Union { inputs, all: false })
+}
+
 /// Match an FTS binary op: `alias.prop CONTAINS|STARTS WITH|ENDS WITH term`.
 fn match_fts_binop(e: &Expr, alias: &str) -> Option<(String, crate::cypher::ir::FullTextOp, Expr)> {
     use crate::cypher::ir::FullTextOp;
@@ -341,6 +384,28 @@ fn flatten_top_level_and(e: &Expr) -> Vec<&Expr> {
         if let ExprKind::BinaryOp {
             left,
             op: BinOp::And,
+            right,
+        } = &e.kind
+        {
+            walk(left, out);
+            walk(right, out);
+        } else {
+            out.push(e);
+        }
+    }
+    walk(e, &mut out);
+    out
+}
+
+/// Flatten a top-level `OR` chain into individual disjuncts. Mirrors
+/// `flatten_top_level_and`. A non-OR expression returns a single-element
+/// vector.
+fn flatten_top_level_or(e: &Expr) -> Vec<&Expr> {
+    let mut out = Vec::new();
+    fn walk<'a>(e: &'a Expr, out: &mut Vec<&'a Expr>) {
+        if let ExprKind::BinaryOp {
+            left,
+            op: BinOp::Or,
             right,
         } = &e.kind
         {
@@ -818,6 +883,257 @@ mod plan_tests {
             }
             _ => panic!("expected Merge"),
         }
+    }
+}
+
+#[cfg(test)]
+mod fts_or_chain_tests {
+    use super::*;
+
+    #[test]
+    fn flatten_top_level_or_splits_chain() {
+        use crate::cypher::ast::{BinOp, Expr, ExprKind, LiteralValue};
+
+        let lit = |s: &str| Expr::synthetic(ExprKind::Literal(LiteralValue::String(s.to_string())));
+        let or = |l: Expr, r: Expr| {
+            Expr::synthetic(ExprKind::BinaryOp {
+                left: Box::new(l),
+                op: BinOp::Or,
+                right: Box::new(r),
+            })
+        };
+
+        // `'a' OR 'b' OR 'c'` parses left-associative as `((a OR b) OR c)`.
+        let chain = or(or(lit("a"), lit("b")), lit("c"));
+        let parts = flatten_top_level_or(&chain);
+        assert_eq!(parts.len(), 3);
+    }
+
+    #[test]
+    fn flatten_top_level_or_returns_single_for_non_or() {
+        use crate::cypher::ast::{Expr, ExprKind, LiteralValue};
+        let lit = Expr::synthetic(ExprKind::Literal(LiteralValue::String("x".to_string())));
+        let parts = flatten_top_level_or(&lit);
+        assert_eq!(parts.len(), 1);
+    }
+
+    #[test]
+    fn try_rewrite_or_chain_two_indexed_disjuncts_returns_union() {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        crate::schema::init_schema(&conn).unwrap();
+        crate::fts::create_fulltext_index(&conn, "Doc", "title").unwrap();
+        crate::fts::create_fulltext_index(&conn, "Doc", "body").unwrap();
+
+        use crate::cypher::ast::{BinOp, Expr, ExprKind, LiteralValue};
+        let prop = |alias: &str, p: &str| {
+            Expr::synthetic(ExprKind::Property(alias.to_string(), p.to_string()))
+        };
+        let lit = |s: &str| Expr::synthetic(ExprKind::Literal(LiteralValue::String(s.to_string())));
+        let contains = |l: Expr, r: Expr| {
+            Expr::synthetic(ExprKind::BinaryOp {
+                left: Box::new(l),
+                op: BinOp::Contains,
+                right: Box::new(r),
+            })
+        };
+        let or = |l: Expr, r: Expr| {
+            Expr::synthetic(ExprKind::BinaryOp {
+                left: Box::new(l),
+                op: BinOp::Or,
+                right: Box::new(r),
+            })
+        };
+        let predicate = or(
+            contains(prop("n", "title"), lit("x")),
+            contains(prop("n", "body"), lit("x")),
+        );
+
+        let result = try_rewrite_or_chain_to_union(&conn, "Doc", "n", &predicate);
+        let plan = result.expect("expected Some(Union)");
+        match plan {
+            LogicalOp::Union { inputs, all: false } => {
+                assert_eq!(inputs.len(), 2);
+                for inp in &inputs {
+                    assert!(
+                        matches!(inp, LogicalOp::FullTextLookup { .. }),
+                        "expected FullTextLookup, got {inp:?}"
+                    );
+                }
+            }
+            other => panic!("expected Union, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn try_rewrite_or_chain_non_or_returns_none() {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        crate::schema::init_schema(&conn).unwrap();
+        crate::fts::create_fulltext_index(&conn, "Doc", "title").unwrap();
+
+        use crate::cypher::ast::{BinOp, Expr, ExprKind, LiteralValue};
+        let predicate = Expr::synthetic(ExprKind::BinaryOp {
+            left: Box::new(Expr::synthetic(ExprKind::Property(
+                "n".to_string(),
+                "title".to_string(),
+            ))),
+            op: BinOp::Contains,
+            right: Box::new(Expr::synthetic(ExprKind::Literal(LiteralValue::String(
+                "x".to_string(),
+            )))),
+        });
+        assert!(try_rewrite_or_chain_to_union(&conn, "Doc", "n", &predicate).is_none());
+    }
+
+    #[test]
+    fn try_rewrite_or_chain_missing_index_returns_none() {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        crate::schema::init_schema(&conn).unwrap();
+        crate::fts::create_fulltext_index(&conn, "Doc", "title").unwrap();
+        // body has no FTS index
+
+        use crate::cypher::ast::{BinOp, Expr, ExprKind, LiteralValue};
+        let prop = |alias: &str, p: &str| {
+            Expr::synthetic(ExprKind::Property(alias.to_string(), p.to_string()))
+        };
+        let lit = |s: &str| Expr::synthetic(ExprKind::Literal(LiteralValue::String(s.to_string())));
+        let contains = |l: Expr, r: Expr| {
+            Expr::synthetic(ExprKind::BinaryOp {
+                left: Box::new(l),
+                op: BinOp::Contains,
+                right: Box::new(r),
+            })
+        };
+        let or = |l: Expr, r: Expr| {
+            Expr::synthetic(ExprKind::BinaryOp {
+                left: Box::new(l),
+                op: BinOp::Or,
+                right: Box::new(r),
+            })
+        };
+        let predicate = or(
+            contains(prop("n", "title"), lit("x")),
+            contains(prop("n", "body"), lit("x")),
+        );
+        assert!(try_rewrite_or_chain_to_union(&conn, "Doc", "n", &predicate).is_none());
+    }
+
+    #[test]
+    fn try_rewrite_or_chain_non_fts_disjunct_returns_none() {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        crate::schema::init_schema(&conn).unwrap();
+        crate::fts::create_fulltext_index(&conn, "Doc", "title").unwrap();
+
+        use crate::cypher::ast::{BinOp, Expr, ExprKind, LiteralValue};
+        let prop = |alias: &str, p: &str| {
+            Expr::synthetic(ExprKind::Property(alias.to_string(), p.to_string()))
+        };
+        let lit_str =
+            |s: &str| Expr::synthetic(ExprKind::Literal(LiteralValue::String(s.to_string())));
+        let lit_int = |n: i64| Expr::synthetic(ExprKind::Literal(LiteralValue::I64(n)));
+
+        let contains = |l: Expr, r: Expr| {
+            Expr::synthetic(ExprKind::BinaryOp {
+                left: Box::new(l),
+                op: BinOp::Contains,
+                right: Box::new(r),
+            })
+        };
+        let eq = |l: Expr, r: Expr| {
+            Expr::synthetic(ExprKind::BinaryOp {
+                left: Box::new(l),
+                op: BinOp::Eq,
+                right: Box::new(r),
+            })
+        };
+        let or = |l: Expr, r: Expr| {
+            Expr::synthetic(ExprKind::BinaryOp {
+                left: Box::new(l),
+                op: BinOp::Or,
+                right: Box::new(r),
+            })
+        };
+
+        let predicate = or(
+            contains(prop("n", "title"), lit_str("x")),
+            eq(prop("n", "id"), lit_int(5)),
+        );
+        assert!(try_rewrite_or_chain_to_union(&conn, "Doc", "n", &predicate).is_none());
+    }
+
+    #[test]
+    fn rewrite_text_filter_to_fts_handles_or_chain() {
+        use crate::cypher::ast::{BinOp, Expr, ExprKind, LiteralValue};
+
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        crate::schema::init_schema(&conn).unwrap();
+        crate::fts::create_fulltext_index(&conn, "Doc", "title").unwrap();
+        crate::fts::create_fulltext_index(&conn, "Doc", "body").unwrap();
+
+        let prop = |alias: &str, p: &str| {
+            Expr::synthetic(ExprKind::Property(alias.to_string(), p.to_string()))
+        };
+        let lit = |s: &str| Expr::synthetic(ExprKind::Literal(LiteralValue::String(s.to_string())));
+        let contains = |l: Expr, r: Expr| {
+            Expr::synthetic(ExprKind::BinaryOp {
+                left: Box::new(l),
+                op: BinOp::Contains,
+                right: Box::new(r),
+            })
+        };
+        let or = |l: Expr, r: Expr| {
+            Expr::synthetic(ExprKind::BinaryOp {
+                left: Box::new(l),
+                op: BinOp::Or,
+                right: Box::new(r),
+            })
+        };
+
+        let mut plan = LogicalOp::Filter {
+            input: Box::new(LogicalOp::Scan {
+                label: "Doc".to_string(),
+                alias: "n".to_string(),
+            }),
+            predicate: or(
+                contains(prop("n", "title"), lit("x")),
+                contains(prop("n", "body"), lit("x")),
+            ),
+        };
+        rewrite_text_filter_to_fts(&conn, &mut plan);
+        assert!(
+            matches!(&plan, LogicalOp::Union { inputs, all: false } if inputs.len() == 2),
+            "expected Union(2), got {plan:?}",
+        );
+    }
+
+    #[test]
+    fn rewrite_text_filter_to_fts_single_contains_still_works() {
+        use crate::cypher::ast::{BinOp, Expr, ExprKind, LiteralValue};
+
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        crate::schema::init_schema(&conn).unwrap();
+        crate::fts::create_fulltext_index(&conn, "Doc", "title").unwrap();
+
+        let mut plan = LogicalOp::Filter {
+            input: Box::new(LogicalOp::Scan {
+                label: "Doc".to_string(),
+                alias: "n".to_string(),
+            }),
+            predicate: Expr::synthetic(ExprKind::BinaryOp {
+                left: Box::new(Expr::synthetic(ExprKind::Property(
+                    "n".to_string(),
+                    "title".to_string(),
+                ))),
+                op: BinOp::Contains,
+                right: Box::new(Expr::synthetic(ExprKind::Literal(LiteralValue::String(
+                    "x".to_string(),
+                )))),
+            }),
+        };
+        rewrite_text_filter_to_fts(&conn, &mut plan);
+        assert!(
+            matches!(plan, LogicalOp::FullTextLookup { .. }),
+            "regression: single CONTAINS must still use AND-chain rewrite"
+        );
     }
 }
 

@@ -20,15 +20,36 @@ pub(in crate::cypher::executor) fn exec_call(
 ) -> Result<Vec<NamedRecord>> {
     let records = exec(conn, input, ctx)?;
 
-    let proc_def = ctx.procedures.get(procedure_name).ok_or_else(|| {
-        GraphError::Query(crate::types::QueryError::ProcedureError {
-            phase: crate::types::QueryPhase::Runtime,
-            message: format!("ProcedureNotFound: unknown procedure `{procedure_name}`"),
-            code: ErrorCode::Other,
-            hint: None,
-            span: None,
-        })
-    })?;
+    use crate::cypher::builtin_procedures;
+    use crate::cypher::procedure::ProcedureDef;
+
+    let proc_def_owned;
+    let proc_def: &ProcedureDef = match ctx.procedures.get(procedure_name) {
+        Some(def) => def,
+        None => match builtin_procedures::builtin_signature(procedure_name) {
+            Some(sig) => {
+                let rows = builtin_procedures::execute_builtin(procedure_name, conn)?;
+                proc_def_owned = ProcedureDef {
+                    name: procedure_name.to_string(),
+                    inputs: sig.inputs,
+                    outputs: sig.outputs,
+                    rows,
+                };
+                &proc_def_owned
+            }
+            None => {
+                return Err(GraphError::Query(
+                    crate::types::QueryError::ProcedureError {
+                        phase: crate::types::QueryPhase::Runtime,
+                        message: format!("ProcedureNotFound: unknown procedure `{procedure_name}`"),
+                        code: ErrorCode::Other,
+                        hint: None,
+                        span: None,
+                    },
+                ));
+            }
+        },
+    };
 
     let mut results = Vec::new();
 
@@ -88,6 +109,27 @@ pub(in crate::cypher::executor) fn exec_call(
 
     check_row_limit(&results, ctx)?;
     Ok(results)
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::Database;
+
+    #[test]
+    fn call_db_indexes_returns_rows_for_each_index() {
+        let mut db = Database::open_memory().unwrap();
+        {
+            let tx = db.write_tx().unwrap();
+            tx.create_index("Person", "name").unwrap();
+            tx.create_fulltext_index("Doc", "body").unwrap();
+            tx.commit().unwrap();
+        }
+
+        let rows = db
+            .execute("CALL db.indexes() YIELD label, property, kind RETURN *")
+            .unwrap();
+        assert_eq!(rows.len(), 2);
+    }
 }
 
 /// Compare two values for procedure row filtering, with numeric coercion.

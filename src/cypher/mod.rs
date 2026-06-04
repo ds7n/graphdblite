@@ -1,4 +1,5 @@
 pub mod ast;
+pub(crate) mod builtin_procedures;
 pub mod cost;
 pub mod eval;
 pub mod executor;

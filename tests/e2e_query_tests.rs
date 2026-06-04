@@ -4489,3 +4489,94 @@ fn regex_match_invalid_pattern_surfaces_error() {
         .unwrap_err();
     assert!(format!("{err}").contains("invalid regex pattern"));
 }
+
+fn string_field(r: &graphdblite::Record, name: &str) -> String {
+    match r.get(name).unwrap() {
+        graphdblite::Value::String(s) => s.clone(),
+        v => panic!("expected string at `{name}`, got {v:?}"),
+    }
+}
+
+#[test]
+fn db_indexes_empty_on_fresh_database() {
+    let mut db = graphdblite::Database::open_memory().unwrap();
+    let rows = db
+        .execute("CALL db.indexes() YIELD label, property, kind RETURN *")
+        .unwrap();
+    assert!(rows.is_empty());
+}
+
+#[test]
+fn db_indexes_reports_both_index_kinds() {
+    let mut db = graphdblite::Database::open_memory().unwrap();
+    {
+        let tx = db.write_tx().unwrap();
+        tx.create_index("Person", "name").unwrap();
+        tx.create_fulltext_index("Doc", "body").unwrap();
+        tx.commit().unwrap();
+    }
+
+    let rows = db
+        .execute("CALL db.indexes() YIELD label, property, kind RETURN *")
+        .unwrap();
+    assert_eq!(rows.len(), 2);
+
+    let mut triples: Vec<(String, String, String)> = rows
+        .iter()
+        .map(|r| {
+            let lab = string_field(r, "label");
+            let prop = string_field(r, "property");
+            let kind = string_field(r, "kind");
+            (lab, prop, kind)
+        })
+        .collect();
+    triples.sort();
+    assert_eq!(
+        triples,
+        vec![
+            (
+                "Doc".to_string(),
+                "body".to_string(),
+                "fulltext".to_string()
+            ),
+            (
+                "Person".to_string(),
+                "name".to_string(),
+                "btree".to_string()
+            ),
+        ]
+    );
+}
+
+#[test]
+fn db_indexes_yield_filter_selects_fulltext_only() {
+    let mut db = graphdblite::Database::open_memory().unwrap();
+    {
+        let tx = db.write_tx().unwrap();
+        tx.create_index("Person", "name").unwrap();
+        tx.create_fulltext_index("Doc", "body").unwrap();
+        tx.commit().unwrap();
+    }
+
+    let rows = db
+        .execute(
+            "CALL db.indexes() YIELD label, property, kind \
+             WITH label, property, kind WHERE kind = 'fulltext' \
+             RETURN label, property",
+        )
+        .unwrap();
+    assert_eq!(rows.len(), 1);
+    assert_eq!(string_field(&rows[0], "label"), "Doc");
+    assert_eq!(string_field(&rows[0], "property"), "body");
+}
+
+#[test]
+fn call_unknown_builtin_errors() {
+    let mut db = graphdblite::Database::open_memory().unwrap();
+    let err = db.execute("CALL db.nonsense()").unwrap_err();
+    let msg = format!("{err}");
+    assert!(
+        msg.contains("ProcedureNotFound") || msg.contains("unknown procedure"),
+        "expected ProcedureNotFound, got: {msg}"
+    );
+}

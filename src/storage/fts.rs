@@ -109,6 +109,40 @@ pub fn list_fulltext_indexes_for_label(
     Ok(result)
 }
 
+/// List every fulltext index in the database as `(label, property)`
+/// pairs. Filters out FTS5 shadow tables (`_data`, `_idx`, `_content`,
+/// `_docsize`, `_config`) via the same `CREATE VIRTUAL TABLE` check
+/// that `list_fulltext_indexes_for_label` uses.
+///
+/// Note: same label/property underscore ambiguity as
+/// `index::list_all_indexes` — see that function's doc comment. Split
+/// is on the FIRST underscore after the `node_fts_` prefix so that
+/// properties with underscores (e.g. `cache_data`) round-trip when
+/// labels do not contain underscores.
+pub fn list_all_fulltext_indexes(conn: &Connection) -> Result<Vec<(String, String)>> {
+    let mut stmt = conn.prepare_cached(
+        "SELECT name FROM sqlite_master \
+         WHERE type='table' \
+         AND name LIKE 'node_fts_%' \
+         AND sql LIKE 'CREATE VIRTUAL TABLE%'",
+    )?;
+    let rows = stmt.query_map([], |row| row.get::<_, String>(0))?;
+
+    let mut result = Vec::new();
+    for name in rows {
+        let name = name?;
+        let Some(rest) = name.strip_prefix("node_fts_") else {
+            continue;
+        };
+        let Some(split) = rest.find('_') else {
+            continue;
+        };
+        let (label, property) = rest.split_at(split);
+        result.push((label.to_string(), property[1..].to_string()));
+    }
+    Ok(result)
+}
+
 /// Update fulltext indexes for a node after create / SET / REMOVE.
 ///
 /// Pass `old_properties = None` for newly-created nodes. For each
@@ -525,5 +559,41 @@ mod tests {
             .unwrap()
             .unwrap();
         assert_eq!(ids.len(), 1);
+    }
+
+    #[test]
+    fn list_all_fulltext_indexes_returns_empty_on_fresh_db() {
+        let c = conn();
+        let got = list_all_fulltext_indexes(&c).unwrap();
+        assert!(got.is_empty());
+    }
+
+    #[test]
+    fn list_all_fulltext_indexes_returns_one_per_index_across_labels() {
+        let c = conn();
+        create_fulltext_index(&c, "Doc", "body").unwrap();
+        create_fulltext_index(&c, "Doc", "title").unwrap();
+        create_fulltext_index(&c, "Note", "text").unwrap();
+        let mut got = list_all_fulltext_indexes(&c).unwrap();
+        got.sort();
+        assert_eq!(
+            got,
+            vec![
+                ("Doc".to_string(), "body".to_string()),
+                ("Doc".to_string(), "title".to_string()),
+                ("Note".to_string(), "text".to_string()),
+            ]
+        );
+    }
+
+    #[test]
+    fn list_all_fulltext_indexes_skips_shadow_tables() {
+        // Regression: a user property literally named "cache_data" or other
+        // FTS5 shadow-suffix names must not confuse the listing.
+        let c = conn();
+        create_fulltext_index(&c, "Foo", "cache_data").unwrap();
+        let got = list_all_fulltext_indexes(&c).unwrap();
+        // Exactly one entry — the virtual table itself — not the shadow tables.
+        assert_eq!(got, vec![("Foo".to_string(), "cache_data".to_string())]);
     }
 }

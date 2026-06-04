@@ -234,3 +234,74 @@ pub fn list_indexes_for_label(conn: &Connection, label: &str) -> Result<Vec<(Str
     }
     Ok(result)
 }
+
+/// List every secondary index in the database as `(label, property)`
+/// pairs. Order is unspecified — callers should sort if they need
+/// determinism.
+///
+/// Note: the underlying table name is `node_idx_<label>_<property>`.
+/// Both labels and properties may contain underscores
+/// (`validate_name` allows `[A-Za-z0-9_]`), so the split between label
+/// and property is ambiguous in principle. We split on the **first**
+/// underscore after the `node_idx_` prefix, which round-trips correctly
+/// when labels do not contain underscores (the common case). Labels
+/// with underscores will be misparsed by this label-agnostic listing;
+/// callers needing exact label scoping should use
+/// `list_indexes_for_label`.
+pub fn list_all_indexes(conn: &Connection) -> Result<Vec<(String, String)>> {
+    let mut stmt = conn.prepare_cached(
+        "SELECT name FROM sqlite_master \
+         WHERE type='table' AND name LIKE 'node_idx_%'",
+    )?;
+    let rows = stmt.query_map([], |row| row.get::<_, String>(0))?;
+
+    let mut result = Vec::new();
+    for name in rows {
+        let name = name?;
+        let Some(rest) = name.strip_prefix("node_idx_") else {
+            continue;
+        };
+        let Some(split) = rest.find('_') else {
+            continue;
+        };
+        let (label, property) = rest.split_at(split);
+        result.push((label.to_string(), property[1..].to_string()));
+    }
+    Ok(result)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn fresh_conn() -> Connection {
+        let c = Connection::open_in_memory().unwrap();
+        crate::schema::init_schema(&c).unwrap();
+        c
+    }
+
+    #[test]
+    fn list_all_indexes_returns_empty_on_fresh_db() {
+        let conn = fresh_conn();
+        let got = list_all_indexes(&conn).unwrap();
+        assert!(got.is_empty());
+    }
+
+    #[test]
+    fn list_all_indexes_returns_one_per_index_across_labels() {
+        let conn = fresh_conn();
+        create_index(&conn, "Person", "name").unwrap();
+        create_index(&conn, "Person", "age").unwrap();
+        create_index(&conn, "City", "name").unwrap();
+        let mut got = list_all_indexes(&conn).unwrap();
+        got.sort();
+        assert_eq!(
+            got,
+            vec![
+                ("City".to_string(), "name".to_string()),
+                ("Person".to_string(), "age".to_string()),
+                ("Person".to_string(), "name".to_string()),
+            ]
+        );
+    }
+}

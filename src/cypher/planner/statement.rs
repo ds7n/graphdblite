@@ -27,16 +27,32 @@ pub(in crate::cypher::planner) fn plan_call(
     procedures: &crate::cypher::procedure::ProcedureRegistry,
     params: Option<&std::collections::HashMap<String, Value>>,
 ) -> crate::types::Result<LogicalOp> {
-    // 1. ProcedureNotFound — look up procedure in registry.
-    let proc_def = procedures.get(procedure_name).ok_or_else(|| {
-        GraphError::Query(crate::types::QueryError::ProcedureError {
-            phase: crate::types::QueryPhase::SemanticAnalysis,
-            message: format!("unknown procedure `{procedure_name}`"),
-            code: ErrorCode::ProcedureNotFound,
-            hint: None,
-            span: None,
-        })
-    })?;
+    // 1. ProcedureNotFound — look up procedure in the test registry,
+    //    then fall back to the built-in allowlist.
+    let registry_def = procedures.get(procedure_name).cloned();
+    let proc_def_owned = match registry_def {
+        Some(def) => def,
+        None => match crate::cypher::builtin_procedures::builtin_signature(procedure_name) {
+            Some(sig) => crate::cypher::procedure::ProcedureDef {
+                name: procedure_name.to_string(),
+                inputs: sig.inputs,
+                outputs: sig.outputs,
+                rows: Vec::new(),
+            },
+            None => {
+                return Err(GraphError::Query(
+                    crate::types::QueryError::ProcedureError {
+                        phase: crate::types::QueryPhase::SemanticAnalysis,
+                        message: format!("unknown procedure `{procedure_name}`"),
+                        code: ErrorCode::ProcedureNotFound,
+                        hint: None,
+                        span: None,
+                    },
+                ));
+            }
+        },
+    };
+    let proc_def = &proc_def_owned;
 
     // Determine if this is an in-query CALL (has RETURN or YIELD with RETURN).
     let is_in_query = return_clause.is_some();
@@ -1245,4 +1261,21 @@ pub(in crate::cypher::planner) fn plan_match_merge(
     }
 
     Ok(result)
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::cypher::parser::parse;
+    use crate::cypher::planner::plan_with_procedures;
+    use crate::cypher::procedure::ProcedureRegistry;
+
+    #[test]
+    fn plan_call_resolves_db_indexes_built_in() {
+        let stmt = parse("CALL db.indexes() YIELD label, property, kind RETURN *").unwrap();
+        let registry = ProcedureRegistry::new();
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        let plan = plan_with_procedures(&conn, &stmt, &registry, None).unwrap();
+        let dbg = format!("{plan:?}");
+        assert!(dbg.contains("db.indexes"), "plan missing CALL node: {dbg}");
+    }
 }

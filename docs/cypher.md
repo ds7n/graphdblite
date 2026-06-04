@@ -460,3 +460,26 @@ let rows = db.execute(
   separate queries per field and union at the Cypher level.
 - No phrase queries, no prefix-with-`*`, no ranking / BM25. Use
   the existing operators only.
+
+## Introspection
+
+### `CALL db.indexes()`
+
+Returns one row per index in the database.
+
+| column     | type   | values |
+| ---------- | ------ | ------ |
+| `label`    | STRING | label the index covers |
+| `property` | STRING | property the index covers |
+| `kind`     | STRING | `"btree"` (secondary index) or `"fulltext"` (FTS5) |
+
+```cypher
+CALL db.indexes() YIELD label, property, kind RETURN *
+```
+
+A `(label, property)` pair carrying both kinds of index yields two
+rows.
+
+Other openCypher `db.*` introspection procedures
+(`db.labels()`, `db.relationshipTypes()`, `db.propertyKeys()`,
+`db.schema.visualization()`) are not yet implemented.

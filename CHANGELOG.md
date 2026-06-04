@@ -32,6 +32,10 @@ ships.
   `drop_fulltext_index` (case-converted per language idiom).
   Closes BC-11 in `docs/BINDING_CONFORMANCE.md`. Python's surface
   is unchanged.
+- **Index introspection via `CALL db.indexes()`.** New built-in
+  procedure returns `(label, property, kind)` rows for every secondary
+  and fulltext index in the database. No new grammar — reuses the
+  existing CALL surface.
 
 ## [0.1.1] - 2026-05-23
 

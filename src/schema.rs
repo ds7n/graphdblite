@@ -106,87 +106,6 @@ pub fn init_schema(conn: &Connection) -> Result<()> {
     Ok(())
 }
 
-#[cfg(test)]
-mod migration_v3_tests {
-    use super::*;
-    use rusqlite::Connection;
-
-    /// Initialize a v2-shaped DB, then forcibly downgrade `schema_version` to 2
-    /// and seed `edge_props` rows directly so the v3 counters are absent.
-    fn seed_v2_db_with_raw_edges() -> Connection {
-        let conn = Connection::open_in_memory().unwrap();
-        init_schema(&conn).unwrap();
-        // Force schema_version back to 2.
-        conn.execute(
-            "INSERT OR REPLACE INTO metadata (key, value) VALUES ('schema_version', ?1)",
-            [&2u64.to_be_bytes()[..]],
-        )
-        .unwrap();
-        // Drop any edge-type stats that the v3 init may have written.
-        conn.execute(
-            "DELETE FROM metadata WHERE key LIKE 'stats:edge_type_count:%'",
-            [],
-        )
-        .unwrap();
-
-        // Seed edge_props rows directly. Layout: [src:8][dst:8][label][0x00][seq:8].
-        let put = |src: u64, dst: u64, label: &str, seq: u64| {
-            let mut key = Vec::new();
-            key.extend_from_slice(&src.to_be_bytes());
-            key.extend_from_slice(&dst.to_be_bytes());
-            key.extend_from_slice(label.as_bytes());
-            key.push(0x00);
-            key.extend_from_slice(&seq.to_be_bytes());
-            conn.execute(
-                "INSERT INTO edge_props (key, value) VALUES (?1, ?2)",
-                rusqlite::params![key, &[][..]],
-            )
-            .unwrap();
-        };
-        put(1, 2, "KNOWS", 0);
-        put(1, 2, "KNOWS", 1);
-        put(2, 3, "KNOWS", 2);
-        put(1, 2, "WORKS_AT", 3);
-        conn
-    }
-
-    #[test]
-    fn migrate_v2_to_v3_backfills_edge_type_counts() {
-        let conn = seed_v2_db_with_raw_edges();
-        // Re-run init_schema to trigger v2 → v3 migration.
-        init_schema(&conn).unwrap();
-
-        let mut got = crate::stats::get_all_edge_type_counts(&conn).unwrap();
-        got.sort();
-        assert_eq!(
-            got,
-            vec![("KNOWS".to_string(), 3), ("WORKS_AT".to_string(), 1),]
-        );
-
-        // schema_version stamped to 3.
-        let raw: Vec<u8> = conn
-            .query_row(
-                "SELECT value FROM metadata WHERE key = 'schema_version'",
-                [],
-                |row| row.get(0),
-            )
-            .unwrap();
-        assert_eq!(raw.len(), 8);
-        assert_eq!(u64::from_be_bytes(raw.try_into().unwrap()), 3);
-    }
-
-    #[test]
-    fn migrate_is_idempotent_when_already_v3() {
-        let conn = Connection::open_in_memory().unwrap();
-        init_schema(&conn).unwrap();
-        // Second call must not double-count anything.
-        init_schema(&conn).unwrap();
-        assert!(crate::stats::get_all_edge_type_counts(&conn)
-            .unwrap()
-            .is_empty());
-    }
-}
-
 /// Migrate schema from v1 (nodes has key+value only) to v2 (key+label+value).
 ///
 /// Recreates the nodes table with the label column, backfills label from the
@@ -271,4 +190,85 @@ fn migrate_v2_to_v3(conn: &Connection) -> Result<()> {
     )?;
 
     Ok(())
+}
+
+#[cfg(test)]
+mod migration_v3_tests {
+    use super::*;
+    use rusqlite::Connection;
+
+    /// Initialize a v2-shaped DB, then forcibly downgrade `schema_version` to 2
+    /// and seed `edge_props` rows directly so the v3 counters are absent.
+    fn seed_v2_db_with_raw_edges() -> Connection {
+        let conn = Connection::open_in_memory().unwrap();
+        init_schema(&conn).unwrap();
+        // Force schema_version back to 2.
+        conn.execute(
+            "INSERT OR REPLACE INTO metadata (key, value) VALUES ('schema_version', ?1)",
+            [&2u64.to_be_bytes()[..]],
+        )
+        .unwrap();
+        // Drop any edge-type stats that the v3 init may have written.
+        conn.execute(
+            "DELETE FROM metadata WHERE key LIKE 'stats:edge_type_count:%'",
+            [],
+        )
+        .unwrap();
+
+        // Seed edge_props rows directly. Layout: [src:8][dst:8][label][0x00][seq:8].
+        let put = |src: u64, dst: u64, label: &str, seq: u64| {
+            let mut key = Vec::new();
+            key.extend_from_slice(&src.to_be_bytes());
+            key.extend_from_slice(&dst.to_be_bytes());
+            key.extend_from_slice(label.as_bytes());
+            key.push(0x00);
+            key.extend_from_slice(&seq.to_be_bytes());
+            conn.execute(
+                "INSERT INTO edge_props (key, value) VALUES (?1, ?2)",
+                rusqlite::params![key, &[][..]],
+            )
+            .unwrap();
+        };
+        put(1, 2, "KNOWS", 0);
+        put(1, 2, "KNOWS", 1);
+        put(2, 3, "KNOWS", 2);
+        put(1, 2, "WORKS_AT", 3);
+        conn
+    }
+
+    #[test]
+    fn migrate_v2_to_v3_backfills_edge_type_counts() {
+        let conn = seed_v2_db_with_raw_edges();
+        // Re-run init_schema to trigger v2 → v3 migration.
+        init_schema(&conn).unwrap();
+
+        let mut got = crate::stats::get_all_edge_type_counts(&conn).unwrap();
+        got.sort();
+        assert_eq!(
+            got,
+            vec![("KNOWS".to_string(), 3), ("WORKS_AT".to_string(), 1),]
+        );
+
+        // schema_version stamped to 3.
+        let raw: Vec<u8> = conn
+            .query_row(
+                "SELECT value FROM metadata WHERE key = 'schema_version'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(raw.len(), 8);
+        assert_eq!(u64::from_be_bytes(raw.try_into().unwrap()), 3);
+    }
+
+    #[test]
+    fn migrate_is_idempotent_when_already_v3() {
+        let conn = Connection::open_in_memory().unwrap();
+        init_schema(&conn).unwrap();
+        // Second call must not double-count anything.
+        init_schema(&conn).unwrap();
+        assert!(crate::stats::get_all_edge_type_counts(&conn)
+            .unwrap()
+            .is_empty());
+    }
 }

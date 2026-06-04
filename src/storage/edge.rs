@@ -51,6 +51,20 @@ pub(crate) fn edge_seq_from_key(key: &[u8], prefix_len: usize) -> u64 {
     }
 }
 
+/// Extract the label/relationship type from an `edge_props` key.
+///
+/// Layout: `[src:8][dst:8][label_bytes][0x00][seq:8]`. Returns `None` if
+/// the key is too short (< 16 bytes for the node-id prefix) or has no
+/// `0x00` separator after the label.
+pub(crate) fn label_from_edge_props_key(key: &[u8]) -> Option<&str> {
+    if key.len() < 16 {
+        return None;
+    }
+    let rest = &key[16..];
+    let nul = rest.iter().position(|&b| b == 0x00)?;
+    std::str::from_utf8(&rest[..nul]).ok()
+}
+
 /// Create an edge from src to dst with the given label and properties.
 pub fn create_edge(
     conn: &Connection,
@@ -1181,5 +1195,31 @@ mod traverse_paths_tests {
             }
             other => panic!("expected SizeLimit, got {other:?}"),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::types::NodeId;
+
+    #[test]
+    fn label_from_edge_props_key_round_trips() {
+        let key = super::edge_props_key(NodeId(1), NodeId(2), "KNOWS", 7);
+        assert_eq!(super::label_from_edge_props_key(&key), Some("KNOWS"));
+    }
+
+    #[test]
+    fn label_from_edge_props_key_rejects_short_key() {
+        assert_eq!(super::label_from_edge_props_key(&[0u8; 8]), None);
+    }
+
+    #[test]
+    fn label_from_edge_props_key_rejects_missing_nul() {
+        let mut key = Vec::new();
+        key.extend_from_slice(&1u64.to_be_bytes());
+        key.extend_from_slice(&2u64.to_be_bytes());
+        key.extend_from_slice(b"KNOWS");
+        // no 0x00 terminator
+        assert_eq!(super::label_from_edge_props_key(&key), None);
     }
 }

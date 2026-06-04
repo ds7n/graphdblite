@@ -1,3 +1,4 @@
+use std::cell::RefCell;
 use std::collections::HashMap;
 
 use rusqlite::Connection;
@@ -29,6 +30,8 @@ pub struct ExecContext {
     /// so write Cypher inside a read-only transaction fails fast instead of
     /// silently upgrading the SQLite lock.
     pub require_read_only: bool,
+    /// Per-query bounded LRU of compiled regexes for the `=~` operator.
+    pub regex_cache: RefCell<crate::cypher::eval::regex_cache::RegexCache>,
 }
 
 impl Default for ExecContext {
@@ -39,6 +42,7 @@ impl Default for ExecContext {
             max_traversal_work: 10_000_000,
             procedures: ProcedureRegistry::default(),
             require_read_only: false,
+            regex_cache: RefCell::new(crate::cypher::eval::regex_cache::RegexCache::default()),
         }
     }
 }

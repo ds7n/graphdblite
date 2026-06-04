@@ -122,6 +122,7 @@ macro_rules! impl_read_ops {
                     max_traversal_work: self.max_traversal_work,
                     procedures: procedures.clone(),
                     require_read_only: $read_only,
+                    ..Default::default()
                 };
                 execute_cypher(&self.tx, cypher, params, ctx, self.exec_caches())
             }

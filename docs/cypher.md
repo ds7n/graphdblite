@@ -95,6 +95,35 @@ WHERE n.name ENDS WITH 'son'
 WHERE n.name CONTAINS 'li'
 ```
 
+### Regex match (`=~`)
+
+Returns `true` when the left-hand string matches the right-hand
+[Rust regex](https://docs.rs/regex/) pattern *in full*. Patterns are
+implicitly anchored — `'hello' =~ 'hello'` is true, but
+`'hello world' =~ 'hello'` is false (use `'hello.*'`).
+
+```cypher
+MATCH (n:Person) WHERE n.name =~ '(?i)al.*' RETURN n
+```
+
+**Supported:** Character classes, anchors, alternation, quantifiers,
+inline flags `(?i)` / `(?m)` / `(?s)` / `(?x)` / `(?u)`.
+
+**Not supported:** Backreferences and lookaround (Rust's `regex` crate
+is linear-time by construction — ReDoS-safe at the cost of these two
+PCRE features). If you need them, restructure the query or open an
+issue.
+
+**Indexing:** `=~` predicates always run as a label scan with per-row
+evaluation. Full-text (trigram) indexes do not accelerate regex —
+combine with an indexed `=` or `CONTAINS` predicate to pre-filter when
+selectivity matters.
+
+**Null and type semantics:** Identical to `CONTAINS` / `STARTS WITH` /
+`ENDS WITH`. `NULL =~ x` and `x =~ NULL` return `NULL`. Non-string
+operands return `NULL`. An invalid regex pattern raises a runtime
+`InvalidArgumentValue` error.
+
 ### NULL checks
 
 ```cypher

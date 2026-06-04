@@ -680,6 +680,7 @@ dependencies = [
  "pest",
  "pest_derive",
  "pollster",
+ "regex",
  "rmp-serde",
  "rusqlite",
  "serde",

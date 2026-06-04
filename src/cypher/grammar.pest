@@ -339,7 +339,7 @@ is_not_null_suffix = { is_kw ~ not_kw ~ null_kw }
 is_null_suffix = { is_kw ~ null_kw }
 in_suffix = { in_kw ~ add_expr }
 string_pred_suffix = { string_pred_op ~ add_expr }
-string_pred_op = { starts_with_op | ends_with_op | contains_op }
+string_pred_op = { starts_with_op | ends_with_op | contains_op | regex_match_op }
 
 is_kw = @{ ^"IS" ~ !(ASCII_ALPHANUMERIC | "_") }
 in_kw = @{ ^"IN" ~ !(ASCII_ALPHANUMERIC | "_") }
@@ -369,6 +369,7 @@ comp_op = { "<>" | "<=" | ">=" | "<" | ">" | "=" }
 starts_with_op = { ^"STARTS" ~ ^"WITH" }
 ends_with_op = { ^"ENDS" ~ ^"WITH" }
 contains_op = { ^"CONTAINS" }
+regex_match_op = { "=~" }
 
 expr = { xor_term ~ (or_op ~ xor_term)* }
 in_expr = { add_expr ~ (^"IN" ~ add_expr)? }

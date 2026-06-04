@@ -651,4 +651,14 @@ mod parse_tests {
         let stmt = parse("MATCH () CREATE () WITH * CREATE ()").unwrap();
         assert!(matches!(stmt, Statement::MultiClause(_)));
     }
+
+    #[test]
+    fn parses_regex_match_operator() {
+        let stmt = parse("MATCH (n) WHERE n.name =~ 'h.*' RETURN n").unwrap();
+        let dbg = format!("{stmt:?}");
+        assert!(
+            dbg.contains("RegexMatch"),
+            "parsed AST missing RegexMatch: {dbg}"
+        );
+    }
 }

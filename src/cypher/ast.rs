@@ -547,6 +547,7 @@ pub enum BinOp {
     StartsWith,
     EndsWith,
     Contains,
+    RegexMatch,
     In,
     Add,
     Sub,

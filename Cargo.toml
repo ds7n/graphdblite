@@ -43,6 +43,7 @@ serde = { version = "1", features = ["derive"] }
 indexmap = "2"
 pest = "2"
 pest_derive = "2"
+regex = "1"
 chrono = { version = "0.4.44", features = ["serde"] }
 chrono-tz = "0.10.4"
 tracing = "0.1"

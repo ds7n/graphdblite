@@ -111,6 +111,7 @@ pub fn expr_to_column_name(expr: &Expr) -> String {
                 BinOp::StartsWith => " STARTS WITH ",
                 BinOp::EndsWith => " ENDS WITH ",
                 BinOp::Contains => " CONTAINS ",
+                BinOp::RegexMatch => " =~ ",
             };
             let prec = binop_precedence(op);
             let l = format_child_expr(left, prec, true);

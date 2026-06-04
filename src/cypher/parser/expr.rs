@@ -256,6 +256,7 @@ pub(in crate::cypher::parser) fn parse_string_pred_op(
         Rule::starts_with_op => Ok(BinOp::StartsWith),
         Rule::ends_with_op => Ok(BinOp::EndsWith),
         Rule::contains_op => Ok(BinOp::Contains),
+        Rule::regex_match_op => Ok(BinOp::RegexMatch),
         _ => Err(GraphError::syntax(format!(
             "unexpected string pred op: {:?}",
             inner.as_rule()
@@ -443,6 +444,7 @@ pub(in crate::cypher::parser) fn parse_comp_op(
             Rule::starts_with_op => Ok(BinOp::StartsWith),
             Rule::ends_with_op => Ok(BinOp::EndsWith),
             Rule::contains_op => Ok(BinOp::Contains),
+            Rule::regex_match_op => Ok(BinOp::RegexMatch),
             _ => Err(GraphError::syntax(format!(
                 "unexpected comp_op sub-rule: {:?}",
                 sub.as_rule()

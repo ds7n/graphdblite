@@ -2,6 +2,7 @@ mod column_name;
 mod comparison;
 mod comprehension;
 mod functions;
+pub(in crate::cypher) mod regex_cache;
 mod subquery;
 mod temporal_ops;
 
@@ -30,6 +31,30 @@ use crate::types::{ErrorCode, GraphError, QueryPhase, Value};
 thread_local! {
     static CURRENT_PARAMS: Cell<*const HashMap<String, Value>> =
         const { Cell::new(std::ptr::null()) };
+    static CURRENT_REGEX_CACHE: Cell<*const std::cell::RefCell<regex_cache::RegexCache>> =
+        const { Cell::new(std::ptr::null()) };
+}
+
+/// RAII guard that publishes a `&RefCell<RegexCache>` to the thread-local
+/// for the lifetime of the guard, restoring the previous value on drop.
+/// Mirrors `ParamScope` — set at the top of `execute_cypher` so eval can
+/// reach a per-query LRU through the existing `EvalCx`-only call paths.
+pub(crate) struct RegexCacheScope {
+    prev: *const std::cell::RefCell<regex_cache::RegexCache>,
+}
+
+impl RegexCacheScope {
+    pub(crate) fn enter(cache: &std::cell::RefCell<regex_cache::RegexCache>) -> Self {
+        let new_ptr = cache as *const _;
+        let prev = CURRENT_REGEX_CACHE.with(|c| c.replace(new_ptr));
+        Self { prev }
+    }
+}
+
+impl Drop for RegexCacheScope {
+    fn drop(&mut self) {
+        CURRENT_REGEX_CACHE.with(|c| c.set(self.prev));
+    }
 }
 
 /// RAII guard that publishes a `&HashMap<String, Value>` to the thread-local
@@ -691,6 +716,28 @@ pub(in crate::cypher::eval) fn eval_binop(
             (Value::String(l), Value::String(r)) => Ok(Value::Bool(l.contains(r.as_str()))),
             _ => Ok(Value::Null),
         },
+        BinOp::RegexMatch => match (left, right) {
+            (Value::Null, _) | (_, Value::Null) => Ok(Value::Null),
+            (Value::String(l), Value::String(r)) => {
+                let raw = CURRENT_REGEX_CACHE.with(|c| c.get());
+                if raw.is_null() {
+                    // No active RegexCacheScope (eval-level unit tests): use
+                    // an ephemeral cache. Still correct, just no LRU win.
+                    let mut tmp = regex_cache::RegexCache::default();
+                    let re = tmp.get_or_compile(r)?;
+                    Ok(Value::Bool(re.is_match(l)))
+                } else {
+                    // SAFETY: `RegexCacheScope` keeps the `RefCell` alive for
+                    // the lifetime of the executor invocation (mirrors the
+                    // `ParamScope` discipline above).
+                    let cache: &std::cell::RefCell<regex_cache::RegexCache> = unsafe { &*raw };
+                    let mut cache = cache.borrow_mut();
+                    let re = cache.get_or_compile(r)?;
+                    Ok(Value::Bool(re.is_match(l)))
+                }
+            }
+            _ => Ok(Value::Null),
+        },
         BinOp::In => match (left, right) {
             (_, Value::Null) => Ok(Value::Null),
             (Value::Null, Value::List(items)) => {
@@ -913,7 +960,7 @@ pub(in crate::cypher::eval) fn binop_precedence(op: &BinOp) -> u8 {
         BinOp::Xor => 2,
         BinOp::And => 3,
         BinOp::Eq | BinOp::Neq | BinOp::Lt | BinOp::Gt | BinOp::Lte | BinOp::Gte => 5,
-        BinOp::In | BinOp::StartsWith | BinOp::EndsWith | BinOp::Contains => 5,
+        BinOp::In | BinOp::StartsWith | BinOp::EndsWith | BinOp::Contains | BinOp::RegexMatch => 5,
         BinOp::Add | BinOp::Sub => 6,
         BinOp::Mul | BinOp::Div | BinOp::Mod => 7,
         BinOp::Pow => 8,
@@ -962,5 +1009,99 @@ mod tests {
         let empty: HashMap<String, Value> = HashMap::new();
         let ecx = EvalCx::with_params(&conn, Some(&empty));
         assert!(eval_expr(&expr, &rec, ecx).is_err());
+    }
+
+    fn val_to_lit(v: Value) -> crate::cypher::ast::LiteralValue {
+        use crate::cypher::ast::LiteralValue;
+        match v {
+            Value::Null => LiteralValue::Null,
+            Value::Bool(b) => LiteralValue::Bool(b),
+            Value::I64(i) => LiteralValue::I64(i),
+            Value::F64(f) => LiteralValue::F64(f),
+            Value::String(s) => LiteralValue::String(s),
+            other => panic!("unsupported literal in test helper: {other:?}"),
+        }
+    }
+
+    fn mk_binop_lit(op: crate::cypher::ast::BinOp, l: Value, r: Value) -> Expr {
+        let lhs = Expr::synthetic(ExprKind::Literal(val_to_lit(l)));
+        let rhs = Expr::synthetic(ExprKind::Literal(val_to_lit(r)));
+        Expr::synthetic(ExprKind::BinaryOp {
+            left: Box::new(lhs),
+            op,
+            right: Box::new(rhs),
+        })
+    }
+
+    #[test]
+    fn regex_match_full_match_semantics() {
+        use crate::cypher::ast::BinOp;
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        let rec = NamedRecord::new();
+        let ecx = EvalCx::new(&conn);
+        let mk = |l: &str, r: &str| {
+            let e = mk_binop_lit(
+                BinOp::RegexMatch,
+                Value::String(l.into()),
+                Value::String(r.into()),
+            );
+            eval_expr(&e, &rec, ecx).unwrap()
+        };
+        assert_eq!(mk("hello", "h.*"), Value::Bool(true));
+        assert_eq!(
+            mk("hello", "ell"),
+            Value::Bool(false),
+            "full-match: substring patterns must not match"
+        );
+        assert_eq!(mk("HELLO", "(?i)hello"), Value::Bool(true));
+    }
+
+    #[test]
+    fn regex_match_null_propagates() {
+        use crate::cypher::ast::BinOp;
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        let rec = NamedRecord::new();
+        let ecx = EvalCx::new(&conn);
+
+        let e = mk_binop_lit(BinOp::RegexMatch, Value::Null, Value::String("h.*".into()));
+        assert_eq!(eval_expr(&e, &rec, ecx).unwrap(), Value::Null);
+
+        let e = mk_binop_lit(
+            BinOp::RegexMatch,
+            Value::String("hello".into()),
+            Value::Null,
+        );
+        assert_eq!(eval_expr(&e, &rec, ecx).unwrap(), Value::Null);
+    }
+
+    #[test]
+    fn regex_match_non_string_operands_yield_null() {
+        use crate::cypher::ast::BinOp;
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        let rec = NamedRecord::new();
+        let ecx = EvalCx::new(&conn);
+
+        let e = mk_binop_lit(
+            BinOp::RegexMatch,
+            Value::I64(42),
+            Value::String("h.*".into()),
+        );
+        assert_eq!(eval_expr(&e, &rec, ecx).unwrap(), Value::Null);
+    }
+
+    #[test]
+    fn regex_match_invalid_pattern_errors() {
+        use crate::cypher::ast::BinOp;
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        let rec = NamedRecord::new();
+        let ecx = EvalCx::new(&conn);
+
+        let e = mk_binop_lit(
+            BinOp::RegexMatch,
+            Value::String("hello".into()),
+            Value::String("([unclosed".into()),
+        );
+        let err = eval_expr(&e, &rec, ecx).unwrap_err();
+        assert!(format!("{err}").contains("invalid regex pattern"));
     }
 }

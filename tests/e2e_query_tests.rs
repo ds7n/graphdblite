@@ -4421,3 +4421,71 @@ fn fts_contains_uses_fulltext_index_when_both_exist() {
         "this CONTAINS plan should not include IndexLookup; got: {plan_str}"
     );
 }
+
+#[test]
+fn regex_match_operator_end_to_end() {
+    let mut db = Database::open_memory().unwrap();
+    {
+        let tx = db.write_tx().unwrap();
+        tx.query("CREATE (:Person {name: 'Alice'})").unwrap();
+        tx.query("CREATE (:Person {name: 'alfred'})").unwrap();
+        tx.query("CREATE (:Person {name: 'Bob'})").unwrap();
+        tx.commit().unwrap();
+    }
+
+    let tx = db.read_tx().unwrap();
+    let rows = tx
+        .query("MATCH (n:Person) WHERE n.name =~ '(?i)al.*' RETURN n.name AS name")
+        .unwrap();
+    let mut names: Vec<String> = rows
+        .iter()
+        .map(|r| match r.get("name").unwrap() {
+            Value::String(s) => s.clone(),
+            v => panic!("expected string, got {v:?}"),
+        })
+        .collect();
+    names.sort();
+    assert_eq!(names, vec!["Alice".to_string(), "alfred".to_string()]);
+    tx.commit().unwrap();
+}
+
+#[test]
+fn regex_match_full_match_excludes_partial() {
+    let mut db = Database::open_memory().unwrap();
+    {
+        let tx = db.write_tx().unwrap();
+        tx.query("CREATE (:Person {name: 'hello world'})").unwrap();
+        tx.commit().unwrap();
+    }
+
+    let tx = db.read_tx().unwrap();
+    let rows = tx
+        .query("MATCH (n:Person) WHERE n.name =~ 'hello' RETURN n.name AS name")
+        .unwrap();
+    assert!(
+        rows.is_empty(),
+        "full-match should reject partial: got {rows:?}"
+    );
+
+    let rows = tx
+        .query("MATCH (n:Person) WHERE n.name =~ 'hello.*' RETURN n.name AS name")
+        .unwrap();
+    assert_eq!(rows.len(), 1);
+    tx.commit().unwrap();
+}
+
+#[test]
+fn regex_match_invalid_pattern_surfaces_error() {
+    let mut db = Database::open_memory().unwrap();
+    {
+        let tx = db.write_tx().unwrap();
+        tx.query("CREATE (:Person {name: 'Alice'})").unwrap();
+        tx.commit().unwrap();
+    }
+
+    let tx = db.read_tx().unwrap();
+    let err = tx
+        .query("MATCH (n:Person) WHERE n.name =~ '([unclosed' RETURN n")
+        .unwrap_err();
+    assert!(format!("{err}").contains("invalid regex pattern"));
+}

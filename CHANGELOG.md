@@ -22,6 +22,10 @@ ships.
   storage-cost trade-offs. Node, Go, and C bindings do not yet
   expose this surface; they will gain it alongside a future
   index-DDL parity project.
+- **Regex match operator (`=~`).** OpenCypher full-match semantics
+  backed by the Rust `regex` crate. Per-query compiled-regex cache,
+  NULL propagation, ReDoS-safe by construction. See
+  `docs/cypher.md` for the full feature/limitation matrix.
 
 ## [0.1.1] - 2026-05-23
 

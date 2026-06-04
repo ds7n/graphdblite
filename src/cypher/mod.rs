@@ -57,6 +57,7 @@ pub(crate) fn execute_cypher(
         parser::validate_params(&stmt, p)?;
     }
     let _scope = eval::ParamScope::enter(params);
+    let _regex_scope = eval::RegexCacheScope::enter(&ctx.regex_cache);
     let plan = match (caches.plan, caches.schema_epoch) {
         (Some(pc), Some(epoch)) if plan_cache::is_plan_cacheable(&stmt) => {
             let e = epoch.load(Ordering::Acquire);

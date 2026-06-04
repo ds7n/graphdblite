@@ -4675,3 +4675,45 @@ fn or_chain_fts_falls_back_to_scan_for_non_fts_disjunct() {
         .unwrap();
     assert_eq!(rows.len(), 2);
 }
+
+#[test]
+fn db_counts_returns_label_and_edge_type_rows() {
+    let mut db = Database::open_memory().unwrap();
+
+    db.execute(
+        "CREATE (a:Person {name:'A'})-[:KNOWS]->(b:Person {name:'B'}),
+                (a)-[:KNOWS]->(c:Person {name:'C'}),
+                (a)-[:WORKS_AT]->(:Company {name:'X'})",
+    )
+    .unwrap();
+
+    let rows = db
+        .execute(
+            "CALL db.counts() YIELD kind, name, count \
+             RETURN kind, name, count ORDER BY kind, name",
+        )
+        .unwrap();
+
+    let tuples: Vec<(String, String, i64)> = rows
+        .iter()
+        .map(|r| {
+            let kind = string_field(r, "kind");
+            let name = string_field(r, "name");
+            let count = match r.get("count").unwrap() {
+                Value::I64(n) => *n,
+                v => panic!("count was {v:?}"),
+            };
+            (kind, name, count)
+        })
+        .collect();
+
+    assert_eq!(
+        tuples,
+        vec![
+            ("edge_type".to_string(), "KNOWS".to_string(), 2),
+            ("edge_type".to_string(), "WORKS_AT".to_string(), 1),
+            ("label".to_string(), "Company".to_string(), 1),
+            ("label".to_string(), "Person".to_string(), 3),
+        ]
+    );
+}

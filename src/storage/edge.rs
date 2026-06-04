@@ -106,6 +106,7 @@ pub fn create_edge(
         hint: None,
     })?;
     kv::put(conn, kv::TABLE_EDGE_PROPS, &props_key, &data)?;
+    crate::stats::increment_edge_type_count(conn, label)?;
 
     Ok(())
 }
@@ -141,8 +142,12 @@ pub fn delete_edge(conn: &Connection, src: NodeId, dst: NodeId, label: &str) -> 
     // Delete all parallel edge properties for this (src, dst, label).
     let prefix = edge_props_prefix(src, dst, label);
     let entries = kv::scan_prefix(conn, kv::TABLE_EDGE_PROPS, &prefix)?;
+    let removed = entries.len() as u64;
     for (key, _) in entries {
         kv::delete(conn, kv::TABLE_EDGE_PROPS, &key)?;
+    }
+    if removed > 0 {
+        crate::stats::decrement_edge_type_count_by(conn, label, removed)?;
     }
 
     Ok(())
@@ -160,6 +165,7 @@ pub fn delete_single_edge(
 ) -> Result<()> {
     let props_key = edge_props_key(src, dst, label, seq);
     kv::delete(conn, kv::TABLE_EDGE_PROPS, &props_key)?;
+    crate::stats::decrement_edge_type_count_by(conn, label, 1)?;
 
     // Check if there are remaining parallel edges.
     let prefix = edge_props_prefix(src, dst, label);
@@ -1201,6 +1207,52 @@ mod traverse_paths_tests {
 #[cfg(test)]
 mod tests {
     use crate::types::NodeId;
+    use rusqlite::Connection;
+
+    fn fresh_conn() -> Connection {
+        let conn = Connection::open_in_memory().unwrap();
+        crate::schema::init_schema(&conn).unwrap();
+        conn
+    }
+
+    #[test]
+    fn create_edge_increments_edge_type_counter() {
+        use crate::stats::get_edge_type_count;
+        let conn = fresh_conn();
+        let a = crate::storage::node::create_node(&conn, &[], Default::default()).unwrap();
+        let b = crate::storage::node::create_node(&conn, &[], Default::default()).unwrap();
+        super::create_edge(&conn, a, b, "KNOWS", Default::default()).unwrap();
+        super::create_edge(&conn, a, b, "KNOWS", Default::default()).unwrap();
+        super::create_edge(&conn, a, b, "KNOWS", Default::default()).unwrap();
+        assert_eq!(get_edge_type_count(&conn, "KNOWS").unwrap(), 3);
+    }
+
+    #[test]
+    fn delete_single_edge_decrements_counter() {
+        use crate::stats::get_edge_type_count;
+        let conn = fresh_conn();
+        let a = crate::storage::node::create_node(&conn, &[], Default::default()).unwrap();
+        let b = crate::storage::node::create_node(&conn, &[], Default::default()).unwrap();
+        super::create_edge(&conn, a, b, "KNOWS", Default::default()).unwrap();
+        super::create_edge(&conn, a, b, "KNOWS", Default::default()).unwrap();
+        let all = super::get_all_edge_props(&conn, a, b, "KNOWS").unwrap();
+        let (seq, _) = all.first().expect("at least one parallel edge");
+        super::delete_single_edge(&conn, a, b, "KNOWS", *seq).unwrap();
+        assert_eq!(get_edge_type_count(&conn, "KNOWS").unwrap(), 1);
+    }
+
+    #[test]
+    fn delete_edge_decrements_by_parallel_count() {
+        use crate::stats::get_edge_type_count;
+        let conn = fresh_conn();
+        let a = crate::storage::node::create_node(&conn, &[], Default::default()).unwrap();
+        let b = crate::storage::node::create_node(&conn, &[], Default::default()).unwrap();
+        super::create_edge(&conn, a, b, "KNOWS", Default::default()).unwrap();
+        super::create_edge(&conn, a, b, "KNOWS", Default::default()).unwrap();
+        super::create_edge(&conn, a, b, "KNOWS", Default::default()).unwrap();
+        super::delete_edge(&conn, a, b, "KNOWS").unwrap();
+        assert_eq!(get_edge_type_count(&conn, "KNOWS").unwrap(), 0);
+    }
 
     #[test]
     fn label_from_edge_props_key_round_trips() {

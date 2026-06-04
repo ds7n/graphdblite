@@ -2,10 +2,6 @@
 // Copyright (c) 2026 ds7n
 
 #![allow(unexpected_cfgs)]
-// pyo3 0.22's `PyResult<T>` (= `Result<T, PyErr>`) trips clippy 1.95's
-// `useless_conversion` lint at every fn boundary. Upstream pyo3 fix
-// would require a version bump; suppress at the module level until then.
-#![allow(clippy::useless_conversion)]
 
 use std::path::PathBuf;
 
@@ -15,6 +11,11 @@ use pyo3::create_exception;
 use pyo3::exceptions::{PyRuntimeError, PyValueError};
 use pyo3::prelude::*;
 use pyo3::types::{PyBool, PyDict, PyFloat, PyList, PyString, PyTuple};
+use pyo3::{Py, PyAny};
+
+/// `PyObject` was removed as a public alias in pyo3 0.28; restore locally
+/// to keep the binding's call-site signatures unchanged.
+type PyObject = Py<PyAny>;
 
 use graphdblite::{Config, Database as RustDatabase, GraphError, Record, Value};
 
@@ -42,60 +43,64 @@ fn to_py_err(e: GraphError) -> PyErr {
 fn value_to_py(py: Python, val: &Value) -> PyResult<PyObject> {
     Ok(match val {
         Value::Null => py.None(),
-        Value::Bool(b) => b.to_object(py),
-        Value::I64(n) => n.to_object(py),
-        Value::F64(n) => n.to_object(py),
-        Value::String(s) => s.to_object(py),
+        Value::Bool(b) => b.into_pyobject(py)?.to_owned().into_any().unbind(),
+        Value::I64(n) => n.into_pyobject(py)?.into_any().unbind(),
+        Value::F64(n) => n.into_pyobject(py)?.into_any().unbind(),
+        Value::String(s) => s.as_str().into_pyobject(py)?.into_any().unbind(),
         Value::List(items) => {
             let py_items: Vec<PyObject> = items
                 .iter()
                 .map(|v| value_to_py(py, v))
                 .collect::<PyResult<_>>()?;
-            py_items.to_object(py)
+            py_items.into_pyobject(py)?.into_any().unbind()
         }
         Value::Path(p) => {
-            let ids: Vec<PyObject> = p.nodes.iter().map(|n| n.id.0.to_object(py)).collect();
-            ids.to_object(py)
+            let ids: Vec<PyObject> = p
+                .nodes
+                .iter()
+                .map(|n| Ok(n.id.0.into_pyobject(py)?.into_any().unbind()))
+                .collect::<PyResult<_>>()?;
+            ids.into_pyobject(py)?.into_any().unbind()
         }
         Value::Node(n) => {
-            let dict = PyDict::new_bound(py);
+            let dict = PyDict::new(py);
             dict.set_item("__id", n.id.0)?;
             dict.set_item("__labels", &n.labels)?;
             for (k, v) in &n.properties {
                 dict.set_item(k, value_to_py(py, v)?)?;
             }
-            dict.to_object(py)
+            dict.into_any().unbind()
         }
         Value::Edge(e) => {
-            let dict = PyDict::new_bound(py);
+            let dict = PyDict::new(py);
             dict.set_item("__src", e.src.0)?;
             dict.set_item("__dst", e.dst.0)?;
             dict.set_item("__label", &e.label)?;
             for (k, v) in &e.properties {
                 dict.set_item(k, value_to_py(py, v)?)?;
             }
-            dict.to_object(py)
+            dict.into_any().unbind()
         }
         Value::Map(map) => {
-            let dict = PyDict::new_bound(py);
+            let dict = PyDict::new(py);
             for (k, v) in map {
                 dict.set_item(k, value_to_py(py, v)?)?;
             }
-            dict.to_object(py)
+            dict.into_any().unbind()
         }
         // Temporal types — expose as ISO string.
-        other => format!("{other}").to_object(py),
+        other => format!("{other}").into_pyobject(py)?.into_any().unbind(),
     })
 }
 
 fn records_to_py(py: Python, records: &[Record]) -> PyResult<Vec<PyObject>> {
     let mut result = Vec::new();
     for rec in records {
-        let dict = PyDict::new_bound(py);
+        let dict = PyDict::new(py);
         for (key, val) in rec.iter() {
             dict.set_item(key, value_to_py(py, val)?)?;
         }
-        result.push(dict.to_object(py));
+        result.push(dict.into_any().unbind());
     }
     Ok(result)
 }
@@ -104,19 +109,19 @@ fn records_to_py(py: Python, records: &[Record]) -> PyResult<Vec<PyObject>> {
 fn py_to_value(obj: &Bound<'_, pyo3::types::PyAny>) -> PyResult<Value> {
     if obj.is_none() {
         Ok(Value::Null)
-    } else if obj.downcast::<PyBool>().is_ok() {
+    } else if obj.cast::<PyBool>().is_ok() {
         // Check bool before i64 — Python bool is a subclass of int.
         Ok(Value::Bool(obj.extract::<bool>()?))
     } else if let Ok(n) = obj.extract::<i64>() {
         Ok(Value::I64(n))
-    } else if obj.downcast::<PyFloat>().is_ok() {
+    } else if obj.cast::<PyFloat>().is_ok() {
         Ok(Value::F64(obj.extract::<f64>()?))
-    } else if obj.downcast::<PyString>().is_ok() {
+    } else if obj.cast::<PyString>().is_ok() {
         Ok(Value::String(obj.extract::<String>()?))
-    } else if let Ok(list) = obj.downcast::<PyList>() {
+    } else if let Ok(list) = obj.cast::<PyList>() {
         let items: PyResult<Vec<Value>> = list.iter().map(|item| py_to_value(&item)).collect();
         Ok(Value::List(items?))
-    } else if let Ok(dict) = obj.downcast::<PyDict>() {
+    } else if let Ok(dict) = obj.cast::<PyDict>() {
         let mut map = std::collections::BTreeMap::new();
         for (key, value) in dict.iter() {
             let k: String = key.extract()?;
@@ -162,7 +167,12 @@ fn py_dict_to_value_map(dict: &Bound<'_, PyDict>) -> PyResult<HashMap<String, Va
 }
 
 /// Python wrapper for the graphdblite Database.
-#[pyclass(name = "Database")]
+///
+/// `unsendable` is required in pyo3 0.28+: `RustDatabase` wraps a
+/// `rusqlite::Connection` (`RefCell` internally), which is `!Send`/`!Sync`.
+/// The binding already serializes access through `&mut self`; this attribute
+/// also enforces Python-side single-threaded use.
+#[pyclass(name = "Database", unsendable)]
 pub struct PyDatabase {
     inner: Option<RustDatabase>,
     path: String,
@@ -231,7 +241,7 @@ impl PyDatabase {
         let param_map = params.map(py_dict_to_value_map).transpose()?;
         let cypher = cypher.to_string();
         let records = py
-            .allow_threads(|| {
+            .detach(|| {
                 let tx = db.read_tx()?;
                 let r = tx.query_with_params(&cypher, param_map.as_ref())?;
                 tx.commit()?;
@@ -258,7 +268,7 @@ impl PyDatabase {
         let param_map = params.map(py_dict_to_value_map).transpose()?;
         let cypher = cypher.to_string();
         let records = py
-            .allow_threads(|| {
+            .detach(|| {
                 let tx = db.write_tx()?;
                 let r = tx.query_with_params(&cypher, param_map.as_ref())?;
                 tx.commit()?;
@@ -310,8 +320,7 @@ impl PyDatabase {
             .as_mut()
             .ok_or_else(|| PyRuntimeError::new_err("database is closed"))?;
         let path_owned = path.to_string();
-        py.allow_threads(|| db.snapshot_to(&path_owned))
-            .map_err(to_py_err)
+        py.detach(|| db.snapshot_to(&path_owned)).map_err(to_py_err)
     }
 
     /// Close the database connection.
@@ -346,7 +355,7 @@ impl PyDatabase {
 ///
 /// Holds the `RustDatabase` for the duration of the transaction. The database
 /// is returned to `PyDatabase` on commit, rollback, or context manager exit.
-#[pyclass(name = "WriteTransaction")]
+#[pyclass(name = "WriteTransaction", unsendable)]
 pub struct PyWriteTransaction {
     db: Option<RustDatabase>,
     parent: Py<PyDatabase>,
@@ -493,7 +502,7 @@ impl PyWriteTransaction {
             let dst: u64 = tup.get_item(1)?.extract()?;
             let mut props = std::collections::BTreeMap::new();
             if tup.len() > 2 {
-                let dict: Bound<'_, PyDict> = tup.get_item(2)?.downcast_into().map_err(|_| {
+                let dict: Bound<'_, PyDict> = tup.get_item(2)?.cast_into().map_err(|_| {
                     PyValueError::new_err("edge tuple third element must be a dict")
                 })?;
                 for (k, v) in dict.iter() {
@@ -562,7 +571,7 @@ impl PyWriteTransaction {
 }
 
 /// Python wrapper for a read-only transaction.
-#[pyclass(name = "ReadTransaction")]
+#[pyclass(name = "ReadTransaction", unsendable)]
 pub struct PyReadTransaction {
     db: Option<RustDatabase>,
     parent: Py<PyDatabase>,
@@ -645,12 +654,9 @@ pub fn _graphdblite(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyDatabase>()?;
     m.add_class::<PyWriteTransaction>()?;
     m.add_class::<PyReadTransaction>()?;
-    m.add("GraphDBError", m.py().get_type_bound::<GraphDBError>())?;
-    m.add("ParseError", m.py().get_type_bound::<ParseError>())?;
-    m.add("StorageError", m.py().get_type_bound::<StorageError>())?;
-    m.add(
-        "NodeNotFoundError",
-        m.py().get_type_bound::<NodeNotFoundError>(),
-    )?;
+    m.add("GraphDBError", m.py().get_type::<GraphDBError>())?;
+    m.add("ParseError", m.py().get_type::<ParseError>())?;
+    m.add("StorageError", m.py().get_type::<StorageError>())?;
+    m.add("NodeNotFoundError", m.py().get_type::<NodeNotFoundError>())?;
     Ok(())
 }

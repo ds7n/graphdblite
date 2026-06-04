@@ -43,6 +43,16 @@ ships.
   and fulltext index in the database. No new grammar — reuses the
   existing CALL surface.
 
+### Internal
+
+- **pyo3 0.22 → 0.28 upgrade.** Python binding migrated to the newer
+  `IntoPyObject` API. No public Python API change. The
+  `#![allow(clippy::useless_conversion)]` module-level workaround is
+  gone. Follow-on API churn folded in: `PyDict::new_bound` →
+  `PyDict::new`, `Python::allow_threads` → `Python::detach`,
+  `Bound::downcast` → `cast`, and an `unsendable` pyclass attribute on
+  the three wrapper classes (rusqlite's `Connection` is `!Send`).
+
 ## [0.1.1] - 2026-05-23
 
 ### Performance

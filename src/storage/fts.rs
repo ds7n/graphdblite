@@ -26,6 +26,29 @@ fn fts_table_exists(conn: &Connection, table: &str) -> Result<bool> {
     Ok(exists)
 }
 
+/// Return `true` if the FTS index on `(label, property)` was created
+/// with the case-insensitive trigram tokenizer.
+///
+/// Reads back the `CREATE VIRTUAL TABLE` DDL from `sqlite_master.sql`
+/// and looks for the `case_sensitive 0` token we wrote at create time.
+/// Errors with `IndexNotFound` when no FTS index exists for the pair.
+pub fn is_case_insensitive(conn: &Connection, label: &str, property: &str) -> Result<bool> {
+    let table = fts_table_name(label, property)?;
+    let sql: Option<String> = conn
+        .query_row(
+            "SELECT sql FROM sqlite_master WHERE type='table' AND name=?1 AND sql LIKE 'CREATE VIRTUAL TABLE%'",
+            [&table],
+            |r| r.get(0),
+        )
+        .ok();
+    let sql = sql.ok_or_else(|| GraphError::IndexNotFound {
+        label: label.to_string(),
+        property: property.to_string(),
+        hint: Some("no fulltext index on this (label, property)".to_string()),
+    })?;
+    Ok(sql.contains("case_sensitive 0"))
+}
+
 /// Create a fulltext index on `(label, property)`. The underlying
 /// FTS5 virtual table uses the `trigram` tokenizer with
 /// `case_sensitive 1` to preserve openCypher's case-sensitive
@@ -651,6 +674,34 @@ mod tests {
                 assert_eq!(property, "bio");
             }
             other => panic!("expected IndexAlreadyExists, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn is_case_insensitive_returns_false_for_cs_index() {
+        let c = conn();
+        create_fulltext_index(&c, "Person", "bio").unwrap();
+        assert!(!is_case_insensitive(&c, "Person", "bio").unwrap());
+    }
+
+    #[test]
+    fn is_case_insensitive_returns_true_for_ci_index() {
+        let c = conn();
+        create_fulltext_index_ci(&c, "Person", "bio").unwrap();
+        assert!(is_case_insensitive(&c, "Person", "bio").unwrap());
+    }
+
+    #[test]
+    fn is_case_insensitive_errors_when_index_missing() {
+        let c = conn();
+        match is_case_insensitive(&c, "Person", "bio") {
+            Err(GraphError::IndexNotFound {
+                label, property, ..
+            }) => {
+                assert_eq!(label, "Person");
+                assert_eq!(property, "bio");
+            }
+            other => panic!("expected IndexNotFound, got {other:?}"),
         }
     }
 

@@ -228,6 +228,21 @@ pub unsafe extern "C" fn graphdb_create_fulltext_index(
     ddl_call(db, label, property, |d, l, p| d.create_fulltext_index(l, p))
 }
 
+/// Create a case-insensitive fulltext index on `(label, property)`.
+/// Backed by SQLite FTS5 trigram tokenizer with `case_sensitive 0`,
+/// so plain `CONTAINS` / `STARTS WITH` / `ENDS WITH` against this
+/// property is case-insensitive.
+#[no_mangle]
+pub unsafe extern "C" fn graphdb_create_fulltext_index_ci(
+    db: *mut GraphDB,
+    label: *const c_char,
+    property: *const c_char,
+) -> i32 {
+    ddl_call(db, label, property, |d, l, p| {
+        d.create_fulltext_index_ci(l, p)
+    })
+}
+
 /// Drop a fulltext index on `(label, property)`.
 #[no_mangle]
 pub unsafe extern "C" fn graphdb_drop_fulltext_index(

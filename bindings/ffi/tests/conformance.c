@@ -381,6 +381,58 @@ static int bc_11_fulltext_ddl(const char *tmpdir) {
         return fail("BC-11", "secondary commit failed");
     }
 
+    /* Case-insensitive fulltext index round-trip. */
+    if (graphdb_tx_begin_write(db) != 0) {
+        graphdb_close(db);
+        return fail("BC-11", "ci tx_begin_write failed");
+    }
+    if (graphdb_create_fulltext_index_ci(db, "Doc", "body") != 0) {
+        graphdb_tx_rollback(db);
+        graphdb_close(db);
+        return fail("BC-11", "create_fulltext_index_ci failed");
+    }
+    if (graphdb_tx_execute(db,
+            "CREATE (:Doc {body: 'Hello World'})", &res) != 0) {
+        graphdb_tx_rollback(db);
+        graphdb_close(db);
+        return fail("BC-11", "ci insert failed");
+    }
+    graphdb_result_free(res);
+    if (graphdb_tx_commit(db) != 0) {
+        graphdb_close(db);
+        return fail("BC-11", "ci commit failed");
+    }
+
+    /* CI index must serve a case-mismatched CONTAINS query. Two Doc
+     * nodes exist by now: 'hello world' (created earlier) and
+     * 'Hello World' (just created); both match. */
+    if (graphdb_query(db,
+            "MATCH (n:Doc) WHERE n.body CONTAINS 'Hello' RETURN n.body",
+            &res) != 0) {
+        graphdb_close(db);
+        return fail("BC-11", "ci contains query failed");
+    }
+    if (graphdb_result_row_count(res) != 2) {
+        graphdb_result_free(res);
+        graphdb_close(db);
+        return fail("BC-11", "expected 2 rows from CI CONTAINS");
+    }
+    graphdb_result_free(res);
+
+    if (graphdb_tx_begin_write(db) != 0) {
+        graphdb_close(db);
+        return fail("BC-11", "ci drop tx_begin_write failed");
+    }
+    if (graphdb_drop_fulltext_index(db, "Doc", "body") != 0) {
+        graphdb_tx_rollback(db);
+        graphdb_close(db);
+        return fail("BC-11", "ci drop_fulltext_index failed");
+    }
+    if (graphdb_tx_commit(db) != 0) {
+        graphdb_close(db);
+        return fail("BC-11", "ci drop commit failed");
+    }
+
     graphdb_close(db);
     return pass("BC-11");
 }

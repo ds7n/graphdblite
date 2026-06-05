@@ -13,7 +13,7 @@ use rusqlite::Connection;
 use crate::cypher::procedure::ProcParam;
 use crate::stats;
 use crate::storage::{fts, index};
-use crate::types::{Result, Value};
+use crate::types::{ErrorCode, GraphError, NodeId, QueryError, QueryPhase, Result, Value};
 
 /// Signature of a built-in procedure. Mirrors the fields of
 /// `ProcedureDef` that the planner needs for arg/yield validation.
@@ -61,6 +61,32 @@ pub fn builtin_signature(name: &str) -> Option<BuiltinSig> {
                 },
             ],
         }),
+        "fts.search" => Some(BuiltinSig {
+            inputs: vec![
+                ProcParam {
+                    name: "label".to_string(),
+                    type_name: "STRING?".to_string(),
+                },
+                ProcParam {
+                    name: "property".to_string(),
+                    type_name: "STRING?".to_string(),
+                },
+                ProcParam {
+                    name: "query".to_string(),
+                    type_name: "STRING?".to_string(),
+                },
+            ],
+            outputs: vec![
+                ProcParam {
+                    name: "node".to_string(),
+                    type_name: "NODE?".to_string(),
+                },
+                ProcParam {
+                    name: "score".to_string(),
+                    type_name: "FLOAT?".to_string(),
+                },
+            ],
+        }),
         _ => None,
     }
 }
@@ -85,6 +111,7 @@ pub fn execute_builtin(
             debug_assert!(args.is_empty(), "db.counts takes no args");
             exec_db_counts(conn)
         }
+        "fts.search" => exec_fts_search(args, conn),
         other => unreachable!("execute_builtin called with unknown name `{other}`"),
     }
 }
@@ -136,6 +163,109 @@ fn count_row(kind: &str, name: &str, count: u64) -> HashMap<String, Value> {
     m
 }
 
+/// Build a runtime TypeError for `fts.search` arg validation.
+fn fts_search_type_error(message: impl Into<String>) -> GraphError {
+    GraphError::Query(QueryError::TypeError {
+        phase: QueryPhase::Runtime,
+        code: ErrorCode::Other,
+        message: message.into(),
+        hint: None,
+        span: None,
+    })
+}
+
+/// Execute `fts.search(label, property, query)` — yields `(node, score)`
+/// rows ordered by descending BM25 relevance.
+///
+/// Requires an FTS index on `(label, property)`. The `unicode61` word
+/// tokenizer is the intended pairing; trigram indexes also work but
+/// treat the query as a literal substring search.
+///
+/// FTS5's `bm25()` returns a negative-signed score where *lower is
+/// better*; we negate so callers can use the conventional
+/// `ORDER BY score DESC` ranking.
+fn exec_fts_search(args: &[Value], conn: &Connection) -> Result<Vec<HashMap<String, Value>>> {
+    let label = match args.first() {
+        Some(Value::String(s)) => s.as_str(),
+        _ => return Err(fts_search_type_error("fts.search: label must be a string")),
+    };
+    let property = match args.get(1) {
+        Some(Value::String(s)) => s.as_str(),
+        _ => {
+            return Err(fts_search_type_error(
+                "fts.search: property must be a string",
+            ));
+        }
+    };
+    let query = match args.get(2) {
+        Some(Value::String(s)) => s.as_str(),
+        _ => return Err(fts_search_type_error("fts.search: query must be a string")),
+    };
+
+    // Verify any FTS index exists on the pair. Returns IndexNotFound if not.
+    let _kind = fts::fts_tokenizer_kind(conn, label, property)?;
+
+    let table = fts::fts_table_name(label, property)?;
+    // bm25(t) is FTS5's built-in ranking function. It returns a negative
+    // score; lower (more negative) = more relevant. We negate below so
+    // higher = better in the output.
+    let sql = format!(
+        "SELECT rowid, bm25(\"{table}\") AS rank \
+         FROM \"{table}\" \
+         WHERE \"{table}\" MATCH ?1 \
+         ORDER BY rank ASC"
+    );
+
+    let mut stmt = conn.prepare(&sql).map_err(|e| {
+        GraphError::Query(QueryError::ProcedureError {
+            phase: QueryPhase::Runtime,
+            code: ErrorCode::Other,
+            message: format!("fts.search: failed to prepare fulltext query: {e}"),
+            hint: Some(format!("query was: {query}")),
+            span: None,
+        })
+    })?;
+
+    let mapped = stmt
+        .query_map([query], |row| {
+            Ok((row.get::<_, i64>(0)?, row.get::<_, f64>(1)?))
+        })
+        .map_err(|e| {
+            GraphError::Query(QueryError::ProcedureError {
+                phase: QueryPhase::Runtime,
+                code: ErrorCode::Other,
+                message: format!("fts.search: invalid fulltext query syntax (fts5): {e}"),
+                hint: Some(format!("query was: {query}")),
+                span: None,
+            })
+        })?;
+
+    let mut out = Vec::new();
+    for r in mapped {
+        let (rowid, rank) = r.map_err(|e| {
+            GraphError::Query(QueryError::ProcedureError {
+                phase: QueryPhase::Runtime,
+                code: ErrorCode::Other,
+                message: format!("fts.search: error iterating fulltext rows: {e}"),
+                hint: Some(format!("query was: {query}")),
+                span: None,
+            })
+        })?;
+        let node_id = NodeId(rowid as u64);
+        let node = match crate::storage::node::get_node(conn, node_id) {
+            Ok(n) => n,
+            // Row in FTS table but node row deleted — skip rather than fail.
+            Err(GraphError::NodeNotFound { .. }) => continue,
+            Err(e) => return Err(e),
+        };
+        let mut m = HashMap::with_capacity(2);
+        m.insert("node".to_string(), Value::Node(node));
+        m.insert("score".to_string(), Value::F64(-rank));
+        out.push(m);
+    }
+    Ok(out)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -145,6 +275,15 @@ mod tests {
         let c = Connection::open_in_memory().unwrap();
         crate::schema::init_schema(&c).unwrap();
         c
+    }
+
+    /// Build a `Properties` map from `(name, value)` pairs.
+    fn props(pairs: &[(&str, Value)]) -> crate::types::Properties {
+        let mut p = HashMap::new();
+        for (k, v) in pairs {
+            p.insert((*k).to_string(), v.clone());
+        }
+        p
     }
 
     #[test]
@@ -336,6 +475,212 @@ mod tests {
                 ("edge_type".to_string(), "WORKS_AT".to_string(), 1),
                 ("label".to_string(), "Company".to_string(), 1),
                 ("label".to_string(), "Person".to_string(), 2),
+            ]
+        );
+    }
+
+    #[test]
+    fn signature_for_fts_search() {
+        let sig = builtin_signature("fts.search").unwrap();
+        let in_names: Vec<&str> = sig.inputs.iter().map(|p| p.name.as_str()).collect();
+        assert_eq!(in_names, vec!["label", "property", "query"]);
+        let out_names: Vec<&str> = sig.outputs.iter().map(|p| p.name.as_str()).collect();
+        assert_eq!(out_names, vec!["node", "score"]);
+    }
+
+    #[test]
+    fn exec_fts_search_returns_nodes_and_scores() {
+        let conn = fresh_conn();
+        crate::storage::fts::create_fulltext_index_word(&conn, "Person", "bio").unwrap();
+        let id1 = crate::storage::node::create_node(
+            &conn,
+            &["Person".to_string()],
+            props(&[("bio", Value::String("rust systems programming".to_string()))]),
+        )
+        .unwrap();
+        let _id2 = crate::storage::node::create_node(
+            &conn,
+            &["Person".to_string()],
+            props(&[("bio", Value::String("python data science".to_string()))]),
+        )
+        .unwrap();
+        // create_node doesn't trigger FTS sync — drop+recreate so backfill
+        // picks up the rows we just inserted.
+        crate::storage::fts::drop_fulltext_index(&conn, "Person", "bio").unwrap();
+        crate::storage::fts::create_fulltext_index_word(&conn, "Person", "bio").unwrap();
+
+        let rows = execute_builtin(
+            "fts.search",
+            &[
+                Value::String("Person".to_string()),
+                Value::String("bio".to_string()),
+                Value::String("rust".to_string()),
+            ],
+            &conn,
+        )
+        .unwrap();
+        assert_eq!(rows.len(), 1, "only id1 matches `rust`");
+        match rows[0].get("node").unwrap() {
+            Value::Node(n) => assert_eq!(n.id, id1),
+            v => panic!("node column was {v:?}"),
+        }
+        match rows[0].get("score").unwrap() {
+            Value::F64(s) => {
+                assert!(*s > 0.0, "score should be positive (negated bm25); got {s}")
+            }
+            v => panic!("score column was {v:?}"),
+        }
+    }
+
+    #[test]
+    fn exec_fts_search_orders_by_relevance_descending() {
+        let conn = fresh_conn();
+        crate::storage::node::create_node(
+            &conn,
+            &["Doc".to_string()],
+            props(&[(
+                "body",
+                Value::String("rust rust rust everywhere".to_string()),
+            )]),
+        )
+        .unwrap();
+        crate::storage::node::create_node(
+            &conn,
+            &["Doc".to_string()],
+            props(&[(
+                "body",
+                Value::String("rust occasionally appears here".to_string()),
+            )]),
+        )
+        .unwrap();
+        // Create the index after the nodes — the backfill on create
+        // populates the FTS table.
+        crate::storage::fts::create_fulltext_index_word(&conn, "Doc", "body").unwrap();
+
+        let rows = execute_builtin(
+            "fts.search",
+            &[
+                Value::String("Doc".to_string()),
+                Value::String("body".to_string()),
+                Value::String("rust".to_string()),
+            ],
+            &conn,
+        )
+        .unwrap();
+        assert_eq!(rows.len(), 2);
+        let s0 = match rows[0].get("score").unwrap() {
+            Value::F64(s) => *s,
+            v => panic!("score was {v:?}"),
+        };
+        let s1 = match rows[1].get("score").unwrap() {
+            Value::F64(s) => *s,
+            v => panic!("score was {v:?}"),
+        };
+        assert!(
+            s0 >= s1,
+            "expected scores in descending order: {s0} vs {s1}"
+        );
+    }
+
+    #[test]
+    fn exec_fts_search_errors_on_missing_index() {
+        let conn = fresh_conn();
+        let err = execute_builtin(
+            "fts.search",
+            &[
+                Value::String("Person".to_string()),
+                Value::String("bio".to_string()),
+                Value::String("anything".to_string()),
+            ],
+            &conn,
+        )
+        .unwrap_err();
+        assert!(
+            matches!(err, GraphError::IndexNotFound { .. }),
+            "expected IndexNotFound, got {err:?}"
+        );
+    }
+
+    #[test]
+    fn exec_fts_search_invalid_query_returns_query_error() {
+        let conn = fresh_conn();
+        crate::storage::fts::create_fulltext_index_word(&conn, "Doc", "body").unwrap();
+        // FTS5 errors on unmatched quote.
+        let err = execute_builtin(
+            "fts.search",
+            &[
+                Value::String("Doc".to_string()),
+                Value::String("body".to_string()),
+                Value::String("\"unmatched".to_string()),
+            ],
+            &conn,
+        )
+        .unwrap_err();
+        let msg = format!("{err:?}");
+        assert!(
+            msg.contains("fulltext") || msg.contains("syntax") || msg.contains("fts5"),
+            "error message should mention the fulltext issue; got: {msg}"
+        );
+    }
+
+    #[test]
+    fn exec_fts_search_non_string_arg_errors() {
+        let conn = fresh_conn();
+        crate::storage::fts::create_fulltext_index_word(&conn, "Doc", "body").unwrap();
+        let err = execute_builtin(
+            "fts.search",
+            &[
+                Value::String("Doc".to_string()),
+                Value::String("body".to_string()),
+                Value::I64(42),
+            ],
+            &conn,
+        )
+        .unwrap_err();
+        assert!(
+            matches!(err, GraphError::Query(QueryError::TypeError { .. })),
+            "expected TypeError, got {err:?}"
+        );
+    }
+
+    #[test]
+    fn exec_db_indexes_distinguishes_word_kind() {
+        let conn = fresh_conn();
+        crate::storage::fts::create_fulltext_index(&conn, "Person", "name").unwrap();
+        crate::storage::fts::create_fulltext_index_word(&conn, "Article", "body").unwrap();
+        let rows = execute_builtin("db.indexes", &[], &conn).unwrap();
+        let mut tuples: Vec<(String, String, String)> = rows
+            .into_iter()
+            .map(|r| {
+                let lab = match r.get("label").unwrap() {
+                    Value::String(s) => s.clone(),
+                    v => panic!("label was {v:?}"),
+                };
+                let prop = match r.get("property").unwrap() {
+                    Value::String(s) => s.clone(),
+                    v => panic!("property was {v:?}"),
+                };
+                let kind = match r.get("kind").unwrap() {
+                    Value::String(s) => s.clone(),
+                    v => panic!("kind was {v:?}"),
+                };
+                (lab, prop, kind)
+            })
+            .collect();
+        tuples.sort();
+        assert_eq!(
+            tuples,
+            vec![
+                (
+                    "Article".to_string(),
+                    "body".to_string(),
+                    "fulltext_word".to_string()
+                ),
+                (
+                    "Person".to_string(),
+                    "name".to_string(),
+                    "fulltext".to_string()
+                ),
             ]
         );
     }

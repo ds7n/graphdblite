@@ -130,6 +130,16 @@ codepoints (FTS5 trigram tokenizer floor). Bindings need only wire
 the two methods through — they don't enforce these semantics
 themselves.
 
+Each binding additionally exposes a case-insensitive variant —
+`create_fulltext_index_ci` (Python / Rust) / `createFulltextIndexCi`
+(Node) / `CreateFulltextIndexCI` (Go) /
+`graphdb_create_fulltext_index_ci` (C/FFI). Behaviour mirrors the
+case-sensitive variant except the FTS5 tokenizer is built with
+`case_sensitive 0`, and the planner also rewrites the symmetric
+`toLower(prop) <op> toLower(rhs)` idiom against a CI index. The
+`db.indexes()` procedure reports `kind = "fulltext_ci"` for CI
+indexes.
+
 ---
 
 ## Coverage matrix

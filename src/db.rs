@@ -451,6 +451,20 @@ impl Database {
         Ok(())
     }
 
+    /// Create a case-insensitive fulltext index on `(label, property)`.
+    ///
+    /// Backed by FTS5's `trigram case_sensitive 0` tokenizer — plain
+    /// `CONTAINS` / `STARTS WITH` / `ENDS WITH` against this property
+    /// becomes case-insensitive and FTS-accelerated.
+    ///
+    /// Same transaction / error semantics as `create_fulltext_index`.
+    pub fn create_fulltext_index_ci(&mut self, label: &str, property: &str) -> Result<()> {
+        self.require_write_tx("create_fulltext_index_ci")?;
+        crate::fts::create_fulltext_index_ci(&self.conn, label, property)?;
+        self.schema_epoch.fetch_add(1, Ordering::AcqRel);
+        Ok(())
+    }
+
     /// Drop a fulltext index on `(label, property)` inside the active
     /// write transaction. Returns `GraphError::IndexNotFound` when no
     /// fulltext index exists on the pair.
@@ -951,6 +965,26 @@ mod plan_cache_tests {
         db.begin_write().unwrap();
         let epoch_before = db.schema_epoch.load(std::sync::atomic::Ordering::Acquire);
         db.create_fulltext_index("Doc", "body").unwrap();
+        let epoch_after = db.schema_epoch.load(std::sync::atomic::Ordering::Acquire);
+        assert!(epoch_after > epoch_before);
+        db.commit().unwrap();
+    }
+
+    #[test]
+    fn create_fulltext_index_ci_requires_write_tx() {
+        let mut db = Database::open_memory().unwrap();
+        match db.create_fulltext_index_ci("Doc", "body") {
+            Err(GraphError::Transaction { .. }) => {}
+            other => panic!("expected Transaction error, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn create_fulltext_index_ci_bumps_schema_epoch() {
+        let mut db = Database::open_memory().unwrap();
+        db.begin_write().unwrap();
+        let epoch_before = db.schema_epoch.load(std::sync::atomic::Ordering::Acquire);
+        db.create_fulltext_index_ci("Doc", "body").unwrap();
         let epoch_after = db.schema_epoch.load(std::sync::atomic::Ordering::Acquire);
         assert!(epoch_after > epoch_before);
         db.commit().unwrap();

@@ -391,6 +391,14 @@ impl<'a> WriteTransaction<'a> {
         Ok(())
     }
 
+    /// Create a case-insensitive fulltext index. See
+    /// `Database::create_fulltext_index_ci` for semantics.
+    pub fn create_fulltext_index_ci(&self, label: &str, property: &str) -> Result<()> {
+        fts::create_fulltext_index_ci(&self.tx, label, property)?;
+        self.schema_epoch.fetch_add(1, Ordering::AcqRel);
+        Ok(())
+    }
+
     /// Drop a fulltext index on `(label, property)`. See
     /// `Database::drop_fulltext_index` for semantics.
     pub fn drop_fulltext_index(&self, label: &str, property: &str) -> Result<()> {
@@ -643,6 +651,34 @@ mod tx_guard_tests {
             let tx = db.write_tx().unwrap();
             tx.query("CREATE (n:Doc {body: 'hello world'})").unwrap();
             tx.commit().unwrap();
+        }
+        {
+            let tx = db.write_tx().unwrap();
+            tx.drop_fulltext_index("Doc", "body").unwrap();
+            tx.commit().unwrap();
+        }
+    }
+
+    #[test]
+    fn write_tx_create_and_drop_fulltext_index_ci() {
+        let mut db = Database::open_memory().unwrap();
+        {
+            let tx = db.write_tx().unwrap();
+            tx.create_fulltext_index_ci("Doc", "body").unwrap();
+            tx.commit().unwrap();
+        }
+        {
+            let tx = db.write_tx().unwrap();
+            tx.query("CREATE (n:Doc {body: 'Hello World'})").unwrap();
+            tx.commit().unwrap();
+        }
+        {
+            // Case-insensitive: lowercase substring matches mixed-case content.
+            let tx = db.read_tx().unwrap();
+            let rows = tx
+                .query("MATCH (n:Doc) WHERE n.body CONTAINS 'hello' RETURN n.body AS body")
+                .unwrap();
+            assert_eq!(rows.len(), 1);
         }
         {
             let tx = db.write_tx().unwrap();

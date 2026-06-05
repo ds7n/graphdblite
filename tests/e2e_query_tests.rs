@@ -4717,3 +4717,76 @@ fn db_counts_returns_label_and_edge_type_rows() {
         ]
     );
 }
+
+#[test]
+fn fts_ci_index_matches_across_case() {
+    let mut db = Database::open_memory().unwrap();
+    db.begin_write().unwrap();
+    db.create_fulltext_index_ci("Person", "name").unwrap();
+    db.commit().unwrap();
+
+    db.execute("CREATE (:Person {name:'Alice Smith'}), (:Person {name:'Bob Jones'})")
+        .unwrap();
+
+    let rows = db
+        .execute(
+            "MATCH (n:Person) WHERE n.name CONTAINS 'alice' RETURN n.name AS name ORDER BY name",
+        )
+        .unwrap();
+    let names: Vec<String> = rows.iter().map(|r| string_field(r, "name")).collect();
+    assert_eq!(names, vec!["Alice Smith".to_string()]);
+}
+
+#[test]
+fn fts_cs_index_excludes_case_mismatch() {
+    let mut db = Database::open_memory().unwrap();
+    db.begin_write().unwrap();
+    db.create_fulltext_index("Person", "name").unwrap();
+    db.commit().unwrap();
+
+    db.execute("CREATE (:Person {name:'Alice Smith'})").unwrap();
+
+    let rows = db
+        .execute("MATCH (n:Person) WHERE n.name CONTAINS 'alice' RETURN n.name AS name")
+        .unwrap();
+    assert!(
+        rows.is_empty(),
+        "case-sensitive index must reject lowercase substring; got {rows:?}"
+    );
+}
+
+#[test]
+fn fts_tolower_idiom_matches_via_ci_index() {
+    let mut db = Database::open_memory().unwrap();
+    db.begin_write().unwrap();
+    db.create_fulltext_index_ci("Person", "name").unwrap();
+    db.commit().unwrap();
+
+    db.execute("CREATE (:Person {name:'Alice Smith'})").unwrap();
+
+    let rows = db
+        .execute(
+            "MATCH (n:Person) WHERE toLower(n.name) CONTAINS toLower('ALICE') RETURN n.name AS name",
+        )
+        .unwrap();
+    let names: Vec<String> = rows.iter().map(|r| string_field(r, "name")).collect();
+    assert_eq!(names, vec!["Alice Smith".to_string()]);
+}
+
+#[test]
+fn fts_tolower_idiom_works_via_scan_fallback_when_only_cs_index() {
+    let mut db = Database::open_memory().unwrap();
+    db.begin_write().unwrap();
+    db.create_fulltext_index("Person", "name").unwrap();
+    db.commit().unwrap();
+
+    db.execute("CREATE (:Person {name:'Alice Smith'})").unwrap();
+
+    let rows = db
+        .execute(
+            "MATCH (n:Person) WHERE toLower(n.name) CONTAINS toLower('ALICE') RETURN n.name AS name",
+        )
+        .unwrap();
+    let names: Vec<String> = rows.iter().map(|r| string_field(r, "name")).collect();
+    assert_eq!(names, vec!["Alice Smith".to_string()]);
+}

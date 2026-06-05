@@ -4790,3 +4790,87 @@ fn fts_tolower_idiom_works_via_scan_fallback_when_only_cs_index() {
     let names: Vec<String> = rows.iter().map(|r| string_field(r, "name")).collect();
     assert_eq!(names, vec!["Alice Smith".to_string()]);
 }
+
+#[test]
+fn fts_search_returns_matches_and_scores() {
+    let mut db = graphdblite::Database::open_memory().unwrap();
+    db.execute(
+        "CREATE (:Person {name:'Alice',bio:'rust systems programming'}), \
+                (:Person {name:'Bob',bio:'python data science'})",
+    )
+    .unwrap();
+    db.begin_write().unwrap();
+    db.create_fulltext_index_word("Person", "bio").unwrap();
+    db.commit().unwrap();
+
+    let rows = db
+        .execute(
+            "CALL fts.search('Person', 'bio', 'rust') YIELD node, score \
+             RETURN node.name AS name ORDER BY score DESC",
+        )
+        .unwrap();
+    let names: Vec<String> = rows.iter().map(|r| string_field(r, "name")).collect();
+    assert_eq!(names, vec!["Alice".to_string()]);
+}
+
+#[test]
+fn fts_search_supports_phrase_and_or_queries() {
+    let mut db = graphdblite::Database::open_memory().unwrap();
+    db.execute(
+        "CREATE (:Doc {body:'rust systems programming'}), \
+                (:Doc {body:'golang microservices'}), \
+                (:Doc {body:'python machine learning'})",
+    )
+    .unwrap();
+    db.begin_write().unwrap();
+    db.create_fulltext_index_word("Doc", "body").unwrap();
+    db.commit().unwrap();
+
+    // OR query: rust OR golang
+    let rows = db
+        .execute(
+            "CALL fts.search('Doc', 'body', 'rust OR golang') YIELD node \
+             RETURN node.body AS body ORDER BY body",
+        )
+        .unwrap();
+    let bodies: Vec<String> = rows.iter().map(|r| string_field(r, "body")).collect();
+    assert_eq!(
+        bodies,
+        vec![
+            "golang microservices".to_string(),
+            "rust systems programming".to_string(),
+        ]
+    );
+
+    // Phrase query: "systems programming"
+    let rows = db
+        .execute(
+            "CALL fts.search('Doc', 'body', '\"systems programming\"') YIELD node \
+             RETURN node.body AS body",
+        )
+        .unwrap();
+    let bodies: Vec<String> = rows.iter().map(|r| string_field(r, "body")).collect();
+    assert_eq!(bodies, vec!["rust systems programming".to_string()]);
+}
+
+#[test]
+fn fts_search_composes_with_downstream_match() {
+    let mut db = graphdblite::Database::open_memory().unwrap();
+    db.execute(
+        "CREATE (a:Person {name:'Alice',bio:'rust systems'})-[:WORKS_AT]->(c:Co {name:'Acme'}), \
+                (b:Person {name:'Bob',bio:'python data'})-[:WORKS_AT]->(d:Co {name:'Beta'})",
+    )
+    .unwrap();
+    db.begin_write().unwrap();
+    db.create_fulltext_index_word("Person", "bio").unwrap();
+    db.commit().unwrap();
+
+    let rows = db
+        .execute(
+            "CALL fts.search('Person', 'bio', 'rust') YIELD node \
+             MATCH (node)-[:WORKS_AT]->(c) RETURN c.name AS company",
+        )
+        .unwrap();
+    let companies: Vec<String> = rows.iter().map(|r| string_field(r, "company")).collect();
+    assert_eq!(companies, vec!["Acme".to_string()]);
+}

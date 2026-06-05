@@ -275,6 +275,21 @@ impl WriteTransaction {
             .map_err(to_napi_err)
     }
 
+    /// Create a case-insensitive fulltext index on (label, property).
+    /// Uses SQLite FTS5 trigram tokenizer with case_sensitive=0, so
+    /// CONTAINS / STARTS WITH / ENDS WITH against this property is
+    /// case-insensitive.
+    #[napi]
+    pub fn create_fulltext_index_ci(&mut self, label: String, property: String) -> Result<()> {
+        if self.finished {
+            return Err(finished_err());
+        }
+        let mut guard = self.inner.lock().expect("Database mutex poisoned");
+        let db = guard.as_mut().ok_or_else(closed_err)?;
+        db.create_fulltext_index_ci(&label, &property)
+            .map_err(to_napi_err)
+    }
+
     /// Drop a fulltext index on (label, property).
     #[napi]
     pub fn drop_fulltext_index(&mut self, label: String, property: String) -> Result<()> {

@@ -49,6 +49,13 @@ export declare class WriteTransaction {
    * CONTAINS / STARTS WITH / ENDS WITH via SQLite FTS5 (trigram, case-sensitive).
    */
   createFulltextIndex(label: string, property: string): void
+  /**
+   * Create a case-insensitive fulltext index on (label, property).
+   * Uses SQLite FTS5 trigram tokenizer with case_sensitive=0, so
+   * CONTAINS / STARTS WITH / ENDS WITH against this property is
+   * case-insensitive.
+   */
+  createFulltextIndexCi(label: string, property: string): void
   /** Drop a fulltext index on (label, property). */
   dropFulltextIndex(label: string, property: string): void
   /** Commit the transaction. */

@@ -19,6 +19,26 @@ test('createIndex / dropIndex round-trip', () => {
   }
 });
 
+test('createFulltextIndexCi enables case-insensitive CONTAINS via FTS', () => {
+  const db = gdb.Database.openMemory();
+  try {
+    const tx = db.beginWrite();
+    tx.createFulltextIndexCi('Doc', 'body');
+    tx.execute("CREATE (:Doc {body: 'Hello World'})");
+    tx.commit();
+
+    const rows = db.query("MATCH (n:Doc) WHERE n.body CONTAINS 'hello' RETURN n.body AS body");
+    assert.equal(rows.length, 1);
+    assert.equal(rows[0].body, 'Hello World');
+
+    const tx2 = db.beginWrite();
+    tx2.dropFulltextIndex('Doc', 'body');
+    tx2.commit();
+  } finally {
+    db.close();
+  }
+});
+
 test('createFulltextIndex enables CONTAINS via FTS', () => {
   const db = gdb.Database.openMemory();
   try {

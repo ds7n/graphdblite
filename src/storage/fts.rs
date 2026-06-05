@@ -61,12 +61,39 @@ pub fn fts_tokenizer_kind(
         property: property.to_string(),
         hint: Some("no fulltext index on this (label, property)".to_string()),
     })?;
+    Ok(parse_tokenizer_kind(&sql))
+}
+
+/// Parse a `CREATE VIRTUAL TABLE ... USING fts5(...)` DDL string and
+/// recover which tokenizer it specified.
+///
+/// Order-of-checks invariant: a `unicode61` DDL never contains the
+/// `case_sensitive` flag (that flag belongs to the `trigram` tokenizer),
+/// so checking `unicode61` first is safe.
+fn parse_tokenizer_kind(sql: &str) -> FtsTokenizerKind {
     if sql.contains("unicode61") {
-        Ok(FtsTokenizerKind::Word)
+        FtsTokenizerKind::Word
     } else if sql.contains("case_sensitive 0") {
-        Ok(FtsTokenizerKind::TrigramCaseInsensitive)
+        FtsTokenizerKind::TrigramCaseInsensitive
     } else {
-        Ok(FtsTokenizerKind::TrigramCaseSensitive)
+        FtsTokenizerKind::TrigramCaseSensitive
+    }
+}
+
+/// Internal spec for the shared creator. Determines the FTS5 tokenize clause.
+enum FtsTokenizerSpec {
+    TrigramCaseSensitive,
+    TrigramCaseInsensitive,
+    Word,
+}
+
+impl FtsTokenizerSpec {
+    fn tokenize_clause(&self) -> &'static str {
+        match self {
+            Self::TrigramCaseSensitive => "trigram case_sensitive 1",
+            Self::TrigramCaseInsensitive => "trigram case_sensitive 0",
+            Self::Word => "unicode61",
+        }
     }
 }
 
@@ -79,7 +106,12 @@ pub fn fts_tokenizer_kind(
 /// properties are indexed (non-strings are silently skipped, matching
 /// the steady-state write path).
 pub fn create_fulltext_index(conn: &Connection, label: &str, property: &str) -> Result<()> {
-    create_fulltext_index_impl(conn, label, property, true)
+    create_fulltext_index_impl(
+        conn,
+        label,
+        property,
+        FtsTokenizerSpec::TrigramCaseSensitive,
+    )
 }
 
 /// Create a case-insensitive fulltext index on `(label, property)`.
@@ -89,14 +121,31 @@ pub fn create_fulltext_index(conn: &Connection, label: &str, property: &str) -> 
 /// content and the query phrase. Plain `CONTAINS` / `STARTS WITH` /
 /// `ENDS WITH` against this property is then case-insensitive.
 pub fn create_fulltext_index_ci(conn: &Connection, label: &str, property: &str) -> Result<()> {
-    create_fulltext_index_impl(conn, label, property, false)
+    create_fulltext_index_impl(
+        conn,
+        label,
+        property,
+        FtsTokenizerSpec::TrigramCaseInsensitive,
+    )
+}
+
+/// Create a word-tokenized fulltext index on `(label, property)`,
+/// suitable for the `fts.search` procedure.
+///
+/// FTS5 `unicode61` tokenizer — lowercases and folds diacritics, splits
+/// on word boundaries. Matches whole tokens (not arbitrary substrings),
+/// supports phrase / boolean / prefix queries via FTS5 MATCH syntax.
+/// `CONTAINS` / `STARTS WITH` / `ENDS WITH` are not accelerated against
+/// this index and fall back to label scan with per-row eval.
+pub fn create_fulltext_index_word(conn: &Connection, label: &str, property: &str) -> Result<()> {
+    create_fulltext_index_impl(conn, label, property, FtsTokenizerSpec::Word)
 }
 
 fn create_fulltext_index_impl(
     conn: &Connection,
     label: &str,
     property: &str,
-    case_sensitive: bool,
+    spec: FtsTokenizerSpec,
 ) -> Result<()> {
     let table = fts_table_name(label, property)?;
     if fts_table_exists(conn, &table)? {
@@ -106,10 +155,10 @@ fn create_fulltext_index_impl(
             hint: Some("a fulltext index on this (label, property) already exists".to_string()),
         });
     }
-    let cs_flag = if case_sensitive { 1 } else { 0 };
     conn.execute(
         &format!(
-            "CREATE VIRTUAL TABLE \"{table}\" USING fts5(content, tokenize='trigram case_sensitive {cs_flag}')"
+            "CREATE VIRTUAL TABLE \"{table}\" USING fts5(content, tokenize='{}')",
+            spec.tokenize_clause()
         ),
         [],
     )?;
@@ -206,13 +255,7 @@ pub fn list_all_fulltext_indexes(
             continue;
         };
         let (label, property) = rest.split_at(split);
-        let kind = if sql.contains("unicode61") {
-            FtsTokenizerKind::Word
-        } else if sql.contains("case_sensitive 0") {
-            FtsTokenizerKind::TrigramCaseInsensitive
-        } else {
-            FtsTokenizerKind::TrigramCaseSensitive
-        };
+        let kind = parse_tokenizer_kind(&sql);
         result.push((label.to_string(), property[1..].to_string(), kind));
     }
     Ok(result)
@@ -783,6 +826,96 @@ mod tests {
             }
             other => panic!("expected IndexNotFound, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn create_fulltext_index_word_creates_unicode61_table() {
+        let c = conn();
+        create_fulltext_index_word(&c, "Doc", "body").unwrap();
+        let sql: String = c
+            .query_row(
+                "SELECT sql FROM sqlite_master WHERE type='table' AND name=?1",
+                ["node_fts_Doc_body"],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert!(sql.contains("unicode61"), "sql was: {sql}");
+    }
+
+    #[test]
+    fn fts_tokenizer_kind_returns_word_for_unicode61_index() {
+        let c = conn();
+        create_fulltext_index_word(&c, "Doc", "body").unwrap();
+        assert_eq!(
+            fts_tokenizer_kind(&c, "Doc", "body").unwrap(),
+            FtsTokenizerKind::Word
+        );
+    }
+
+    #[test]
+    fn create_fulltext_index_word_errors_when_trigram_exists_on_same_pair() {
+        let c = conn();
+        create_fulltext_index(&c, "Doc", "body").unwrap();
+        match create_fulltext_index_word(&c, "Doc", "body") {
+            Err(GraphError::IndexAlreadyExists {
+                label, property, ..
+            }) => {
+                assert_eq!(label, "Doc");
+                assert_eq!(property, "body");
+            }
+            other => panic!("expected IndexAlreadyExists, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn word_index_round_trip_does_not_match_substring() {
+        // unicode61 tokenizes on word boundaries, so 'lic' (a substring
+        // of 'Alice') must NOT match a word-tokenized index. This is
+        // the key behavior distinguishing it from trigram.
+        let c = conn();
+        let id = crate::node::create_node(
+            &c,
+            &["Person".to_string()],
+            props(&[("bio", Value::String("Alice Smith".to_string()))]),
+        )
+        .unwrap();
+        create_fulltext_index_word(&c, "Person", "bio").unwrap();
+        let hits: Vec<i64> = c
+            .prepare(
+                "SELECT rowid FROM \"node_fts_Person_bio\" WHERE \"node_fts_Person_bio\" MATCH ?1",
+            )
+            .unwrap()
+            .query_map(["lic"], |r| r.get(0))
+            .unwrap()
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .unwrap();
+        assert!(
+            hits.is_empty(),
+            "word index must not match substring 'lic'; got {hits:?}"
+        );
+        let _ = id;
+    }
+
+    #[test]
+    fn word_index_matches_whole_token_case_insensitively() {
+        let c = conn();
+        let id = crate::node::create_node(
+            &c,
+            &["Person".to_string()],
+            props(&[("bio", Value::String("Alice Smith".to_string()))]),
+        )
+        .unwrap();
+        create_fulltext_index_word(&c, "Person", "bio").unwrap();
+        let hits: Vec<i64> = c
+            .prepare(
+                "SELECT rowid FROM \"node_fts_Person_bio\" WHERE \"node_fts_Person_bio\" MATCH ?1",
+            )
+            .unwrap()
+            .query_map(["alice"], |r| r.get(0))
+            .unwrap()
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .unwrap();
+        assert_eq!(hits, vec![id.0 as i64]);
     }
 
     #[test]

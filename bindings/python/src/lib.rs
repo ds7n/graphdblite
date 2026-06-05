@@ -449,6 +449,17 @@ impl PyWriteTransaction {
             .map_err(to_py_err)
     }
 
+    /// Create a word-tokenized fulltext index on (label, property).
+    ///
+    /// Backed by SQLite FTS5's `unicode61` tokenizer — enables the
+    /// `fts.search` procedure for BM25-ranked full-text search over
+    /// natural-language text.
+    fn create_fulltext_index_word(&mut self, label: &str, property: &str) -> PyResult<()> {
+        let db = self.get_db_mut()?;
+        db.create_fulltext_index_word(label, property)
+            .map_err(to_py_err)
+    }
+
     /// Drop a fulltext index on (label, property).
     fn drop_fulltext_index(&mut self, label: &str, property: &str) -> PyResult<()> {
         let db = self.get_db_mut()?;

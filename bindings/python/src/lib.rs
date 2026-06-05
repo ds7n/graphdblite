@@ -438,6 +438,17 @@ impl PyWriteTransaction {
         db.create_fulltext_index(label, property).map_err(to_py_err)
     }
 
+    /// Create a case-insensitive fulltext index on (label, property).
+    ///
+    /// Backed by SQLite FTS5's `trigram case_sensitive 0` tokenizer — plain
+    /// `CONTAINS` / `STARTS WITH` / `ENDS WITH` against this property
+    /// becomes case-insensitive and FTS-accelerated.
+    fn create_fulltext_index_ci(&mut self, label: &str, property: &str) -> PyResult<()> {
+        let db = self.get_db_mut()?;
+        db.create_fulltext_index_ci(label, property)
+            .map_err(to_py_err)
+    }
+
     /// Drop a fulltext index on (label, property).
     fn drop_fulltext_index(&mut self, label: &str, property: &str) -> PyResult<()> {
         let db = self.get_db_mut()?;

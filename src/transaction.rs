@@ -399,6 +399,14 @@ impl<'a> WriteTransaction<'a> {
         Ok(())
     }
 
+    /// Create a word-tokenized fulltext index. See
+    /// `Database::create_fulltext_index_word` for semantics.
+    pub fn create_fulltext_index_word(&self, label: &str, property: &str) -> Result<()> {
+        fts::create_fulltext_index_word(&self.tx, label, property)?;
+        self.schema_epoch.fetch_add(1, Ordering::AcqRel);
+        Ok(())
+    }
+
     /// Drop a fulltext index on `(label, property)`. See
     /// `Database::drop_fulltext_index` for semantics.
     pub fn drop_fulltext_index(&self, label: &str, property: &str) -> Result<()> {
@@ -553,7 +561,7 @@ impl Drop for ReadTxGuard<'_> {
 
 #[cfg(test)]
 mod tx_guard_tests {
-    use crate::Database;
+    use crate::{Database, Value};
 
     #[test]
     fn explicit_commit_persists() {
@@ -685,5 +693,27 @@ mod tx_guard_tests {
             tx.drop_fulltext_index("Doc", "body").unwrap();
             tx.commit().unwrap();
         }
+    }
+
+    #[test]
+    fn write_tx_create_fulltext_index_word() {
+        let mut db = Database::open_memory().unwrap();
+        {
+            let tx = db.write_tx().unwrap();
+            tx.create_fulltext_index_word("Doc", "body").unwrap();
+            tx.commit().unwrap();
+        }
+        // Verify via introspection — should report `fulltext_word` kind.
+        let rows = db
+            .execute("CALL db.indexes() YIELD label, property, kind RETURN kind")
+            .unwrap();
+        let kinds: Vec<String> = rows
+            .iter()
+            .map(|r| match r.get("kind").unwrap() {
+                Value::String(s) => s.clone(),
+                v => panic!("kind was {v:?}"),
+            })
+            .collect();
+        assert_eq!(kinds, vec!["fulltext_word".to_string()]);
     }
 }

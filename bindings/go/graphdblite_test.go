@@ -311,3 +311,40 @@ func TestCreateAndDropFulltextIndex(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+func TestCreateFulltextIndexCI(t *testing.T) {
+	db, err := OpenMemory()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	tx, err := db.BeginWrite()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := tx.CreateFulltextIndexCI("Doc", "body"); err != nil {
+		_ = tx.Rollback()
+		t.Fatalf("CreateFulltextIndexCI: %v", err)
+	}
+	res, err := tx.Execute("CREATE (:Doc {body: 'Hello World'})")
+	if err != nil {
+		_ = tx.Rollback()
+		t.Fatalf("insert: %v", err)
+	}
+	res.Free()
+	if err := tx.Commit(); err != nil {
+		t.Fatal(err)
+	}
+
+	// Case-mismatched CONTAINS must hit the CI FTS rewrite path.
+	res, err = db.Query("MATCH (n:Doc) WHERE n.body CONTAINS 'hello' RETURN n.body")
+	if err != nil {
+		t.Fatalf("contains query: %v", err)
+	}
+	if got := res.RowCount(); got != 1 {
+		res.Free()
+		t.Fatalf("expected 1 row from CI CONTAINS, got %d", got)
+	}
+	res.Free()
+}

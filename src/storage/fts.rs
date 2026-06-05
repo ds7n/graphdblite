@@ -35,6 +35,25 @@ fn fts_table_exists(conn: &Connection, table: &str) -> Result<bool> {
 /// properties are indexed (non-strings are silently skipped, matching
 /// the steady-state write path).
 pub fn create_fulltext_index(conn: &Connection, label: &str, property: &str) -> Result<()> {
+    create_fulltext_index_impl(conn, label, property, true)
+}
+
+/// Create a case-insensitive fulltext index on `(label, property)`.
+///
+/// The underlying FTS5 virtual table uses the `trigram` tokenizer with
+/// `case_sensitive 0`, so MATCH queries case-fold both the indexed
+/// content and the query phrase. Plain `CONTAINS` / `STARTS WITH` /
+/// `ENDS WITH` against this property is then case-insensitive.
+pub fn create_fulltext_index_ci(conn: &Connection, label: &str, property: &str) -> Result<()> {
+    create_fulltext_index_impl(conn, label, property, false)
+}
+
+fn create_fulltext_index_impl(
+    conn: &Connection,
+    label: &str,
+    property: &str,
+    case_sensitive: bool,
+) -> Result<()> {
     let table = fts_table_name(label, property)?;
     if fts_table_exists(conn, &table)? {
         return Err(GraphError::IndexAlreadyExists {
@@ -43,9 +62,10 @@ pub fn create_fulltext_index(conn: &Connection, label: &str, property: &str) -> 
             hint: Some("a fulltext index on this (label, property) already exists".to_string()),
         });
     }
+    let cs_flag = if case_sensitive { 1 } else { 0 };
     conn.execute(
         &format!(
-            "CREATE VIRTUAL TABLE \"{table}\" USING fts5(content, tokenize='trigram case_sensitive 1')"
+            "CREATE VIRTUAL TABLE \"{table}\" USING fts5(content, tokenize='trigram case_sensitive {cs_flag}')"
         ),
         [],
     )?;
@@ -584,6 +604,54 @@ mod tests {
                 ("Note".to_string(), "text".to_string()),
             ]
         );
+    }
+
+    #[test]
+    fn create_fulltext_index_ci_creates_case_insensitive_table() {
+        let c = conn();
+        create_fulltext_index_ci(&c, "Person", "bio").unwrap();
+        let sql: String = c
+            .query_row(
+                "SELECT sql FROM sqlite_master WHERE type='table' AND name=?1",
+                ["node_fts_Person_bio"],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert!(sql.contains("case_sensitive 0"), "sql was: {sql}");
+    }
+
+    #[test]
+    fn create_fulltext_index_ci_round_trip_finds_mismatched_case() {
+        let c = conn();
+        // Create node first so the CI index backfills it on create —
+        // `storage::node::create_node` does not call `update_fts_for_node`
+        // (that's done at the transaction/executor layer).
+        let id = crate::node::create_node(
+            &c,
+            &["Person".to_string()],
+            props(&[("bio", Value::String("Alice Smith".to_string()))]),
+        )
+        .unwrap();
+        create_fulltext_index_ci(&c, "Person", "bio").unwrap();
+        let hits = fulltext_lookup(&c, "Person", "bio", "alice")
+            .unwrap()
+            .expect("ci index should serve the query");
+        assert_eq!(hits, vec![id]);
+    }
+
+    #[test]
+    fn create_fulltext_index_ci_errors_when_cs_exists_on_same_pair() {
+        let c = conn();
+        create_fulltext_index(&c, "Person", "bio").unwrap();
+        match create_fulltext_index_ci(&c, "Person", "bio") {
+            Err(GraphError::IndexAlreadyExists {
+                label, property, ..
+            }) => {
+                assert_eq!(label, "Person");
+                assert_eq!(property, "bio");
+            }
+            other => panic!("expected IndexAlreadyExists, got {other:?}"),
+        }
     }
 
     #[test]

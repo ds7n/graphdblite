@@ -21,22 +21,22 @@ pub(in crate::cypher::executor) fn exec_call(
     let records = exec(conn, input, ctx)?;
 
     use crate::cypher::builtin_procedures;
-    use crate::cypher::procedure::ProcedureDef;
+    use crate::cypher::procedure::ProcParam;
 
-    let proc_def_owned;
-    let proc_def: &ProcedureDef = match ctx.procedures.get(procedure_name) {
-        Some(def) => def,
+    // Resolve the procedure: registry first (test-only mocks may shadow
+    // built-ins by name), then built-in. Registry procedures carry their
+    // own row table; built-ins are invoked per outer record with the
+    // evaluated args, since arg-parameterized built-ins (e.g. fts.search)
+    // produce different rows per call.
+    enum ProcSource<'a> {
+        Registry(&'a crate::cypher::procedure::ProcedureDef),
+        Builtin(builtin_procedures::BuiltinSig),
+    }
+
+    let source: ProcSource<'_> = match ctx.procedures.get(procedure_name) {
+        Some(def) => ProcSource::Registry(def),
         None => match builtin_procedures::builtin_signature(procedure_name) {
-            Some(sig) => {
-                let rows = builtin_procedures::execute_builtin(procedure_name, conn)?;
-                proc_def_owned = ProcedureDef {
-                    name: procedure_name.to_string(),
-                    inputs: sig.inputs,
-                    outputs: sig.outputs,
-                    rows,
-                };
-                &proc_def_owned
-            }
+            Some(sig) => ProcSource::Builtin(sig),
             None => {
                 return Err(GraphError::Query(
                     crate::types::QueryError::ProcedureError {
@@ -60,24 +60,43 @@ pub(in crate::cypher::executor) fn exec_call(
             eval_args.push(eval_expr(arg, rec, crate::cypher::eval::EvalCx::new(conn))?);
         }
 
-        // Filter procedure data rows by matching input values.
-        let matching_rows: Vec<_> = if proc_def.inputs.is_empty() || eval_args.is_empty() {
-            proc_def.rows.iter().collect()
-        } else {
-            proc_def
-                .rows
-                .iter()
-                .filter(|row| {
-                    proc_def
-                        .inputs
+        // Resolve the per-record row set + input spec for filtering.
+        let (proc_inputs, data_rows): (
+            &[ProcParam],
+            std::borrow::Cow<'_, [std::collections::HashMap<String, Value>]>,
+        ) = match &source {
+            ProcSource::Registry(def) => (
+                def.inputs.as_slice(),
+                std::borrow::Cow::Borrowed(def.rows.as_slice()),
+            ),
+            ProcSource::Builtin(sig) => {
+                let rows = builtin_procedures::execute_builtin(procedure_name, &eval_args, conn)?;
+                (sig.inputs.as_slice(), std::borrow::Cow::Owned(rows))
+            }
+        };
+
+        // Built-ins produce rows already parameterized by `eval_args`, so
+        // skip the input-match filter; registry rows are static and must
+        // be filtered.
+        let matching_rows: Vec<&std::collections::HashMap<String, Value>> = match &source {
+            ProcSource::Builtin(_) => data_rows.iter().collect(),
+            ProcSource::Registry(_) => {
+                if proc_inputs.is_empty() || eval_args.is_empty() {
+                    data_rows.iter().collect()
+                } else {
+                    data_rows
                         .iter()
-                        .zip(&eval_args)
-                        .all(|(param, arg_val)| match row.get(&param.name) {
-                            Some(row_val) => values_match(row_val, arg_val),
-                            None => true,
+                        .filter(|row| {
+                            proc_inputs.iter().zip(&eval_args).all(|(param, arg_val)| {
+                                match row.get(&param.name) {
+                                    Some(row_val) => values_match(row_val, arg_val),
+                                    None => true,
+                                }
+                            })
                         })
-                })
-                .collect()
+                        .collect()
+                }
+            }
         };
 
         if yield_items.is_empty() {

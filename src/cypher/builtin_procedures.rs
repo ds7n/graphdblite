@@ -67,10 +67,24 @@ pub fn builtin_signature(name: &str) -> Option<BuiltinSig> {
 
 /// Run a built-in by name. Caller must have validated the name via
 /// [`builtin_signature`] first.
-pub fn execute_builtin(name: &str, conn: &Connection) -> Result<Vec<HashMap<String, Value>>> {
+///
+/// `args` carries the evaluated procedure arguments for the current
+/// outer record. Built-ins that take no arguments (e.g. `db.indexes`,
+/// `db.counts`) ignore the slice; arg-parameterized built-ins read it.
+pub fn execute_builtin(
+    name: &str,
+    args: &[Value],
+    conn: &Connection,
+) -> Result<Vec<HashMap<String, Value>>> {
     match name {
-        "db.indexes" => exec_db_indexes(conn),
-        "db.counts" => exec_db_counts(conn),
+        "db.indexes" => {
+            debug_assert!(args.is_empty(), "db.indexes takes no args");
+            exec_db_indexes(conn)
+        }
+        "db.counts" => {
+            debug_assert!(args.is_empty(), "db.counts takes no args");
+            exec_db_counts(conn)
+        }
         other => unreachable!("execute_builtin called with unknown name `{other}`"),
     }
 }
@@ -150,7 +164,7 @@ mod tests {
     #[test]
     fn exec_db_indexes_empty_on_fresh_db() {
         let conn = fresh_conn();
-        let rows = execute_builtin("db.indexes", &conn).unwrap();
+        let rows = execute_builtin("db.indexes", &[], &conn).unwrap();
         assert!(rows.is_empty());
     }
 
@@ -159,7 +173,7 @@ mod tests {
         let conn = fresh_conn();
         index::create_index(&conn, "Person", "name").unwrap();
         fts::create_fulltext_index(&conn, "Doc", "body").unwrap();
-        let rows = execute_builtin("db.indexes", &conn).unwrap();
+        let rows = execute_builtin("db.indexes", &[], &conn).unwrap();
         assert_eq!(rows.len(), 2);
 
         let mut tuples: Vec<(String, String, String)> = rows
@@ -203,7 +217,7 @@ mod tests {
         let conn = fresh_conn();
         index::create_index(&conn, "Doc", "body").unwrap();
         fts::create_fulltext_index(&conn, "Doc", "body").unwrap();
-        let rows = execute_builtin("db.indexes", &conn).unwrap();
+        let rows = execute_builtin("db.indexes", &[], &conn).unwrap();
         assert_eq!(rows.len(), 2);
         let kinds: std::collections::HashSet<String> = rows
             .iter()
@@ -225,7 +239,7 @@ mod tests {
         let conn = fresh_conn();
         crate::storage::fts::create_fulltext_index(&conn, "Person", "name").unwrap();
         crate::storage::fts::create_fulltext_index_ci(&conn, "Article", "body").unwrap();
-        let rows = execute_builtin("db.indexes", &conn).unwrap();
+        let rows = execute_builtin("db.indexes", &[], &conn).unwrap();
         let mut tuples: Vec<(String, String, String)> = rows
             .into_iter()
             .map(|r| {
@@ -275,7 +289,7 @@ mod tests {
     #[test]
     fn exec_db_counts_empty_on_fresh_db() {
         let conn = fresh_conn();
-        let rows = execute_builtin("db.counts", &conn).unwrap();
+        let rows = execute_builtin("db.counts", &[], &conn).unwrap();
         assert!(rows.is_empty());
     }
 
@@ -295,7 +309,7 @@ mod tests {
         crate::storage::edge::create_edge(&conn, a, c, "KNOWS", Default::default()).unwrap();
         crate::storage::edge::create_edge(&conn, a, c, "KNOWS", Default::default()).unwrap();
 
-        let rows = execute_builtin("db.counts", &conn).unwrap();
+        let rows = execute_builtin("db.counts", &[], &conn).unwrap();
         let mut tuples: Vec<(String, String, i64)> = rows
             .into_iter()
             .map(|r| {

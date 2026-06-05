@@ -222,8 +222,10 @@ pub(in crate::cypher::planner) fn rewrite_text_filter_to_fts(
     if let LogicalOp::Scan { label, alias } = input.as_ref() {
         if !label.is_empty() {
             // 1) Single-predicate / AND-chain rewrite (existing).
-            if let Some((prop, fts_op, term, residual)) = extract_fts_predicate(&predicate, alias) {
-                if fts_index_exists(conn, label, &prop) {
+            if let Some((prop, fts_op, term, residual, needs_ci)) =
+                extract_fts_predicate(&predicate, alias)
+            {
+                if fts_rewrite_is_usable(conn, label, &prop, needs_ci) {
                     *op = LogicalOp::FullTextLookup {
                         label: label.clone(),
                         alias: alias.clone(),
@@ -250,10 +252,10 @@ pub(in crate::cypher::planner) fn rewrite_text_filter_to_fts(
     if let LogicalOp::CorrelatedJoin { right, .. } = input.as_ref() {
         if let LogicalOp::Scan { label, alias } = right.as_ref() {
             if !label.is_empty() {
-                if let Some((prop, fts_op, term, residual)) =
+                if let Some((prop, fts_op, term, residual, needs_ci)) =
                     extract_fts_predicate(&predicate, alias)
                 {
-                    if fts_index_exists(conn, label, &prop) {
+                    if fts_rewrite_is_usable(conn, label, &prop, needs_ci) {
                         let label = label.clone();
                         let alias = alias.clone();
                         let LogicalOp::CorrelatedJoin {
@@ -288,23 +290,68 @@ pub(in crate::cypher::planner) fn rewrite_text_filter_to_fts(
     *op = LogicalOp::Filter { input, predicate };
 }
 
-/// Check if an FTS index exists on `(label, property)` by querying sqlite_master.
-fn fts_index_exists(conn: &Connection, label: &str, property: &str) -> bool {
-    crate::fts::list_fulltext_indexes_for_label(conn, label)
-        .map(|v| v.iter().any(|(_, p)| p == property))
-        .unwrap_or(false)
+/// Kind of FTS index present on `(label, property)`.
+enum FtsKind {
+    CaseSensitive,
+    CaseInsensitive,
+}
+
+/// Return the kind of FTS index on `(label, property)`, or `None` if no
+/// FTS index exists. Errors from introspection (e.g. missing index) map
+/// to `None` so callers fall back to the scan path cleanly.
+fn fts_kind_for(conn: &Connection, label: &str, property: &str) -> Option<FtsKind> {
+    match crate::fts::is_case_insensitive(conn, label, property) {
+        Ok(true) => Some(FtsKind::CaseInsensitive),
+        Ok(false) => Some(FtsKind::CaseSensitive),
+        Err(_) => None,
+    }
+}
+
+/// Whether an FTS rewrite is safe given the index kind and whether the
+/// matched predicate needs case-insensitive semantics. Case-insensitive
+/// predicates require a CI index; case-sensitive predicates work with
+/// either kind.
+fn fts_rewrite_is_usable(conn: &Connection, label: &str, property: &str, needs_ci: bool) -> bool {
+    match fts_kind_for(conn, label, property) {
+        Some(FtsKind::CaseInsensitive) => true,
+        Some(FtsKind::CaseSensitive) => !needs_ci,
+        None => false,
+    }
+}
+
+/// Result of matching an FTS-eligible binop.
+struct MatchedFts {
+    property: String,
+    op: crate::cypher::ir::FullTextOp,
+    term: Expr,
+    /// True when the matched predicate has the symmetric
+    /// `toLower(alias.prop) <op> toLower(rhs)` shape and therefore
+    /// requires a case-insensitive FTS index to be rewritten safely.
+    needs_ci: bool,
 }
 
 /// Try to extract an FTS-eligible predicate from `predicate` (or a
-/// top-level conjunction). Returns `(property, fts_op, term, residual)`.
+/// top-level conjunction). Returns `(property, fts_op, term, residual, needs_ci)`.
 /// The residual carries any conjuncts not consumed by the rewrite.
 fn extract_fts_predicate(
     predicate: &Expr,
     alias: &str,
-) -> Option<(String, crate::cypher::ir::FullTextOp, Expr, Option<Expr>)> {
+) -> Option<(
+    String,
+    crate::cypher::ir::FullTextOp,
+    Expr,
+    Option<Expr>,
+    bool,
+)> {
     let conjuncts = flatten_top_level_and(predicate);
     for (idx, c) in conjuncts.iter().enumerate() {
-        if let Some((prop, fts_op, term)) = match_fts_binop(c, alias) {
+        if let Some(matched) = match_fts_binop(c, alias) {
+            let MatchedFts {
+                property: prop,
+                op: fts_op,
+                term,
+                needs_ci,
+            } = matched;
             let residual_parts: Vec<&Expr> = conjuncts
                 .iter()
                 .enumerate()
@@ -312,7 +359,7 @@ fn extract_fts_predicate(
                 .map(|(_, e)| *e)
                 .collect();
             let residual = rebuild_and(&residual_parts);
-            return Some((prop, fts_op, term, residual));
+            return Some((prop, fts_op, term, residual, needs_ci));
         }
     }
     None
@@ -338,8 +385,14 @@ fn try_rewrite_or_chain_to_union(
 
     let mut inputs: Vec<LogicalOp> = Vec::with_capacity(disjuncts.len());
     for d in disjuncts {
-        let (prop, fts_op, term) = match_fts_binop(d, alias)?;
-        if !fts_index_exists(conn, label, &prop) {
+        let matched = match_fts_binop(d, alias)?;
+        let MatchedFts {
+            property: prop,
+            op: fts_op,
+            term,
+            needs_ci,
+        } = matched;
+        if !fts_rewrite_is_usable(conn, label, &prop, needs_ci) {
             return None;
         }
         inputs.push(LogicalOp::FullTextLookup {
@@ -355,8 +408,18 @@ fn try_rewrite_or_chain_to_union(
     Some(LogicalOp::Union { inputs, all: false })
 }
 
-/// Match an FTS binary op: `alias.prop CONTAINS|STARTS WITH|ENDS WITH term`.
-fn match_fts_binop(e: &Expr, alias: &str) -> Option<(String, crate::cypher::ir::FullTextOp, Expr)> {
+/// Match an FTS binary op against `alias.<prop>`, optionally with both
+/// sides wrapped in `toLower(...)` for the case-insensitive idiom.
+///
+/// Recognized shapes:
+/// - `alias.prop <op> rhs`                       → `needs_ci = false`
+/// - `toLower(alias.prop) <op> toLower(rhs)`     → `needs_ci = true`
+///
+/// `toLower` matching is case-insensitive on the function name, mirroring
+/// the eval dispatch in `cypher::eval::functions`. Asymmetric wrappings
+/// (only one side `toLower`'d) return `None` — callers fall back to a
+/// label scan with per-row eval, which is correct but unaccelerated.
+fn match_fts_binop(e: &Expr, alias: &str) -> Option<MatchedFts> {
     use crate::cypher::ir::FullTextOp;
     let ExprKind::BinaryOp { left, op, right } = &e.kind else {
         return None;
@@ -367,14 +430,68 @@ fn match_fts_binop(e: &Expr, alias: &str) -> Option<(String, crate::cypher::ir::
         BinOp::EndsWith => FullTextOp::EndsWith,
         _ => return None,
     };
-    // ExprKind::Property is a tuple (variable_name, property_name).
+
+    // Symmetric toLower form first — both sides must be wrapped.
+    if let (Some(prop), Some(inner_rhs)) = (
+        unwrap_tolower_of_property(left, alias),
+        unwrap_tolower(right),
+    ) {
+        return Some(MatchedFts {
+            property: prop,
+            op: fts_op,
+            term: inner_rhs,
+            needs_ci: true,
+        });
+    }
+
+    // Plain `alias.prop <op> rhs`.
     let ExprKind::Property(var, prop) = &left.kind else {
         return None;
     };
     if var != alias {
         return None;
     }
-    Some((prop.clone(), fts_op, (**right).clone()))
+    Some(MatchedFts {
+        property: prop.clone(),
+        op: fts_op,
+        term: (**right).clone(),
+        needs_ci: false,
+    })
+}
+
+/// Return `Some(prop)` when `e` is `toLower(alias.prop)`. Function-name
+/// match is case-insensitive (`toLower` / `tolower` / etc.).
+fn unwrap_tolower_of_property(e: &Expr, alias: &str) -> Option<String> {
+    let ExprKind::FunctionCall { name, args, .. } = &e.kind else {
+        return None;
+    };
+    if !name.eq_ignore_ascii_case("toLower") {
+        return None;
+    }
+    if args.len() != 1 {
+        return None;
+    }
+    let ExprKind::Property(var, prop) = &args[0].kind else {
+        return None;
+    };
+    if var != alias {
+        return None;
+    }
+    Some(prop.clone())
+}
+
+/// Return `Some(inner)` when `e` is `toLower(inner)`. Otherwise `None`.
+fn unwrap_tolower(e: &Expr) -> Option<Expr> {
+    let ExprKind::FunctionCall { name, args, .. } = &e.kind else {
+        return None;
+    };
+    if !name.eq_ignore_ascii_case("toLower") {
+        return None;
+    }
+    if args.len() != 1 {
+        return None;
+    }
+    Some(args[0].clone())
 }
 
 /// Flatten a top-level `AND` chain into individual conjuncts.
@@ -1134,6 +1251,123 @@ mod fts_or_chain_tests {
             matches!(plan, LogicalOp::FullTextLookup { .. }),
             "regression: single CONTAINS must still use AND-chain rewrite"
         );
+    }
+
+    // === toLower idiom + CI gating (Task 5) ===
+
+    fn build_tolower_contains(alias: &str, prop: &str, term: &str) -> Expr {
+        use crate::cypher::ast::{BinOp, Expr, ExprKind, LiteralValue};
+        Expr::synthetic(ExprKind::BinaryOp {
+            left: Box::new(Expr::synthetic(ExprKind::FunctionCall {
+                name: "toLower".to_string(),
+                args: vec![Expr::synthetic(ExprKind::Property(
+                    alias.to_string(),
+                    prop.to_string(),
+                ))],
+                distinct: false,
+                original_text: None,
+            })),
+            op: BinOp::Contains,
+            right: Box::new(Expr::synthetic(ExprKind::FunctionCall {
+                name: "toLower".to_string(),
+                args: vec![Expr::synthetic(ExprKind::Literal(LiteralValue::String(
+                    term.to_string(),
+                )))],
+                distinct: false,
+                original_text: None,
+            })),
+        })
+    }
+
+    #[test]
+    fn tolower_contains_rewrites_when_ci_index_present() {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        crate::schema::init_schema(&conn).unwrap();
+        crate::fts::create_fulltext_index_ci(&conn, "Doc", "body").unwrap();
+
+        let mut op = LogicalOp::Filter {
+            input: Box::new(LogicalOp::Scan {
+                label: "Doc".to_string(),
+                alias: "n".to_string(),
+            }),
+            predicate: build_tolower_contains("n", "body", "Alice"),
+        };
+        rewrite_text_filter_to_fts(&conn, &mut op);
+        assert!(
+            matches!(op, LogicalOp::FullTextLookup { .. }),
+            "expected FullTextLookup, got {op:?}",
+        );
+    }
+
+    #[test]
+    fn tolower_contains_falls_back_when_only_cs_index() {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        crate::schema::init_schema(&conn).unwrap();
+        crate::fts::create_fulltext_index(&conn, "Doc", "body").unwrap();
+
+        let mut op = LogicalOp::Filter {
+            input: Box::new(LogicalOp::Scan {
+                label: "Doc".to_string(),
+                alias: "n".to_string(),
+            }),
+            predicate: build_tolower_contains("n", "body", "Alice"),
+        };
+        rewrite_text_filter_to_fts(&conn, &mut op);
+        assert!(
+            matches!(op, LogicalOp::Filter { .. }),
+            "CS-only index must not satisfy a needs_ci predicate; got {op:?}",
+        );
+    }
+
+    #[test]
+    fn tolower_contains_falls_back_when_no_index() {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        crate::schema::init_schema(&conn).unwrap();
+
+        let mut op = LogicalOp::Filter {
+            input: Box::new(LogicalOp::Scan {
+                label: "Doc".to_string(),
+                alias: "n".to_string(),
+            }),
+            predicate: build_tolower_contains("n", "body", "Alice"),
+        };
+        rewrite_text_filter_to_fts(&conn, &mut op);
+        assert!(matches!(op, LogicalOp::Filter { .. }));
+    }
+
+    #[test]
+    fn asymmetric_tolower_does_not_rewrite_even_with_ci_index() {
+        use crate::cypher::ast::{BinOp, Expr, ExprKind, LiteralValue};
+
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        crate::schema::init_schema(&conn).unwrap();
+        crate::fts::create_fulltext_index_ci(&conn, "Doc", "body").unwrap();
+
+        // toLower(n.body) CONTAINS 'Alice'  — RHS not wrapped.
+        let predicate = Expr::synthetic(ExprKind::BinaryOp {
+            left: Box::new(Expr::synthetic(ExprKind::FunctionCall {
+                name: "toLower".to_string(),
+                args: vec![Expr::synthetic(ExprKind::Property(
+                    "n".to_string(),
+                    "body".to_string(),
+                ))],
+                distinct: false,
+                original_text: None,
+            })),
+            op: BinOp::Contains,
+            right: Box::new(Expr::synthetic(ExprKind::Literal(LiteralValue::String(
+                "Alice".to_string(),
+            )))),
+        });
+        let mut op = LogicalOp::Filter {
+            input: Box::new(LogicalOp::Scan {
+                label: "Doc".to_string(),
+                alias: "n".to_string(),
+            }),
+            predicate,
+        };
+        rewrite_text_filter_to_fts(&conn, &mut op);
+        assert!(matches!(op, LogicalOp::Filter { .. }));
     }
 }
 

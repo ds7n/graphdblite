@@ -82,13 +82,13 @@ fn exec_db_indexes(conn: &Connection) -> Result<Vec<HashMap<String, Value>>> {
     for (label, property) in secondary {
         rows.push(row(&label, &property, "btree"));
     }
-    for (label, property, case_insensitive) in fulltext {
-        let kind = if case_insensitive {
-            "fulltext_ci"
-        } else {
-            "fulltext"
+    for (label, property, kind) in fulltext {
+        let kind_str = match kind {
+            crate::storage::fts::FtsTokenizerKind::TrigramCaseSensitive => "fulltext",
+            crate::storage::fts::FtsTokenizerKind::TrigramCaseInsensitive => "fulltext_ci",
+            crate::storage::fts::FtsTokenizerKind::Word => "fulltext_word",
         };
-        rows.push(row(&label, &property, kind));
+        rows.push(row(&label, &property, kind_str));
     }
     Ok(rows)
 }

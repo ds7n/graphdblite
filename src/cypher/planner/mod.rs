@@ -300,9 +300,10 @@ enum FtsKind {
 /// FTS index exists. Errors from introspection (e.g. missing index) map
 /// to `None` so callers fall back to the scan path cleanly.
 fn fts_kind_for(conn: &Connection, label: &str, property: &str) -> Option<FtsKind> {
-    match crate::fts::is_case_insensitive(conn, label, property) {
-        Ok(true) => Some(FtsKind::CaseInsensitive),
-        Ok(false) => Some(FtsKind::CaseSensitive),
+    match crate::fts::fts_tokenizer_kind(conn, label, property) {
+        Ok(crate::fts::FtsTokenizerKind::TrigramCaseSensitive) => Some(FtsKind::CaseSensitive),
+        Ok(crate::fts::FtsTokenizerKind::TrigramCaseInsensitive) => Some(FtsKind::CaseInsensitive),
+        Ok(crate::fts::FtsTokenizerKind::Word) => None,
         Err(_) => None,
     }
 }

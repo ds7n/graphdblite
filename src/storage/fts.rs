@@ -26,13 +26,28 @@ fn fts_table_exists(conn: &Connection, table: &str) -> Result<bool> {
     Ok(exists)
 }
 
-/// Return `true` if the FTS index on `(label, property)` was created
-/// with the case-insensitive trigram tokenizer.
+/// Which tokenizer the FTS5 virtual table was created with.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum FtsTokenizerKind {
+    /// `trigram case_sensitive 1` — default, preserves Cypher substring
+    /// semantics for `CONTAINS` / `STARTS WITH` / `ENDS WITH`.
+    TrigramCaseSensitive,
+    /// `trigram case_sensitive 0` — case-folded trigram matching.
+    TrigramCaseInsensitive,
+    /// `unicode61` — word-tokenized matching for `fts.search`.
+    Word,
+}
+
+/// Inspect the FTS5 virtual table for `(label, property)` and report
+/// which tokenizer it was created with.
 ///
-/// Reads back the `CREATE VIRTUAL TABLE` DDL from `sqlite_master.sql`
-/// and looks for the `case_sensitive 0` token we wrote at create time.
+/// Reads back the `CREATE VIRTUAL TABLE` DDL from `sqlite_master.sql`.
 /// Errors with `IndexNotFound` when no FTS index exists for the pair.
-pub fn is_case_insensitive(conn: &Connection, label: &str, property: &str) -> Result<bool> {
+pub fn fts_tokenizer_kind(
+    conn: &Connection,
+    label: &str,
+    property: &str,
+) -> Result<FtsTokenizerKind> {
     let table = fts_table_name(label, property)?;
     let sql: Option<String> = conn
         .query_row(
@@ -46,7 +61,13 @@ pub fn is_case_insensitive(conn: &Connection, label: &str, property: &str) -> Re
         property: property.to_string(),
         hint: Some("no fulltext index on this (label, property)".to_string()),
     })?;
-    Ok(sql.contains("case_sensitive 0"))
+    if sql.contains("unicode61") {
+        Ok(FtsTokenizerKind::Word)
+    } else if sql.contains("case_sensitive 0") {
+        Ok(FtsTokenizerKind::TrigramCaseInsensitive)
+    } else {
+        Ok(FtsTokenizerKind::TrigramCaseSensitive)
+    }
 }
 
 /// Create a fulltext index on `(label, property)`. The underlying
@@ -162,7 +183,9 @@ pub fn list_fulltext_indexes_for_label(
 /// is on the FIRST underscore after the `node_fts_` prefix so that
 /// properties with underscores (e.g. `cache_data`) round-trip when
 /// labels do not contain underscores.
-pub fn list_all_fulltext_indexes(conn: &Connection) -> Result<Vec<(String, String, bool)>> {
+pub fn list_all_fulltext_indexes(
+    conn: &Connection,
+) -> Result<Vec<(String, String, FtsTokenizerKind)>> {
     let mut stmt = conn.prepare_cached(
         "SELECT name, sql FROM sqlite_master \
          WHERE type='table' \
@@ -183,12 +206,14 @@ pub fn list_all_fulltext_indexes(conn: &Connection) -> Result<Vec<(String, Strin
             continue;
         };
         let (label, property) = rest.split_at(split);
-        let case_insensitive = sql.contains("case_sensitive 0");
-        result.push((
-            label.to_string(),
-            property[1..].to_string(),
-            case_insensitive,
-        ));
+        let kind = if sql.contains("unicode61") {
+            FtsTokenizerKind::Word
+        } else if sql.contains("case_sensitive 0") {
+            FtsTokenizerKind::TrigramCaseInsensitive
+        } else {
+            FtsTokenizerKind::TrigramCaseSensitive
+        };
+        result.push((label.to_string(), property[1..].to_string(), kind));
     }
     Ok(result)
 }
@@ -629,15 +654,27 @@ mod tests {
         assert_eq!(
             got,
             vec![
-                ("Doc".to_string(), "body".to_string(), false),
-                ("Doc".to_string(), "title".to_string(), false),
-                ("Note".to_string(), "text".to_string(), false),
+                (
+                    "Doc".to_string(),
+                    "body".to_string(),
+                    FtsTokenizerKind::TrigramCaseSensitive
+                ),
+                (
+                    "Doc".to_string(),
+                    "title".to_string(),
+                    FtsTokenizerKind::TrigramCaseSensitive
+                ),
+                (
+                    "Note".to_string(),
+                    "text".to_string(),
+                    FtsTokenizerKind::TrigramCaseSensitive
+                ),
             ]
         );
     }
 
     #[test]
-    fn list_all_fulltext_indexes_returns_case_insensitive_flag() {
+    fn list_all_fulltext_indexes_returns_tokenizer_kind() {
         let c = conn();
         create_fulltext_index(&c, "Person", "name").unwrap();
         create_fulltext_index_ci(&c, "Person", "bio").unwrap();
@@ -647,9 +684,21 @@ mod tests {
         assert_eq!(
             got,
             vec![
-                ("Article".to_string(), "body".to_string(), true),
-                ("Person".to_string(), "bio".to_string(), true),
-                ("Person".to_string(), "name".to_string(), false),
+                (
+                    "Article".to_string(),
+                    "body".to_string(),
+                    FtsTokenizerKind::TrigramCaseInsensitive
+                ),
+                (
+                    "Person".to_string(),
+                    "bio".to_string(),
+                    FtsTokenizerKind::TrigramCaseInsensitive
+                ),
+                (
+                    "Person".to_string(),
+                    "name".to_string(),
+                    FtsTokenizerKind::TrigramCaseSensitive
+                ),
             ]
         );
     }
@@ -703,28 +752,34 @@ mod tests {
     }
 
     #[test]
-    fn is_case_insensitive_returns_false_for_cs_index() {
+    fn fts_tokenizer_kind_returns_trigram_cs_for_default_index() {
         let c = conn();
-        create_fulltext_index(&c, "Person", "bio").unwrap();
-        assert!(!is_case_insensitive(&c, "Person", "bio").unwrap());
+        create_fulltext_index(&c, "Doc", "body").unwrap();
+        assert_eq!(
+            fts_tokenizer_kind(&c, "Doc", "body").unwrap(),
+            FtsTokenizerKind::TrigramCaseSensitive
+        );
     }
 
     #[test]
-    fn is_case_insensitive_returns_true_for_ci_index() {
+    fn fts_tokenizer_kind_returns_trigram_ci_for_ci_index() {
         let c = conn();
-        create_fulltext_index_ci(&c, "Person", "bio").unwrap();
-        assert!(is_case_insensitive(&c, "Person", "bio").unwrap());
+        create_fulltext_index_ci(&c, "Doc", "body").unwrap();
+        assert_eq!(
+            fts_tokenizer_kind(&c, "Doc", "body").unwrap(),
+            FtsTokenizerKind::TrigramCaseInsensitive
+        );
     }
 
     #[test]
-    fn is_case_insensitive_errors_when_index_missing() {
+    fn fts_tokenizer_kind_errors_when_index_missing() {
         let c = conn();
-        match is_case_insensitive(&c, "Person", "bio") {
+        match fts_tokenizer_kind(&c, "Doc", "body") {
             Err(GraphError::IndexNotFound {
                 label, property, ..
             }) => {
-                assert_eq!(label, "Person");
-                assert_eq!(property, "bio");
+                assert_eq!(label, "Doc");
+                assert_eq!(property, "body");
             }
             other => panic!("expected IndexNotFound, got {other:?}"),
         }
@@ -740,7 +795,11 @@ mod tests {
         // Exactly one entry — the virtual table itself — not the shadow tables.
         assert_eq!(
             got,
-            vec![("Foo".to_string(), "cache_data".to_string(), false)]
+            vec![(
+                "Foo".to_string(),
+                "cache_data".to_string(),
+                FtsTokenizerKind::TrigramCaseSensitive
+            )]
         );
     }
 }

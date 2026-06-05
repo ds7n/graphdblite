@@ -82,8 +82,13 @@ fn exec_db_indexes(conn: &Connection) -> Result<Vec<HashMap<String, Value>>> {
     for (label, property) in secondary {
         rows.push(row(&label, &property, "btree"));
     }
-    for (label, property) in fulltext {
-        rows.push(row(&label, &property, "fulltext"));
+    for (label, property, case_insensitive) in fulltext {
+        let kind = if case_insensitive {
+            "fulltext_ci"
+        } else {
+            "fulltext"
+        };
+        rows.push(row(&label, &property, kind));
     }
     Ok(rows)
 }
@@ -212,6 +217,48 @@ mod tests {
             ["btree".to_string(), "fulltext".to_string()]
                 .into_iter()
                 .collect()
+        );
+    }
+
+    #[test]
+    fn exec_db_indexes_distinguishes_ci_and_cs() {
+        let conn = fresh_conn();
+        crate::storage::fts::create_fulltext_index(&conn, "Person", "name").unwrap();
+        crate::storage::fts::create_fulltext_index_ci(&conn, "Article", "body").unwrap();
+        let rows = execute_builtin("db.indexes", &conn).unwrap();
+        let mut tuples: Vec<(String, String, String)> = rows
+            .into_iter()
+            .map(|r| {
+                let lab = match r.get("label").unwrap() {
+                    Value::String(s) => s.clone(),
+                    v => panic!("label was {v:?}"),
+                };
+                let prop = match r.get("property").unwrap() {
+                    Value::String(s) => s.clone(),
+                    v => panic!("property was {v:?}"),
+                };
+                let kind = match r.get("kind").unwrap() {
+                    Value::String(s) => s.clone(),
+                    v => panic!("kind was {v:?}"),
+                };
+                (lab, prop, kind)
+            })
+            .collect();
+        tuples.sort();
+        assert_eq!(
+            tuples,
+            vec![
+                (
+                    "Article".to_string(),
+                    "body".to_string(),
+                    "fulltext_ci".to_string()
+                ),
+                (
+                    "Person".to_string(),
+                    "name".to_string(),
+                    "fulltext".to_string()
+                ),
+            ]
         );
     }
 

@@ -162,18 +162,20 @@ pub fn list_fulltext_indexes_for_label(
 /// is on the FIRST underscore after the `node_fts_` prefix so that
 /// properties with underscores (e.g. `cache_data`) round-trip when
 /// labels do not contain underscores.
-pub fn list_all_fulltext_indexes(conn: &Connection) -> Result<Vec<(String, String)>> {
+pub fn list_all_fulltext_indexes(conn: &Connection) -> Result<Vec<(String, String, bool)>> {
     let mut stmt = conn.prepare_cached(
-        "SELECT name FROM sqlite_master \
+        "SELECT name, sql FROM sqlite_master \
          WHERE type='table' \
          AND name LIKE 'node_fts_%' \
          AND sql LIKE 'CREATE VIRTUAL TABLE%'",
     )?;
-    let rows = stmt.query_map([], |row| row.get::<_, String>(0))?;
+    let rows = stmt.query_map([], |row| {
+        Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+    })?;
 
     let mut result = Vec::new();
-    for name in rows {
-        let name = name?;
+    for r in rows {
+        let (name, sql) = r?;
         let Some(rest) = name.strip_prefix("node_fts_") else {
             continue;
         };
@@ -181,7 +183,12 @@ pub fn list_all_fulltext_indexes(conn: &Connection) -> Result<Vec<(String, Strin
             continue;
         };
         let (label, property) = rest.split_at(split);
-        result.push((label.to_string(), property[1..].to_string()));
+        let case_insensitive = sql.contains("case_sensitive 0");
+        result.push((
+            label.to_string(),
+            property[1..].to_string(),
+            case_insensitive,
+        ));
     }
     Ok(result)
 }
@@ -622,9 +629,27 @@ mod tests {
         assert_eq!(
             got,
             vec![
-                ("Doc".to_string(), "body".to_string()),
-                ("Doc".to_string(), "title".to_string()),
-                ("Note".to_string(), "text".to_string()),
+                ("Doc".to_string(), "body".to_string(), false),
+                ("Doc".to_string(), "title".to_string(), false),
+                ("Note".to_string(), "text".to_string(), false),
+            ]
+        );
+    }
+
+    #[test]
+    fn list_all_fulltext_indexes_returns_case_insensitive_flag() {
+        let c = conn();
+        create_fulltext_index(&c, "Person", "name").unwrap();
+        create_fulltext_index_ci(&c, "Person", "bio").unwrap();
+        create_fulltext_index_ci(&c, "Article", "body").unwrap();
+        let mut got = list_all_fulltext_indexes(&c).unwrap();
+        got.sort();
+        assert_eq!(
+            got,
+            vec![
+                ("Article".to_string(), "body".to_string(), true),
+                ("Person".to_string(), "bio".to_string(), true),
+                ("Person".to_string(), "name".to_string(), false),
             ]
         );
     }
@@ -713,6 +738,9 @@ mod tests {
         create_fulltext_index(&c, "Foo", "cache_data").unwrap();
         let got = list_all_fulltext_indexes(&c).unwrap();
         // Exactly one entry — the virtual table itself — not the shadow tables.
-        assert_eq!(got, vec![("Foo".to_string(), "cache_data".to_string())]);
+        assert_eq!(
+            got,
+            vec![("Foo".to_string(), "cache_data".to_string(), false)]
+        );
     }
 }

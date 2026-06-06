@@ -61,10 +61,8 @@ pub(in crate::cypher::executor) fn exec_call(
         }
 
         // Resolve the per-record row set + input spec for filtering.
-        let (proc_inputs, data_rows): (
-            &[ProcParam],
-            std::borrow::Cow<'_, [std::collections::HashMap<String, Value>]>,
-        ) = match &source {
+        type ProcRows<'a> = std::borrow::Cow<'a, [std::collections::HashMap<String, Value>]>;
+        let (proc_inputs, data_rows): (&[ProcParam], ProcRows<'_>) = match &source {
             ProcSource::Registry(def) => (
                 def.inputs.as_slice(),
                 std::borrow::Cow::Borrowed(def.rows.as_slice()),

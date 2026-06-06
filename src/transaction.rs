@@ -407,6 +407,18 @@ impl<'a> WriteTransaction<'a> {
         Ok(())
     }
 
+    /// Multi-property variant. See
+    /// `Database::create_fulltext_index_word_multi` for semantics.
+    pub fn create_fulltext_index_word_multi(
+        &self,
+        label: &str,
+        properties: &[String],
+    ) -> Result<()> {
+        fts::create_fulltext_index_word_multi(&self.tx, label, properties)?;
+        self.schema_epoch.fetch_add(1, Ordering::AcqRel);
+        Ok(())
+    }
+
     /// Drop a fulltext index on `(label, property)`. See
     /// `Database::drop_fulltext_index` for semantics.
     pub fn drop_fulltext_index(&self, label: &str, property: &str) -> Result<()> {
@@ -715,5 +727,32 @@ mod tx_guard_tests {
             })
             .collect();
         assert_eq!(kinds, vec!["fulltext_word".to_string()]);
+    }
+
+    #[test]
+    fn write_tx_create_fulltext_index_word_multi() {
+        let mut db = Database::open_memory().unwrap();
+        {
+            let tx = db.write_tx().unwrap();
+            tx.create_fulltext_index_word_multi(
+                "Article",
+                &["title".to_string(), "body".to_string()],
+            )
+            .unwrap();
+            tx.commit().unwrap();
+        }
+        let rows = db
+            .execute(
+                "CALL db.indexes() YIELD label, property, kind RETURN property ORDER BY property",
+            )
+            .unwrap();
+        let props: Vec<String> = rows
+            .iter()
+            .map(|r| match r.get("property").unwrap() {
+                Value::String(s) => s.clone(),
+                v => panic!("property was {v:?}"),
+            })
+            .collect();
+        assert_eq!(props, vec!["body".to_string(), "title".to_string()]);
     }
 }

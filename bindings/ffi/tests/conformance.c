@@ -483,6 +483,42 @@ static int bc_11_fulltext_ddl(const char *tmpdir) {
         return fail("BC-11", "word drop commit failed");
     }
 
+    /* Multi-property word index round-trip via fts.search('*', ...). */
+    if (graphdb_tx_begin_write(db) != 0) {
+        graphdb_close(db);
+        return fail("BC-11", "multi tx_begin_write failed");
+    }
+    const char *props[] = {"title", "body"};
+    if (graphdb_create_fulltext_index_word_multi(db, "Article", props, 2) != 0) {
+        graphdb_tx_rollback(db);
+        graphdb_close(db);
+        return fail("BC-11", "create_fulltext_index_word_multi failed");
+    }
+    if (graphdb_tx_execute(db,
+            "CREATE (:Article {title: 'rust', body: 'memory safe systems'})",
+            &res) != 0) {
+        graphdb_tx_rollback(db);
+        graphdb_close(db);
+        return fail("BC-11", "multi insert failed");
+    }
+    graphdb_result_free(res);
+    if (graphdb_tx_commit(db) != 0) {
+        graphdb_close(db);
+        return fail("BC-11", "multi commit failed");
+    }
+    if (graphdb_query(db,
+            "CALL fts.search('Article', '*', 'memory') YIELD node, score RETURN score",
+            &res) != 0) {
+        graphdb_close(db);
+        return fail("BC-11", "multi fts.search query failed");
+    }
+    if (graphdb_result_row_count(res) != 1) {
+        graphdb_result_free(res);
+        graphdb_close(db);
+        return fail("BC-11", "expected 1 row from multi fts.search");
+    }
+    graphdb_result_free(res);
+
     graphdb_close(db);
     return pass("BC-11");
 }

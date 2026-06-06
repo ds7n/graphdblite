@@ -259,6 +259,61 @@ pub unsafe extern "C" fn graphdb_create_fulltext_index_word(
     })
 }
 
+/// Create a multi-property word-tokenized fulltext index on `(label, properties)`.
+/// Backed by a single SQLite FTS5 `unicode61` multi-column virtual table that
+/// covers every listed property. Use with `CALL fts.search(label, '*', query)`
+/// to search across all covered columns, or `CALL fts.search(label, prop, query)`
+/// to scope to one covered column.
+///
+/// `properties` must point to an array of `properties_count` non-null,
+/// null-terminated UTF-8 strings. `properties_count` must be > 0.
+#[no_mangle]
+pub unsafe extern "C" fn graphdb_create_fulltext_index_word_multi(
+    db: *mut GraphDB,
+    label: *const c_char,
+    properties: *const *const c_char,
+    properties_count: usize,
+) -> i32 {
+    if db.is_null() || label.is_null() || properties.is_null() {
+        set_error("null pointer argument");
+        return -1;
+    }
+    let handle = unsafe { &*db };
+    let label_str = match unsafe { CStr::from_ptr(label) }.to_str() {
+        Ok(s) => s,
+        Err(e) => {
+            set_error(&format!("invalid UTF-8 label: {e}"));
+            return -1;
+        }
+    };
+    let mut props: Vec<String> = Vec::with_capacity(properties_count);
+    for i in 0..properties_count {
+        let p_ptr = unsafe { *properties.add(i) };
+        if p_ptr.is_null() {
+            set_error("null property pointer in properties array");
+            return -1;
+        }
+        match unsafe { CStr::from_ptr(p_ptr) }.to_str() {
+            Ok(s) => props.push(s.to_string()),
+            Err(e) => {
+                set_error(&format!("invalid UTF-8 property: {e}"));
+                return -1;
+            }
+        }
+    }
+    let mut guard = match lock_db(handle) {
+        Ok(g) => g,
+        Err(e) => {
+            set_error(&e.to_string());
+            return -1;
+        }
+    };
+    wrap_result(
+        guard.create_fulltext_index_word_multi(label_str, &props),
+        |_| {},
+    )
+}
+
 /// Drop a fulltext index on `(label, property)`.
 #[no_mangle]
 pub unsafe extern "C" fn graphdb_drop_fulltext_index(

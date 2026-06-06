@@ -243,6 +243,22 @@ pub unsafe extern "C" fn graphdb_create_fulltext_index_ci(
     })
 }
 
+/// Create a word-tokenized fulltext index on `(label, property)`.
+/// Backed by SQLite FTS5 with the `unicode61` tokenizer. Suitable for
+/// the `fts.search` procedure. Does not accelerate
+/// `CONTAINS` / `STARTS WITH` / `ENDS WITH` — use
+/// `graphdb_create_fulltext_index` for those.
+#[no_mangle]
+pub unsafe extern "C" fn graphdb_create_fulltext_index_word(
+    db: *mut GraphDB,
+    label: *const c_char,
+    property: *const c_char,
+) -> i32 {
+    ddl_call(db, label, property, |d, l, p| {
+        d.create_fulltext_index_word(l, p)
+    })
+}
+
 /// Drop a fulltext index on `(label, property)`.
 #[no_mangle]
 pub unsafe extern "C" fn graphdb_drop_fulltext_index(

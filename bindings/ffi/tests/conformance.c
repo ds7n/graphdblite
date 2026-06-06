@@ -433,6 +433,56 @@ static int bc_11_fulltext_ddl(const char *tmpdir) {
         return fail("BC-11", "ci drop commit failed");
     }
 
+    /* Word-tokenized (unicode61) fulltext index round-trip via fts.search. */
+    if (graphdb_tx_begin_write(db) != 0) {
+        graphdb_close(db);
+        return fail("BC-11", "word tx_begin_write failed");
+    }
+    if (graphdb_create_fulltext_index_word(db, "Doc", "body") != 0) {
+        graphdb_tx_rollback(db);
+        graphdb_close(db);
+        return fail("BC-11", "create_fulltext_index_word failed");
+    }
+    if (graphdb_tx_execute(db,
+            "CREATE (:Doc {body: 'rust systems programming'})", &res) != 0) {
+        graphdb_tx_rollback(db);
+        graphdb_close(db);
+        return fail("BC-11", "word insert failed");
+    }
+    graphdb_result_free(res);
+    if (graphdb_tx_commit(db) != 0) {
+        graphdb_close(db);
+        return fail("BC-11", "word commit failed");
+    }
+
+    /* fts.search must return the newly inserted Doc. */
+    if (graphdb_query(db,
+            "CALL fts.search('Doc', 'body', 'rust') YIELD node, score RETURN score",
+            &res) != 0) {
+        graphdb_close(db);
+        return fail("BC-11", "fts.search query failed");
+    }
+    if (graphdb_result_row_count(res) != 1) {
+        graphdb_result_free(res);
+        graphdb_close(db);
+        return fail("BC-11", "expected 1 row from fts.search");
+    }
+    graphdb_result_free(res);
+
+    if (graphdb_tx_begin_write(db) != 0) {
+        graphdb_close(db);
+        return fail("BC-11", "word drop tx_begin_write failed");
+    }
+    if (graphdb_drop_fulltext_index(db, "Doc", "body") != 0) {
+        graphdb_tx_rollback(db);
+        graphdb_close(db);
+        return fail("BC-11", "word drop_fulltext_index failed");
+    }
+    if (graphdb_tx_commit(db) != 0) {
+        graphdb_close(db);
+        return fail("BC-11", "word drop commit failed");
+    }
+
     graphdb_close(db);
     return pass("BC-11");
 }

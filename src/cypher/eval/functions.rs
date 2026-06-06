@@ -336,6 +336,21 @@ pub(in crate::cypher::eval) fn eval_function_call(
                 _ => Ok(Value::Null),
             }
         }
+        "score" => {
+            // score(n) — BM25 score for FTS-bound nodes. Planner validates
+            // arity == 1 and arg is a Variable at plan time; the runtime
+            // guards are defensive: return NULL for malformed shapes rather
+            // than evaluating the arg (a literal/property/function-call has
+            // no `__fts_score` flat key by construction).
+            if args.len() != 1 {
+                return Ok(Value::Null);
+            }
+            let ExprKind::Variable(var_name) = &args[0].kind else {
+                return Ok(Value::Null);
+            };
+            let key = format!("{var_name}.__fts_score");
+            Ok(record.get(&key).cloned().unwrap_or(Value::Null))
+        }
         "type" => {
             // type(r) — extract the relationship type from a binding.
             if let Some(Expr {

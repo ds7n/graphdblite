@@ -197,6 +197,7 @@ pub const KNOWN_FUNCTION_NAMES: &[&str] = &[
     "reverse",
     "range",
     "rand",
+    "score",
     // Temporal constructors and statement-time variants
     "date",
     "date.transaction",
@@ -1103,5 +1104,42 @@ mod tests {
         );
         let err = eval_expr(&e, &rec, ecx).unwrap_err();
         assert!(format!("{err}").contains("invalid regex pattern"));
+    }
+
+    #[test]
+    fn eval_score_returns_fts_score_from_record() {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        let mut rec = NamedRecord::new();
+        rec.set("n.__fts_score".to_string(), Value::F64(2.5));
+
+        let arg = Expr::synthetic(ExprKind::Variable("n".to_string()));
+        let call = Expr::synthetic(ExprKind::FunctionCall {
+            name: "score".to_string(),
+            args: vec![arg],
+            distinct: false,
+            original_text: None,
+        });
+        let ecx = EvalCx::new(&conn);
+        let got = eval_expr(&call, &rec, ecx).unwrap();
+        assert_eq!(got, Value::F64(2.5));
+    }
+
+    #[test]
+    fn eval_score_returns_null_when_var_not_fts_bound() {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        let mut rec = NamedRecord::new();
+        // Record binds `n` but has no `n.__fts_score`.
+        rec.set("n".to_string(), Value::I64(42));
+
+        let arg = Expr::synthetic(ExprKind::Variable("n".to_string()));
+        let call = Expr::synthetic(ExprKind::FunctionCall {
+            name: "score".to_string(),
+            args: vec![arg],
+            distinct: false,
+            original_text: None,
+        });
+        let ecx = EvalCx::new(&conn);
+        let got = eval_expr(&call, &rec, ecx).unwrap();
+        assert_eq!(got, Value::Null);
     }
 }

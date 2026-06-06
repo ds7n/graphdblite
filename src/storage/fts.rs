@@ -483,36 +483,94 @@ pub fn update_fts_for_node(
 ) -> Result<()> {
     let infos = list_fulltext_indexes_for_label(conn, label)?;
     for info in &infos {
-        // Single-prop only at this task. Multi-prop write path lands in Task 3.
-        debug_assert_eq!(
-            info.properties.len(),
-            1,
-            "multi-prop write path not yet implemented; expected after Task 3"
-        );
-        let property = &info.properties[0];
-        let table = &info.table_name;
+        update_fts_for_node_one_index(conn, node_id, info, old_properties, new_properties)?;
+    }
+    Ok(())
+}
 
-        let old_val = old_properties
-            .and_then(|p| p.get(property.as_str()))
-            .and_then(|v| match v {
-                Value::String(s) => Some(s.as_str()),
+/// Sync one FTS index for a node write.
+///
+/// Handles both legacy single-property tables (`node_fts_{label}_{prop}`
+/// with a single FTS5 column literally named `content`) and multi-property
+/// tables (`node_fts_multi_{label}_{N}` with one FTS5 column per property).
+fn update_fts_for_node_one_index(
+    conn: &Connection,
+    node_id: NodeId,
+    info: &FtsIndexInfo,
+    old_properties: Option<&Properties>,
+    new_properties: &Properties,
+) -> Result<()> {
+    let old_vals: Vec<Option<String>> = info
+        .properties
+        .iter()
+        .map(|p| {
+            old_properties
+                .and_then(|props| props.get(p.as_str()))
+                .and_then(|v| match v {
+                    Value::String(s) => Some(s.clone()),
+                    _ => None,
+                })
+        })
+        .collect();
+    let new_vals: Vec<Option<String>> = info
+        .properties
+        .iter()
+        .map(|p| {
+            new_properties.get(p.as_str()).and_then(|v| match v {
+                Value::String(s) => Some(s.clone()),
                 _ => None,
-            });
-        let new_val = new_properties.get(property.as_str()).and_then(|v| match v {
-            Value::String(s) => Some(s.as_str()),
-            _ => None,
-        });
+            })
+        })
+        .collect();
 
-        if old_val == new_val {
-            continue;
-        }
-        if old_val.is_some() {
-            conn.execute(
-                &format!("DELETE FROM \"{table}\" WHERE rowid=?1"),
-                rusqlite::params![node_id.0 as i64],
-            )?;
-        }
-        if let Some(s) = new_val {
+    if old_vals == new_vals {
+        return Ok(());
+    }
+
+    let table = &info.table_name;
+    let had_any_old = old_vals.iter().any(|v| v.is_some());
+    let has_any_new = new_vals.iter().any(|v| v.is_some());
+
+    if had_any_old {
+        conn.execute(
+            &format!("DELETE FROM \"{table}\" WHERE rowid=?1"),
+            rusqlite::params![node_id.0 as i64],
+        )?;
+    }
+    if has_any_new {
+        // Legacy single-prop tables have one FTS5 column named `content`,
+        // NOT the property name. Multi-prop tables use the property names
+        // as column names.
+        let is_multi = table.starts_with("node_fts_multi_");
+        if is_multi {
+            let cols_quoted: String = info
+                .properties
+                .iter()
+                .map(|p| format!("\"{p}\""))
+                .collect::<Vec<_>>()
+                .join(", ");
+            let placeholders: String = (2..=info.properties.len() + 1)
+                .map(|i| format!("?{i}"))
+                .collect::<Vec<_>>()
+                .join(", ");
+            let sql = format!(
+                "INSERT INTO \"{table}\" (rowid, {cols_quoted}) VALUES (?1, {placeholders})"
+            );
+            let mut params: Vec<Box<dyn rusqlite::ToSql>> =
+                Vec::with_capacity(info.properties.len() + 1);
+            params.push(Box::new(node_id.0 as i64));
+            for v in &new_vals {
+                match v {
+                    Some(s) => params.push(Box::new(s.clone())),
+                    None => params.push(Box::new(rusqlite::types::Null)),
+                }
+            }
+            conn.execute(&sql, rusqlite::params_from_iter(params.iter()))?;
+        } else {
+            // Legacy single-prop: exactly one property, column name `content`.
+            let s = new_vals[0]
+                .as_ref()
+                .expect("has_any_new is true for single-prop table");
             conn.execute(
                 &format!("INSERT INTO \"{table}\" (rowid, content) VALUES (?1, ?2)"),
                 rusqlite::params![node_id.0 as i64, s],
@@ -531,9 +589,13 @@ pub fn remove_fts_for_node(
 ) -> Result<()> {
     let infos = list_fulltext_indexes_for_label(conn, label)?;
     for info in &infos {
-        debug_assert_eq!(info.properties.len(), 1);
-        let property = &info.properties[0];
-        if let Some(Value::String(_)) = properties.get(property.as_str()) {
+        // Delete the row if any covered property had a string value (the
+        // only condition under which a row would have been inserted).
+        let any_indexed = info
+            .properties
+            .iter()
+            .any(|p| matches!(properties.get(p.as_str()), Some(Value::String(_))));
+        if any_indexed {
             conn.execute(
                 &format!("DELETE FROM \"{}\" WHERE rowid=?1", info.table_name),
                 rusqlite::params![node_id.0 as i64],
@@ -1302,6 +1364,107 @@ mod tests {
         );
         assert_eq!(got[0].kind, FtsTokenizerKind::Word);
         assert_eq!(got[0].table_name, "node_fts_multi_Article_1");
+    }
+
+    #[test]
+    fn update_fts_for_node_writes_multi_column_row() {
+        let c = conn();
+        create_fulltext_index_word_multi(&c, "Article", &["title".to_string(), "body".to_string()])
+            .unwrap();
+        let id = NodeId(42);
+        let p = props(&[
+            ("title", Value::String("rust systems".to_string())),
+            ("body", Value::String("memory safety is key".to_string())),
+        ]);
+        update_fts_for_node(&c, id, "Article", None, &p).unwrap();
+
+        let title_hits: Vec<i64> = c
+            .prepare("SELECT rowid FROM \"node_fts_multi_Article_1\" WHERE \"node_fts_multi_Article_1\" MATCH ?1")
+            .unwrap()
+            .query_map(["systems"], |r| r.get(0))
+            .unwrap()
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .unwrap();
+        assert_eq!(title_hits, vec![42]);
+        let body_hits: Vec<i64> = c
+            .prepare("SELECT rowid FROM \"node_fts_multi_Article_1\" WHERE \"node_fts_multi_Article_1\" MATCH ?1")
+            .unwrap()
+            .query_map(["safety"], |r| r.get(0))
+            .unwrap()
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .unwrap();
+        assert_eq!(body_hits, vec![42]);
+    }
+
+    #[test]
+    fn update_fts_for_node_handles_partial_multi_column_node() {
+        let c = conn();
+        create_fulltext_index_word_multi(&c, "Article", &["title".to_string(), "body".to_string()])
+            .unwrap();
+        let p = props(&[("title", Value::String("only title".to_string()))]);
+        update_fts_for_node(&c, NodeId(7), "Article", None, &p).unwrap();
+        let hits: Vec<i64> = c
+            .prepare("SELECT rowid FROM \"node_fts_multi_Article_1\" WHERE \"node_fts_multi_Article_1\" MATCH ?1")
+            .unwrap()
+            .query_map(["title"], |r| r.get(0))
+            .unwrap()
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .unwrap();
+        assert_eq!(hits, vec![7]);
+    }
+
+    #[test]
+    fn remove_fts_for_node_clears_multi_column_row() {
+        let c = conn();
+        create_fulltext_index_word_multi(&c, "Article", &["title".to_string(), "body".to_string()])
+            .unwrap();
+        let p = props(&[
+            ("title", Value::String("hello".to_string())),
+            ("body", Value::String("world".to_string())),
+        ]);
+        update_fts_for_node(&c, NodeId(1), "Article", None, &p).unwrap();
+        remove_fts_for_node(&c, NodeId(1), "Article", &p).unwrap();
+        let hits: Vec<i64> = c
+            .prepare("SELECT rowid FROM \"node_fts_multi_Article_1\" WHERE \"node_fts_multi_Article_1\" MATCH ?1")
+            .unwrap()
+            .query_map(["hello"], |r| r.get(0))
+            .unwrap()
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .unwrap();
+        assert!(hits.is_empty());
+    }
+
+    #[test]
+    fn update_fts_for_node_with_property_change_overwrites_multi_column_row() {
+        let c = conn();
+        create_fulltext_index_word_multi(&c, "Article", &["title".to_string(), "body".to_string()])
+            .unwrap();
+        let old = props(&[
+            ("title", Value::String("old".to_string())),
+            ("body", Value::String("text".to_string())),
+        ]);
+        update_fts_for_node(&c, NodeId(1), "Article", None, &old).unwrap();
+        let new = props(&[
+            ("title", Value::String("new".to_string())),
+            ("body", Value::String("text".to_string())),
+        ]);
+        update_fts_for_node(&c, NodeId(1), "Article", Some(&old), &new).unwrap();
+        let old_hits: Vec<i64> = c
+            .prepare("SELECT rowid FROM \"node_fts_multi_Article_1\" WHERE \"node_fts_multi_Article_1\" MATCH ?1")
+            .unwrap()
+            .query_map(["old"], |r| r.get(0))
+            .unwrap()
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .unwrap();
+        assert!(old_hits.is_empty(), "old title should no longer match");
+        let new_hits: Vec<i64> = c
+            .prepare("SELECT rowid FROM \"node_fts_multi_Article_1\" WHERE \"node_fts_multi_Article_1\" MATCH ?1")
+            .unwrap()
+            .query_map(["new"], |r| r.get(0))
+            .unwrap()
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .unwrap();
+        assert_eq!(new_hits, vec![1]);
     }
 
     #[test]

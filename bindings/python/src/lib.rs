@@ -460,6 +460,22 @@ impl PyWriteTransaction {
             .map_err(to_py_err)
     }
 
+    /// Create a multi-property word-tokenized fulltext index on `label`.
+    ///
+    /// One FTS5 virtual table covers all listed properties. Use with
+    /// `CALL fts.search(label, '*', query)` to search across all
+    /// columns, or `CALL fts.search(label, property, query)` to scope
+    /// to one column.
+    fn create_fulltext_index_word_multi(
+        &mut self,
+        label: &str,
+        properties: Vec<String>,
+    ) -> PyResult<()> {
+        let db = self.get_db_mut()?;
+        db.create_fulltext_index_word_multi(label, &properties)
+            .map_err(to_py_err)
+    }
+
     /// Drop a fulltext index on (label, property).
     fn drop_fulltext_index(&mut self, label: &str, property: &str) -> PyResult<()> {
         let db = self.get_db_mut()?;

@@ -38,30 +38,29 @@ pub enum FtsTokenizerKind {
     Word,
 }
 
-/// Inspect the FTS5 virtual table for `(label, property)` and report
-/// which tokenizer it was created with.
+/// Resolve which FTS5 tokenizer covers `(label, property)`.
 ///
-/// Reads back the `CREATE VIRTUAL TABLE` DDL from `sqlite_master.sql`.
-/// Errors with `IndexNotFound` when no FTS index exists for the pair.
+/// Scans every fulltext index on `label` (single- and multi-prop) and
+/// returns the tokenizer kind of the one whose column list contains
+/// `property`. Errors with `IndexNotFound` when no FTS index covers
+/// the pair. Multi-prop tables share their tokenizer across every
+/// covered property by construction.
 pub fn fts_tokenizer_kind(
     conn: &Connection,
     label: &str,
     property: &str,
 ) -> Result<FtsTokenizerKind> {
-    let table = fts_table_name(label, property)?;
-    let sql: Option<String> = conn
-        .query_row(
-            "SELECT sql FROM sqlite_master WHERE type='table' AND name=?1 AND sql LIKE 'CREATE VIRTUAL TABLE%'",
-            [&table],
-            |r| r.get(0),
-        )
-        .ok();
-    let sql = sql.ok_or_else(|| GraphError::IndexNotFound {
+    let infos = list_all_fulltext_indexes(conn)?;
+    for info in &infos {
+        if info.label == label && info.properties.iter().any(|p| p == property) {
+            return Ok(info.kind);
+        }
+    }
+    Err(GraphError::IndexNotFound {
         label: label.to_string(),
         property: property.to_string(),
-        hint: Some("no fulltext index on this (label, property)".to_string()),
-    })?;
-    Ok(parse_tokenizer_kind(&sql))
+        hint: Some("no fulltext index covers this (label, property)".to_string()),
+    })
 }
 
 /// Parse a `CREATE VIRTUAL TABLE ... USING fts5(...)` DDL string and
@@ -185,6 +184,146 @@ pub fn create_fulltext_index_word(conn: &Connection, label: &str, property: &str
     create_fulltext_index_impl(conn, label, property, FtsTokenizerSpec::Word)
 }
 
+/// Build a unique multi-prop FTS table name for `label`.
+///
+/// Scans `sqlite_master` for existing `node_fts_multi_{label}_*`
+/// tables and picks the smallest unused positive integer suffix.
+/// Deterministic, doesn't depend on the property list (so the same
+/// label can host several disjoint multi-prop indexes).
+fn fts_multi_table_name(conn: &Connection, label: &str) -> Result<String> {
+    validate_name(label)?;
+    let prefix = format!("node_fts_multi_{label}_");
+    let mut stmt =
+        conn.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name LIKE ?1")?;
+    let rows = stmt.query_map([format!("{prefix}%")], |row| row.get::<_, String>(0))?;
+
+    let mut used: Vec<u64> = Vec::new();
+    for r in rows {
+        let name = r?;
+        if let Some(rest) = name.strip_prefix(&prefix) {
+            if let Ok(n) = rest.parse::<u64>() {
+                used.push(n);
+            }
+        }
+    }
+    used.sort();
+    let mut n: u64 = 1;
+    for u in used {
+        if u == n {
+            n += 1;
+        } else if u > n {
+            break;
+        }
+    }
+    Ok(format!("{prefix}{n}"))
+}
+
+/// Create a multi-property word-tokenized fulltext index on `label`.
+///
+/// One FTS5 virtual table (`node_fts_multi_{label}_{N}`) covers all
+/// listed properties as separate columns. `fts.search` can search
+/// across all of them via `'*'` or scope to one column by name.
+///
+/// Strict mutex: errors with `IndexAlreadyExists` if any existing FTS
+/// index (single or multi) already covers any of the listed properties
+/// on this label. `properties` must be non-empty and contain no
+/// duplicates.
+pub fn create_fulltext_index_word_multi(
+    conn: &Connection,
+    label: &str,
+    properties: &[String],
+) -> Result<()> {
+    if properties.is_empty() {
+        return Err(GraphError::IndexAlreadyExists {
+            label: label.to_string(),
+            property: String::new(),
+            hint: Some(
+                "create_fulltext_index_word_multi requires at least one property".to_string(),
+            ),
+        });
+    }
+    // Reject duplicate property names in the request.
+    let mut seen = std::collections::HashSet::new();
+    for p in properties {
+        if !seen.insert(p.as_str()) {
+            return Err(GraphError::IndexAlreadyExists {
+                label: label.to_string(),
+                property: p.clone(),
+                hint: Some("duplicate property in multi-prop index list".to_string()),
+            });
+        }
+    }
+    // Mutex: no existing FTS index can cover any of these properties.
+    for p in properties {
+        if fts_tokenizer_kind(conn, label, p).is_ok() {
+            return Err(GraphError::IndexAlreadyExists {
+                label: label.to_string(),
+                property: p.clone(),
+                hint: Some("another fulltext index already covers (label, property)".to_string()),
+            });
+        }
+    }
+    // Validate every property name as a safe identifier (we interpolate
+    // them into SQL column lists below).
+    for p in properties {
+        validate_name(p)?;
+    }
+    create_fulltext_index_multi_impl(conn, label, properties, FtsTokenizerSpec::Word)
+}
+
+fn create_fulltext_index_multi_impl(
+    conn: &Connection,
+    label: &str,
+    properties: &[String],
+    spec: FtsTokenizerSpec,
+) -> Result<()> {
+    let table = fts_multi_table_name(conn, label)?;
+    let cols_quoted: String = properties
+        .iter()
+        .map(|p| format!("\"{p}\""))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let tokenize = spec.tokenize_clause();
+    conn.execute(
+        &format!(
+            "CREATE VIRTUAL TABLE \"{table}\" USING fts5({cols_quoted}, tokenize='{tokenize}')"
+        ),
+        [],
+    )?;
+
+    // Backfill from existing nodes with this label.
+    let nodes = crate::node::find_nodes_by_label(conn, label)?;
+    if nodes.is_empty() {
+        return Ok(());
+    }
+    let placeholders: String = (2..=properties.len() + 1)
+        .map(|i| format!("?{i}"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let insert_sql =
+        format!("INSERT INTO \"{table}\" (rowid, {cols_quoted}) VALUES (?1, {placeholders})");
+    for n in &nodes {
+        // Skip nodes that have no string value on any covered property —
+        // matches the steady-state write path in `update_fts_for_node`.
+        let any_string = properties
+            .iter()
+            .any(|p| matches!(n.properties.get(p), Some(Value::String(_))));
+        if !any_string {
+            continue;
+        }
+        let mut params: Vec<Box<dyn rusqlite::ToSql>> = Vec::with_capacity(properties.len() + 1);
+        params.push(Box::new(n.id.0 as i64));
+        for prop in properties {
+            match n.properties.get(prop) {
+                Some(Value::String(s)) => params.push(Box::new(s.clone())),
+                _ => params.push(Box::new(rusqlite::types::Null)),
+            }
+        }
+        conn.execute(&insert_sql, rusqlite::params_from_iter(params.iter()))?;
+    }
+    Ok(())
+}
+
 fn create_fulltext_index_impl(
     conn: &Connection,
     label: &str,
@@ -197,6 +336,16 @@ fn create_fulltext_index_impl(
             label: label.to_string(),
             property: property.to_string(),
             hint: Some("a fulltext index on this (label, property) already exists".to_string()),
+        });
+    }
+    // Mutex against multi-prop indexes covering the same (label, property).
+    if fts_tokenizer_kind(conn, label, property).is_ok() {
+        return Err(GraphError::IndexAlreadyExists {
+            label: label.to_string(),
+            property: property.to_string(),
+            hint: Some(
+                "a multi-property fulltext index already covers this (label, property)".to_string(),
+            ),
         });
     }
     conn.execute(
@@ -1002,6 +1151,157 @@ mod tests {
         assert_eq!(got[0].table_name, "node_fts_Person_bio");
         assert_eq!(got[1].properties, vec!["name".to_string()]);
         assert_eq!(got[1].kind, FtsTokenizerKind::TrigramCaseSensitive);
+    }
+
+    #[test]
+    fn create_fulltext_index_word_multi_creates_multi_column_table() {
+        let c = conn();
+        create_fulltext_index_word_multi(
+            &c,
+            "Article",
+            &[
+                "title".to_string(),
+                "body".to_string(),
+                "summary".to_string(),
+            ],
+        )
+        .unwrap();
+        let sql: String = c
+            .query_row(
+                "SELECT sql FROM sqlite_master WHERE type='table' AND name=?1",
+                ["node_fts_multi_Article_1"],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert!(sql.contains("unicode61"), "sql was: {sql}");
+        assert!(sql.contains("\"title\""), "sql was: {sql}");
+        assert!(sql.contains("\"body\""), "sql was: {sql}");
+        assert!(sql.contains("\"summary\""), "sql was: {sql}");
+    }
+
+    #[test]
+    fn create_fulltext_index_word_multi_picks_smallest_unused_n() {
+        let c = conn();
+        create_fulltext_index_word_multi(&c, "Article", &["title".to_string(), "body".to_string()])
+            .unwrap();
+        create_fulltext_index_word_multi(
+            &c,
+            "Article",
+            &["summary".to_string(), "abstract".to_string()],
+        )
+        .unwrap();
+        let names: Vec<String> = c
+            .prepare("SELECT name FROM sqlite_master WHERE type='table' AND name LIKE 'node_fts_multi_Article_%' ORDER BY name")
+            .unwrap()
+            .query_map([], |r| r.get::<_, String>(0))
+            .unwrap()
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .unwrap();
+        let virtual_tables: Vec<&String> = names
+            .iter()
+            .filter(|n| {
+                !n.contains("_data")
+                    && !n.contains("_idx")
+                    && !n.contains("_content")
+                    && !n.contains("_docsize")
+                    && !n.contains("_config")
+            })
+            .collect();
+        assert_eq!(virtual_tables.len(), 2);
+        assert_eq!(virtual_tables[0], "node_fts_multi_Article_1");
+        assert_eq!(virtual_tables[1], "node_fts_multi_Article_2");
+    }
+
+    #[test]
+    fn create_fulltext_index_word_multi_errors_on_empty_properties() {
+        let c = conn();
+        match create_fulltext_index_word_multi(&c, "Article", &[]) {
+            Err(GraphError::Query(_)) | Err(GraphError::IndexAlreadyExists { .. }) => {}
+            other => panic!("expected error on empty properties, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn create_fulltext_index_word_multi_errors_on_duplicate_properties() {
+        let c = conn();
+        match create_fulltext_index_word_multi(
+            &c,
+            "Article",
+            &["title".to_string(), "title".to_string()],
+        ) {
+            Err(GraphError::IndexAlreadyExists { .. }) | Err(GraphError::Query(_)) => {}
+            other => panic!("expected error on duplicate properties, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn create_fulltext_index_word_multi_errors_when_single_prop_overlaps() {
+        let c = conn();
+        create_fulltext_index_word(&c, "Article", "title").unwrap();
+        match create_fulltext_index_word_multi(
+            &c,
+            "Article",
+            &["title".to_string(), "body".to_string()],
+        ) {
+            Err(GraphError::IndexAlreadyExists {
+                label, property, ..
+            }) => {
+                assert_eq!(label, "Article");
+                assert_eq!(property, "title");
+            }
+            other => panic!("expected IndexAlreadyExists, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn create_single_prop_errors_when_multi_covers_pair() {
+        let c = conn();
+        create_fulltext_index_word_multi(&c, "Article", &["title".to_string(), "body".to_string()])
+            .unwrap();
+        match create_fulltext_index_word(&c, "Article", "title") {
+            Err(GraphError::IndexAlreadyExists {
+                label, property, ..
+            }) => {
+                assert_eq!(label, "Article");
+                assert_eq!(property, "title");
+            }
+            other => panic!("expected IndexAlreadyExists, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn fts_tokenizer_kind_resolves_through_multi_prop_index() {
+        let c = conn();
+        create_fulltext_index_word_multi(&c, "Article", &["title".to_string(), "body".to_string()])
+            .unwrap();
+        assert_eq!(
+            fts_tokenizer_kind(&c, "Article", "title").unwrap(),
+            FtsTokenizerKind::Word
+        );
+        assert_eq!(
+            fts_tokenizer_kind(&c, "Article", "body").unwrap(),
+            FtsTokenizerKind::Word
+        );
+        match fts_tokenizer_kind(&c, "Article", "summary") {
+            Err(GraphError::IndexNotFound { .. }) => {}
+            other => panic!("expected IndexNotFound, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn list_all_fulltext_indexes_returns_multi_prop_info() {
+        let c = conn();
+        create_fulltext_index_word_multi(&c, "Article", &["title".to_string(), "body".to_string()])
+            .unwrap();
+        let got = list_all_fulltext_indexes(&c).unwrap();
+        assert_eq!(got.len(), 1);
+        assert_eq!(got[0].label, "Article");
+        assert_eq!(
+            got[0].properties,
+            vec!["title".to_string(), "body".to_string()]
+        );
+        assert_eq!(got[0].kind, FtsTokenizerKind::Word);
+        assert_eq!(got[0].table_name, "node_fts_multi_Article_1");
     }
 
     #[test]

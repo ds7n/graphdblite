@@ -4874,3 +4874,98 @@ fn fts_search_composes_with_downstream_match() {
     let companies: Vec<String> = rows.iter().map(|r| string_field(r, "company")).collect();
     assert_eq!(companies, vec!["Acme".to_string()]);
 }
+
+#[test]
+fn fts_multi_prop_search_finds_match_in_any_column() {
+    let mut db = Database::open_memory().unwrap();
+    db.execute(
+        "CREATE (:Article {title:'rust systems', body:'memory safe', summary:'fast'}), \
+                (:Article {title:'python notes', body:'data science', summary:'analysis'}), \
+                (:Article {title:'go tutorial', body:'concurrent code', summary:'goroutines'})",
+    )
+    .unwrap();
+    db.begin_write().unwrap();
+    db.create_fulltext_index_word_multi(
+        "Article",
+        &[
+            "title".to_string(),
+            "body".to_string(),
+            "summary".to_string(),
+        ],
+    )
+    .unwrap();
+    db.commit().unwrap();
+
+    // 'memory' only in body of first article.
+    let rows = db
+        .execute(
+            "CALL fts.search('Article', '*', 'memory') YIELD node \
+             RETURN node.title AS title",
+        )
+        .unwrap();
+    let titles: Vec<String> = rows.iter().map(|r| string_field(r, "title")).collect();
+    assert_eq!(titles, vec!["rust systems".to_string()]);
+
+    // 'goroutines' only in summary of third article.
+    let rows = db
+        .execute(
+            "CALL fts.search('Article', '*', 'goroutines') YIELD node \
+             RETURN node.title AS title",
+        )
+        .unwrap();
+    let titles: Vec<String> = rows.iter().map(|r| string_field(r, "title")).collect();
+    assert_eq!(titles, vec!["go tutorial".to_string()]);
+}
+
+#[test]
+fn fts_multi_prop_column_scoped_search_isolates_one_property() {
+    let mut db = Database::open_memory().unwrap();
+    db.execute("CREATE (:Article {title:'rust systems', body:'python data'})")
+        .unwrap();
+    db.begin_write().unwrap();
+    db.create_fulltext_index_word_multi("Article", &["title".to_string(), "body".to_string()])
+        .unwrap();
+    db.commit().unwrap();
+
+    // 'python' is in body, not title. Title-scoped search returns nothing.
+    let rows = db
+        .execute(
+            "CALL fts.search('Article', 'title', 'python') YIELD node \
+             RETURN node.title AS title",
+        )
+        .unwrap();
+    assert!(rows.is_empty());
+
+    // Body-scoped finds it.
+    let rows = db
+        .execute(
+            "CALL fts.search('Article', 'body', 'python') YIELD node \
+             RETURN node.title AS title",
+        )
+        .unwrap();
+    let titles: Vec<String> = rows.iter().map(|r| string_field(r, "title")).collect();
+    assert_eq!(titles, vec!["rust systems".to_string()]);
+}
+
+#[test]
+fn fts_multi_prop_supports_phrase_query_per_column() {
+    let mut db = Database::open_memory().unwrap();
+    db.execute(
+        "CREATE (:Article {title:'rust', body:'systems programming in rust'}), \
+                (:Article {title:'rust', body:'data science with python'})",
+    )
+    .unwrap();
+    db.begin_write().unwrap();
+    db.create_fulltext_index_word_multi("Article", &["title".to_string(), "body".to_string()])
+        .unwrap();
+    db.commit().unwrap();
+
+    let rows = db
+        .execute(
+            "CALL fts.search('Article', 'body', '\"systems programming\"') YIELD node \
+             RETURN node.body AS body",
+        )
+        .unwrap();
+    let bodies: Vec<String> = rows.iter().map(|r| string_field(r, "body")).collect();
+    assert_eq!(bodies, vec!["systems programming in rust".to_string()]);
+}

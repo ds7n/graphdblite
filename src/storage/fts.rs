@@ -80,6 +80,50 @@ fn parse_tokenizer_kind(sql: &str) -> FtsTokenizerKind {
     }
 }
 
+/// Structured description of a fulltext index.
+///
+/// `properties.len() == 1` for single-property indexes (the historical
+/// shape); `properties.len() > 1` for multi-property indexes whose
+/// underlying FTS5 virtual table has multiple content columns.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FtsIndexInfo {
+    /// Label this index is attached to.
+    pub label: String,
+    /// Property names covered by this index. Length 1 for single-prop
+    /// (legacy) indexes; length > 1 for multi-prop indexes.
+    pub properties: Vec<String>,
+    /// Which FTS5 tokenizer was used at create time.
+    pub kind: FtsTokenizerKind,
+    /// Underlying SQLite virtual table name.
+    pub table_name: String,
+}
+
+/// Parse the comma-separated column list out of an FTS5
+/// `CREATE VIRTUAL TABLE ... USING fts5(...)` DDL string.
+///
+/// Handles bare identifiers (`content`) and quoted ones (`"title"`).
+/// Stops at the `tokenize=` clause if present, otherwise at the
+/// closing `)`. Returns an empty vec if the DDL shape is unexpected.
+fn parse_column_list(sql: &str) -> Vec<String> {
+    let Some(open) = sql.find('(') else {
+        return Vec::new();
+    };
+    let rest = &sql[open + 1..];
+    // Stop at "tokenize=" or the matching close paren.
+    let end = rest
+        .find("tokenize=")
+        .unwrap_or_else(|| rest.rfind(')').unwrap_or(rest.len()));
+    let columns_str = rest[..end].trim().trim_end_matches(',').trim();
+    columns_str
+        .split(',')
+        .map(|c| {
+            let c = c.trim();
+            c.trim_matches('"').trim_matches('\'').to_string()
+        })
+        .filter(|c| !c.is_empty())
+        .collect()
+}
+
 /// Internal spec for the shared creator. Determines the FTS5 tokenize clause.
 enum FtsTokenizerSpec {
     TrigramCaseSensitive,
@@ -202,24 +246,9 @@ pub fn drop_fulltext_index(conn: &Connection, label: &str, property: &str) -> Re
 pub fn list_fulltext_indexes_for_label(
     conn: &Connection,
     label: &str,
-) -> Result<Vec<(String, String)>> {
-    let prefix = format!("node_fts_{label}_");
-    let mut stmt = conn.prepare_cached(
-        "SELECT name FROM sqlite_master \
-         WHERE type='table' \
-         AND name LIKE ?1 \
-         AND sql LIKE 'CREATE VIRTUAL TABLE%'",
-    )?;
-    let rows = stmt.query_map([format!("{prefix}%")], |row| row.get::<_, String>(0))?;
-
-    let mut result = Vec::new();
-    for name in rows {
-        let name = name?;
-        if let Some(property) = name.strip_prefix(&prefix) {
-            result.push((label.to_string(), property.to_string()));
-        }
-    }
-    Ok(result)
+) -> Result<Vec<FtsIndexInfo>> {
+    let all = list_all_fulltext_indexes(conn)?;
+    Ok(all.into_iter().filter(|info| info.label == label).collect())
 }
 
 /// List every fulltext index in the database as `(label, property)`
@@ -232,13 +261,11 @@ pub fn list_fulltext_indexes_for_label(
 /// is on the FIRST underscore after the `node_fts_` prefix so that
 /// properties with underscores (e.g. `cache_data`) round-trip when
 /// labels do not contain underscores.
-pub fn list_all_fulltext_indexes(
-    conn: &Connection,
-) -> Result<Vec<(String, String, FtsTokenizerKind)>> {
+pub fn list_all_fulltext_indexes(conn: &Connection) -> Result<Vec<FtsIndexInfo>> {
     let mut stmt = conn.prepare_cached(
         "SELECT name, sql FROM sqlite_master \
          WHERE type='table' \
-         AND name LIKE 'node_fts_%' \
+         AND (name LIKE 'node_fts_%') \
          AND sql LIKE 'CREATE VIRTUAL TABLE%'",
     )?;
     let rows = stmt.query_map([], |row| {
@@ -248,15 +275,41 @@ pub fn list_all_fulltext_indexes(
     let mut result = Vec::new();
     for r in rows {
         let (name, sql) = r?;
-        let Some(rest) = name.strip_prefix("node_fts_") else {
-            continue;
-        };
-        let Some(split) = rest.find('_') else {
-            continue;
-        };
-        let (label, property) = rest.split_at(split);
         let kind = parse_tokenizer_kind(&sql);
-        result.push((label.to_string(), property[1..].to_string(), kind));
+        let properties = parse_column_list(&sql);
+
+        // Determine label from table name. Two naming schemes:
+        //   node_fts_{label}_{property}        (single-prop, legacy)
+        //   node_fts_multi_{label}_{N}         (multi-prop)
+        if let Some(rest) = name.strip_prefix("node_fts_multi_") {
+            // Suffix is {label}_{N}; split on the LAST underscore.
+            let Some(split) = rest.rfind('_') else {
+                continue;
+            };
+            let label = &rest[..split];
+            result.push(FtsIndexInfo {
+                label: label.to_string(),
+                properties,
+                kind,
+                table_name: name,
+            });
+        } else if let Some(rest) = name.strip_prefix("node_fts_") {
+            // Single-prop: split on the FIRST underscore to separate
+            // {label}_{property}. The `properties` parsed from the DDL
+            // is `["content"]`, which is the FTS5 column name — for
+            // legacy single-prop tables we want the PROPERTY name from
+            // the table name, not the column name.
+            let Some(split) = rest.find('_') else {
+                continue;
+            };
+            let (label, property) = rest.split_at(split);
+            result.push(FtsIndexInfo {
+                label: label.to_string(),
+                properties: vec![property[1..].to_string()],
+                kind,
+                table_name: name,
+            });
+        }
     }
     Ok(result)
 }
@@ -279,9 +332,17 @@ pub fn update_fts_for_node(
     old_properties: Option<&Properties>,
     new_properties: &Properties,
 ) -> Result<()> {
-    let tables = list_fulltext_indexes_for_label(conn, label)?;
-    for (_, property) in &tables {
-        let table = fts_table_name(label, property)?;
+    let infos = list_fulltext_indexes_for_label(conn, label)?;
+    for info in &infos {
+        // Single-prop only at this task. Multi-prop write path lands in Task 3.
+        debug_assert_eq!(
+            info.properties.len(),
+            1,
+            "multi-prop write path not yet implemented; expected after Task 3"
+        );
+        let property = &info.properties[0];
+        let table = &info.table_name;
+
         let old_val = old_properties
             .and_then(|p| p.get(property.as_str()))
             .and_then(|v| match v {
@@ -319,12 +380,13 @@ pub fn remove_fts_for_node(
     label: &str,
     properties: &Properties,
 ) -> Result<()> {
-    let tables = list_fulltext_indexes_for_label(conn, label)?;
-    for (_, property) in &tables {
+    let infos = list_fulltext_indexes_for_label(conn, label)?;
+    for info in &infos {
+        debug_assert_eq!(info.properties.len(), 1);
+        let property = &info.properties[0];
         if let Some(Value::String(_)) = properties.get(property.as_str()) {
-            let table = fts_table_name(label, property)?;
             conn.execute(
-                &format!("DELETE FROM \"{table}\" WHERE rowid=?1"),
+                &format!("DELETE FROM \"{}\" WHERE rowid=?1", info.table_name),
                 rusqlite::params![node_id.0 as i64],
             )?;
         }
@@ -485,14 +547,12 @@ mod tests {
         create_fulltext_index(&c, "Article", "body").unwrap();
 
         let mut got = list_fulltext_indexes_for_label(&c, "Person").unwrap();
-        got.sort();
-        assert_eq!(
-            got,
-            vec![
-                ("Person".to_string(), "bio".to_string()),
-                ("Person".to_string(), "name".to_string()),
-            ]
-        );
+        got.sort_by(|a, b| a.properties[0].cmp(&b.properties[0]));
+        assert_eq!(got.len(), 2);
+        assert_eq!(got[0].label, "Person");
+        assert_eq!(got[0].properties, vec!["bio".to_string()]);
+        assert_eq!(got[1].label, "Person");
+        assert_eq!(got[1].properties, vec!["name".to_string()]);
     }
 
     #[test]
@@ -510,7 +570,9 @@ mod tests {
         // though it shares a suffix with FTS5's "_data" shadow tables.
         create_fulltext_index(&c, "Foo", "cache_data").unwrap();
         let got = list_fulltext_indexes_for_label(&c, "Foo").unwrap();
-        assert_eq!(got, vec![("Foo".to_string(), "cache_data".to_string())]);
+        assert_eq!(got.len(), 1);
+        assert_eq!(got[0].label, "Foo");
+        assert_eq!(got[0].properties, vec!["cache_data".to_string()]);
     }
 
     #[test]
@@ -693,27 +755,17 @@ mod tests {
         create_fulltext_index(&c, "Doc", "title").unwrap();
         create_fulltext_index(&c, "Note", "text").unwrap();
         let mut got = list_all_fulltext_indexes(&c).unwrap();
-        got.sort();
-        assert_eq!(
-            got,
-            vec![
-                (
-                    "Doc".to_string(),
-                    "body".to_string(),
-                    FtsTokenizerKind::TrigramCaseSensitive
-                ),
-                (
-                    "Doc".to_string(),
-                    "title".to_string(),
-                    FtsTokenizerKind::TrigramCaseSensitive
-                ),
-                (
-                    "Note".to_string(),
-                    "text".to_string(),
-                    FtsTokenizerKind::TrigramCaseSensitive
-                ),
-            ]
-        );
+        got.sort_by(|a, b| a.table_name.cmp(&b.table_name));
+        assert_eq!(got.len(), 3);
+        assert_eq!(got[0].label, "Doc");
+        assert_eq!(got[0].properties, vec!["body".to_string()]);
+        assert_eq!(got[0].kind, FtsTokenizerKind::TrigramCaseSensitive);
+        assert_eq!(got[1].label, "Doc");
+        assert_eq!(got[1].properties, vec!["title".to_string()]);
+        assert_eq!(got[1].kind, FtsTokenizerKind::TrigramCaseSensitive);
+        assert_eq!(got[2].label, "Note");
+        assert_eq!(got[2].properties, vec!["text".to_string()]);
+        assert_eq!(got[2].kind, FtsTokenizerKind::TrigramCaseSensitive);
     }
 
     #[test]
@@ -723,27 +775,17 @@ mod tests {
         create_fulltext_index_ci(&c, "Person", "bio").unwrap();
         create_fulltext_index_ci(&c, "Article", "body").unwrap();
         let mut got = list_all_fulltext_indexes(&c).unwrap();
-        got.sort();
-        assert_eq!(
-            got,
-            vec![
-                (
-                    "Article".to_string(),
-                    "body".to_string(),
-                    FtsTokenizerKind::TrigramCaseInsensitive
-                ),
-                (
-                    "Person".to_string(),
-                    "bio".to_string(),
-                    FtsTokenizerKind::TrigramCaseInsensitive
-                ),
-                (
-                    "Person".to_string(),
-                    "name".to_string(),
-                    FtsTokenizerKind::TrigramCaseSensitive
-                ),
-            ]
-        );
+        got.sort_by(|a, b| a.table_name.cmp(&b.table_name));
+        assert_eq!(got.len(), 3);
+        assert_eq!(got[0].label, "Article");
+        assert_eq!(got[0].properties, vec!["body".to_string()]);
+        assert_eq!(got[0].kind, FtsTokenizerKind::TrigramCaseInsensitive);
+        assert_eq!(got[1].label, "Person");
+        assert_eq!(got[1].properties, vec!["bio".to_string()]);
+        assert_eq!(got[1].kind, FtsTokenizerKind::TrigramCaseInsensitive);
+        assert_eq!(got[2].label, "Person");
+        assert_eq!(got[2].properties, vec!["name".to_string()]);
+        assert_eq!(got[2].kind, FtsTokenizerKind::TrigramCaseSensitive);
     }
 
     #[test]
@@ -919,6 +961,50 @@ mod tests {
     }
 
     #[test]
+    fn parse_column_list_extracts_quoted_identifiers() {
+        let sql = "CREATE VIRTUAL TABLE \"node_fts_multi_Article_1\" USING fts5(\"title\", \"body\", \"summary\", tokenize='unicode61')";
+        assert_eq!(
+            parse_column_list(sql),
+            vec![
+                "title".to_string(),
+                "body".to_string(),
+                "summary".to_string()
+            ]
+        );
+    }
+
+    #[test]
+    fn parse_column_list_handles_single_content_column() {
+        let sql = "CREATE VIRTUAL TABLE \"node_fts_Person_bio\" USING fts5(content, tokenize='trigram case_sensitive 1')";
+        assert_eq!(parse_column_list(sql), vec!["content".to_string()]);
+    }
+
+    #[test]
+    fn parse_column_list_handles_no_tokenize_clause() {
+        let sql = "CREATE VIRTUAL TABLE \"t\" USING fts5(\"a\", \"b\")";
+        assert_eq!(
+            parse_column_list(sql),
+            vec!["a".to_string(), "b".to_string()]
+        );
+    }
+
+    #[test]
+    fn list_all_fulltext_indexes_returns_index_info_for_single_prop() {
+        let c = conn();
+        create_fulltext_index(&c, "Person", "name").unwrap();
+        create_fulltext_index_ci(&c, "Person", "bio").unwrap();
+        let mut got = list_all_fulltext_indexes(&c).unwrap();
+        got.sort_by(|a, b| a.table_name.cmp(&b.table_name));
+        assert_eq!(got.len(), 2);
+        assert_eq!(got[0].label, "Person");
+        assert_eq!(got[0].properties, vec!["bio".to_string()]);
+        assert_eq!(got[0].kind, FtsTokenizerKind::TrigramCaseInsensitive);
+        assert_eq!(got[0].table_name, "node_fts_Person_bio");
+        assert_eq!(got[1].properties, vec!["name".to_string()]);
+        assert_eq!(got[1].kind, FtsTokenizerKind::TrigramCaseSensitive);
+    }
+
+    #[test]
     fn list_all_fulltext_indexes_skips_shadow_tables() {
         // Regression: a user property literally named "cache_data" or other
         // FTS5 shadow-suffix names must not confuse the listing.
@@ -926,13 +1012,9 @@ mod tests {
         create_fulltext_index(&c, "Foo", "cache_data").unwrap();
         let got = list_all_fulltext_indexes(&c).unwrap();
         // Exactly one entry — the virtual table itself — not the shadow tables.
-        assert_eq!(
-            got,
-            vec![(
-                "Foo".to_string(),
-                "cache_data".to_string(),
-                FtsTokenizerKind::TrigramCaseSensitive
-            )]
-        );
+        assert_eq!(got.len(), 1);
+        assert_eq!(got[0].label, "Foo");
+        assert_eq!(got[0].properties, vec!["cache_data".to_string()]);
+        assert_eq!(got[0].kind, FtsTokenizerKind::TrigramCaseSensitive);
     }
 }

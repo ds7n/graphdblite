@@ -123,13 +123,15 @@ fn exec_db_indexes(conn: &Connection) -> Result<Vec<HashMap<String, Value>>> {
     for (label, property) in secondary {
         rows.push(row(&label, &property, "btree"));
     }
-    for (label, property, kind) in fulltext {
-        let kind_str = match kind {
+    for info in fulltext {
+        let kind_str = match info.kind {
             crate::storage::fts::FtsTokenizerKind::TrigramCaseSensitive => "fulltext",
             crate::storage::fts::FtsTokenizerKind::TrigramCaseInsensitive => "fulltext_ci",
             crate::storage::fts::FtsTokenizerKind::Word => "fulltext_word",
         };
-        rows.push(row(&label, &property, kind_str));
+        for property in &info.properties {
+            rows.push(row(&info.label, property, kind_str));
+        }
     }
     Ok(rows)
 }

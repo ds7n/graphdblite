@@ -270,6 +270,45 @@ func (tx *WriteTransaction) CreateFulltextIndexWord(label, property string) erro
 	})
 }
 
+// CreateFulltextIndexWordMulti creates a word-tokenized (unicode61)
+// fulltext index covering multiple properties on a label. Backed by a
+// single SQLite FTS5 multi-column virtual table.
+//
+// Use CALL fts.search(label, '*', query) to search across every covered
+// property, or CALL fts.search(label, property, query) to scope to one
+// covered property.
+func (tx *WriteTransaction) CreateFulltextIndexWordMulti(label string, properties []string) error {
+	if tx.db == nil || tx.db.ptr == nil {
+		return errors.New("transaction is finished")
+	}
+	if len(properties) == 0 {
+		return errors.New("graphdblite create_fulltext_index_word_multi: properties cannot be empty")
+	}
+	clabel := C.CString(label)
+	defer C.free(unsafe.Pointer(clabel))
+
+	// Marshal []string into a C array of *C.char. Each C.CString allocates
+	// in the C heap; defer C.free for each entry so they release in LIFO
+	// order when the function returns (whether via success or error path).
+	cprops := make([]*C.char, len(properties))
+	for i, p := range properties {
+		cprops[i] = C.CString(p)
+		defer C.free(unsafe.Pointer(cprops[i]))
+	}
+	cpropsPtr := (**C.char)(unsafe.Pointer(&cprops[0]))
+
+	rc := C.graphdb_create_fulltext_index_word_multi(
+		tx.db.ptr,
+		clabel,
+		cpropsPtr,
+		C.size_t(len(properties)),
+	)
+	if rc != 0 {
+		return fmt.Errorf("graphdblite create_fulltext_index_word_multi: %w", lastError())
+	}
+	return nil
+}
+
 // DropFulltextIndex drops a fulltext index on (label, property).
 func (tx *WriteTransaction) DropFulltextIndex(label, property string) error {
 	return tx.ddl("drop_fulltext_index", label, property, func(clabel, cprop *C.char) C.int32_t {

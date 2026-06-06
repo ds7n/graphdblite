@@ -385,3 +385,40 @@ func TestCreateFulltextIndexWord(t *testing.T) {
 	}
 	res.Free()
 }
+
+func TestCreateFulltextIndexWordMulti(t *testing.T) {
+	db, err := OpenMemory()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	tx, err := db.BeginWrite()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := tx.CreateFulltextIndexWordMulti("Article", []string{"title", "body"}); err != nil {
+		_ = tx.Rollback()
+		t.Fatalf("CreateFulltextIndexWordMulti: %v", err)
+	}
+	res, err := tx.Execute("CREATE (:Article {title: 'rust', body: 'memory safe systems'})")
+	if err != nil {
+		_ = tx.Rollback()
+		t.Fatalf("insert: %v", err)
+	}
+	res.Free()
+	if err := tx.Commit(); err != nil {
+		t.Fatal(err)
+	}
+
+	// '*' searches across all covered properties of the multi-prop index.
+	res, err = db.Query("CALL fts.search('Article', '*', 'memory') YIELD node, score RETURN score")
+	if err != nil {
+		t.Fatalf("fts.search: %v", err)
+	}
+	if got := res.RowCount(); got != 1 {
+		res.Free()
+		t.Fatalf("expected 1 row from fts.search, got %d", got)
+	}
+	res.Free()
+}

@@ -95,14 +95,19 @@ pub(crate) fn exec_fulltext_lookup(
     };
 
     let mut records = Vec::new();
-    for (id, _rank) in scored_ids {
+    for (id, rank) in scored_ids {
         let n = node::get_node(conn, id)?;
         // Anchored post-filter: CONTAINS needs no check (trigram is exact);
         // STARTS WITH / ENDS WITH need a position check.
         if !fts_anchor_matches(&n.properties, property, op, &term) {
             continue;
         }
-        let rec = node_to_record(&n, alias);
+        let mut rec = node_to_record(&n, alias);
+        // Surface BM25 score for `score(<alias>)` projections. FTS5's
+        // `bm25()` is negative-signed (lower = better); negate so the
+        // user-facing convention is higher = better, matching the
+        // `fts.search` procedure path.
+        rec.set(format!("{alias}.__fts_score"), Value::F64(-rank));
         if let Some(filter) = remaining_filters {
             if !eval_predicate(filter, &rec, crate::cypher::eval::EvalCx::new(conn))? {
                 continue;
@@ -160,7 +165,10 @@ fn exec_fulltext_fallback(
         if !matches {
             continue;
         }
-        let rec = node_to_record(&n, alias);
+        let mut rec = node_to_record(&n, alias);
+        // Trigram-floor fallback rows still matched via an FTS-eligible op,
+        // so emit a concrete 0.0 score rather than leaving `score(n)` NULL.
+        rec.set(format!("{alias}.__fts_score"), Value::F64(0.0));
         if let Some(filter) = remaining_filters {
             if !eval_predicate(filter, &rec, crate::cypher::eval::EvalCx::new(conn))? {
                 continue;
@@ -904,4 +912,70 @@ pub(in crate::cypher::executor) fn exec_unwind(
     }
 
     Ok(results)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::cypher::ast::{Expr, ExprKind, LiteralValue};
+    use crate::cypher::ir::FullTextOp;
+
+    #[test]
+    fn exec_fulltext_lookup_writes_fts_score_flat_key() {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        crate::schema::init_schema(&conn).unwrap();
+        let mut props = std::collections::HashMap::new();
+        props.insert(
+            "body".to_string(),
+            Value::String("rust systems programming".to_string()),
+        );
+        crate::storage::node::create_node(&conn, &["Doc".to_string()], props).unwrap();
+        crate::storage::fts::create_fulltext_index(&conn, "Doc", "body").unwrap();
+
+        let term_expr =
+            Expr::synthetic(ExprKind::Literal(LiteralValue::String("rust".to_string())));
+        let outer = NamedRecord::default();
+        let records = exec_fulltext_lookup(
+            &conn,
+            "Doc",
+            "n",
+            "body",
+            FullTextOp::Contains,
+            &term_expr,
+            None,
+            &outer,
+        )
+        .unwrap();
+        assert_eq!(records.len(), 1);
+        let score = records[0]
+            .get("n.__fts_score")
+            .expect("n.__fts_score flat key must be set");
+        match score {
+            Value::F64(s) => assert!(
+                s.is_finite() && *s > 0.0,
+                "score should be positive, got {s}"
+            ),
+            other => panic!("n.__fts_score was {other:?}, expected F64"),
+        }
+    }
+
+    #[test]
+    fn exec_fulltext_fallback_writes_zero_fts_score() {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        crate::schema::init_schema(&conn).unwrap();
+        let mut props = std::collections::HashMap::new();
+        props.insert("body".to_string(), Value::String("ab cd".to_string()));
+        crate::storage::node::create_node(&conn, &["Doc".to_string()], props).unwrap();
+        crate::storage::fts::create_fulltext_index(&conn, "Doc", "body").unwrap();
+
+        // Term length 2 is below the trigram floor → fallback path.
+        let records =
+            exec_fulltext_fallback(&conn, "Doc", "n", "body", FullTextOp::Contains, "ab", None)
+                .unwrap();
+        assert_eq!(records.len(), 1);
+        let score = records[0]
+            .get("n.__fts_score")
+            .expect("fallback must set n.__fts_score");
+        assert_eq!(*score, Value::F64(0.0));
+    }
 }

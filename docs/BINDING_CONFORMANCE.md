@@ -140,6 +140,17 @@ case-sensitive variant except the FTS5 tokenizer is built with
 `db.indexes()` procedure reports `kind = "fulltext_ci"` for CI
 indexes.
 
+Each binding also exposes a word-tokenized variant —
+`create_fulltext_index_word` (Python / Rust) /
+`createFulltextIndexWord` (Node) / `CreateFulltextIndexWord` (Go) /
+`graphdb_create_fulltext_index_word` (C/FFI). Backed by FTS5's
+`unicode61` tokenizer (word-boundary, case-folded, diacritic-folded),
+this variant is intended for use with the `fts.search(label,
+property, query)` built-in procedure rather than `CONTAINS` /
+`STARTS WITH` / `ENDS WITH` (which fall back to label scan against
+a word index). `db.indexes()` reports `kind = "fulltext_word"` for
+word indexes.
+
 ---
 
 ## Coverage matrix

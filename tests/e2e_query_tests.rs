@@ -4969,3 +4969,143 @@ fn fts_multi_prop_supports_phrase_query_per_column() {
     let bodies: Vec<String> = rows.iter().map(|r| string_field(r, "body")).collect();
     assert_eq!(bodies, vec!["systems programming in rust".to_string()]);
 }
+
+#[test]
+fn score_function_returns_bm25_for_contains_hits() {
+    let mut db = Database::open_memory().unwrap();
+    db.execute(
+        "CREATE (:Doc {body:'rust rust rust everywhere'}), \
+                (:Doc {body:'rust occasionally appears here'}), \
+                (:Doc {body:'python only'})",
+    )
+    .unwrap();
+    db.begin_write().unwrap();
+    db.create_fulltext_index("Doc", "body").unwrap();
+    db.commit().unwrap();
+
+    let rows = db
+        .execute(
+            "MATCH (n:Doc) WHERE n.body CONTAINS 'rust' \
+             RETURN n.body AS body, score(n) AS s",
+        )
+        .unwrap();
+    assert_eq!(rows.len(), 2);
+    for r in &rows {
+        match r.get("s").unwrap() {
+            Value::F64(f) => assert!(*f > 0.0, "score should be positive, got {f}"),
+            v => panic!("score column was {v:?}"),
+        }
+    }
+}
+
+#[test]
+fn score_function_returns_null_for_non_fts_variable() {
+    let mut db = Database::open_memory().unwrap();
+    db.execute("CREATE (:Person {name:'Alice'}), (:Person {name:'Bob'})")
+        .unwrap();
+    let rows = db
+        .execute("MATCH (n:Person) RETURN score(n) AS s ORDER BY n.name")
+        .unwrap();
+    assert_eq!(rows.len(), 2);
+    for r in &rows {
+        assert_eq!(r.get("s").unwrap(), &Value::Null);
+    }
+}
+
+#[test]
+fn score_function_orders_results_descending() {
+    let mut db = Database::open_memory().unwrap();
+    db.execute(
+        "CREATE (:Doc {body:'rust rust rust frequent'}), \
+                (:Doc {body:'rust rare'})",
+    )
+    .unwrap();
+    db.begin_write().unwrap();
+    db.create_fulltext_index("Doc", "body").unwrap();
+    db.commit().unwrap();
+
+    let rows = db
+        .execute(
+            "MATCH (n:Doc) WHERE n.body CONTAINS 'rust' \
+             RETURN n.body AS body ORDER BY score(n) DESC",
+        )
+        .unwrap();
+    let bodies: Vec<String> = rows.iter().map(|r| string_field(r, "body")).collect();
+    assert_eq!(bodies[0], "rust rust rust frequent");
+    assert_eq!(bodies[1], "rust rare");
+}
+
+#[test]
+fn score_function_works_with_starts_with() {
+    let mut db = Database::open_memory().unwrap();
+    db.execute("CREATE (:Doc {body:'rust programming'})")
+        .unwrap();
+    db.begin_write().unwrap();
+    db.create_fulltext_index("Doc", "body").unwrap();
+    db.commit().unwrap();
+
+    let rows = db
+        .execute(
+            "MATCH (n:Doc) WHERE n.body STARTS WITH 'rust' \
+             RETURN score(n) AS s",
+        )
+        .unwrap();
+    assert_eq!(rows.len(), 1);
+    match rows[0].get("s").unwrap() {
+        Value::F64(f) => assert!(*f > 0.0, "score should be positive, got {f}"),
+        v => panic!("score column was {v:?}"),
+    }
+}
+
+#[test]
+fn score_function_works_with_ends_with() {
+    let mut db = Database::open_memory().unwrap();
+    db.execute("CREATE (:Doc {body:'programming in rust'})")
+        .unwrap();
+    db.begin_write().unwrap();
+    db.create_fulltext_index("Doc", "body").unwrap();
+    db.commit().unwrap();
+
+    let rows = db
+        .execute(
+            "MATCH (n:Doc) WHERE n.body ENDS WITH 'rust' \
+             RETURN score(n) AS s",
+        )
+        .unwrap();
+    assert_eq!(rows.len(), 1);
+    match rows[0].get("s").unwrap() {
+        Value::F64(f) => assert!(*f > 0.0, "score should be positive, got {f}"),
+        v => panic!("score column was {v:?}"),
+    }
+}
+
+#[test]
+fn score_function_survives_with_clause() {
+    let mut db = Database::open_memory().unwrap();
+    db.execute(
+        "CREATE (:Doc {body:'rust rust rust'}), \
+                (:Doc {body:'rust once'})",
+    )
+    .unwrap();
+    db.begin_write().unwrap();
+    db.create_fulltext_index("Doc", "body").unwrap();
+    db.commit().unwrap();
+
+    let rows = db
+        .execute(
+            "MATCH (n:Doc) WHERE n.body CONTAINS 'rust' \
+             WITH n, score(n) AS s \
+             RETURN n.body AS body, s ORDER BY s DESC",
+        )
+        .unwrap();
+    assert_eq!(rows.len(), 2);
+    let s0 = match rows[0].get("s").unwrap() {
+        Value::F64(f) => *f,
+        _ => panic!(),
+    };
+    let s1 = match rows[1].get("s").unwrap() {
+        Value::F64(f) => *f,
+        _ => panic!(),
+    };
+    assert!(s0 >= s1, "expected descending: {s0} vs {s1}");
+}

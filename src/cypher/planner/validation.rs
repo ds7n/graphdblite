@@ -117,6 +117,32 @@ pub(in crate::cypher::planner) fn validate_expr_types(
                     }
                 }
             }
+            // score() requires its sole argument to be a bare Variable —
+            // the executor reads `<var>.__fts_score` from the record's flat
+            // bindings, which only exist for variables bound by an FTS-aware
+            // Scan/IndexLookup.
+            if name_lower == "score" {
+                if args.len() != 1 {
+                    return Err(GraphError::Query(crate::types::QueryError::ArgumentError {
+                        phase: crate::types::QueryPhase::SemanticAnalysis,
+                        code: ErrorCode::InvalidArgumentValue,
+                        message: format!("score() requires exactly 1 argument, got {}", args.len()),
+                        hint: Some("usage: score(node_variable)".to_string()),
+                        span: Some(expr.span),
+                    }));
+                }
+                if !matches!(&args[0].kind, ExprKind::Variable(_)) {
+                    return Err(GraphError::Query(crate::types::QueryError::ArgumentError {
+                        phase: crate::types::QueryPhase::SemanticAnalysis,
+                        code: ErrorCode::InvalidArgumentValue,
+                        message: "score() argument must be a variable".to_string(),
+                        hint: Some(
+                            "usage: score(n) where n is an FTS-matched node variable".to_string(),
+                        ),
+                        span: Some(expr.span),
+                    }));
+                }
+            }
             for arg in args {
                 validate_expr_types(arg, var_types)?;
             }
@@ -1155,4 +1181,81 @@ pub(in crate::cypher::planner) fn validate_variable_types_with_map(
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod score_validation_tests {
+    use crate::cypher::parser::parse;
+    use crate::cypher::planner::plan;
+    use crate::types::{ErrorCode, GraphError, QueryError};
+    use rusqlite::Connection;
+
+    fn plan_cypher(q: &str) -> crate::types::Result<crate::cypher::ir::LogicalOp> {
+        let conn = Connection::open_in_memory().unwrap();
+        crate::schema::init_schema(&conn).unwrap();
+        let stmt = parse(q)?;
+        plan(&conn, &stmt)
+    }
+
+    #[test]
+    fn score_with_zero_args_errors_at_plan_time() {
+        let err = plan_cypher("MATCH (n:Person) RETURN score()").unwrap_err();
+        match err {
+            GraphError::Query(QueryError::ArgumentError {
+                code: ErrorCode::InvalidArgumentValue,
+                message,
+                ..
+            }) => {
+                assert!(message.contains("score"), "message was: {message}");
+            }
+            other => panic!("expected ArgumentError(InvalidArgumentValue), got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn score_with_two_args_errors_at_plan_time() {
+        let err = plan_cypher("MATCH (n:Person), (m:Person) RETURN score(n, m)").unwrap_err();
+        match err {
+            GraphError::Query(QueryError::ArgumentError {
+                code: ErrorCode::InvalidArgumentValue,
+                ..
+            }) => {}
+            other => panic!("expected ArgumentError(InvalidArgumentValue), got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn score_with_literal_arg_errors_at_plan_time() {
+        let err = plan_cypher("MATCH (n:Person) RETURN score(123)").unwrap_err();
+        match err {
+            GraphError::Query(QueryError::ArgumentError {
+                code: ErrorCode::InvalidArgumentValue,
+                message,
+                ..
+            }) => {
+                assert!(
+                    message.contains("variable") || message.contains("Variable"),
+                    "message was: {message}"
+                );
+            }
+            other => panic!("expected ArgumentError(InvalidArgumentValue), got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn score_with_property_access_arg_errors_at_plan_time() {
+        let err = plan_cypher("MATCH (n:Person) RETURN score(n.bio)").unwrap_err();
+        match err {
+            GraphError::Query(QueryError::ArgumentError {
+                code: ErrorCode::InvalidArgumentValue,
+                ..
+            }) => {}
+            other => panic!("expected ArgumentError(InvalidArgumentValue), got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn score_with_variable_arg_plans_successfully() {
+        plan_cypher("MATCH (n:Person) RETURN score(n)").expect("score(n) should plan");
+    }
 }

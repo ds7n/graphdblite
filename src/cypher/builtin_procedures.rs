@@ -176,12 +176,75 @@ fn fts_search_type_error(message: impl Into<String>) -> GraphError {
     })
 }
 
+/// Resolve the `(label, property)` arg pair for `fts.search` to the
+/// matching index + optional column scope.
+///
+/// Returns `(table_name, Some(column_name))` to scope the MATCH to one
+/// FTS5 column, or `(table_name, None)` to search all columns.
+///
+/// `property == "*"` resolves to whatever single FTS index exists on
+/// `label` (errors with a procedure error if none or more than one).
+/// Otherwise the function finds the index whose column list covers
+/// `property` and scopes to that column for multi-column tables; for
+/// legacy single-column tables (whose FTS5 column is literally named
+/// `content`), no column-scope is needed.
+fn resolve_fts_target(
+    conn: &Connection,
+    label: &str,
+    property: &str,
+) -> Result<(String, Option<String>)> {
+    let infos = fts::list_fulltext_indexes_for_label(conn, label)?;
+
+    if property == "*" {
+        match infos.len() {
+            0 => Err(GraphError::IndexNotFound {
+                label: label.to_string(),
+                property: "*".to_string(),
+                hint: Some(format!("no fulltext index on label `{label}`")),
+            }),
+            1 => Ok((infos[0].table_name.clone(), None)),
+            _ => Err(GraphError::Query(QueryError::ProcedureError {
+                phase: QueryPhase::Runtime,
+                code: ErrorCode::Other,
+                message: format!(
+                    "fts.search('*'): label `{label}` has multiple FTS indexes; specify a property to disambiguate"
+                ),
+                hint: None,
+                span: None,
+            })),
+        }
+    } else {
+        for info in &infos {
+            if info.properties.iter().any(|p| p == property) {
+                // For multi-column tables, scope to the column. For
+                // legacy single-prop tables (one FTS5 column named
+                // `content`), no scope needed — MATCH the bare query.
+                let scope = if info.table_name.starts_with("node_fts_multi_") {
+                    Some(property.to_string())
+                } else {
+                    None
+                };
+                return Ok((info.table_name.clone(), scope));
+            }
+        }
+        Err(GraphError::IndexNotFound {
+            label: label.to_string(),
+            property: property.to_string(),
+            hint: Some("no fulltext index covers this (label, property)".to_string()),
+        })
+    }
+}
+
 /// Execute `fts.search(label, property, query)` — yields `(node, score)`
 /// rows ordered by descending BM25 relevance.
 ///
 /// Requires an FTS index on `(label, property)`. The `unicode61` word
 /// tokenizer is the intended pairing; trigram indexes also work but
 /// treat the query as a literal substring search.
+///
+/// `property == "*"` searches all columns of the single FTS index on
+/// `label` (errors if there are 0 or >1 indexes). For a specific
+/// `property`, the match is scoped to that column on multi-prop tables.
 ///
 /// FTS5's `bm25()` returns a negative-signed score where *lower is
 /// better*; we negate so callers can use the conventional
@@ -204,10 +267,13 @@ fn exec_fts_search(args: &[Value], conn: &Connection) -> Result<Vec<HashMap<Stri
         _ => return Err(fts_search_type_error("fts.search: query must be a string")),
     };
 
-    // Verify any FTS index exists on the pair. Returns IndexNotFound if not.
-    let _kind = fts::fts_tokenizer_kind(conn, label, property)?;
+    let (table, scope) = resolve_fts_target(conn, label, property)?;
 
-    let table = fts::fts_table_name(label, property)?;
+    let match_term = match &scope {
+        Some(col) => format!("\"{col}\":({query})"),
+        None => query.to_string(),
+    };
+
     // bm25(t) is FTS5's built-in ranking function. It returns a negative
     // score; lower (more negative) = more relevant. We negate below so
     // higher = better in the output.
@@ -229,7 +295,7 @@ fn exec_fts_search(args: &[Value], conn: &Connection) -> Result<Vec<HashMap<Stri
     })?;
 
     let mapped = stmt
-        .query_map([query], |row| {
+        .query_map([&match_term], |row| {
             Ok((row.get::<_, i64>(0)?, row.get::<_, f64>(1)?))
         })
         .map_err(|e| {
@@ -685,5 +751,182 @@ mod tests {
                 ),
             ]
         );
+    }
+
+    #[test]
+    fn exec_fts_search_wildcard_searches_all_columns() {
+        let conn = fresh_conn();
+        crate::storage::fts::create_fulltext_index_word_multi(
+            &conn,
+            "Article",
+            &["title".to_string(), "body".to_string()],
+        )
+        .unwrap();
+        let id = crate::storage::node::create_node(
+            &conn,
+            &["Article".to_string()],
+            props(&[
+                (
+                    "title",
+                    Value::String("rust systems programming".to_string()),
+                ),
+                ("body", Value::String("python is also nice".to_string())),
+            ]),
+        )
+        .unwrap();
+        crate::storage::fts::update_fts_for_node(
+            &conn,
+            id,
+            "Article",
+            None,
+            &props(&[
+                (
+                    "title",
+                    Value::String("rust systems programming".to_string()),
+                ),
+                ("body", Value::String("python is also nice".to_string())),
+            ]),
+        )
+        .unwrap();
+        // Wildcard searches all columns; `python` is only in body.
+        let rows = execute_builtin(
+            "fts.search",
+            &[
+                Value::String("Article".to_string()),
+                Value::String("*".to_string()),
+                Value::String("python".to_string()),
+            ],
+            &conn,
+        )
+        .unwrap();
+        assert_eq!(rows.len(), 1);
+    }
+
+    #[test]
+    fn exec_fts_search_column_scoped_isolates_one_property() {
+        let conn = fresh_conn();
+        crate::storage::fts::create_fulltext_index_word_multi(
+            &conn,
+            "Article",
+            &["title".to_string(), "body".to_string()],
+        )
+        .unwrap();
+        let id = crate::storage::node::create_node(
+            &conn,
+            &["Article".to_string()],
+            props(&[
+                (
+                    "title",
+                    Value::String("rust systems programming".to_string()),
+                ),
+                ("body", Value::String("python is also nice".to_string())),
+            ]),
+        )
+        .unwrap();
+        crate::storage::fts::update_fts_for_node(
+            &conn,
+            id,
+            "Article",
+            None,
+            &props(&[
+                (
+                    "title",
+                    Value::String("rust systems programming".to_string()),
+                ),
+                ("body", Value::String("python is also nice".to_string())),
+            ]),
+        )
+        .unwrap();
+        // Search title for `python` — should be empty since `python` is in body.
+        let rows = execute_builtin(
+            "fts.search",
+            &[
+                Value::String("Article".to_string()),
+                Value::String("title".to_string()),
+                Value::String("python".to_string()),
+            ],
+            &conn,
+        )
+        .unwrap();
+        assert!(rows.is_empty());
+        // Search title for `rust` — should hit.
+        let rows = execute_builtin(
+            "fts.search",
+            &[
+                Value::String("Article".to_string()),
+                Value::String("title".to_string()),
+                Value::String("rust".to_string()),
+            ],
+            &conn,
+        )
+        .unwrap();
+        assert_eq!(rows.len(), 1);
+    }
+
+    #[test]
+    fn exec_fts_search_wildcard_errors_with_multiple_indexes() {
+        let conn = fresh_conn();
+        // Two disjoint indexes on the same label.
+        crate::storage::fts::create_fulltext_index_word(&conn, "Article", "title").unwrap();
+        crate::storage::fts::create_fulltext_index_word_multi(
+            &conn,
+            "Article",
+            &["body".to_string(), "summary".to_string()],
+        )
+        .unwrap();
+        let err = execute_builtin(
+            "fts.search",
+            &[
+                Value::String("Article".to_string()),
+                Value::String("*".to_string()),
+                Value::String("anything".to_string()),
+            ],
+            &conn,
+        )
+        .unwrap_err();
+        let msg = format!("{err:?}");
+        assert!(
+            msg.contains("multiple") || msg.contains("ambiguous"),
+            "expected multi-index error, got: {msg}"
+        );
+    }
+
+    #[test]
+    fn exec_db_indexes_emits_one_row_per_covered_property() {
+        let conn = fresh_conn();
+        crate::storage::fts::create_fulltext_index_word_multi(
+            &conn,
+            "Article",
+            &[
+                "title".to_string(),
+                "body".to_string(),
+                "summary".to_string(),
+            ],
+        )
+        .unwrap();
+        let rows = execute_builtin("db.indexes", &[], &conn).unwrap();
+        assert_eq!(rows.len(), 3);
+        let mut props: Vec<String> = rows
+            .iter()
+            .map(|r| match r.get("property").unwrap() {
+                Value::String(s) => s.clone(),
+                v => panic!("property was {v:?}"),
+            })
+            .collect();
+        props.sort();
+        assert_eq!(
+            props,
+            vec![
+                "body".to_string(),
+                "summary".to_string(),
+                "title".to_string()
+            ]
+        );
+        for r in &rows {
+            assert_eq!(
+                r.get("kind"),
+                Some(&Value::String("fulltext_word".to_string()))
+            );
+        }
     }
 }

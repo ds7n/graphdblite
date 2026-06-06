@@ -39,6 +39,29 @@ test('createFulltextIndexCi enables case-insensitive CONTAINS via FTS', () => {
   }
 });
 
+test('createFulltextIndexWord enables fts.search', () => {
+  const db = gdb.Database.openMemory();
+  try {
+    const tx = db.beginWrite();
+    tx.execute("CREATE (:Doc {body:'rust systems programming'}), (:Doc {body:'python data science'})");
+    tx.createFulltextIndexWord('Doc', 'body');
+    tx.commit();
+
+    const rows = db.query(
+      "CALL fts.search('Doc', 'body', 'rust') YIELD node, score RETURN node.body AS body, score"
+    );
+    assert.equal(rows.length, 1);
+    assert.equal(rows[0].body, 'rust systems programming');
+    assert.ok(rows[0].score > 0);
+
+    const tx2 = db.beginWrite();
+    tx2.dropFulltextIndex('Doc', 'body');
+    tx2.commit();
+  } finally {
+    db.close();
+  }
+});
+
 test('createFulltextIndex enables CONTAINS via FTS', () => {
   const db = gdb.Database.openMemory();
   try {

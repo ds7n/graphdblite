@@ -56,6 +56,13 @@ export declare class WriteTransaction {
    * case-insensitive.
    */
   createFulltextIndexCi(label: string, property: string): void
+  /**
+   * Create a word-tokenized fulltext index on (label, property).
+   * Uses SQLite FTS5 `unicode61` tokenizer, intended for use with
+   * the `fts.search` CALL procedure (bm25 ranking on word matches).
+   * Does NOT accelerate `CONTAINS` / `STARTS WITH` / `ENDS WITH`.
+   */
+  createFulltextIndexWord(label: string, property: string): void
   /** Drop a fulltext index on (label, property). */
   dropFulltextIndex(label: string, property: string): void
   /** Commit the transaction. */

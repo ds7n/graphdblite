@@ -348,3 +348,40 @@ func TestCreateFulltextIndexCI(t *testing.T) {
 	}
 	res.Free()
 }
+
+func TestCreateFulltextIndexWord(t *testing.T) {
+	db, err := OpenMemory()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	tx, err := db.BeginWrite()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := tx.CreateFulltextIndexWord("Doc", "body"); err != nil {
+		_ = tx.Rollback()
+		t.Fatalf("CreateFulltextIndexWord: %v", err)
+	}
+	res, err := tx.Execute("CREATE (:Doc {body: 'rust systems programming'})")
+	if err != nil {
+		_ = tx.Rollback()
+		t.Fatalf("insert: %v", err)
+	}
+	res.Free()
+	if err := tx.Commit(); err != nil {
+		t.Fatal(err)
+	}
+
+	// fts.search must return the newly inserted Doc.
+	res, err = db.Query("CALL fts.search('Doc', 'body', 'rust') YIELD node, score RETURN score")
+	if err != nil {
+		t.Fatalf("fts.search: %v", err)
+	}
+	if got := res.RowCount(); got != 1 {
+		res.Free()
+		t.Fatalf("expected 1 row from fts.search, got %d", got)
+	}
+	res.Free()
+}

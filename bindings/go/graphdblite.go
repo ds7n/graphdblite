@@ -260,6 +260,16 @@ func (tx *WriteTransaction) CreateFulltextIndexCI(label, property string) error 
 	})
 }
 
+// CreateFulltextIndexWord creates a word-tokenized (unicode61) fulltext
+// index on (label, property). Suitable for the fts.search procedure.
+// Does not accelerate CONTAINS / STARTS WITH / ENDS WITH — use
+// CreateFulltextIndex for those.
+func (tx *WriteTransaction) CreateFulltextIndexWord(label, property string) error {
+	return tx.ddl("create_fulltext_index_word", label, property, func(clabel, cprop *C.char) C.int32_t {
+		return C.graphdb_create_fulltext_index_word(tx.db.ptr, clabel, cprop)
+	})
+}
+
 // DropFulltextIndex drops a fulltext index on (label, property).
 func (tx *WriteTransaction) DropFulltextIndex(label, property string) error {
 	return tx.ddl("drop_fulltext_index", label, property, func(clabel, cprop *C.char) C.int32_t {

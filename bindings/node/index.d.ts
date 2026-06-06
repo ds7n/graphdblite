@@ -63,6 +63,13 @@ export declare class WriteTransaction {
    * Does NOT accelerate `CONTAINS` / `STARTS WITH` / `ENDS WITH`.
    */
   createFulltextIndexWord(label: string, property: string): void
+  /**
+   * Create a word-tokenized fulltext index covering multiple
+   * properties on a label. Use with `CALL fts.search(label, '*', query)`
+   * to search across all covered properties, or
+   * `CALL fts.search(label, property, query)` to scope to one.
+   */
+  createFulltextIndexWordMulti(label: string, properties: Array<string>): void
   /** Drop a fulltext index on (label, property). */
   dropFulltextIndex(label: string, property: string): void
   /** Commit the transaction. */

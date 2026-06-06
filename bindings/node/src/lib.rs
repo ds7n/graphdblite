@@ -305,6 +305,25 @@ impl WriteTransaction {
             .map_err(to_napi_err)
     }
 
+    /// Create a word-tokenized fulltext index covering multiple
+    /// properties on a label. Use with `CALL fts.search(label, '*', query)`
+    /// to search across all covered properties, or
+    /// `CALL fts.search(label, property, query)` to scope to one.
+    #[napi]
+    pub fn create_fulltext_index_word_multi(
+        &mut self,
+        label: String,
+        properties: Vec<String>,
+    ) -> Result<()> {
+        if self.finished {
+            return Err(finished_err());
+        }
+        let mut guard = self.inner.lock().expect("Database mutex poisoned");
+        let db = guard.as_mut().ok_or_else(closed_err)?;
+        db.create_fulltext_index_word_multi(&label, &properties)
+            .map_err(to_napi_err)
+    }
+
     /// Drop a fulltext index on (label, property).
     #[napi]
     pub fn drop_fulltext_index(&mut self, label: String, property: String) -> Result<()> {

@@ -62,6 +62,24 @@ test('createFulltextIndexWord enables fts.search', () => {
   }
 });
 
+test('createFulltextIndexWordMulti enables fts.search wildcard', () => {
+  const db = gdb.Database.openMemory();
+  try {
+    const tx = db.beginWrite();
+    tx.createFulltextIndexWordMulti('Article', ['title', 'body']);
+    tx.execute("CREATE (:Article {title:'rust', body:'memory safe'})");
+    tx.commit();
+
+    const rows = db.query(
+      "CALL fts.search('Article', '*', 'memory') YIELD node, score RETURN node.title AS title"
+    );
+    assert.equal(rows.length, 1);
+    assert.equal(rows[0].title, 'rust');
+  } finally {
+    db.close();
+  }
+});
+
 test('createFulltextIndex enables CONTAINS via FTS', () => {
   const db = gdb.Database.openMemory();
   try {

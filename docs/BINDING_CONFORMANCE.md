@@ -151,6 +151,17 @@ property, query)` built-in procedure rather than `CONTAINS` /
 a word index). `db.indexes()` reports `kind = "fulltext_word"` for
 word indexes.
 
+Each binding additionally exposes a multi-property word variant —
+`create_fulltext_index_word_multi(label, properties)` (Python / Rust) /
+`createFulltextIndexWordMulti(label, properties)` (Node) /
+`CreateFulltextIndexWordMulti(label, properties)` (Go) /
+`graphdb_create_fulltext_index_word_multi(db, label, props, n_props)`
+(C/FFI). One FTS5 multi-column `unicode61` virtual table covers all
+listed properties on the label, and BC-11 exercises this surface
+through a `CALL fts.search(label, '*', query)` wildcard round-trip
+that matches across every covered column. `db.indexes()` emits one
+row per covered property (all with `kind = "fulltext_word"`).
+
 ---
 
 ## Coverage matrix

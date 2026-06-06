@@ -77,8 +77,8 @@ pub(crate) fn exec_fulltext_lookup(
     };
 
     let candidates = crate::fts::fulltext_lookup(conn, label, property, &term)?;
-    let node_ids = match candidates {
-        Some(ids) => ids,
+    let scored_ids = match candidates {
+        Some(rows) => rows,
         None => {
             // Term is below the trigram floor (<3 codepoints). Fall back to
             // a full label scan with per-row predicate evaluation.
@@ -95,7 +95,7 @@ pub(crate) fn exec_fulltext_lookup(
     };
 
     let mut records = Vec::new();
-    for id in node_ids {
+    for (id, _rank) in scored_ids {
         let n = node::get_node(conn, id)?;
         // Anchored post-filter: CONTAINS needs no check (trigram is exact);
         // STARTS WITH / ENDS WITH need a position check.

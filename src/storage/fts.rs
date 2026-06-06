@@ -617,7 +617,7 @@ pub fn fulltext_lookup(
     label: &str,
     property: &str,
     term: &str,
-) -> Result<Option<Vec<NodeId>>> {
+) -> Result<Option<Vec<(NodeId, f64)>>> {
     if term.chars().count() < 3 {
         return Ok(None);
     }
@@ -636,16 +636,18 @@ pub fn fulltext_lookup(
     let phrase = format!("\"{escaped}\"");
 
     let mut stmt = conn.prepare_cached(&format!(
-        "SELECT rowid FROM \"{table}\" WHERE content MATCH ?1"
+        "SELECT rowid, bm25(\"{table}\") AS rank FROM \"{table}\" WHERE content MATCH ?1"
     ))?;
-    let rows = stmt.query_map([&phrase], |r| r.get::<_, i64>(0))?;
+    let rows = stmt.query_map([&phrase], |r| {
+        Ok((r.get::<_, i64>(0)?, r.get::<_, f64>(1)?))
+    })?;
 
-    let mut ids = Vec::new();
+    let mut out = Vec::new();
     for row in rows {
-        let id = row?;
-        ids.push(NodeId(id as u64));
+        let (id, rank) = row?;
+        out.push((NodeId(id as u64), rank));
     }
-    Ok(Some(ids))
+    Ok(Some(out))
 }
 
 #[cfg(test)]
@@ -866,9 +868,12 @@ mod tests {
     fn fulltext_lookup_returns_matches_for_normal_term() {
         let c = conn();
         setup_with_nodes(&c);
-        let mut ids = fulltext_lookup(&c, "Doc", "text", "brown")
+        let mut ids: Vec<NodeId> = fulltext_lookup(&c, "Doc", "text", "brown")
             .unwrap()
-            .unwrap();
+            .unwrap()
+            .into_iter()
+            .map(|(id, _)| id)
+            .collect();
         ids.sort_by_key(|n| n.0);
         assert_eq!(ids, vec![NodeId(1), NodeId(3)]);
     }
@@ -877,17 +882,23 @@ mod tests {
     fn fulltext_lookup_is_case_sensitive() {
         let c = conn();
         setup_with_nodes(&c);
-        let ids = fulltext_lookup(&c, "Doc", "text", "foobar")
+        let ids: Vec<NodeId> = fulltext_lookup(&c, "Doc", "text", "foobar")
             .unwrap()
-            .unwrap();
+            .unwrap()
+            .into_iter()
+            .map(|(id, _)| id)
+            .collect();
         assert!(
             ids.is_empty(),
             "case-sensitive: lowercase must not match uppercase"
         );
 
-        let ids = fulltext_lookup(&c, "Doc", "text", "FOOBAR")
+        let ids: Vec<NodeId> = fulltext_lookup(&c, "Doc", "text", "FOOBAR")
             .unwrap()
-            .unwrap();
+            .unwrap()
+            .into_iter()
+            .map(|(id, _)| id)
+            .collect();
         assert_eq!(ids, vec![NodeId(4)]);
     }
 
@@ -905,10 +916,41 @@ mod tests {
         create_fulltext_index(&c, "Doc", "text").unwrap();
         let p = props(&[("text", Value::String("say \"hello\" loudly".into()))]);
         update_fts_for_node(&c, NodeId(1), "Doc", None, &p).unwrap();
-        let ids = fulltext_lookup(&c, "Doc", "text", "\"hello\"")
+        let ids: Vec<NodeId> = fulltext_lookup(&c, "Doc", "text", "\"hello\"")
             .unwrap()
-            .unwrap();
+            .unwrap()
+            .into_iter()
+            .map(|(id, _)| id)
+            .collect();
         assert_eq!(ids, vec![NodeId(1)]);
+    }
+
+    #[test]
+    fn fulltext_lookup_returns_rowid_and_rank_tuples() {
+        let c = conn();
+        let id1 = crate::node::create_node(
+            &c,
+            &["Doc".to_string()],
+            props(&[("body", Value::String("rust rust rust".to_string()))]),
+        )
+        .unwrap();
+        let id2 = crate::node::create_node(
+            &c,
+            &["Doc".to_string()],
+            props(&[("body", Value::String("rust occasionally".to_string()))]),
+        )
+        .unwrap();
+        create_fulltext_index(&c, "Doc", "body").unwrap();
+        let hits = fulltext_lookup(&c, "Doc", "body", "rust").unwrap().unwrap();
+        // Two hits; FTS5 bm25() returns negative floats (lower = better match).
+        assert_eq!(hits.len(), 2);
+        let id_set: std::collections::HashSet<NodeId> = hits.iter().map(|(id, _)| *id).collect();
+        assert!(id_set.contains(&id1));
+        assert!(id_set.contains(&id2));
+        // All scores must be finite floats.
+        for (_, s) in &hits {
+            assert!(s.is_finite(), "score not finite: {s}");
+        }
     }
 
     #[test]
@@ -1026,9 +1068,12 @@ mod tests {
         )
         .unwrap();
         create_fulltext_index_ci(&c, "Person", "bio").unwrap();
-        let hits = fulltext_lookup(&c, "Person", "bio", "alice")
+        let hits: Vec<NodeId> = fulltext_lookup(&c, "Person", "bio", "alice")
             .unwrap()
-            .expect("ci index should serve the query");
+            .expect("ci index should serve the query")
+            .into_iter()
+            .map(|(id, _)| id)
+            .collect();
         assert_eq!(hits, vec![id]);
     }
 

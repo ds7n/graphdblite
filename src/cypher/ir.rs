@@ -70,11 +70,22 @@ pub enum LogicalOp {
     IdLookup { alias: String, value_expr: Expr },
 
     /// Index-based lookup: use a secondary index instead of a full label scan.
+    ///
+    /// Carries N >= 1 (property, key) pairs in column order. For `N == 1`
+    /// this is a single-property lookup; for `N >= 2` the planner has matched
+    /// a prefix of a composite index.
     IndexLookup {
         label: String,
         alias: String,
-        property: String,
-        value: LookupKey,
+        /// Full property list of the chosen index (column order). For
+        /// single-prop indexes `len == 1`; for composite indexes `len >= 2`.
+        /// The executor passes this to `composite_index_prefix_lookup`
+        /// so no per-query catalog lookup is required at execution time.
+        index_properties: Vec<String>,
+        /// The matched prefix: 1..=index_properties.len() (property, key)
+        /// pairs, in the same order as the leading columns of
+        /// `index_properties`. `lookups.len() <= index_properties.len()`.
+        lookups: Vec<(String, LookupKey)>,
         /// Remaining inline property filters not covered by the index.
         remaining_filters: Option<Expr>,
     },
@@ -311,6 +322,18 @@ pub enum LogicalOp {
 
     /// Produce a single empty record (used as starting input for scans).
     EmptyRow,
+
+    /// CREATE INDEX ON :Label(prop1, prop2, ...)
+    CreateIndex {
+        label: String,
+        properties: Vec<String>,
+    },
+
+    /// DROP INDEX ON :Label(prop1, prop2, ...)
+    DropIndex {
+        label: String,
+        properties: Vec<String>,
+    },
 }
 
 impl LogicalOp {
@@ -350,6 +373,8 @@ impl LogicalOp {
             Self::ShortestPath { .. } => "ShortestPath",
             Self::Union { .. } => "Union",
             Self::EmptyRow => "EmptyRow",
+            Self::CreateIndex { .. } => "CreateIndex",
+            Self::DropIndex { .. } => "DropIndex",
         }
     }
 }

@@ -704,7 +704,12 @@ pub(in crate::cypher::executor) fn find_merge_matches_by_label_and_props(
 ) -> Result<Vec<crate::types::Node>> {
     // Try indexed lookup on the primary label (skipped when label is empty).
     let indexes = index::list_indexes_for_label(conn, label)?;
-    let indexed_props: Vec<&str> = indexes.iter().map(|(_, p)| p.as_str()).collect();
+    let indexed_props: Vec<String> = indexes
+        .iter()
+        .filter(|info| info.properties.len() == 1)
+        .map(|info| info.properties[0].clone())
+        .collect();
+    let indexed_props: Vec<&str> = indexed_props.iter().map(|s| s.as_str()).collect();
 
     for (key, value) in properties {
         if indexed_props.contains(&key.as_str()) {
@@ -743,7 +748,12 @@ pub(in crate::cypher::executor) fn find_merge_match_evaluated(
 ) -> Result<Option<crate::types::Node>> {
     // Try to find an indexed property.
     let indexes = index::list_indexes_for_label(conn, label)?;
-    let indexed_props: Vec<&str> = indexes.iter().map(|(_, p)| p.as_str()).collect();
+    let indexed_props: Vec<String> = indexes
+        .iter()
+        .filter(|info| info.properties.len() == 1)
+        .map(|info| info.properties[0].clone())
+        .collect();
+    let indexed_props: Vec<&str> = indexed_props.iter().map(|s| s.as_str()).collect();
 
     for (key, value) in properties {
         if indexed_props.contains(&key.as_str()) {
@@ -779,7 +789,12 @@ pub(in crate::cypher::executor) fn find_merge_matches_evaluated(
 ) -> Result<Vec<crate::types::Node>> {
     // Try indexed lookup first.
     let indexes = index::list_indexes_for_label(conn, label)?;
-    let indexed_props: Vec<&str> = indexes.iter().map(|(_, p)| p.as_str()).collect();
+    let indexed_props: Vec<String> = indexes
+        .iter()
+        .filter(|info| info.properties.len() == 1)
+        .map(|info| info.properties[0].clone())
+        .collect();
+    let indexed_props: Vec<&str> = indexed_props.iter().map(|s| s.as_str()).collect();
 
     for (key, value) in properties {
         if indexed_props.contains(&key.as_str()) {

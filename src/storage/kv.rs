@@ -1,6 +1,6 @@
 use rusqlite::params;
 
-use crate::types::{validate_name, Result};
+use crate::types::Result;
 
 /// Table names used in the KV schema.
 pub const TABLE_NODES: &str = "nodes";
@@ -11,12 +11,27 @@ pub const TABLE_EDGE_PROPS: &str = "edge_props";
 /// Defense-in-depth check on the `table` argument before it is interpolated
 /// into SQL and used as a `prepare_cached` key. All current callers pass
 /// either one of the constants above or a name produced by
-/// `index::index_table_name` (which already calls `validate_name`), so this
-/// is a belt-and-suspenders guard. It (a) rejects unsafe identifiers if a
-/// future caller forgets to validate, and (b) bounds the prepared-statement
-/// cache by the set of valid table names instead of by ad-hoc inputs.
+/// `index::index_table_name` / `index::composite_index_table_name` (which
+/// already validate their components), so this is a belt-and-suspenders guard.
+/// It (a) rejects unsafe identifiers if a future caller forgets to validate,
+/// and (b) bounds the prepared-statement cache by the set of valid table names
+/// instead of by ad-hoc inputs.
+///
+/// Composite index tables use `$` as a property separator
+/// (`node_idx$Label$prop1$prop2`), so `$` is explicitly allowed here in
+/// addition to the `[A-Za-z0-9_]` set accepted by `validate_name`.
 fn check_table(table: &str) -> Result<()> {
-    validate_name(table)
+    if table.is_empty()
+        || !table
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'$')
+    {
+        return Err(crate::types::GraphError::InvalidName {
+            name: table.to_string(),
+            hint: None,
+        });
+    }
+    Ok(())
 }
 
 /// Get a value by key from a KV table. Returns None if not found.

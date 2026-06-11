@@ -383,6 +383,20 @@ impl<'a> WriteTransaction<'a> {
         Ok(())
     }
 
+    /// Create a composite index on `(label, properties)`.
+    pub fn create_composite_index(&self, label: &str, properties: &[&str]) -> Result<()> {
+        index::create_composite_index(&self.tx, label, properties)?;
+        self.schema_epoch.fetch_add(1, Ordering::AcqRel);
+        Ok(())
+    }
+
+    /// Drop a composite index on `(label, properties)`.
+    pub fn drop_composite_index(&self, label: &str, properties: &[&str]) -> Result<()> {
+        index::drop_composite_index(&self.tx, label, properties)?;
+        self.schema_epoch.fetch_add(1, Ordering::AcqRel);
+        Ok(())
+    }
+
     /// Create a fulltext index on `(label, property)`. See
     /// `Database::create_fulltext_index` for semantics.
     pub fn create_fulltext_index(&self, label: &str, property: &str) -> Result<()> {

@@ -22,8 +22,8 @@ use crate::cypher::record::NamedRecord;
 use crate::cypher::record_v2::{Record as SlotRecord, RecordSchema, SlotId};
 use crate::cypher::record_view::SlotView;
 use crate::cypher::schema_infer::{collect_property_refs, infer_with_props, PropertyRefs};
+use crate::node;
 use crate::types::{NodeId, Result, Value};
-use crate::{index, node};
 
 /// Pull-based iterator that yields slot-indexed records.
 ///
@@ -173,7 +173,9 @@ pub fn is_slot_supported(plan: &LogicalOp) -> bool {
         | LogicalOp::SetProperties { .. }
         | LogicalOp::Remove { .. }
         | LogicalOp::Merge { .. }
-        | LogicalOp::MatchMerge { .. } => true,
+        | LogicalOp::MatchMerge { .. }
+        | LogicalOp::CreateIndex { .. }
+        | LogicalOp::DropIndex { .. } => true,
         _ => false,
     }
 }
@@ -353,13 +355,13 @@ fn build_slot_iter_inner<'a>(
         LogicalOp::IndexLookup {
             label,
             alias,
-            property,
-            value,
+            index_properties,
+            lookups,
             remaining_filters,
         } => {
             let schema = infer_with_props(plan, refs);
-            let lookup_value = crate::cypher::executor::resolve_lookup_key(value)?;
-            let node_ids = index::index_lookup(conn, label, property, &lookup_value)?;
+            let node_ids =
+                crate::cypher::executor::index_lookup_ids(conn, label, index_properties, lookups)?;
             let mut records = Vec::with_capacity(node_ids.len());
             for id in node_ids {
                 let n = node::get_node(conn, id)?;
@@ -497,7 +499,9 @@ fn build_slot_iter_inner<'a>(
         | LogicalOp::SetProperties { .. }
         | LogicalOp::Remove { .. }
         | LogicalOp::Merge { .. }
-        | LogicalOp::MatchMerge { .. } => {
+        | LogicalOp::MatchMerge { .. }
+        | LogicalOp::CreateIndex { .. }
+        | LogicalOp::DropIndex { .. } => {
             // Phase 3g.1 / 4.1 bridge — see is_slot_supported comment.
             // Run the whole subtree through `exec()` and adapt to slots.
             let output_schema = infer_with_props(plan, refs);

@@ -324,7 +324,89 @@ pub unsafe extern "C" fn graphdb_drop_fulltext_index(
     ddl_call(db, label, property, |d, l, p| d.drop_fulltext_index(l, p))
 }
 
-/// Shared scaffold for the four DDL exports above.
+/// Create a composite secondary index on `(label, properties[0..count])`.
+///
+/// `properties` must point to an array of `count` non-null, null-terminated
+/// UTF-8 strings listing the property names in column order. `count` must be
+/// ≥ 2. Returns non-zero on error; call `graphdb_last_error` for details.
+#[no_mangle]
+pub unsafe extern "C" fn graphdb_create_composite_index(
+    db: *mut GraphDB,
+    label: *const c_char,
+    properties: *const *const c_char,
+    count: usize,
+) -> i32 {
+    composite_ddl_call(db, label, properties, count, |d, l, p| {
+        d.create_composite_index(l, p)
+    })
+}
+
+/// Drop a composite secondary index on `(label, properties[0..count])`.
+///
+/// `properties` must point to an array of `count` non-null, null-terminated
+/// UTF-8 strings listing the property names in the same order used at creation.
+#[no_mangle]
+pub unsafe extern "C" fn graphdb_drop_composite_index(
+    db: *mut GraphDB,
+    label: *const c_char,
+    properties: *const *const c_char,
+    count: usize,
+) -> i32 {
+    composite_ddl_call(db, label, properties, count, |d, l, p| {
+        d.drop_composite_index(l, p)
+    })
+}
+
+/// Shared scaffold for composite DDL exports.
+fn composite_ddl_call(
+    db: *mut GraphDB,
+    label: *const c_char,
+    properties: *const *const c_char,
+    count: usize,
+    op: impl FnOnce(&mut Database, &str, &[&str]) -> Result<(), GraphError>,
+) -> i32 {
+    if db.is_null() || label.is_null() || properties.is_null() {
+        set_error("null pointer argument");
+        return -1;
+    }
+    if count == 0 {
+        set_error("count must be > 0");
+        return -1;
+    }
+    let handle = unsafe { &*db };
+    let label_str = match unsafe { CStr::from_ptr(label) }.to_str() {
+        Ok(s) => s,
+        Err(e) => {
+            set_error(&format!("invalid UTF-8 label: {e}"));
+            return -1;
+        }
+    };
+    let mut prop_strs: Vec<&str> = Vec::with_capacity(count);
+    for i in 0..count {
+        let p_ptr = unsafe { *properties.add(i) };
+        if p_ptr.is_null() {
+            set_error("null property pointer in properties array");
+            return -1;
+        }
+        match unsafe { CStr::from_ptr(p_ptr) }.to_str() {
+            Ok(s) => prop_strs.push(s),
+            Err(e) => {
+                set_error(&format!("invalid UTF-8 property: {e}"));
+                return -1;
+            }
+        }
+    }
+    let mut guard = match lock_db(handle) {
+        Ok(g) => g,
+        Err(e) => {
+            set_error(&e.to_string());
+            return -1;
+        }
+    };
+    wrap_result(op(&mut *guard, label_str, &prop_strs), |_| {})
+}
+
+/// Shared scaffold for single-property DDL exports.
 fn ddl_call(
     db: *mut GraphDB,
     label: *const c_char,

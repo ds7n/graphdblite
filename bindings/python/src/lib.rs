@@ -430,6 +430,20 @@ impl PyWriteTransaction {
         db.drop_index(label, property).map_err(to_py_err)
     }
 
+    /// Create a composite index on (label, [properties]) for faster multi-property lookups.
+    fn create_composite_index(&mut self, label: &str, properties: Vec<String>) -> PyResult<()> {
+        let refs: Vec<&str> = properties.iter().map(String::as_str).collect();
+        let db = self.get_db_mut()?;
+        db.create_composite_index(label, &refs).map_err(to_py_err)
+    }
+
+    /// Drop a composite index on (label, [properties]).
+    fn drop_composite_index(&mut self, label: &str, properties: Vec<String>) -> PyResult<()> {
+        let refs: Vec<&str> = properties.iter().map(String::as_str).collect();
+        let db = self.get_db_mut()?;
+        db.drop_composite_index(label, &refs).map_err(to_py_err)
+    }
+
     /// Create a fulltext index on (label, property). Accelerates
     /// `CONTAINS` / `STARTS WITH` / `ENDS WITH` Cypher predicates via
     /// SQLite FTS5 (trigram tokenizer, case-sensitive).

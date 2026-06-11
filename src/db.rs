@@ -363,6 +363,11 @@ impl Database {
         if matches!(stmt, ast::Statement::Explain(_)) {
             return Ok(crate::cypher::cost::format_explain(&self.conn, &plan));
         }
+        let is_ddl = matches!(
+            plan,
+            crate::cypher::ir::LogicalOp::CreateIndex { .. }
+                | crate::cypher::ir::LogicalOp::DropIndex { .. }
+        );
         let read_only = executor::is_read_only(&plan);
         if read_only {
             self.conn.execute_batch("BEGIN DEFERRED")?;
@@ -376,6 +381,11 @@ impl Database {
             Ok(records) => {
                 self.conn.execute_batch("COMMIT")?;
                 self.tx_state = TxState::None;
+                // Bump schema epoch after successful DDL so the plan cache is
+                // invalidated and subsequent queries pick up the new schema.
+                if is_ddl {
+                    self.schema_epoch.fetch_add(1, Ordering::AcqRel);
+                }
                 Ok(records)
             }
             Err(e) => {
@@ -430,6 +440,26 @@ impl Database {
     pub fn drop_index(&mut self, label: &str, property: &str) -> Result<()> {
         self.require_write_tx("drop_index")?;
         crate::index::drop_index(&self.conn, label, property)?;
+        self.schema_epoch.fetch_add(1, Ordering::AcqRel);
+        Ok(())
+    }
+
+    /// Create a composite index on `(label, properties)` inside the active
+    /// write transaction. Returns `GraphError::Transaction` when no write
+    /// transaction is active.
+    pub fn create_composite_index(&mut self, label: &str, properties: &[&str]) -> Result<()> {
+        self.require_write_tx("create_composite_index")?;
+        crate::index::create_composite_index(&self.conn, label, properties)?;
+        self.schema_epoch.fetch_add(1, Ordering::AcqRel);
+        Ok(())
+    }
+
+    /// Drop a composite index on `(label, properties)` inside the active
+    /// write transaction. Returns `GraphError::Transaction` when no write
+    /// transaction is active.
+    pub fn drop_composite_index(&mut self, label: &str, properties: &[&str]) -> Result<()> {
+        self.require_write_tx("drop_composite_index")?;
+        crate::index::drop_composite_index(&self.conn, label, properties)?;
         self.schema_epoch.fetch_add(1, Ordering::AcqRel);
         Ok(())
     }
@@ -1074,6 +1104,17 @@ mod plan_cache_tests {
         db.create_fulltext_index("Doc", "body").unwrap();
         let epoch_before = db.schema_epoch.load(std::sync::atomic::Ordering::Acquire);
         db.drop_fulltext_index("Doc", "body").unwrap();
+        let epoch_after = db.schema_epoch.load(std::sync::atomic::Ordering::Acquire);
+        assert!(epoch_after > epoch_before);
+        db.commit().unwrap();
+    }
+
+    #[test]
+    fn create_composite_index_via_database_bumps_schema_epoch() {
+        let mut db = Database::open_memory().unwrap();
+        db.begin_write().unwrap();
+        let epoch_before = db.schema_epoch.load(std::sync::atomic::Ordering::Acquire);
+        db.create_composite_index("Person", &["a", "b"]).unwrap();
         let epoch_after = db.schema_epoch.load(std::sync::atomic::Ordering::Acquire);
         assert!(epoch_after > epoch_before);
         db.commit().unwrap();

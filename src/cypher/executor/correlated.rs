@@ -199,8 +199,8 @@ pub(super) fn exec_correlated(
         LogicalOp::IndexLookup {
             label,
             alias,
-            property,
-            value,
+            index_properties,
+            lookups,
             remaining_filters,
         } => {
             if let Some(node_id) = outer.get(alias).and_then(value_to_node_id) {
@@ -209,11 +209,13 @@ pub(super) fn exec_correlated(
                     return Ok(vec![]);
                 }
                 let rec = node_to_record(&node, alias);
-                // Check the index property matches.
-                let expected = crate::cypher::executor::resolve_lookup_key(value)?;
-                let actual_key = format!("{alias}.{property}");
-                if rec.get(&actual_key) != Some(&expected) {
-                    return Ok(vec![]);
+                // Verify every lookup property matches the pre-bound node.
+                for (property, value) in lookups {
+                    let expected = crate::cypher::executor::resolve_lookup_key(value)?;
+                    let actual_key = format!("{alias}.{property}");
+                    if rec.get(&actual_key) != Some(&expected) {
+                        return Ok(vec![]);
+                    }
                 }
                 if let Some(filter) = remaining_filters {
                     if !eval_predicate(filter, &rec, crate::cypher::eval::EvalCx::new(conn))? {
@@ -226,8 +228,8 @@ pub(super) fn exec_correlated(
                     conn,
                     label,
                     alias,
-                    property,
-                    value,
+                    index_properties,
+                    lookups,
                     remaining_filters.as_ref(),
                 )
             }

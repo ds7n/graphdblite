@@ -11,11 +11,13 @@ use rusqlite::Connection;
 
 use crate::cypher::ast::{Expr, ExprKind, ReturnItem};
 use crate::cypher::eval::{eval_expr, eval_predicate, expr_to_column_name};
-use crate::cypher::executor::{is_user_visible_field, literal_to_value, node_to_record};
+use crate::cypher::executor::{
+    index_lookup_ids, is_user_visible_field, literal_to_value, node_to_record,
+};
 use crate::cypher::ir::*;
 use crate::cypher::record::NamedRecord;
+use crate::node;
 use crate::types::{Direction, Result, Value};
-use crate::{index, node};
 
 /// Pull-based iterator that yields one record at a time.
 ///
@@ -377,12 +379,11 @@ pub fn build_iter<'a>(
         LogicalOp::IndexLookup {
             label,
             alias,
-            property,
-            value,
+            index_properties,
+            lookups,
             remaining_filters,
         } => {
-            let lookup_value = crate::cypher::executor::resolve_lookup_key(value)?;
-            let node_ids = index::index_lookup(conn, label, property, &lookup_value)?;
+            let node_ids = index_lookup_ids(conn, label, index_properties, lookups)?;
             let mut records = Vec::new();
             for id in node_ids {
                 let n = node::get_node(conn, id)?;

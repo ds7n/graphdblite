@@ -81,5 +81,18 @@ pub(crate) fn execute_cypher(
             ),
         });
     }
-    executor::execute_with_ctx(conn, &plan, &ctx)
+    let is_ddl = matches!(
+        plan,
+        ir::LogicalOp::CreateIndex { .. } | ir::LogicalOp::DropIndex { .. }
+    );
+    let result = executor::execute_with_ctx(conn, &plan, &ctx)?;
+    // Bump schema epoch after successful DDL so that subsequent queries see
+    // an invalidated plan cache (matching the behaviour of the Rust API methods
+    // WriteTransaction::create_composite_index / drop_composite_index).
+    if is_ddl {
+        if let Some(epoch) = caches.schema_epoch {
+            epoch.fetch_add(1, Ordering::AcqRel);
+        }
+    }
+    Ok(result)
 }

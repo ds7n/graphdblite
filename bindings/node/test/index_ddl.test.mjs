@@ -102,3 +102,30 @@ test('createFulltextIndex enables CONTAINS via FTS', () => {
     db.close();
   }
 });
+
+test('createCompositeIndex / dropCompositeIndex round-trip', () => {
+  const db = gdb.Database.openMemory();
+  try {
+    const tx = db.beginWrite();
+    tx.createCompositeIndex('Person', ['tenant_id', 'ext_id']);
+    assert.throws(
+      () => tx.createCompositeIndex('Person', ['tenant_id', 'ext_id']),
+      /already exists|index/i,
+      'duplicate createCompositeIndex should error'
+    );
+    tx.commit();
+
+    const rows = db.query("CALL db.indexes() YIELD label, property, kind RETURN label, property, kind");
+    const props = rows.map(r => r.property).sort();
+    assert.deepEqual(props, ['ext_id', 'tenant_id']);
+
+    const tx2 = db.beginWrite();
+    tx2.dropCompositeIndex('Person', ['tenant_id', 'ext_id']);
+    tx2.commit();
+
+    const rows2 = db.query("CALL db.indexes() YIELD label, property, kind RETURN label, property, kind");
+    assert.equal(rows2.length, 0);
+  } finally {
+    db.close();
+  }
+});

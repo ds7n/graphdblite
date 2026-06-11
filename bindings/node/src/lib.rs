@@ -336,6 +336,32 @@ impl WriteTransaction {
             .map_err(to_napi_err)
     }
 
+    /// Create a composite (multi-property) secondary index on (label, properties).
+    /// Accelerates equality lookups on all listed properties simultaneously.
+    #[napi]
+    pub fn create_composite_index(&mut self, label: String, properties: Vec<String>) -> Result<()> {
+        if self.finished {
+            return Err(finished_err());
+        }
+        let mut guard = self.inner.lock().expect("Database mutex poisoned");
+        let db = guard.as_mut().ok_or_else(closed_err)?;
+        let refs: Vec<&str> = properties.iter().map(String::as_str).collect();
+        db.create_composite_index(&label, &refs)
+            .map_err(to_napi_err)
+    }
+
+    /// Drop a composite (multi-property) secondary index on (label, properties).
+    #[napi]
+    pub fn drop_composite_index(&mut self, label: String, properties: Vec<String>) -> Result<()> {
+        if self.finished {
+            return Err(finished_err());
+        }
+        let mut guard = self.inner.lock().expect("Database mutex poisoned");
+        let db = guard.as_mut().ok_or_else(closed_err)?;
+        let refs: Vec<&str> = properties.iter().map(String::as_str).collect();
+        db.drop_composite_index(&label, &refs).map_err(to_napi_err)
+    }
+
     /// Commit the transaction.
     #[napi]
     pub fn commit(&mut self) -> Result<()> {

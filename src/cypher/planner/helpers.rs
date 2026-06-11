@@ -1,6 +1,6 @@
 //! Pre-plan helpers — anon counters callers, name suggestions, function arity, sort/return utilities, aggregate detection.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use rusqlite::Connection;
 
@@ -785,55 +785,56 @@ pub(in crate::cypher::planner) fn rebuild_conjunction(conjuncts: Vec<Expr>) -> O
     })
 }
 
-/// Try to push a single equality predicate (`alias.prop = literal`) into an
-/// existing Scan node in the plan tree, converting it to an IndexLookup.
-///
-/// Returns `Some(modified_op)` if the predicate was pushed, `None` if it
-/// cannot be pushed (no matching scan, no index, non-eligible predicate).
-pub(in crate::cypher::planner) fn try_push_predicate(
-    conn: &Connection,
-    op: &mut LogicalOp,
+/// Extract `(alias, property, lookup_key)` from an equality predicate of the
+/// form `alias.prop = literal` or `alias.prop = $param` (in either order).
+/// Returns `None` for non-eligible predicates so the caller can fall through
+/// to keeping the conjunct in the residual WHERE filter.
+pub(in crate::cypher::planner) fn extract_eq_property_predicate(
     predicate: &Expr,
-) -> Option<LogicalOp> {
-    // Handle: Property(alias, prop) = Literal(val)  OR  Property = Parameter
-    let (alias, prop, key) = match &predicate.kind {
+) -> Option<(String, String, LookupKey)> {
+    match &predicate.kind {
         ExprKind::BinaryOp {
             left,
             op: BinOp::Eq,
             right,
         } => match (&left.as_ref().kind, &right.as_ref().kind) {
             (ExprKind::Property(a, p), ExprKind::Literal(l)) => {
-                (a.clone(), p.clone(), LookupKey::Literal(l.clone()))
+                Some((a.clone(), p.clone(), LookupKey::Literal(l.clone())))
             }
             (ExprKind::Literal(l), ExprKind::Property(a, p)) => {
-                (a.clone(), p.clone(), LookupKey::Literal(l.clone()))
+                Some((a.clone(), p.clone(), LookupKey::Literal(l.clone())))
             }
             (ExprKind::Property(a, p), ExprKind::Parameter(n)) => {
-                (a.clone(), p.clone(), LookupKey::Param(n.clone()))
+                Some((a.clone(), p.clone(), LookupKey::Param(n.clone())))
             }
             (ExprKind::Parameter(n), ExprKind::Property(a, p)) => {
-                (a.clone(), p.clone(), LookupKey::Param(n.clone()))
+                Some((a.clone(), p.clone(), LookupKey::Param(n.clone())))
             }
-            _ => return None,
+            _ => None,
         },
-        _ => return None,
-    };
-
-    // Check if there's an index for this label+property.
-    // Walk the plan tree to find the Scan for this alias.
-    try_replace_scan(conn, op, &alias, &prop, &key)
+        _ => None,
+    }
 }
 
 /// Recursively search the plan tree for a `Scan` with the given alias and
-/// replace it with an `IndexLookup` if an index exists. Returns the new
-/// root op if a replacement was made.
-pub(in crate::cypher::planner) fn try_replace_scan(
+/// replace it with an `IndexLookup` chosen via `pick_index_for_equality_preds`
+/// from the supplied equality candidates. Returns `(new_root_op,
+/// consumed_property_names)` — the consumed list tells the caller which
+/// of the input candidates were folded into the lookup so they can drop
+/// the corresponding WHERE conjuncts.
+///
+/// Empty `candidates` returns `None` (nothing to push). The walker descends
+/// through Filter / Expand / CrossProduct wrappers, mirroring the legacy
+/// single-prop traversal.
+pub(in crate::cypher::planner) fn try_replace_scan_multi(
     conn: &Connection,
     op: &mut LogicalOp,
     alias: &str,
-    prop: &str,
-    lit: &LookupKey,
-) -> Option<LogicalOp> {
+    candidates: &HashMap<String, LookupKey>,
+) -> Option<(LogicalOp, Vec<String>)> {
+    if candidates.is_empty() {
+        return None;
+    }
     match op {
         LogicalOp::Scan {
             label,
@@ -843,26 +844,43 @@ pub(in crate::cypher::planner) fn try_replace_scan(
                 return None;
             }
             let indexes = index::list_indexes_for_label(conn, label).unwrap_or_default();
-            let has_index = indexes.iter().any(|(_, p)| p == prop);
-            if !has_index {
-                return None;
+            let (info, k) = crate::cypher::planner::pattern::pick_index_for_equality_preds(
+                &indexes, candidates,
+            )?;
+            let mut lookups: Vec<(String, LookupKey)> = Vec::with_capacity(k);
+            let mut consumed: Vec<String> = Vec::with_capacity(k);
+            for p in &info.properties[..k] {
+                let key = candidates
+                    .get(p.as_str())
+                    .expect("pick_index_for_equality_preds guarantees key presence")
+                    .clone();
+                lookups.push((p.clone(), key));
+                consumed.push(p.clone());
             }
-            Some(LogicalOp::IndexLookup {
-                label: label.clone(),
-                alias: alias.to_string(),
-                property: prop.to_string(),
-                value: lit.clone(),
-                remaining_filters: None,
-            })
+            Some((
+                LogicalOp::IndexLookup {
+                    label: label.clone(),
+                    alias: alias.to_string(),
+                    index_properties: info.properties.clone(),
+                    lookups,
+                    remaining_filters: None,
+                },
+                consumed,
+            ))
         }
 
         // Walk through wrapper operators that preserve the scan.
         LogicalOp::Filter {
             input,
             predicate: existing,
-        } => try_replace_scan(conn, input, alias, prop, lit).map(|new_input| LogicalOp::Filter {
-            input: Box::new(new_input),
-            predicate: existing.clone(),
+        } => try_replace_scan_multi(conn, input, alias, candidates).map(|(new_input, c)| {
+            (
+                LogicalOp::Filter {
+                    input: Box::new(new_input),
+                    predicate: existing.clone(),
+                },
+                c,
+            )
         }),
 
         LogicalOp::Expand {
@@ -877,18 +895,23 @@ pub(in crate::cypher::planner) fn try_replace_scan(
             var_length,
             var_length_prop_filters,
             result_cap,
-        } => try_replace_scan(conn, input, alias, prop, lit).map(|new_input| LogicalOp::Expand {
-            input: Box::new(new_input),
-            src_alias: src_alias.clone(),
-            dst_alias: dst_alias.clone(),
-            rel_alias: rel_alias.clone(),
-            edge_types: edge_types.clone(),
-            direction: *direction,
-            min_hops: *min_hops,
-            max_hops: *max_hops,
-            var_length: *var_length,
-            var_length_prop_filters: var_length_prop_filters.clone(),
-            result_cap: *result_cap,
+        } => try_replace_scan_multi(conn, input, alias, candidates).map(|(new_input, c)| {
+            (
+                LogicalOp::Expand {
+                    input: Box::new(new_input),
+                    src_alias: src_alias.clone(),
+                    dst_alias: dst_alias.clone(),
+                    rel_alias: rel_alias.clone(),
+                    edge_types: edge_types.clone(),
+                    direction: *direction,
+                    min_hops: *min_hops,
+                    max_hops: *max_hops,
+                    var_length: *var_length,
+                    var_length_prop_filters: var_length_prop_filters.clone(),
+                    result_cap: *result_cap,
+                },
+                c,
+            )
         }),
 
         LogicalOp::CrossProduct {
@@ -896,19 +919,25 @@ pub(in crate::cypher::planner) fn try_replace_scan(
             right,
             same_match,
         } => {
-            if let Some(new_left) = try_replace_scan(conn, left, alias, prop, lit) {
-                Some(LogicalOp::CrossProduct {
-                    left: Box::new(new_left),
-                    right: right.clone(),
-                    same_match: *same_match,
-                })
-            } else {
-                try_replace_scan(conn, right, alias, prop, lit).map(|new_right| {
+            if let Some((new_left, c)) = try_replace_scan_multi(conn, left, alias, candidates) {
+                Some((
                     LogicalOp::CrossProduct {
-                        left: left.clone(),
-                        right: Box::new(new_right),
+                        left: Box::new(new_left),
+                        right: right.clone(),
                         same_match: *same_match,
-                    }
+                    },
+                    c,
+                ))
+            } else {
+                try_replace_scan_multi(conn, right, alias, candidates).map(|(new_right, c)| {
+                    (
+                        LogicalOp::CrossProduct {
+                            left: left.clone(),
+                            right: Box::new(new_right),
+                            same_match: *same_match,
+                        },
+                        c,
+                    )
                 })
             }
         }

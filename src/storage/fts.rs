@@ -58,7 +58,7 @@ pub fn fts_tokenizer_kind(
     }
     Err(GraphError::IndexNotFound {
         label: label.to_string(),
-        property: property.to_string(),
+        properties: vec![property.to_string()],
         hint: Some("no fulltext index covers this (label, property)".to_string()),
     })
 }
@@ -236,7 +236,7 @@ pub fn create_fulltext_index_word_multi(
     if properties.is_empty() {
         return Err(GraphError::IndexAlreadyExists {
             label: label.to_string(),
-            property: String::new(),
+            properties: vec![],
             hint: Some(
                 "create_fulltext_index_word_multi requires at least one property".to_string(),
             ),
@@ -248,7 +248,7 @@ pub fn create_fulltext_index_word_multi(
         if !seen.insert(p.as_str()) {
             return Err(GraphError::IndexAlreadyExists {
                 label: label.to_string(),
-                property: p.clone(),
+                properties: vec![p.clone()],
                 hint: Some("duplicate property in multi-prop index list".to_string()),
             });
         }
@@ -258,7 +258,7 @@ pub fn create_fulltext_index_word_multi(
         if fts_tokenizer_kind(conn, label, p).is_ok() {
             return Err(GraphError::IndexAlreadyExists {
                 label: label.to_string(),
-                property: p.clone(),
+                properties: vec![p.clone()],
                 hint: Some("another fulltext index already covers (label, property)".to_string()),
             });
         }
@@ -334,7 +334,7 @@ fn create_fulltext_index_impl(
     if fts_table_exists(conn, &table)? {
         return Err(GraphError::IndexAlreadyExists {
             label: label.to_string(),
-            property: property.to_string(),
+            properties: vec![property.to_string()],
             hint: Some("a fulltext index on this (label, property) already exists".to_string()),
         });
     }
@@ -342,7 +342,7 @@ fn create_fulltext_index_impl(
     if fts_tokenizer_kind(conn, label, property).is_ok() {
         return Err(GraphError::IndexAlreadyExists {
             label: label.to_string(),
-            property: property.to_string(),
+            properties: vec![property.to_string()],
             hint: Some(
                 "a multi-property fulltext index already covers this (label, property)".to_string(),
             ),
@@ -376,7 +376,7 @@ pub fn drop_fulltext_index(conn: &Connection, label: &str, property: &str) -> Re
     if !fts_table_exists(conn, &table)? {
         return Err(GraphError::IndexNotFound {
             label: label.to_string(),
-            property: property.to_string(),
+            properties: vec![property.to_string()],
             hint: Some("no fulltext index on this (label, property)".to_string()),
         });
     }
@@ -625,7 +625,7 @@ pub fn fulltext_lookup(
     if !fts_table_exists(conn, &table)? {
         return Err(GraphError::IndexNotFound {
             label: label.to_string(),
-            property: property.to_string(),
+            properties: vec![property.to_string()],
             hint: Some("no fulltext index on this (label, property)".to_string()),
         });
     }
@@ -729,10 +729,10 @@ mod tests {
         create_fulltext_index(&c, "Person", "bio").unwrap();
         match create_fulltext_index(&c, "Person", "bio") {
             Err(GraphError::IndexAlreadyExists {
-                label, property, ..
+                label, properties, ..
             }) => {
                 assert_eq!(label, "Person");
-                assert_eq!(property, "bio");
+                assert_eq!(properties, vec!["bio".to_string()]);
             }
             other => panic!("expected IndexAlreadyExists, got {other:?}"),
         }
@@ -743,10 +743,10 @@ mod tests {
         let c = conn();
         match drop_fulltext_index(&c, "Person", "bio") {
             Err(GraphError::IndexNotFound {
-                label, property, ..
+                label, properties, ..
             }) => {
                 assert_eq!(label, "Person");
-                assert_eq!(property, "bio");
+                assert_eq!(properties, vec!["bio".to_string()]);
             }
             other => panic!("expected IndexNotFound, got {other:?}"),
         }
@@ -1083,10 +1083,10 @@ mod tests {
         create_fulltext_index(&c, "Person", "bio").unwrap();
         match create_fulltext_index_ci(&c, "Person", "bio") {
             Err(GraphError::IndexAlreadyExists {
-                label, property, ..
+                label, properties, ..
             }) => {
                 assert_eq!(label, "Person");
-                assert_eq!(property, "bio");
+                assert_eq!(properties, vec!["bio".to_string()]);
             }
             other => panic!("expected IndexAlreadyExists, got {other:?}"),
         }
@@ -1117,10 +1117,10 @@ mod tests {
         let c = conn();
         match fts_tokenizer_kind(&c, "Doc", "body") {
             Err(GraphError::IndexNotFound {
-                label, property, ..
+                label, properties, ..
             }) => {
                 assert_eq!(label, "Doc");
-                assert_eq!(property, "body");
+                assert_eq!(properties, vec!["body".to_string()]);
             }
             other => panic!("expected IndexNotFound, got {other:?}"),
         }
@@ -1156,10 +1156,10 @@ mod tests {
         create_fulltext_index(&c, "Doc", "body").unwrap();
         match create_fulltext_index_word(&c, "Doc", "body") {
             Err(GraphError::IndexAlreadyExists {
-                label, property, ..
+                label, properties, ..
             }) => {
                 assert_eq!(label, "Doc");
-                assert_eq!(property, "body");
+                assert_eq!(properties, vec!["body".to_string()]);
             }
             other => panic!("expected IndexAlreadyExists, got {other:?}"),
         }
@@ -1351,10 +1351,10 @@ mod tests {
             &["title".to_string(), "body".to_string()],
         ) {
             Err(GraphError::IndexAlreadyExists {
-                label, property, ..
+                label, properties, ..
             }) => {
                 assert_eq!(label, "Article");
-                assert_eq!(property, "title");
+                assert_eq!(properties, vec!["title".to_string()]);
             }
             other => panic!("expected IndexAlreadyExists, got {other:?}"),
         }
@@ -1367,10 +1367,10 @@ mod tests {
             .unwrap();
         match create_fulltext_index_word(&c, "Article", "title") {
             Err(GraphError::IndexAlreadyExists {
-                label, property, ..
+                label, properties, ..
             }) => {
                 assert_eq!(label, "Article");
-                assert_eq!(property, "title");
+                assert_eq!(properties, vec!["title".to_string()]);
             }
             other => panic!("expected IndexAlreadyExists, got {other:?}"),
         }

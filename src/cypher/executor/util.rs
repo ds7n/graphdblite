@@ -6,7 +6,7 @@ use crate::cypher::ast::*;
 use crate::cypher::eval::{eval_predicate, expr_to_column_name};
 use crate::cypher::record::NamedRecord;
 use crate::types::*;
-use crate::{edge, index, node};
+use crate::{edge, node};
 
 use super::*;
 
@@ -169,12 +169,11 @@ pub fn execute_first_match(
         LogicalOp::IndexLookup {
             label,
             alias,
-            property,
-            value,
+            index_properties,
+            lookups,
             remaining_filters,
         } => {
-            let lookup_value = resolve_lookup_key(value)?;
-            let node_ids = index::index_lookup(conn, label, property, &lookup_value)?;
+            let node_ids = index_lookup_ids(conn, label, index_properties, lookups)?;
             for id in node_ids {
                 let n = node::get_node(conn, id)?;
                 let rec = node_to_record(&n, alias);

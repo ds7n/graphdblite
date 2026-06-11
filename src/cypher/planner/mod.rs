@@ -205,6 +205,8 @@ pub(in crate::cypher::planner) fn rewrite_text_filter_to_fts(
         | LogicalOp::CreateNode { .. }
         | LogicalOp::CreateEdge { .. }
         | LogicalOp::Merge { .. }
+        | LogicalOp::CreateIndex { .. }
+        | LogicalOp::DropIndex { .. }
         | LogicalOp::EmptyRow => {}
     }
 
@@ -670,6 +672,8 @@ pub(in crate::cypher::planner) fn walk_children_mut(op: &mut LogicalOp, f: fn(&m
         | LogicalOp::CreateNode { .. }
         | LogicalOp::CreateEdge { .. }
         | LogicalOp::Merge { .. }
+        | LogicalOp::CreateIndex { .. }
+        | LogicalOp::DropIndex { .. }
         | LogicalOp::EmptyRow => {}
     }
 }

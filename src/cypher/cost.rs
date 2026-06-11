@@ -141,7 +141,7 @@ fn estimate_rows(conn: &Connection, plan: &LogicalOp) -> f64 {
 
         LogicalOp::Call { .. } => 1.0,
 
-        // Write operations — not relevant for cost estimation.
+        // Write / DDL operations — not relevant for cost estimation.
         LogicalOp::CreateNode { .. }
         | LogicalOp::CreateEdge { .. }
         | LogicalOp::CreateSequence { .. }
@@ -152,7 +152,9 @@ fn estimate_rows(conn: &Connection, plan: &LogicalOp) -> f64 {
         | LogicalOp::SetProperties { .. }
         | LogicalOp::Remove { .. }
         | LogicalOp::Merge { .. }
-        | LogicalOp::MatchMerge { .. } => 1.0,
+        | LogicalOp::MatchMerge { .. }
+        | LogicalOp::CreateIndex { .. }
+        | LogicalOp::DropIndex { .. } => 1.0,
 
         LogicalOp::Union { inputs, .. } => inputs.iter().map(|i| estimate_rows(conn, i)).sum(),
     }
@@ -180,15 +182,20 @@ fn format_plan_tree(conn: &Connection, plan: &LogicalOp, depth: usize, lines: &m
         LogicalOp::IndexLookup {
             label,
             alias,
-            property,
-            value,
+            lookups,
             ..
         } => {
-            let v = match value {
-                LookupKey::Literal(lv) => format!("{lv:?}"),
-                LookupKey::Param(name) => format!("${name}"),
-            };
-            format!("IndexLookup :{label}.{property} = {v} AS {alias}")
+            let pairs: Vec<String> = lookups
+                .iter()
+                .map(|(prop, key)| {
+                    let v = match key {
+                        LookupKey::Literal(lv) => format!("{lv:?}"),
+                        LookupKey::Param(name) => format!("${name}"),
+                    };
+                    format!("{prop} = {v}")
+                })
+                .collect();
+            format!("IndexLookup :{label}.({}) AS {alias}", pairs.join(", "))
         }
         LogicalOp::IdLookup { alias, value_expr } => {
             format!("IdLookup id({alias}) = {value_expr:?}")
@@ -291,6 +298,12 @@ fn format_plan_tree(conn: &Connection, plan: &LogicalOp, depth: usize, lines: &m
             property,
             ..
         } => format!("FullTextLookup :{label}.{property} AS {alias}"),
+        LogicalOp::CreateIndex { label, properties } => {
+            format!("CreateIndex :{label}({})", properties.join(", "))
+        }
+        LogicalOp::DropIndex { label, properties } => {
+            format!("DropIndex :{label}({})", properties.join(", "))
+        }
     };
 
     lines.push(format!("{indent}{desc} (est. {rows:.0} rows)"));
@@ -305,7 +318,7 @@ fn format_plan_tree(conn: &Connection, plan: &LogicalOp, depth: usize, lines: &m
                 let indexed: Vec<String> = index::list_indexes_for_label(conn, label)
                     .unwrap_or_default()
                     .into_iter()
-                    .map(|(_, p)| p)
+                    .flat_map(|info| info.properties)
                     .collect();
                 let mut suggested: Vec<String> = Vec::new();
                 collect_eq_properties(predicate, alias, &mut suggested);

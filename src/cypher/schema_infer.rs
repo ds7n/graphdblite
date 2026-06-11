@@ -327,6 +327,9 @@ pub fn infer_with_props(op: &LogicalOp, props: &HashMap<String, BTreeSet<String>
                 .map(|o| infer_with_props(o, props))
                 .unwrap_or_default()
         }
+
+        // DDL operators produce no record output.
+        CreateIndex { .. } | DropIndex { .. } => RecordSchema::new(),
     }
 }
 
@@ -623,6 +626,9 @@ pub fn collect_property_refs(op: &LogicalOp, out: &mut HashMap<String, BTreeSet<
                 collect_property_refs(i, out);
             }
         }
+
+        // DDL operators carry no expressions; nothing to walk.
+        CreateIndex { .. } | DropIndex { .. } => {}
     }
 }
 

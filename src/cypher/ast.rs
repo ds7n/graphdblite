@@ -25,6 +25,16 @@ pub enum Statement {
         /// true = UNION ALL (keep duplicates), false = UNION (deduplicate).
         all: bool,
     },
+    /// CREATE INDEX ON :Label(prop1, prop2, ...)
+    CreateIndex {
+        label: String,
+        properties: Vec<String>,
+    },
+    /// DROP INDEX ON :Label(prop1, prop2, ...)
+    DropIndex {
+        label: String,
+        properties: Vec<String>,
+    },
     /// CALL procedure statement.
     Call {
         procedure_name: String,

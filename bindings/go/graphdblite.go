@@ -316,6 +316,70 @@ func (tx *WriteTransaction) DropFulltextIndex(label, property string) error {
 	})
 }
 
+// CreateCompositeIndex creates a multi-column secondary index on
+// (label, properties...). Properties must have at least two entries.
+// Must be called inside an active write transaction.
+func (tx *WriteTransaction) CreateCompositeIndex(label string, properties []string) error {
+	if tx.db == nil || tx.db.ptr == nil {
+		return errors.New("transaction is finished")
+	}
+	if len(properties) == 0 {
+		return errors.New("graphdblite create_composite_index: properties cannot be empty")
+	}
+	clabel := C.CString(label)
+	defer C.free(unsafe.Pointer(clabel))
+
+	cprops := make([]*C.char, len(properties))
+	for i, p := range properties {
+		cprops[i] = C.CString(p)
+		defer C.free(unsafe.Pointer(cprops[i]))
+	}
+	cpropsPtr := (**C.char)(unsafe.Pointer(&cprops[0]))
+
+	rc := C.graphdb_create_composite_index(
+		tx.db.ptr,
+		clabel,
+		cpropsPtr,
+		C.uintptr_t(len(properties)),
+	)
+	if rc != 0 {
+		return fmt.Errorf("graphdblite create_composite_index: %w", lastError())
+	}
+	return nil
+}
+
+// DropCompositeIndex drops a multi-column secondary index on
+// (label, properties...). Property ordering must match the original
+// CreateCompositeIndex call exactly.
+func (tx *WriteTransaction) DropCompositeIndex(label string, properties []string) error {
+	if tx.db == nil || tx.db.ptr == nil {
+		return errors.New("transaction is finished")
+	}
+	if len(properties) == 0 {
+		return errors.New("graphdblite drop_composite_index: properties cannot be empty")
+	}
+	clabel := C.CString(label)
+	defer C.free(unsafe.Pointer(clabel))
+
+	cprops := make([]*C.char, len(properties))
+	for i, p := range properties {
+		cprops[i] = C.CString(p)
+		defer C.free(unsafe.Pointer(cprops[i]))
+	}
+	cpropsPtr := (**C.char)(unsafe.Pointer(&cprops[0]))
+
+	rc := C.graphdb_drop_composite_index(
+		tx.db.ptr,
+		clabel,
+		cpropsPtr,
+		C.uintptr_t(len(properties)),
+	)
+	if rc != 0 {
+		return fmt.Errorf("graphdblite drop_composite_index: %w", lastError())
+	}
+	return nil
+}
+
 // ddl is the shared scaffold for the four index-DDL methods above.
 func (tx *WriteTransaction) ddl(op, label, property string, call func(clabel, cprop *C.char) C.int32_t) error {
 	if tx.db == nil || tx.db.ptr == nil {

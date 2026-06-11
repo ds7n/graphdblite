@@ -661,4 +661,40 @@ mod parse_tests {
             "parsed AST missing RegexMatch: {dbg}"
         );
     }
+
+    #[test]
+    fn parses_composite_create_index() {
+        let stmt = parse("CREATE INDEX ON :Person(a, b, c)").unwrap();
+        match stmt {
+            Statement::CreateIndex { label, properties } => {
+                assert_eq!(label, "Person");
+                assert_eq!(properties, vec!["a", "b", "c"]);
+            }
+            other => panic!("expected CreateIndex, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parses_single_prop_create_index_still_works() {
+        let stmt = parse("CREATE INDEX ON :Person(name)").unwrap();
+        match stmt {
+            Statement::CreateIndex { label, properties } => {
+                assert_eq!(label, "Person");
+                assert_eq!(properties, vec!["name"]);
+            }
+            other => panic!("expected CreateIndex, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parses_composite_drop_index() {
+        let stmt = parse("DROP INDEX ON :Person(tenant_id, ext_id)").unwrap();
+        match stmt {
+            Statement::DropIndex { label, properties } => {
+                assert_eq!(label, "Person");
+                assert_eq!(properties, vec!["tenant_id", "ext_id"]);
+            }
+            other => panic!("expected DropIndex, got {other:?}"),
+        }
+    }
 }

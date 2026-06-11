@@ -578,6 +578,105 @@ out:
     return rc;
 }
 
+/* ----------------------------------------------------------------------- */
+/* BC-12 — composite index DDL: create, query, drop                        */
+/* ----------------------------------------------------------------------- */
+static int bc_12_composite_index_ddl(const char *tmpdir) {
+    const char *tag = "BC-12";
+    GraphDB *db = fresh_db(tmpdir, "bc12.db");
+    if (!db) return fail(tag, "open failed");
+
+    /* Create a composite index inside a write tx. */
+    if (graphdb_tx_begin_write(db) != 0) {
+        graphdb_close(db);
+        return fail(tag, "tx_begin_write failed");
+    }
+    const char *props[] = {"tenant_id", "ext_id"};
+    if (graphdb_create_composite_index(db, "Person", props, 2) != 0) {
+        graphdb_tx_rollback(db);
+        graphdb_close(db);
+        return fail(tag, "create_composite_index failed");
+    }
+
+    /* Insert nodes through the same tx. */
+    GraphResult *res = NULL;
+    if (graphdb_tx_execute(db,
+            "CREATE (:Person {tenant_id: 'acme', ext_id: 'u1', name: 'Alice'})", &res) != 0) {
+        graphdb_tx_rollback(db);
+        graphdb_close(db);
+        return fail(tag, "insert Alice failed");
+    }
+    graphdb_result_free(res); res = NULL;
+    if (graphdb_tx_execute(db,
+            "CREATE (:Person {tenant_id: 'acme', ext_id: 'u2', name: 'Bob'})", &res) != 0) {
+        graphdb_tx_rollback(db);
+        graphdb_close(db);
+        return fail(tag, "insert Bob failed");
+    }
+    graphdb_result_free(res); res = NULL;
+    if (graphdb_tx_commit(db) != 0) {
+        graphdb_close(db);
+        return fail(tag, "commit failed");
+    }
+
+    /* Query using both indexed properties — should hit the composite index. */
+    if (graphdb_query(db,
+            "MATCH (n:Person) WHERE n.tenant_id = 'acme' AND n.ext_id = 'u1' RETURN n.name",
+            &res) != 0) {
+        graphdb_close(db);
+        return fail(tag, "lookup query failed");
+    }
+    if (graphdb_result_row_count(res) != 1) {
+        graphdb_result_free(res);
+        graphdb_close(db);
+        return fail(tag, "expected 1 row from composite index lookup");
+    }
+    const char *name = graphdb_result_value_str(res, 0, 0);
+    if (!name || strcmp(name, "Alice") != 0) {
+        graphdb_result_free(res);
+        graphdb_close(db);
+        return fail(tag, "wrong name returned");
+    }
+    graphdb_result_free(res); res = NULL;
+
+    /* Duplicate create must error. */
+    if (graphdb_tx_begin_write(db) != 0) {
+        graphdb_close(db);
+        return fail(tag, "second tx_begin_write failed");
+    }
+    if (graphdb_create_composite_index(db, "Person", props, 2) == 0) {
+        graphdb_tx_rollback(db);
+        graphdb_close(db);
+        return fail(tag, "expected error on duplicate composite index");
+    }
+
+    /* Drop the composite index. */
+    if (graphdb_drop_composite_index(db, "Person", props, 2) != 0) {
+        graphdb_tx_rollback(db);
+        graphdb_close(db);
+        return fail(tag, "drop_composite_index failed");
+    }
+    if (graphdb_tx_commit(db) != 0) {
+        graphdb_close(db);
+        return fail(tag, "drop commit failed");
+    }
+
+    /* Dropping again must error. */
+    if (graphdb_tx_begin_write(db) != 0) {
+        graphdb_close(db);
+        return fail(tag, "third tx_begin_write failed");
+    }
+    if (graphdb_drop_composite_index(db, "Person", props, 2) == 0) {
+        graphdb_tx_rollback(db);
+        graphdb_close(db);
+        return fail(tag, "expected error dropping missing composite index");
+    }
+    graphdb_tx_rollback(db);
+
+    graphdb_close(db);
+    return pass(tag);
+}
+
 int main(int argc, char **argv) {
     const char *tmpdir = (argc >= 2) ? argv[1] : "/tmp/graphdblite-bc";
     if (mkdir(tmpdir, 0700) != 0) {
@@ -594,6 +693,7 @@ int main(int argc, char **argv) {
         bc_09_close_with_open_tx,
         bc_10_result_after_commit,
         bc_11_fulltext_ddl,
+        bc_12_composite_index_ddl,
         snap_basic,
         snap_rejects_existing,
     };

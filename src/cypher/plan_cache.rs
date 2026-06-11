@@ -127,7 +127,9 @@ impl Default for PlanCache {
 /// procedure registry (any CALL).
 pub(crate) fn is_plan_cacheable(stmt: &Statement) -> bool {
     match stmt {
-        Statement::Call { .. } => false,
+        Statement::Call { .. } | Statement::CreateIndex { .. } | Statement::DropIndex { .. } => {
+            false
+        }
         Statement::Explain(inner) => is_plan_cacheable(inner),
         Statement::Union { statements, .. } => statements.iter().all(is_plan_cacheable),
         Statement::Match(m) => {

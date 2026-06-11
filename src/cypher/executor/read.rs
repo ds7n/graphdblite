@@ -205,12 +205,11 @@ pub(in crate::cypher::executor) fn exec_index_lookup(
     conn: &Connection,
     label: &str,
     alias: &str,
-    property: &str,
-    value: &LookupKey,
+    index_properties: &[String],
+    lookups: &[(String, LookupKey)],
     remaining_filters: Option<&Expr>,
 ) -> Result<Vec<NamedRecord>> {
-    let lookup_value = crate::cypher::executor::resolve_lookup_key(value)?;
-    let node_ids = index::index_lookup(conn, label, property, &lookup_value)?;
+    let node_ids = index_lookup_ids(conn, label, index_properties, lookups)?;
     let mut records = Vec::new();
 
     for id in node_ids {
@@ -227,6 +226,24 @@ pub(in crate::cypher::executor) fn exec_index_lookup(
     }
 
     Ok(records)
+}
+
+/// Evaluate `lookups` to concrete values and call `composite_index_prefix_lookup`.
+/// `index_properties` is the full property list of the chosen index (from the IR),
+/// while `lookups` is the matched prefix (len <= index_properties.len()).
+/// Works for N=1 (single-prop) and N>=2 (composite prefix) uniformly.
+pub(crate) fn index_lookup_ids(
+    conn: &Connection,
+    label: &str,
+    index_properties: &[String],
+    lookups: &[(String, LookupKey)],
+) -> Result<Vec<NodeId>> {
+    let values: Vec<Value> = lookups
+        .iter()
+        .map(|(_, k)| crate::cypher::executor::resolve_lookup_key(k))
+        .collect::<Result<_>>()?;
+    let full_props_refs: Vec<&str> = index_properties.iter().map(String::as_str).collect();
+    index::composite_index_prefix_lookup(conn, label, &full_props_refs, &values)
 }
 
 #[allow(clippy::too_many_arguments)]

@@ -12,6 +12,22 @@ use super::pattern::*;
 use super::validation::*;
 use super::*;
 
+/// One element of a WHERE clause's top-level conjunction. We classify each
+/// piece so the composite-index pushdown can fold matched equality
+/// predicates into the lookup and put everything else (including
+/// unmatched equality predicates) back into the residual filter — in
+/// original conjunct order.
+enum ConjunctKind {
+    /// `alias.prop = literal/param` — candidate for index pushdown.
+    Eq {
+        alias: String,
+        prop: String,
+        expr: Expr,
+    },
+    /// Anything else (inequalities, function calls, OR clauses, etc.).
+    Other(Expr),
+}
+
 #[allow(clippy::too_many_arguments)]
 pub(in crate::cypher::planner) fn plan_call(
     conn: &Connection,
@@ -352,6 +368,14 @@ pub(in crate::cypher::planner) fn plan_inner(
                 span: None,
             },
         )),
+        Statement::CreateIndex { label, properties } => Ok(LogicalOp::CreateIndex {
+            label: label.clone(),
+            properties: properties.clone(),
+        }),
+        Statement::DropIndex { label, properties } => Ok(LogicalOp::DropIndex {
+            label: label.clone(),
+            properties: properties.clone(),
+        }),
         Statement::Explain(inner) => plan_inner(conn, inner, subquery),
         Statement::Union { statements, all } => {
             // Validate that all branches have the same column names.
@@ -448,20 +472,66 @@ pub(in crate::cypher::planner) fn plan_match(
         }
     }
 
-    // Apply WHERE filter with predicate pushdown.
+    // Apply WHERE filter with predicate pushdown. Two passes:
+    // 1. Collect equality-on-property conjuncts grouped by alias so we can
+    //    pick the longest composite-index prefix per alias.
+    // 2. Whatever doesn't get consumed (non-equality predicates, equality
+    //    predicates that exceeded the matched prefix length, or matches
+    //    against aliases with no index) falls through to a Filter.
     if let Some(ref predicate) = stmt.where_clause {
         let conjuncts = decompose_conjuncts(predicate);
-        let mut remaining = Vec::new();
-
+        let mut by_alias: HashMap<String, HashMap<String, LookupKey>> = HashMap::new();
+        // Preserve insertion order of equality conjuncts so we can rebuild
+        // any unmatched ones into the residual filter without re-ordering
+        // surrounding non-equality conjuncts.
+        let mut conjunct_kinds: Vec<ConjunctKind> = Vec::with_capacity(conjuncts.len());
         for conj in conjuncts {
-            if let Some(pushed) = try_push_predicate(conn, &mut op, &conj) {
-                op = pushed;
-            } else {
-                remaining.push(conj);
+            match extract_eq_property_predicate(&conj) {
+                Some((alias, prop, key)) => {
+                    by_alias
+                        .entry(alias.clone())
+                        .or_default()
+                        .insert(prop.clone(), key);
+                    conjunct_kinds.push(ConjunctKind::Eq {
+                        alias,
+                        prop,
+                        expr: conj,
+                    });
+                }
+                None => conjunct_kinds.push(ConjunctKind::Other(conj)),
             }
         }
 
-        // Wrap any remaining (non-pushable) conjuncts as a Filter.
+        // Stable order over aliases (sorted) so plan choice is deterministic
+        // across HashMap iteration randomness.
+        let mut aliases: Vec<String> = by_alias.keys().cloned().collect();
+        aliases.sort();
+        let mut consumed: HashSet<(String, String)> = HashSet::new();
+        for alias in &aliases {
+            let candidates = &by_alias[alias];
+            if let Some((new_op, consumed_props)) =
+                try_replace_scan_multi(conn, &mut op, alias, candidates)
+            {
+                op = new_op;
+                for p in consumed_props {
+                    consumed.insert((alias.clone(), p));
+                }
+            }
+        }
+
+        // Rebuild residual filter from any conjuncts that weren't folded
+        // into a lookup, preserving the original conjunct order.
+        let mut remaining: Vec<Expr> = Vec::new();
+        for kind in conjunct_kinds {
+            match kind {
+                ConjunctKind::Eq { alias, prop, expr } => {
+                    if !consumed.contains(&(alias, prop)) {
+                        remaining.push(expr);
+                    }
+                }
+                ConjunctKind::Other(expr) => remaining.push(expr),
+            }
+        }
         if let Some(filter_pred) = rebuild_conjunction(remaining) {
             op = LogicalOp::Filter {
                 input: Box::new(op),

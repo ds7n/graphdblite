@@ -136,6 +136,8 @@ pub(in crate::cypher::executor) fn check_depth_recursive(op: &LogicalOp, cap: u3
         | LogicalOp::CreateNode { .. }
         | LogicalOp::CreateEdge { .. }
         | LogicalOp::Merge { .. }
+        | LogicalOp::CreateIndex { .. }
+        | LogicalOp::DropIndex { .. }
         | LogicalOp::EmptyRow => Ok(()),
     }
 }
@@ -193,6 +195,8 @@ pub(in crate::cypher::executor) fn is_bare_write(plan: &LogicalOp) -> bool {
             | LogicalOp::Remove { .. }
             | LogicalOp::Merge { .. }
             | LogicalOp::MatchMerge { .. }
+            | LogicalOp::CreateIndex { .. }
+            | LogicalOp::DropIndex { .. }
     )
 }
 
@@ -261,7 +265,7 @@ pub(crate) fn is_read_only(plan: &LogicalOp) -> bool {
 
         LogicalOp::Union { inputs, .. } => inputs.iter().all(is_read_only),
 
-        // Write operations.
+        // Write operations (including DDL).
         LogicalOp::CreateNode { .. }
         | LogicalOp::CreateEdge { .. }
         | LogicalOp::CreateSequence { .. }
@@ -272,7 +276,9 @@ pub(crate) fn is_read_only(plan: &LogicalOp) -> bool {
         | LogicalOp::SetProperties { .. }
         | LogicalOp::Remove { .. }
         | LogicalOp::Merge { .. }
-        | LogicalOp::MatchMerge { .. } => false,
+        | LogicalOp::MatchMerge { .. }
+        | LogicalOp::CreateIndex { .. }
+        | LogicalOp::DropIndex { .. } => false,
     }
 }
 
@@ -304,15 +310,15 @@ pub(in crate::cypher::executor) fn exec(
         LogicalOp::IndexLookup {
             label,
             alias,
-            property,
-            value,
+            index_properties,
+            lookups,
             remaining_filters,
         } => exec_index_lookup(
             conn,
             label,
             alias,
-            property,
-            value,
+            index_properties,
+            lookups,
             remaining_filters.as_ref(),
         ),
 
@@ -522,6 +528,10 @@ pub(in crate::cypher::executor) fn exec(
             ctx,
         ),
 
+        LogicalOp::CreateIndex { label, properties } => exec_create_index(conn, label, properties),
+
+        LogicalOp::DropIndex { label, properties } => exec_drop_index(conn, label, properties),
+
         LogicalOp::Union { inputs, all } => {
             let mut results = Vec::new();
             for input in inputs {
@@ -570,8 +580,9 @@ use read::{
     exec_index_lookup, exec_project, exec_scan, exec_unwind, has_duplicate_relationships,
 };
 use write::{
-    exec_create_edge, exec_create_node, exec_create_sequence, exec_delete, exec_match_create,
-    exec_remove, exec_set_label, exec_set_properties, exec_set_property,
+    exec_create_edge, exec_create_index, exec_create_node, exec_create_sequence, exec_delete,
+    exec_drop_index, exec_match_create, exec_remove, exec_set_label, exec_set_properties,
+    exec_set_property,
 };
 
 // Public surface — anything previously `pub`/`pub(crate)` on mod.rs that
@@ -580,7 +591,7 @@ use write::{
 pub(crate) use aggregate::aggregate_slot_records;
 pub(crate) use read::{
     build_compound_binding, compound_binding_vars, exec_fulltext_lookup, expand_record,
-    is_user_visible_field,
+    index_lookup_ids, is_user_visible_field,
 };
 pub use util::{exec_correlated_exists, exec_correlated_subquery, execute_first_match};
 pub(crate) use util::{

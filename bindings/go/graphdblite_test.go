@@ -422,3 +422,74 @@ func TestCreateFulltextIndexWordMulti(t *testing.T) {
 	}
 	res.Free()
 }
+
+func TestCreateCompositeIndex(t *testing.T) {
+	db, err := OpenMemory()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	tx, err := db.BeginWrite()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := tx.CreateCompositeIndex("Person", []string{"tenant_id", "ext_id"}); err != nil {
+		_ = tx.Rollback()
+		t.Fatalf("CreateCompositeIndex: %v", err)
+	}
+	// Duplicate create should error.
+	if err := tx.CreateCompositeIndex("Person", []string{"tenant_id", "ext_id"}); err == nil {
+		_ = tx.Rollback()
+		t.Fatal("expected duplicate CreateCompositeIndex to error")
+	}
+	res, err := tx.Execute("CREATE (:Person {tenant_id: 1, ext_id: 'a'})")
+	if err != nil {
+		_ = tx.Rollback()
+		t.Fatalf("insert: %v", err)
+	}
+	res.Free()
+	if err := tx.Commit(); err != nil {
+		t.Fatal(err)
+	}
+
+	// db.indexes() should return one row per covered property (2 properties).
+	res, err = db.Query("CALL db.indexes() YIELD label, property")
+	if err != nil {
+		t.Fatalf("db.indexes(): %v", err)
+	}
+	if got := res.RowCount(); got != 2 {
+		res.Free()
+		t.Fatalf("expected 2 rows from db.indexes(), got %d", got)
+	}
+	res.Free()
+}
+
+func TestDropCompositeIndex(t *testing.T) {
+	db, err := OpenMemory()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	tx, err := db.BeginWrite()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := tx.CreateCompositeIndex("Person", []string{"a", "b"}); err != nil {
+		_ = tx.Rollback()
+		t.Fatalf("CreateCompositeIndex: %v", err)
+	}
+	if err := tx.DropCompositeIndex("Person", []string{"a", "b"}); err != nil {
+		_ = tx.Rollback()
+		t.Fatalf("DropCompositeIndex: %v", err)
+	}
+	// Drop again should error (index no longer exists).
+	if err := tx.DropCompositeIndex("Person", []string{"a", "b"}); err == nil {
+		_ = tx.Rollback()
+		t.Fatal("expected second DropCompositeIndex to error")
+	}
+	if err := tx.Rollback(); err != nil {
+		t.Fatal(err)
+	}
+}

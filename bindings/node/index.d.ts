@@ -72,6 +72,13 @@ export declare class WriteTransaction {
   createFulltextIndexWordMulti(label: string, properties: Array<string>): void
   /** Drop a fulltext index on (label, property). */
   dropFulltextIndex(label: string, property: string): void
+  /**
+   * Create a composite (multi-property) secondary index on (label, properties).
+   * Accelerates equality lookups on all listed properties simultaneously.
+   */
+  createCompositeIndex(label: string, properties: Array<string>): void
+  /** Drop a composite (multi-property) secondary index on (label, properties). */
+  dropCompositeIndex(label: string, properties: Array<string>): void
   /** Commit the transaction. */
   commit(): void
   /** Rollback the transaction. */

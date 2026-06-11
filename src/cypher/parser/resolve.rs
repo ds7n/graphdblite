@@ -576,5 +576,7 @@ pub fn validate_params(stmt: &Statement, params: &HashMap<String, Value>) -> Res
             }
             Ok(())
         }
+        // DDL statements carry no expressions; nothing to validate.
+        Statement::CreateIndex { .. } | Statement::DropIndex { .. } => Ok(()),
     }
 }

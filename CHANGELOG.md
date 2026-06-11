@@ -9,6 +9,38 @@ ships.
 
 ### Added
 
+- **Composite (multi-column) secondary indexes.** New
+  `Database::create_composite_index(label, &[props])` /
+  `drop_composite_index` plus matching `WriteTransaction` methods, with
+  parity in the Python, Node, Go, and C/FFI bindings. Cypher DDL
+  extended: `CREATE INDEX ON :Label(prop1, prop2, …)` and
+  `DROP INDEX ON :Label(prop1, prop2, …)`. The planner picks the
+  index with the longest leftmost-prefix matched by equality predicates
+  — both inline pattern properties (`MATCH (p:Person {tenant_id: 1,
+  ext_id: 'a'})`) and WHERE-clause conjuncts (`MATCH (p:Person) WHERE
+  p.tenant_id = 1 AND p.ext_id = 'a'`) drive the same lookup. Tie-breaks
+  prefer the smaller total index width, then lex on joined property
+  names. Storage uses `node_idx$<label>$<p1>$…$<pN>` tables with
+  msgpack-concat tuple keys (`$` is forbidden by `validate_name`, so
+  the separator is unambiguous); single-prop indexes keep their
+  existing `node_idx_<label>_<prop>` naming for backward compatibility
+  — both APIs produce the same on-disk table for `N=1`. `db.indexes()`
+  emits one row per covered property (`kind = "btree"`), matching the
+  multi-prop FTS convention. Nodes missing any covered property are
+  skipped from index entries (no `NULL` placeholder).
+
+### Fixed
+
+- **Cypher `DELETE` now cleans up secondary indexes.** `exec_delete`
+  previously called `storage::node::delete_node` directly, bypassing
+  the index- and FTS-maintenance path that
+  `WriteTransaction::delete_node` performs. The bug was latent for
+  single-property btree indexes (the executor silently fetched deleted
+  nodes back through stale entries) and surfaced as `NodeNotFound`
+  errors against composite indexes once the planner reliably picked
+  them for follow-up lookups. `exec_delete` now invokes
+  `index::remove_indexes_for_node` and `fts::remove_fts_for_node`
+  before removing each node, matching the typed-transaction path.
 - **OR-chain rewrite across FTS indexes.** `WHERE A OR B OR …` where
   every disjunct is a text predicate (`CONTAINS` / `STARTS WITH` /
   `ENDS WITH`) against an FTS-indexed property of the same label now

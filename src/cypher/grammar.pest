@@ -8,7 +8,7 @@ COMMENT = _{ "//" ~ (!"\n" ~ ANY)* }
 statement = { SOI ~ union_stmt ~ ";"? ~ EOI }
 union_stmt = { single_stmt ~ (union_op ~ single_stmt)* }
 union_op = { ^"UNION" ~ ^"ALL"? }
-single_stmt = { explain_stmt | multi_clause_stmt | match_stmt | unwind_stmt | with_stmt | match_create_stmt | match_merge_stmt | delete_stmt | set_stmt | remove_stmt | create_stmt | merge_stmt | call_stmt | return_stmt }
+single_stmt = { explain_stmt | create_index_stmt | drop_index_stmt | multi_clause_stmt | match_stmt | unwind_stmt | with_stmt | match_create_stmt | match_merge_stmt | delete_stmt | set_stmt | remove_stmt | create_stmt | merge_stmt | call_stmt | return_stmt }
 
 explain_stmt = { ^"EXPLAIN" ~ (multi_clause_stmt | match_create_stmt | with_stmt | match_stmt | unwind_stmt) }
 
@@ -110,6 +110,18 @@ call_stmt = {
     (return_clause ~ order_by_clause? ~ skip_clause? ~ limit_clause?)?
 }
 procedure_name = @{ ident ~ ("." ~ ident)+ }
+
+// === DDL: CREATE / DROP INDEX ===
+
+create_index_stmt = {
+    ^"CREATE" ~ ^"INDEX" ~ ^"ON" ~ ":" ~ symbolic_name ~
+    "(" ~ ident ~ ("," ~ ident)* ~ ")"
+}
+
+drop_index_stmt = {
+    ^"DROP" ~ ^"INDEX" ~ ^"ON" ~ ":" ~ symbolic_name ~
+    "(" ~ ident ~ ("," ~ ident)* ~ ")"
+}
 
 yield_clause = {
     ^"YIELD" ~ (yield_star | yield_items)

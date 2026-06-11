@@ -5109,3 +5109,81 @@ fn score_function_survives_with_clause() {
     };
     assert!(s0 >= s1, "expected descending: {s0} vs {s1}");
 }
+
+// ---------------------------------------------------------------------------
+// Cypher DDL: CREATE INDEX / DROP INDEX
+// ---------------------------------------------------------------------------
+
+#[test]
+fn cypher_composite_index_create_and_use() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut db = Database::open(dir.path().join("test.db")).unwrap();
+
+    db.execute("CREATE INDEX ON :Person(tenant_id, ext_id)")
+        .unwrap();
+    db.execute("CREATE (:Person {tenant_id: 1, ext_id: 'a', n: 1})")
+        .unwrap();
+    db.execute("CREATE (:Person {tenant_id: 1, ext_id: 'b', n: 2})")
+        .unwrap();
+    db.execute("CREATE (:Person {tenant_id: 2, ext_id: 'a', n: 3})")
+        .unwrap();
+
+    // Full prefix match — should use the composite index and return exactly one row.
+    let rows = db
+        .execute("MATCH (p:Person {tenant_id: 1, ext_id: 'a'}) RETURN p.n")
+        .unwrap();
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].get("p.n").unwrap(), &Value::I64(1));
+
+    db.execute("DROP INDEX ON :Person(tenant_id, ext_id)")
+        .unwrap();
+
+    // Query still works after drop, falling back to label scan.
+    let rows = db
+        .execute("MATCH (p:Person {tenant_id: 1, ext_id: 'a'}) RETURN p.n")
+        .unwrap();
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].get("p.n").unwrap(), &Value::I64(1));
+}
+
+#[test]
+fn cypher_single_prop_index_create_and_use() {
+    let mut db = Database::open_memory().unwrap();
+
+    db.execute("CREATE INDEX ON :City(name)").unwrap();
+    db.execute("CREATE (:City {name: 'Berlin', pop: 3600000})")
+        .unwrap();
+    db.execute("CREATE (:City {name: 'London', pop: 9000000})")
+        .unwrap();
+
+    let rows = db
+        .execute("MATCH (c:City {name: 'Berlin'}) RETURN c.pop")
+        .unwrap();
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].get("c.pop").unwrap(), &Value::I64(3600000));
+
+    db.execute("DROP INDEX ON :City(name)").unwrap();
+}
+
+#[test]
+fn cypher_create_index_duplicate_is_error() {
+    let mut db = Database::open_memory().unwrap();
+    db.execute("CREATE INDEX ON :Person(email)").unwrap();
+    let err = db.execute("CREATE INDEX ON :Person(email)").unwrap_err();
+    let msg = format!("{err:?}");
+    assert!(
+        msg.contains("IndexAlreadyExists") || msg.contains("already exists"),
+        "expected IndexAlreadyExists error, got: {msg}"
+    );
+}
+
+#[test]
+fn cypher_drop_nonexistent_index_is_error() {
+    let mut db = Database::open_memory().unwrap();
+    let err = db.execute("DROP INDEX ON :Person(email)").unwrap_err();
+    let msg = format!("{err:?}");
+    assert!(
+        msg.contains("IndexNotFound") || msg.contains("not found"),
+        "expected IndexNotFound error, got: {msg}"
+    );
+}

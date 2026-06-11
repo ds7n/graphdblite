@@ -120,8 +120,10 @@ fn exec_db_indexes(conn: &Connection) -> Result<Vec<HashMap<String, Value>>> {
     let secondary = index::list_all_indexes(conn)?;
     let fulltext = fts::list_all_fulltext_indexes(conn)?;
     let mut rows = Vec::with_capacity(secondary.len() + fulltext.len());
-    for (label, property) in secondary {
-        rows.push(row(&label, &property, "btree"));
+    for info in secondary {
+        for prop in &info.properties {
+            rows.push(row(&info.label, prop, info.kind));
+        }
     }
     for info in fulltext {
         let kind_str = match info.kind {
@@ -199,7 +201,7 @@ fn resolve_fts_target(
         match infos.len() {
             0 => Err(GraphError::IndexNotFound {
                 label: label.to_string(),
-                property: "*".to_string(),
+                properties: vec!["*".to_string()],
                 hint: Some(format!("no fulltext index on label `{label}`")),
             }),
             1 => Ok((infos[0].table_name.clone(), None)),
@@ -229,7 +231,7 @@ fn resolve_fts_target(
         }
         Err(GraphError::IndexNotFound {
             label: label.to_string(),
-            property: property.to_string(),
+            properties: vec![property.to_string()],
             hint: Some("no fulltext index covers this (label, property)".to_string()),
         })
     }
@@ -927,6 +929,31 @@ mod tests {
                 r.get("kind"),
                 Some(&Value::String("fulltext_word".to_string()))
             );
+        }
+    }
+
+    #[test]
+    fn exec_db_indexes_emits_one_row_per_composite_btree_property() {
+        let conn = fresh_conn();
+        crate::storage::index::create_composite_index(&conn, "Person", &["tenant_id", "ext_id"])
+            .unwrap();
+        let rows = execute_builtin("db.indexes", &[], &conn).unwrap();
+        assert_eq!(rows.len(), 2);
+        let props: Vec<String> = rows
+            .iter()
+            .map(|r| match r.get("property").unwrap() {
+                Value::String(s) => s.clone(),
+                v => panic!("property was {v:?}"),
+            })
+            .collect();
+        assert_eq!(
+            props,
+            vec!["tenant_id".to_string(), "ext_id".to_string()],
+            "rows must preserve declared column order"
+        );
+        for r in &rows {
+            assert_eq!(r.get("label"), Some(&Value::String("Person".to_string())));
+            assert_eq!(r.get("kind"), Some(&Value::String("btree".to_string())));
         }
     }
 }

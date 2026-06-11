@@ -67,6 +67,8 @@ pub(in crate::cypher::parser) fn parse_single_stmt(
         Rule::with_stmt => parse_with_stmt(pair).map(Statement::Match),
         Rule::return_stmt => parse_return_stmt(pair).map(Statement::Return),
         Rule::call_stmt => parse_call(pair),
+        Rule::create_index_stmt => parse_create_index(pair),
+        Rule::drop_index_stmt => parse_drop_index(pair),
         _ => Err(GraphError::syntax(format!(
             "unexpected rule: {:?}",
             pair.as_rule()
@@ -1023,6 +1025,44 @@ pub(in crate::cypher::parser) fn parse_merge(
         skip,
         limit,
     })
+}
+
+// === DDL: CREATE / DROP INDEX ===
+
+pub(in crate::cypher::parser) fn parse_create_index(
+    pair: pest::iterators::Pair<Rule>,
+) -> crate::types::Result<Statement> {
+    let mut inner = pair.into_inner();
+    let label = inner
+        .next()
+        .ok_or_else(|| GraphError::syntax("CREATE INDEX missing label".to_string()))?
+        .as_str()
+        .to_string();
+    let properties: Vec<String> = inner.map(|p| p.as_str().to_string()).collect();
+    if properties.is_empty() {
+        return Err(GraphError::syntax(
+            "CREATE INDEX requires at least one property".to_string(),
+        ));
+    }
+    Ok(Statement::CreateIndex { label, properties })
+}
+
+pub(in crate::cypher::parser) fn parse_drop_index(
+    pair: pest::iterators::Pair<Rule>,
+) -> crate::types::Result<Statement> {
+    let mut inner = pair.into_inner();
+    let label = inner
+        .next()
+        .ok_or_else(|| GraphError::syntax("DROP INDEX missing label".to_string()))?
+        .as_str()
+        .to_string();
+    let properties: Vec<String> = inner.map(|p| p.as_str().to_string()).collect();
+    if properties.is_empty() {
+        return Err(GraphError::syntax(
+            "DROP INDEX requires at least one property".to_string(),
+        ));
+    }
+    Ok(Statement::DropIndex { label, properties })
 }
 
 // === Pattern parsing ===

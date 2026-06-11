@@ -400,91 +400,61 @@ pub(in crate::cypher::planner) fn plan_node_scan(
     // Try to find an indexed property for this label.
     if !node.properties.is_empty() && !label.is_empty() {
         let indexes = index::list_indexes_for_label(conn, &label).unwrap_or_default();
-        let indexed_props: Vec<&str> = indexes.iter().map(|(_, p)| p.as_str()).collect();
 
-        // Collect all inline properties that have an index and a literal value.
-        let mut candidates: Vec<(&String, &Expr)> = node
+        // Build a map from property name -> LookupKey for each inline property
+        // that carries a literal or parameter value. This is the set of
+        // equality predicates the planner can push into an index.
+        let mut equality_preds: std::collections::HashMap<String, LookupKey> = node
             .properties
             .iter()
-            .filter(|(key, val)| {
-                indexed_props.contains(&key.as_str())
-                    && matches!(val.kind, ExprKind::Literal(_) | ExprKind::Parameter(_))
+            .filter_map(|(key, val)| match &val.kind {
+                ExprKind::Literal(l) => Some((key.clone(), LookupKey::Literal(l.clone()))),
+                ExprKind::Parameter(name) => Some((key.clone(), LookupKey::Param(name.clone()))),
+                _ => None,
             })
             .collect();
 
-        // Pick the most selective index: lowest cardinality, ties broken
-        // alphabetically for determinism.
-        if candidates.len() > 1 {
-            // Pre-compute literal values up front so the sort comparator can be
-            // infallible; if any candidate is somehow not a literal (would
-            // indicate a planner/grammar bug), fall back to lexicographic
-            // ordering rather than panic.
-            let mut indexed: Vec<(&String, &Expr, Option<crate::types::Value>)> = candidates
-                .iter()
-                .map(|(k, e)| {
-                    let v = match &e.kind {
-                        ExprKind::Literal(l) => Some(crate::cypher::executor::literal_to_value(l)),
-                        _ => None,
-                    };
-                    (*k, *e, v)
-                })
-                .collect();
-            indexed.sort_by(|(key_a, _, val_a), (key_b, _, val_b)| {
-                let count_a = match val_a {
-                    Some(v) => {
-                        index::index_count_for_value(conn, &label, key_a, v).unwrap_or(usize::MAX)
-                    }
-                    None => usize::MAX,
-                };
-                let count_b = match val_b {
-                    Some(v) => {
-                        index::index_count_for_value(conn, &label, key_b, v).unwrap_or(usize::MAX)
-                    }
-                    None => usize::MAX,
-                };
-                count_a.cmp(&count_b).then_with(|| key_a.cmp(key_b))
-            });
-            candidates = indexed.into_iter().map(|(k, e, _)| (k, e)).collect();
-        }
-
-        let indexed_match = candidates.into_iter().next();
-
-        if let Some((prop, expr)) = indexed_match {
-            let lookup_key = match &expr.kind {
-                ExprKind::Literal(l) => LookupKey::Literal(l.clone()),
-                ExprKind::Parameter(name) => LookupKey::Param(name.clone()),
-                // Defensive: candidates were filtered upstream.
-                _ => {
-                    return Err(GraphError::query(
-                        crate::types::QueryPhase::SemanticAnalysis,
-                        ErrorCode::Other,
-                        "internal: indexed match candidate is not a literal or parameter"
-                            .to_string(),
-                    ));
+        if !equality_preds.is_empty() {
+            if let Some((info, k)) = pick_index_for_equality_preds(&indexes, &equality_preds) {
+                // Extract the matched-prefix lookups in column order.
+                let mut lookups: Vec<(String, LookupKey)> = Vec::with_capacity(k);
+                for p in &info.properties[..k] {
+                    let key = equality_preds
+                        .remove(p.as_str())
+                        .expect("pick_index_for_equality_preds guaranteed key presence");
+                    lookups.push((p.clone(), key));
                 }
-            };
+                let index_properties = info.properties.clone();
 
-            // Build remaining filters from non-indexed properties.
-            let remaining: std::collections::HashMap<String, Expr> = node
-                .properties
-                .iter()
-                .filter(|(k, _)| k != &prop)
-                .map(|(k, v)| (k.clone(), v.clone()))
-                .collect();
+                // Build remaining filters from non-indexed inline properties
+                // (equality preds not consumed by the index + any non-literal props).
+                let mut remaining: std::collections::HashMap<String, Expr> = node
+                    .properties
+                    .iter()
+                    .filter(|(k, _)| equality_preds.contains_key(k.as_str()))
+                    .map(|(k, v)| (k.clone(), v.clone()))
+                    .collect();
+                // Also include non-literal/non-param inline props as filters.
+                for (k, v) in &node.properties {
+                    if !matches!(v.kind, ExprKind::Literal(_) | ExprKind::Parameter(_)) {
+                        remaining.insert(k.clone(), v.clone());
+                    }
+                }
 
-            let remaining_filters = if remaining.is_empty() {
-                None
-            } else {
-                Some(properties_to_filter(alias, &remaining))
-            };
+                let remaining_filters = if remaining.is_empty() {
+                    None
+                } else {
+                    Some(properties_to_filter(alias, &remaining))
+                };
 
-            return Ok(LogicalOp::IndexLookup {
-                label,
-                alias: alias.to_string(),
-                property: prop.clone(),
-                value: lookup_key,
-                remaining_filters,
-            });
+                return Ok(LogicalOp::IndexLookup {
+                    label,
+                    alias: alias.to_string(),
+                    index_properties,
+                    lookups,
+                    remaining_filters,
+                });
+            }
         }
     }
 
@@ -644,4 +614,58 @@ pub(in crate::cypher::planner) fn plan_create_pattern_with_counter(
     }
 
     Ok(ops)
+}
+
+/// Among all candidate indexes for a label, find the one whose property list
+/// has the longest leftmost prefix entirely covered by equality predicates.
+///
+/// Tie-breaking (when two indexes match the same prefix length):
+/// 1. Prefer smaller total `properties.len()` (less wasted key bytes).
+/// 2. Then lexicographic on `properties.join(",")` for determinism.
+///
+/// Returns `(info, prefix_length)` or `None` if no index matches at least
+/// its leading column.
+pub(in crate::cypher::planner) fn pick_index_for_equality_preds<'a>(
+    candidates: &'a [crate::storage::index::IndexInfo],
+    equality_preds: &std::collections::HashMap<String, LookupKey>,
+) -> Option<(&'a crate::storage::index::IndexInfo, usize)> {
+    let mut best: Option<(&crate::storage::index::IndexInfo, usize)> = None;
+    for info in candidates {
+        // Count how many leading columns of this index are covered.
+        let mut k = 0;
+        for p in &info.properties {
+            if equality_preds.contains_key(p.as_str()) {
+                k += 1;
+            } else {
+                break;
+            }
+        }
+        if k == 0 {
+            continue;
+        }
+        best = Some(match best {
+            None => (info, k),
+            Some(current) => {
+                if k > current.1 {
+                    (info, k)
+                } else if k < current.1 {
+                    current
+                } else {
+                    // Same prefix length — prefer narrower index, then lex.
+                    let len_a = info.properties.len();
+                    let len_b = current.0.properties.len();
+                    if len_a < len_b {
+                        (info, k)
+                    } else if len_a > len_b {
+                        current
+                    } else if info.properties.join(",") < current.0.properties.join(",") {
+                        (info, k)
+                    } else {
+                        current
+                    }
+                }
+            }
+        });
+    }
+    best
 }

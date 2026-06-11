@@ -293,6 +293,18 @@ pub(in crate::cypher::executor) fn exec_delete(
             ))
             .with_code(ErrorCode::DeleteConnectedNode));
         }
+        // Clean up secondary indexes (btree + FTS) before removing the node
+        // itself. Mirrors WriteTransaction::delete_node in transaction.rs.
+        // Missing node (already deleted via duplicate in nodes_to_delete or
+        // an earlier edge cascade) is silently ignored — index entries
+        // would have been cleared at first removal.
+        if let Ok(n) = node::get_node(conn, *node_id) {
+            if let Some(primary_label) = n.labels.first() {
+                let _ =
+                    index::remove_indexes_for_node(conn, *node_id, primary_label, &n.properties);
+                let _ = fts::remove_fts_for_node(conn, *node_id, primary_label, &n.properties);
+            }
+        }
         let _ = node::delete_node(conn, *node_id);
     }
 
@@ -801,4 +813,29 @@ pub(in crate::cypher::executor) fn exec_remove(
         }
     }
     Ok(records)
+}
+
+/// Execute `CREATE INDEX ON :Label(prop1, prop2, ...)`.
+///
+/// Delegates to `index::create_composite_index` (which handles both single-
+/// property and composite cases via the same table schema).
+pub(in crate::cypher::executor) fn exec_create_index(
+    conn: &Connection,
+    label: &str,
+    properties: &[String],
+) -> Result<Vec<NamedRecord>> {
+    let props: Vec<&str> = properties.iter().map(String::as_str).collect();
+    index::create_composite_index(conn, label, &props)?;
+    Ok(vec![])
+}
+
+/// Execute `DROP INDEX ON :Label(prop1, prop2, ...)`.
+pub(in crate::cypher::executor) fn exec_drop_index(
+    conn: &Connection,
+    label: &str,
+    properties: &[String],
+) -> Result<Vec<NamedRecord>> {
+    let props: Vec<&str> = properties.iter().map(String::as_str).collect();
+    index::drop_composite_index(conn, label, &props)?;
+    Ok(vec![])
 }

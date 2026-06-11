@@ -806,12 +806,16 @@ pub enum GraphError {
     },
     IndexAlreadyExists {
         label: String,
-        property: String,
+        properties: Vec<String>,
         hint: Option<String>,
     },
     IndexNotFound {
         label: String,
-        property: String,
+        properties: Vec<String>,
+        hint: Option<String>,
+    },
+    InvalidIndexDefinition {
+        reason: String,
         hint: Option<String>,
     },
     InvalidName {
@@ -873,18 +877,26 @@ impl fmt::Display for GraphError {
             }
             GraphError::IndexAlreadyExists {
                 label,
-                property,
+                properties,
                 hint,
             } => {
-                write!(f, "index already exists: {label}.{property}")?;
+                write!(
+                    f,
+                    "index already exists: :{label}({})",
+                    properties.join(", ")
+                )?;
                 fmt_hint(f, hint.as_deref())
             }
             GraphError::IndexNotFound {
                 label,
-                property,
+                properties,
                 hint,
             } => {
-                write!(f, "index not found: {label}.{property}")?;
+                write!(f, "index not found: :{label}({})", properties.join(", "))?;
+                fmt_hint(f, hint.as_deref())
+            }
+            GraphError::InvalidIndexDefinition { reason, hint } => {
+                write!(f, "invalid index definition: {reason}")?;
                 fmt_hint(f, hint.as_deref())
             }
             GraphError::InvalidName { name, hint } => {
@@ -1133,6 +1145,7 @@ impl GraphError {
             | GraphError::Transaction { hint: h, .. }
             | GraphError::IndexAlreadyExists { hint: h, .. }
             | GraphError::IndexNotFound { hint: h, .. }
+            | GraphError::InvalidIndexDefinition { hint: h, .. }
             | GraphError::InvalidName { hint: h, .. }
             | GraphError::SizeLimit { hint: h, .. }
             | GraphError::SchemaMismatch { hint: h, .. } => *h = Some(hint.into()),

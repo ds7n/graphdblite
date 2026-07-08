@@ -145,3 +145,50 @@ fn two_single_prop_indexes_both_predicates_returns_correct_rows() {
     assert_eq!(rows.len(), 1);
     assert_eq!(rows[0].get("p.n").unwrap(), &Value::I64(1));
 }
+
+/// Regression (#6): contradictory equality predicates on the same indexed
+/// property (`n.x = 1 AND n.x = 2`) are unsatisfiable and must return zero rows.
+/// The index-pushdown path previously folded only the last value into the
+/// IndexLookup and dropped the other conjunct from the residual filter, so an
+/// indexed query wrongly returned the `x = 2` node. The result must match the
+/// no-index Filter path (0 rows) and be independent of conjunct order.
+#[test]
+fn contradictory_equality_on_indexed_prop_returns_zero_rows() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("contradiction.db");
+    let mut db = Database::open(&path).unwrap();
+
+    db.begin_write().unwrap();
+    db.execute("CREATE (:Person {x: 1}), (:Person {x: 2})")
+        .unwrap();
+    db.commit().unwrap();
+
+    {
+        let tx = db.write_tx().unwrap();
+        tx.create_index("Person", "x").unwrap();
+        tx.commit().unwrap();
+    }
+
+    // Index-served: must be unsatisfiable.
+    let rows = db
+        .execute("MATCH (n:Person) WHERE n.x = 1 AND n.x = 2 RETURN n.x")
+        .unwrap();
+    assert_eq!(
+        rows.len(),
+        0,
+        "contradictory equality returned rows via index"
+    );
+
+    // Order-independent: the reversed conjunction must also be empty.
+    let rows_rev = db
+        .execute("MATCH (n:Person) WHERE n.x = 2 AND n.x = 1 RETURN n.x")
+        .unwrap();
+    assert_eq!(rows_rev.len(), 0, "result depends on conjunct order");
+
+    // Sanity: a satisfiable single-value lookup still works via the index.
+    let ok = db
+        .execute("MATCH (n:Person) WHERE n.x = 2 RETURN n.x")
+        .unwrap();
+    assert_eq!(ok.len(), 1);
+    assert_eq!(ok[0].get("n.x").unwrap(), &Value::I64(2));
+}

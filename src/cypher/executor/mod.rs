@@ -538,10 +538,14 @@ pub(in crate::cypher::executor) fn exec(
                 results.extend(exec(conn, input, ctx)?);
             }
             if !all {
-                // Deduplicate for plain UNION.
-                let mut seen = Vec::new();
+                // Deduplicate for plain UNION. Compare rows ignoring the
+                // synthetic per-branch `__fts_score` key: an OR-chain rewritten
+                // to `Union(FullTextLookup, …)` gives the same node a different
+                // BM25 score in each disjunct, so including it here would defeat
+                // dedup and return the node once per matching branch.
+                let mut seen: Vec<NamedRecord> = Vec::new();
                 results.retain(|rec| {
-                    if seen.iter().any(|s: &NamedRecord| s.fields == rec.fields) {
+                    if seen.iter().any(|s| union_rows_equal(s, rec)) {
                         false
                     } else {
                         seen.push(rec.clone());
@@ -552,6 +556,33 @@ pub(in crate::cypher::executor) fn exec(
             Ok(results)
         }
     }
+}
+
+/// Whether two records are equal for UNION dedup purposes.
+///
+/// Identical to `a.fields == b.fields` except that the synthetic
+/// `<alias>.__fts_score` binding is ignored. That key holds a per-branch BM25
+/// score set by FTS-driven scans; the same node reached through two disjuncts of
+/// an OR-chain rewritten to `Union(FullTextLookup, …)` carries a different score
+/// per branch, and those rows must still dedup to one.
+fn union_rows_equal(a: &NamedRecord, b: &NamedRecord) -> bool {
+    fn is_fts_score(key: &str) -> bool {
+        key.ends_with(".__fts_score")
+    }
+    let a_len = a.fields.iter().filter(|(k, _)| !is_fts_score(k)).count();
+    let b_len = b.fields.iter().filter(|(k, _)| !is_fts_score(k)).count();
+    if a_len != b_len {
+        return false;
+    }
+    for (key, val) in &a.fields {
+        if is_fts_score(key) {
+            continue;
+        }
+        if b.get(key) != Some(val) {
+            return false;
+        }
+    }
+    true
 }
 
 // === executor split: submodule declarations ===
@@ -593,6 +624,7 @@ pub(crate) use read::{
     build_compound_binding, compound_binding_vars, exec_fulltext_lookup, expand_record,
     index_lookup_ids, is_user_visible_field,
 };
+pub(in crate::cypher) use util::compare_values_for_sort;
 pub use util::{exec_correlated_exists, exec_correlated_subquery, execute_first_match};
 pub(crate) use util::{
     fetch_and_populate, literal_to_value, node_to_record, node_to_record_pub, resolve_lookup_key,

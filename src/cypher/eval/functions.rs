@@ -577,17 +577,24 @@ pub(in crate::cypher::eval) fn eval_function_call(
             let len = args.get(2).map(|a| eval_expr(a, record, ecx)).transpose()?;
             match (s, start) {
                 (Value::String(s), Some(Value::I64(start))) => {
+                    // Cypher substring is CHARACTER-indexed, not byte-indexed.
+                    // Slicing by byte offset (`s[start..]`) panics when `start`
+                    // falls inside a multibyte codepoint (e.g. substring('é', 1)),
+                    // which would unwind across the FFI boundary. Operate on
+                    // chars to stay panic-free and Unicode-correct.
                     let start = start.max(0) as usize;
-                    if start >= s.len() {
+                    let chars: Vec<char> = s.chars().collect();
+                    if start >= chars.len() {
                         return Ok(Value::String(String::new()));
                     }
-                    match len {
+                    let out: String = match len {
                         Some(Value::I64(l)) => {
-                            let end = (start + l.max(0) as usize).min(s.len());
-                            Ok(Value::String(s[start..end].to_string()))
+                            let take = l.max(0) as usize;
+                            chars[start..].iter().take(take).collect()
                         }
-                        _ => Ok(Value::String(s[start..].to_string())),
-                    }
+                        _ => chars[start..].iter().collect(),
+                    };
+                    Ok(Value::String(out))
                 }
                 _ => Ok(Value::Null),
             }

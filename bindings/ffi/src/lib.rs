@@ -55,6 +55,33 @@ fn wrap_result<T>(result: Result<T, GraphError>, out: impl FnOnce(T)) -> i32 {
     }
 }
 
+/// Run a fallible operation, converting any panic into a recoverable
+/// `GraphError` instead of letting it unwind across the `extern "C"` boundary
+/// (which is undefined behavior — in practice a process abort). Query/execute
+/// paths run untrusted Cypher that can panic on malformed input, so every such
+/// path funnels through here to guarantee the C caller gets `-1` +
+/// `graphdb_last_error` rather than a crashed host process.
+fn catch<T>(op: impl FnOnce() -> Result<T, GraphError>) -> Result<T, GraphError> {
+    match std::panic::catch_unwind(std::panic::AssertUnwindSafe(op)) {
+        Ok(res) => res,
+        Err(payload) => {
+            let msg = panic_message(&payload);
+            Err(GraphError::transaction(format!("internal panic: {msg}")))
+        }
+    }
+}
+
+/// Best-effort extraction of a human-readable message from a panic payload.
+fn panic_message(payload: &Box<dyn std::any::Any + Send>) -> String {
+    if let Some(s) = payload.downcast_ref::<&str>() {
+        (*s).to_string()
+    } else if let Some(s) = payload.downcast_ref::<String>() {
+        s.clone()
+    } else {
+        "unknown panic".to_string()
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Opaque handle types
 // ---------------------------------------------------------------------------
@@ -479,13 +506,13 @@ pub unsafe extern "C" fn graphdb_query(
         }
     };
 
-    let result = (|| -> Result<Vec<Record>, GraphError> {
+    let result = catch(|| {
         let mut guard = lock_db(handle)?;
         let tx = guard.read_tx()?;
         let records = tx.query(cypher_str)?;
         tx.commit()?;
         Ok(records)
-    })();
+    });
 
     wrap_result(result, |records| unsafe {
         *out = Box::into_raw(Box::new(GraphResult {
@@ -519,13 +546,13 @@ pub unsafe extern "C" fn graphdb_execute(
         }
     };
 
-    let result = (|| -> Result<Vec<Record>, GraphError> {
+    let result = catch(|| {
         let mut guard = lock_db(handle)?;
         let tx = guard.write_tx()?;
         let records = tx.query(cypher_str)?;
         tx.commit()?;
         Ok(records)
-    })();
+    });
 
     wrap_result(result, |records| unsafe {
         *out = Box::into_raw(Box::new(GraphResult {
@@ -585,7 +612,7 @@ pub unsafe extern "C" fn graphdb_tx_execute(
         }
     };
 
-    let result = (|| -> Result<Vec<Record>, GraphError> { lock_db(handle)?.execute(cypher_str) })();
+    let result = catch(|| lock_db(handle)?.execute(cypher_str));
 
     wrap_result(result, |records| unsafe {
         *out = Box::into_raw(Box::new(GraphResult {
@@ -1016,6 +1043,56 @@ fn json_escape_into(out: &mut String, s: &str) {
                 out.push_str(&format!("\\u{:04x}", c as u32));
             }
             c => out.push(c),
+        }
+    }
+}
+
+#[cfg(test)]
+mod panic_safety_tests {
+    use super::*;
+
+    // `catch` must convert a panic into a recoverable GraphError, never unwind.
+    #[test]
+    fn catch_converts_panic_to_error() {
+        let r: Result<(), GraphError> = catch(|| panic!("boom"));
+        let err = r.expect_err("catch should surface the panic as an Err");
+        assert!(
+            err.to_string().contains("internal panic"),
+            "unexpected error message: {err}"
+        );
+        assert!(
+            err.to_string().contains("boom"),
+            "panic message lost: {err}"
+        );
+    }
+
+    // `catch` passes through a normal Ok result unchanged.
+    #[test]
+    fn catch_passes_through_ok() {
+        let r: Result<i32, GraphError> = catch(|| Ok(42));
+        assert_eq!(r.unwrap(), 42);
+    }
+
+    // End-to-end: a query that panicked in eval before the substring fix must
+    // now return a clean result through the FFI boundary (return code 0), and
+    // the process must not abort. Guards the whole graphdb_query path.
+    #[test]
+    fn ffi_query_with_formerly_panicking_input_does_not_abort() {
+        unsafe {
+            let mut db: *mut GraphDB = ptr::null_mut();
+            assert_eq!(graphdb_open_memory(&mut db), 0);
+            assert!(!db.is_null());
+
+            let cypher = CString::new("RETURN substring('é', 1) AS s").unwrap();
+            let mut result: *mut GraphResult = ptr::null_mut();
+            let rc = graphdb_query(db, cypher.as_ptr(), &mut result);
+
+            assert_eq!(rc, 0, "query returned error code {rc}");
+            assert!(!result.is_null());
+            assert_eq!(graphdb_result_row_count(result), 1);
+
+            graphdb_result_free(result);
+            graphdb_close(db);
         }
     }
 }

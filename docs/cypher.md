@@ -404,13 +404,34 @@ RETURN a.name, b.name
 ```
 
 The optimizer automatically selects index lookups when secondary indexes exist on
-the filtered property. Create indexes with the Rust API:
+the filtered property.
+
+### Secondary indexes (`CREATE INDEX` / `DROP INDEX`)
+
+Create and drop btree secondary indexes via Cypher DDL or the Rust API.
+A single property or a **composite** (multi-column) list is supported:
+
+```cypher
+CREATE INDEX ON :Person(name)
+CREATE INDEX ON :Person(tenant_id, ext_id)
+DROP INDEX ON :Person(tenant_id, ext_id)
+```
 
 ```rust
 let tx = db.begin_write()?;
 tx.create_index("Person", "name")?;
+tx.create_composite_index("Person", &["tenant_id", "ext_id"])?;
 tx.commit()?;
 ```
+
+A composite index uses **leftmost-prefix** matching: the planner picks
+the index whose longest leading run of columns is covered by equality
+predicates, whether written inline (`MATCH (p:Person {tenant_id: 1,
+ext_id: 'a'})`) or in the `WHERE` clause (`WHERE p.tenant_id = 1 AND
+p.ext_id = 'a'`). Ties prefer the narrower index, then lexical order.
+Nodes missing any covered property are omitted from the index (no NULL
+placeholder), so a composite index does not serve a query that filters
+only on a non-leading column.
 
 ## Full-text indexes
 
@@ -469,8 +490,11 @@ forms are not rewritten in this pass.
 
 **Known limitations (v1):**
 
-- No phrase queries, no prefix-with-`*`, no ranking / BM25. Use
-  the existing operators only.
+- The `CONTAINS` / `STARTS WITH` / `ENDS WITH` rewrite itself does not
+  rank results. For BM25-ranked whole-token / phrase / prefix / boolean
+  search, use the [`fts.search`](#call-ftssearchlabel-property-query)
+  procedure over a word-tokenized index, and read per-row relevance with
+  the [`score()`](#scorevariable) function.
 
 ## Introspection
 
@@ -482,14 +506,92 @@ Returns one row per index in the database.
 | ---------- | ------ | ------ |
 | `label`    | STRING | label the index covers |
 | `property` | STRING | property the index covers |
-| `kind`     | STRING | `"btree"` (secondary index) or `"fulltext"` (FTS5) |
+| `kind`     | STRING | one of `"btree"`, `"fulltext"`, `"fulltext_ci"`, `"fulltext_word"` (see below) |
+
+The `kind` values are:
+
+| `kind`           | index type |
+| ---------------- | ---------- |
+| `"btree"`        | secondary btree index (single- or multi-property) |
+| `"fulltext"`     | trigram FTS5, case-sensitive |
+| `"fulltext_ci"`  | trigram FTS5, case-insensitive |
+| `"fulltext_word"`| `unicode61` word-tokenized FTS5 (for `fts.search`) |
 
 ```cypher
 CALL db.indexes() YIELD label, property, kind RETURN *
 ```
 
-A `(label, property)` pair carrying both kinds of index yields two
-rows.
+A `(label, property)` pair carrying both a btree and a fulltext index
+yields two rows. A **multi-property** index (composite btree or
+multi-column FTS) emits **one row per covered property**, all sharing
+the same `kind`.
+
+### `CALL db.counts()`
+
+Returns per-label node counts and per-edge-type relationship counts,
+maintained incrementally by internal stats counters.
+
+| column   | type    | values |
+| -------- | ------- | ------ |
+| `kind`   | STRING  | `"label"` or `"edge_type"` |
+| `name`   | STRING  | the label or relationship type |
+| `count`  | INTEGER | number of nodes with that label / edges of that type |
+
+```cypher
+CALL db.counts() YIELD kind, name, count
+WHERE kind = 'label' RETURN name, count ORDER BY count DESC
+```
+
+### `CALL fts.search(label, property, query)`
+
+BM25-ranked full-text search over a **word-tokenized** (`unicode61`)
+fulltext index. Unlike the `CONTAINS`/`STARTS WITH`/`ENDS WITH` rewrite
+(substring, unranked), this exposes FTS5 MATCH syntax — whole tokens,
+phrases (`"..."`), prefix (`term*`), and boolean (`a OR b`) — and
+returns results ordered by descending relevance.
+
+| argument   | meaning |
+| ---------- | ------- |
+| `label`    | node label to search |
+| `property` | a covered column name, or `'*'` to search all columns of the (single) FTS index on `label` |
+| `query`    | an FTS5 MATCH expression |
+
+Yields:
+
+| column  | type  | values |
+| ------- | ----- | ------ |
+| `node`  | NODE  | the matching node |
+| `score` | FLOAT | relevance (higher = better; negated BM25) |
+
+```cypher
+CALL fts.search('Doc', 'body', 'graph AND database')
+YIELD node, score
+RETURN node.title, score ORDER BY score DESC LIMIT 10
+```
+
+Create the backing index with
+`Database::create_fulltext_index_word(label, property)` (single column)
+or `create_fulltext_index_word_multi(label, properties)` (multi-column,
+searchable via `property = '*'` or a specific column). `'*'` requires
+exactly one FTS index on the label; with several, name a covered column
+to disambiguate.
+
+### `score(variable)`
+
+Reads the BM25 relevance of an FTS-driven match for a node bound by an
+FTS-rewritten `CONTAINS` / `STARTS WITH` / `ENDS WITH` predicate:
+
+```cypher
+MATCH (n:Doc) WHERE n.body CONTAINS 'graph'
+RETURN n.title, score(n) AS relevance ORDER BY relevance DESC
+```
+
+Returns a `FLOAT` (higher = better) for FTS-driven scans. Returns
+`NULL` for any variable not bound by an FTS lookup (plain label scan,
+btree `IndexLookup`, or expand), and `0.0` for a scan that was
+FTS-eligible but fell back (e.g. a term below the trigram floor). Note
+`score()` is independent of the `fts.search` procedure, which yields its
+own `score` column directly.
 
 Other openCypher `db.*` introspection procedures
 (`db.labels()`, `db.relationshipTypes()`, `db.propertyKeys()`,

@@ -60,10 +60,7 @@ pub(in crate::cypher::executor) fn type_rank(v: &Value) -> u8 {
     }
 }
 
-pub(in crate::cypher::executor) fn compare_values_for_sort(
-    a: &Value,
-    b: &Value,
-) -> std::cmp::Ordering {
+pub(in crate::cypher) fn compare_values_for_sort(a: &Value, b: &Value) -> std::cmp::Ordering {
     match (a, b) {
         (Value::Bool(a), Value::Bool(b)) => a.cmp(b),
         (Value::I64(a), Value::I64(b)) => a.cmp(b),

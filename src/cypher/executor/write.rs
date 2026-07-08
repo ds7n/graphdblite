@@ -27,9 +27,8 @@ pub(in crate::cypher::executor) fn exec_create_node(
     }
 
     let id = node::create_node(conn, labels, props.clone())?;
-    let primary_label = labels.first().map(|s| s.as_str()).unwrap_or("");
-    index::update_indexes_for_node(conn, id, primary_label, None, &props)?;
-    fts::update_fts_for_node(conn, id, primary_label, None, &props)?;
+    index::update_indexes_for_node(conn, id, labels, None, &props)?;
+    fts::update_fts_for_node(conn, id, labels, None, &props)?;
 
     let mut rec = NamedRecord::new();
     if let Some(alias) = alias {
@@ -85,9 +84,8 @@ pub(in crate::cypher::executor) fn exec_create_sequence(
                     props.insert(key.clone(), val);
                 }
                 let id = node::create_node(conn, labels, props.clone())?;
-                let primary_label = labels.first().map(|s| s.as_str()).unwrap_or("");
-                index::update_indexes_for_node(conn, id, primary_label, None, &props)?;
-                fts::update_fts_for_node(conn, id, primary_label, None, &props)?;
+                index::update_indexes_for_node(conn, id, labels, None, &props)?;
+                fts::update_fts_for_node(conn, id, labels, None, &props)?;
                 if let Some(alias) = alias {
                     bindings.insert(alias.clone(), id);
                     last_record.set(alias.clone(), Value::I64(id.0 as i64));
@@ -189,9 +187,8 @@ pub(in crate::cypher::executor) fn exec_match_create(
                         props.insert(key.clone(), val);
                     }
                     let id = node::create_node(conn, labels, props.clone())?;
-                    let primary_label = labels.first().map(|s| s.as_str()).unwrap_or("");
-                    index::update_indexes_for_node(conn, id, primary_label, None, &props)?;
-                    fts::update_fts_for_node(conn, id, primary_label, None, &props)?;
+                    index::update_indexes_for_node(conn, id, labels, None, &props)?;
+                    fts::update_fts_for_node(conn, id, labels, None, &props)?;
                     if let Some(alias) = alias {
                         bindings.insert(alias.clone(), id);
                         out_rec.set(alias.clone(), Value::I64(id.0 as i64));
@@ -299,11 +296,8 @@ pub(in crate::cypher::executor) fn exec_delete(
         // an earlier edge cascade) is silently ignored — index entries
         // would have been cleared at first removal.
         if let Ok(n) = node::get_node(conn, *node_id) {
-            if let Some(primary_label) = n.labels.first() {
-                let _ =
-                    index::remove_indexes_for_node(conn, *node_id, primary_label, &n.properties);
-                let _ = fts::remove_fts_for_node(conn, *node_id, primary_label, &n.properties);
-            }
+            let _ = index::remove_indexes_for_node(conn, *node_id, &n.labels, &n.properties);
+            let _ = fts::remove_fts_for_node(conn, *node_id, &n.labels, &n.properties);
         }
         let _ = node::delete_node(conn, *node_id);
     }
@@ -445,14 +439,14 @@ pub(in crate::cypher::executor) fn exec_set_property(
                 index::update_indexes_for_node(
                     conn,
                     node_id,
-                    old.labels.first().map(|s| s.as_str()).unwrap_or(""),
+                    &old.labels,
                     Some(&old.properties),
                     &new_props,
                 )?;
                 fts::update_fts_for_node(
                     conn,
                     node_id,
-                    old.labels.first().map(|s| s.as_str()).unwrap_or(""),
+                    &old.labels,
                     Some(&old.properties),
                     &new_props,
                 )?;
@@ -504,6 +498,12 @@ pub(in crate::cypher::executor) fn exec_set_label(
             for label in labels {
                 node::add_node_label(conn, node_id, label)?;
             }
+            // Adding labels can bring new per-label indexes into scope; insert
+            // entries across the full (post-add) label set. Idempotent for
+            // labels the node already had.
+            let new = node::get_node(conn, node_id)?;
+            index::update_indexes_for_node(conn, node_id, &new.labels, None, &new.properties)?;
+            fts::update_fts_for_node(conn, node_id, &new.labels, None, &new.properties)?;
             // Update the labels in the record (__labels list and __label colon-joined string).
             let labels_key = format!("{variable}.__labels");
             if let Some(Value::List(current_labels)) = rec.get(&labels_key) {
@@ -677,17 +677,11 @@ pub(in crate::cypher::executor) fn exec_set_properties(
             index::update_indexes_for_node(
                 conn,
                 node_id,
-                old.labels.first().map(|s| s.as_str()).unwrap_or(""),
+                &old.labels,
                 Some(&old_props),
                 &new_props,
             )?;
-            fts::update_fts_for_node(
-                conn,
-                node_id,
-                old.labels.first().map(|s| s.as_str()).unwrap_or(""),
-                Some(&old_props),
-                &new_props,
-            )?;
+            fts::update_fts_for_node(conn, node_id, &old.labels, Some(&old_props), &new_props)?;
 
             // Update the record: remove old property keys, add new ones.
             // First, remove all old flattened property keys.
@@ -768,14 +762,14 @@ pub(in crate::cypher::executor) fn exec_remove(
                         index::update_indexes_for_node(
                             conn,
                             node_id,
-                            old.labels.first().map(|s| s.as_str()).unwrap_or(""),
+                            &old.labels,
                             Some(&old.properties),
                             &new_props,
                         )?;
                         fts::update_fts_for_node(
                             conn,
                             node_id,
-                            old.labels.first().map(|s| s.as_str()).unwrap_or(""),
+                            &old.labels,
                             Some(&old.properties),
                             &new_props,
                         )?;
@@ -788,7 +782,13 @@ pub(in crate::cypher::executor) fn exec_remove(
                     if let Some(Value::I64(id)) = rec.get(variable) {
                         let id = *id;
                         let node_id = NodeId(id as u64);
+                        // A removed label's per-label index entries must be
+                        // dropped; entries owned by the node's remaining labels
+                        // stay valid.
+                        let old = node::get_node(conn, node_id)?;
                         for label in labels {
+                            index::remove_indexes_for_label(conn, node_id, label, &old.properties)?;
+                            fts::remove_fts_for_label(conn, node_id, label, &old.properties)?;
                             node::remove_node_label(conn, node_id, label)?;
                         }
                         // Update the labels in the record.

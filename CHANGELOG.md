@@ -31,6 +31,45 @@ ships.
 
 ### Fixed
 
+- **Sort now orders all value types correctly.** The pull-based `ORDER BY`
+  paths (named- and slot-iterator) used a stripped comparator that returned
+  "equal" for booleans, temporals (`Date`/`Time`/`DateTime`), `Duration`, and
+  lists, silently leaving those columns in insertion order. Both paths now use
+  the canonical comparator (NaN sorts last, lists compared element-wise).
+- **`MERGE … ON CREATE/ON MATCH SET`** with a map (`SET n += {…}` / `SET n =
+  {…}`) or label (`SET n:Label`) now maintains secondary and FTS indexes. These
+  arms previously wrote node storage directly, so an index-served query could
+  miss a MERGE-updated node or return a stale one.
+- **`SET n:Label` / `REMOVE n:Label`** now re-index the node. Index/FTS
+  maintenance is keyed per-label rather than only on the sorted-first "primary"
+  label, so adding or removing a label no longer strands index entries on a
+  multi-label node. (All `update_indexes_for_node` / `remove_indexes_for_node`
+  callers now pass the full label set.)
+- **Secondary-index and FTS OR-chain dedup no longer duplicates FTS rows.** A
+  node matching two disjuncts of an OR-chain rewritten to `Union(FullTextLookup,
+  …)` receives a different per-branch BM25 `__fts_score`; UNION dedup now ignores
+  that synthetic key so the node collapses to one row.
+- **Index and FTS table names are collision-free across underscores.**
+  Single-property secondary-index tables now use the unambiguous
+  `node_idx$<label>$<prop>` scheme and single-property fulltext tables use
+  `node_fts$<label>$<prop>` (legacy `_`-delimited tables still resolve for
+  existing databases), so `(A_b, c)` and `(A, b_c)` no longer collide onto one
+  physical table. The index-lookup executor also re-verifies label membership
+  defensively.
+- **Contradictory equality predicates on an indexed property** (`n.x = 1 AND n.x
+  = 2`) return zero rows again. The index-pushdown pass previously folded only
+  the last value into the lookup and dropped the other conjunct, returning wrong
+  rows; conflicting same-property equalities now stay in the residual filter.
+- **`substring` on multibyte strings no longer panics.** It is now
+  character-indexed per the Cypher spec (was byte-indexed, panicking at a
+  non-char boundary, e.g. `substring('é', 1)`).
+- **C FFI entry points no longer abort the host on a query panic.** Query and
+  execute paths run untrusted Cypher under `catch_unwind`; a panic in the core
+  now returns `-1` + `graphdb_last_error` instead of unwinding across the
+  `extern "C"` boundary (undefined behavior / process abort).
+- **`DELETE` of a duplicate-bound parallel edge** no longer under-counts the
+  edge-type stats counter. `delete_single_edge` only decrements when a row was
+  actually removed, so `db.counts()` and planner cardinality stay accurate.
 - **Cypher `DELETE` now cleans up secondary indexes.** `exec_delete`
   previously called `storage::node::delete_node` directly, bypassing
   the index- and FTS-maintenance path that

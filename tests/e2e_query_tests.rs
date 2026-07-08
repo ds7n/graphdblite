@@ -161,6 +161,88 @@ fn e2e_order_by_desc() {
     tx.commit().unwrap();
 }
 
+// Regression: the pull-based Sort paths (named-iter and slot-iter) once used a
+// stripped comparator that returned Ordering::Equal for every non-I64/F64/
+// String/Null value, so ORDER BY on Bool / temporal / Duration columns silently
+// left rows in insertion order. These assert the actual sorted order for each of
+// those types on the default (slot) execution path.
+#[test]
+fn e2e_order_by_bool() {
+    let mut db = Database::open_memory().unwrap();
+    {
+        let tx = db.write_tx().unwrap();
+        // Insert with `true` first so a no-op comparator would leave it first.
+        tx.query("CREATE (:Flag {name: 't', on: true})").unwrap();
+        tx.query("CREATE (:Flag {name: 'f', on: false})").unwrap();
+        tx.commit().unwrap();
+    }
+    let tx = db.read_tx().unwrap();
+    let results = tx
+        .query("MATCH (n:Flag) RETURN n.name ORDER BY n.on")
+        .unwrap();
+    // false sorts before true.
+    assert_eq!(results.len(), 2);
+    assert_eq!(results[0].get("n.name"), Some(&Value::String("f".into())));
+    assert_eq!(results[1].get("n.name"), Some(&Value::String("t".into())));
+    tx.commit().unwrap();
+}
+
+#[test]
+fn e2e_order_by_datetime() {
+    let mut db = Database::open_memory().unwrap();
+    {
+        let tx = db.write_tx().unwrap();
+        // Insert out of chronological order; the later date is created first.
+        tx.query("CREATE (:Event {name: 'late', at: datetime('2025-06-01T00:00:00Z')})")
+            .unwrap();
+        tx.query("CREATE (:Event {name: 'early', at: datetime('2020-01-01T00:00:00Z')})")
+            .unwrap();
+        tx.commit().unwrap();
+    }
+    let tx = db.read_tx().unwrap();
+    let results = tx
+        .query("MATCH (n:Event) RETURN n.name ORDER BY n.at")
+        .unwrap();
+    assert_eq!(results.len(), 2);
+    assert_eq!(
+        results[0].get("n.name"),
+        Some(&Value::String("early".into()))
+    );
+    assert_eq!(
+        results[1].get("n.name"),
+        Some(&Value::String("late".into()))
+    );
+    tx.commit().unwrap();
+}
+
+#[test]
+fn e2e_order_by_duration() {
+    let mut db = Database::open_memory().unwrap();
+    {
+        let tx = db.write_tx().unwrap();
+        // Longer duration created first.
+        tx.query("CREATE (:Task {name: 'long', d: duration('PT2H')})")
+            .unwrap();
+        tx.query("CREATE (:Task {name: 'short', d: duration('PT30M')})")
+            .unwrap();
+        tx.commit().unwrap();
+    }
+    let tx = db.read_tx().unwrap();
+    let results = tx
+        .query("MATCH (n:Task) RETURN n.name ORDER BY n.d")
+        .unwrap();
+    assert_eq!(results.len(), 2);
+    assert_eq!(
+        results[0].get("n.name"),
+        Some(&Value::String("short".into()))
+    );
+    assert_eq!(
+        results[1].get("n.name"),
+        Some(&Value::String("long".into()))
+    );
+    tx.commit().unwrap();
+}
+
 #[test]
 fn e2e_create_node() {
     let mut db = Database::open_memory().unwrap();
@@ -3436,6 +3518,31 @@ fn e2e_substring() {
     tx.commit().unwrap();
 }
 
+/// Regression (#4 root cause): `substring` is character-indexed per Cypher.
+/// On multibyte input the previous byte-index slicing panicked at a
+/// non-char-boundary (`substring('é', 1)` panicked), which would unwind across
+/// the C FFI boundary. These assert Unicode-correct, panic-free behavior.
+#[test]
+fn e2e_substring_multibyte_is_char_indexed() {
+    let mut db = Database::open_memory().unwrap();
+    let tx = db.read_tx().unwrap();
+
+    // 'é' is one character; start index 1 is past the end → empty string,
+    // NOT a mid-codepoint byte-slice panic.
+    let r = tx.query("RETURN substring('é', 1) AS s").unwrap();
+    assert_eq!(r[0].get("s"), Some(&Value::String(String::new())));
+
+    // Character-based slice across a multibyte prefix.
+    let r = tx.query("RETURN substring('héllo', 1, 3) AS s").unwrap();
+    assert_eq!(r[0].get("s"), Some(&Value::String("éll".into())));
+
+    // Start beyond a multibyte string yields empty, not a panic.
+    let r = tx.query("RETURN substring('née', 10) AS s").unwrap();
+    assert_eq!(r[0].get("s"), Some(&Value::String(String::new())));
+
+    tx.commit().unwrap();
+}
+
 #[test]
 fn e2e_replace_function() {
     let mut db = setup_social_graph();
@@ -4315,6 +4422,10 @@ fn fts_contains_param_term_works() {
         )
         .unwrap();
     assert_eq!(rows.len(), 1);
+    // Assert the specific matching row, not just the count — a wrong-row
+    // result (e.g. the param never bound and the predicate matched 'goodbye')
+    // would otherwise pass.
+    assert_eq!(rows[0].get("b"), Some(&Value::String("hello world".into())));
 }
 
 #[test]
@@ -4615,6 +4726,53 @@ fn or_chain_fts_returns_dedup_union() {
     assert_eq!(rows.len(), 3, "got rows: {rows:?}");
 }
 
+/// Regression: a node matching two disjuncts of an OR-chain over DISTINCT FTS
+/// columns gets a different BM25 `__fts_score` per branch. The Union dedup must
+/// still collapse it to one row. This corpus deliberately makes the per-column
+/// scores diverge (differing term frequency and column length), unlike the
+/// symmetric corpus above where the scores happened to be equal and masked the
+/// bug.
+#[test]
+fn or_chain_fts_dedup_survives_divergent_bm25_scores() {
+    let mut db = graphdblite::Database::open_memory().unwrap();
+    {
+        let tx = db.write_tx().unwrap();
+        tx.create_fulltext_index("Doc", "title").unwrap();
+        tx.create_fulltext_index("Doc", "body").unwrap();
+        tx.commit().unwrap();
+    }
+    {
+        let tx = db.write_tx().unwrap();
+        // Node 1 matches BOTH branches ('graph' in title and body) but the term
+        // frequency and surrounding text differ per column, so BM25 differs.
+        tx.query("CREATE (:Doc {title: 'graph', body: 'graph graph graph database engine'})")
+            .unwrap();
+        // Padding docs so the corpus statistics (avg column length, doc count)
+        // make the two columns' BM25 for node 1 genuinely diverge.
+        for i in 0..15 {
+            tx.query(&format!(
+                "CREATE (:Doc {{title: 'filler {i}', body: 'unrelated padding text number {i}'}})"
+            ))
+            .unwrap();
+        }
+        tx.commit().unwrap();
+    }
+
+    let rows = db
+        .execute(
+            "MATCH (n:Doc) \
+             WHERE n.title CONTAINS 'graph' OR n.body CONTAINS 'graph' \
+             RETURN id(n) AS id",
+        )
+        .unwrap();
+    // Exactly one node matches (via both branches); it must appear once.
+    assert_eq!(
+        rows.len(),
+        1,
+        "node matching both FTS disjuncts was duplicated: {rows:?}"
+    );
+}
+
 #[test]
 fn or_chain_fts_mixed_predicates_returns_correct_results() {
     let mut db = graphdblite::Database::open_memory().unwrap();
@@ -4715,6 +4873,54 @@ fn db_counts_returns_label_and_edge_type_rows() {
             ("label".to_string(), "Company".to_string(), 1),
             ("label".to_string(), "Person".to_string(), 3),
         ]
+    );
+}
+
+/// Regression (#7): deleting the same parallel edge twice in one query (bound in
+/// two output rows via UNWIND) must not decrement the edge-type counter for the
+/// already-removed edge. Two parallel KNOWS edges exist; deleting one leaves the
+/// live count at 1, and `db.counts()` must report 1 — not drift to 0.
+#[test]
+fn double_bound_edge_delete_does_not_drift_edge_counter() {
+    let mut db = Database::open_memory().unwrap();
+    db.execute(
+        "CREATE (a:Person {name:'A'}), (b:Person {name:'B'}),
+                (a)-[:KNOWS {w:1}]->(b), (a)-[:KNOWS {w:2}]->(b)",
+    )
+    .unwrap();
+
+    // The w=1 edge is bound in two output rows; DELETE runs delete_single_edge
+    // twice on the same (src,dst,label,seq).
+    db.execute(
+        "MATCH (a:Person)-[r:KNOWS]->(b:Person) WHERE r.w = 1 \
+         UNWIND [1, 2] AS dup DELETE r",
+    )
+    .unwrap();
+
+    // One KNOWS edge (w=2) remains live.
+    let remaining = db
+        .execute("MATCH ()-[r:KNOWS]->() RETURN r.w AS w")
+        .unwrap();
+    assert_eq!(remaining.len(), 1, "exactly one KNOWS edge should remain");
+    assert_eq!(remaining[0].get("w"), Some(&Value::I64(2)));
+
+    // db.counts() must reflect the true live count of 1, not a drifted 0.
+    let rows = db
+        .execute(
+            "CALL db.counts() YIELD kind, name, count \
+             WITH kind, name, count WHERE kind = 'edge_type' AND name = 'KNOWS' \
+             RETURN count",
+        )
+        .unwrap();
+    assert_eq!(
+        rows.len(),
+        1,
+        "KNOWS edge-type counter row should still exist"
+    );
+    assert_eq!(
+        rows[0].get("count"),
+        Some(&Value::I64(1)),
+        "edge-type counter drifted below the live edge count"
     );
 }
 

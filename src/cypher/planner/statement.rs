@@ -481,6 +481,13 @@ pub(in crate::cypher::planner) fn plan_match(
     if let Some(ref predicate) = stmt.where_clause {
         let conjuncts = decompose_conjuncts(predicate);
         let mut by_alias: HashMap<String, HashMap<String, LookupKey>> = HashMap::new();
+        // Track `(alias, prop)` pairs that carry two or more *conflicting*
+        // equality conjuncts (e.g. `n.x = 1 AND n.x = 2`). A single index lookup
+        // can only encode one value per property, so folding such a pair into a
+        // lookup would silently drop the other conjunct and return wrong rows.
+        // These pairs are excluded from index candidates and both conjuncts stay
+        // in the residual Filter, which evaluates them correctly (0 rows).
+        let mut conflicted: HashSet<(String, String)> = HashSet::new();
         // Preserve insertion order of equality conjuncts so we can rebuild
         // any unmatched ones into the residual filter without re-ordering
         // surrounding non-equality conjuncts.
@@ -488,10 +495,16 @@ pub(in crate::cypher::planner) fn plan_match(
         for conj in conjuncts {
             match extract_eq_property_predicate(&conj) {
                 Some((alias, prop, key)) => {
-                    by_alias
-                        .entry(alias.clone())
-                        .or_default()
-                        .insert(prop.clone(), key);
+                    let slot = by_alias.entry(alias.clone()).or_default();
+                    match slot.get(&prop) {
+                        Some(existing) if *existing != key => {
+                            // Contradictory equality on the same property.
+                            conflicted.insert((alias.clone(), prop.clone()));
+                        }
+                        _ => {
+                            slot.insert(prop.clone(), key);
+                        }
+                    }
                     conjunct_kinds.push(ConjunctKind::Eq {
                         alias,
                         prop,
@@ -499,6 +512,12 @@ pub(in crate::cypher::planner) fn plan_match(
                     });
                 }
                 None => conjunct_kinds.push(ConjunctKind::Other(conj)),
+            }
+        }
+        // Drop conflicted props from index candidacy entirely.
+        for (alias, prop) in &conflicted {
+            if let Some(slot) = by_alias.get_mut(alias) {
+                slot.remove(prop);
             }
         }
 

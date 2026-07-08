@@ -164,8 +164,13 @@ pub fn delete_single_edge(
     seq: u64,
 ) -> Result<()> {
     let props_key = edge_props_key(src, dst, label, seq);
-    kv::delete(conn, kv::TABLE_EDGE_PROPS, &props_key)?;
-    crate::stats::decrement_edge_type_count_by(conn, label, 1)?;
+    // Only decrement the edge-type counter when a row was actually removed;
+    // a redundant delete of an already-gone edge (e.g. the same parallel edge
+    // bound in two output rows) must not drift the counter below the live count.
+    let removed = kv::delete(conn, kv::TABLE_EDGE_PROPS, &props_key)?;
+    if removed {
+        crate::stats::decrement_edge_type_count_by(conn, label, 1)?;
+    }
 
     // Check if there are remaining parallel edges.
     let prefix = edge_props_prefix(src, dst, label);

@@ -32,14 +32,14 @@ pub(in crate::cypher::executor) fn apply_merge_set_item_node(
             index::update_indexes_for_node(
                 conn,
                 node_id,
-                old.labels.first().map(|s| s.as_str()).unwrap_or(""),
+                &old.labels,
                 Some(&old.properties),
                 &new_props,
             )?;
             fts::update_fts_for_node(
                 conn,
                 node_id,
-                old.labels.first().map(|s| s.as_str()).unwrap_or(""),
+                &old.labels,
                 Some(&old.properties),
                 &new_props,
             )?;
@@ -48,15 +48,28 @@ pub(in crate::cypher::executor) fn apply_merge_set_item_node(
             variable: _,
             labels,
         } => {
+            // Adding labels can bring new per-label indexes into scope for this
+            // node, so re-insert index/FTS entries across the full label set.
             for label in labels {
                 node::add_node_label(conn, node_id, label)?;
             }
+            let new = node::get_node(conn, node_id)?;
+            index::update_indexes_for_node(conn, node_id, &new.labels, None, &new.properties)?;
+            fts::update_fts_for_node(conn, node_id, &new.labels, None, &new.properties)?;
         }
         SetItem::MapMerge { variable: _, value } => {
             let map = resolve_to_map(value, rec, conn)?;
+            let old = node::get_node(conn, node_id)?;
+            let mut new_props = old.properties.clone();
             for (k, v) in &map {
+                if *v == Value::Null {
+                    new_props.remove(k);
+                } else {
+                    new_props.insert(k.clone(), v.clone());
+                }
                 node::set_node_property(conn, node_id, k, v.clone())?;
             }
+            maintain_indexes_after_prop_change(conn, node_id, &old, &new_props)?;
         }
         SetItem::MapOverwrite { variable: _, value } => {
             let map = resolve_to_map(value, rec, conn)?;
@@ -65,11 +78,31 @@ pub(in crate::cypher::executor) fn apply_merge_set_item_node(
             for key in old.properties.keys() {
                 node::set_node_property(conn, node_id, key, Value::Null)?;
             }
+            let mut new_props = Properties::new();
             for (k, v) in &map {
+                if *v != Value::Null {
+                    new_props.insert(k.clone(), v.clone());
+                }
                 node::set_node_property(conn, node_id, k, v.clone())?;
             }
+            maintain_indexes_after_prop_change(conn, node_id, &old, &new_props)?;
         }
     }
+    Ok(())
+}
+
+/// Bring secondary + FTS indexes in sync after a MERGE `SET`/`SET +=` map write
+/// mutates a node's properties, mirroring the property-change maintenance in
+/// `write.rs`. `old` is the node as read *before* the write; `new_props` is the
+/// full post-write property set.
+fn maintain_indexes_after_prop_change(
+    conn: &Connection,
+    node_id: NodeId,
+    old: &Node,
+    new_props: &Properties,
+) -> Result<()> {
+    index::update_indexes_for_node(conn, node_id, &old.labels, Some(&old.properties), new_props)?;
+    fts::update_fts_for_node(conn, node_id, &old.labels, Some(&old.properties), new_props)?;
     Ok(())
 }
 
@@ -243,11 +276,8 @@ pub(in crate::cypher::executor) fn exec_merge_node(
         None => {
             let labels: Vec<String> = all_labels.iter().map(|s| s.to_string()).collect();
             let id = node::create_node(conn, &labels, props.clone())?;
-            // Update indexes for every label.
-            for lbl in &all_labels {
-                index::update_indexes_for_node(conn, id, lbl, None, &props)?;
-                fts::update_fts_for_node(conn, id, lbl, None, &props)?;
-            }
+            index::update_indexes_for_node(conn, id, &labels, None, &props)?;
+            fts::update_fts_for_node(conn, id, &labels, None, &props)?;
 
             let rec = NamedRecord::new();
             for item in on_create {
@@ -410,8 +440,8 @@ pub(in crate::cypher::executor) fn find_or_create_merge_node(
                 vec![label.to_string()]
             };
             let id = node::create_node(conn, &labels, props.clone())?;
-            index::update_indexes_for_node(conn, id, label, None, &props)?;
-            fts::update_fts_for_node(conn, id, label, None, &props)?;
+            index::update_indexes_for_node(conn, id, &labels, None, &props)?;
+            fts::update_fts_for_node(conn, id, &labels, None, &props)?;
             Ok(id)
         }
     }
@@ -461,8 +491,8 @@ pub(in crate::cypher::executor) fn exec_match_merge(
                     vec![label.to_string()]
                 };
                 let id = node::create_node(conn, &labels, props.clone())?;
-                index::update_indexes_for_node(conn, id, label, None, &props)?;
-                fts::update_fts_for_node(conn, id, label, None, &props)?;
+                index::update_indexes_for_node(conn, id, &labels, None, &props)?;
+                fts::update_fts_for_node(conn, id, &labels, None, &props)?;
                 for item in on_create {
                     apply_merge_set_item_node(conn, item, id, rec)?;
                 }

@@ -214,6 +214,14 @@ pub(in crate::cypher::executor) fn exec_index_lookup(
 
     for id in node_ids {
         let n = node::get_node(conn, id)?;
+        // Defense-in-depth: only emit nodes that actually carry the queried
+        // label. Index table names historically could collide across
+        // (label, property) pairs containing underscores, so a lookup could
+        // surface a node stored under a different label; re-checking membership
+        // here guarantees index-served results never leak a cross-label node.
+        if !label.is_empty() && !n.labels.iter().any(|l| l == label) {
+            continue;
+        }
         let rec = node_to_record(&n, alias);
 
         if let Some(filter) = remaining_filters {

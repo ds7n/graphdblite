@@ -474,7 +474,8 @@ pub fn list_all_fulltext_indexes(conn: &Connection) -> Result<Vec<FtsIndexInfo>>
 ///
 /// Non-string values are skipped silently (the FTS index only covers
 /// string properties).
-pub fn update_fts_for_node(
+/// Sync the fulltext indexes owned by a single `label` for a node write.
+pub fn update_fts_for_label(
     conn: &Connection,
     node_id: NodeId,
     label: &str,
@@ -484,6 +485,25 @@ pub fn update_fts_for_node(
     let infos = list_fulltext_indexes_for_label(conn, label)?;
     for info in &infos {
         update_fts_for_node_one_index(conn, node_id, info, old_properties, new_properties)?;
+    }
+    Ok(())
+}
+
+/// Sync fulltext indexes for a node write across ALL of the node's labels.
+///
+/// Like btree indexes, an FTS index is served for any node carrying its
+/// declared label, so maintenance must run for every label the node has — not
+/// just the sorted-first primary. Call with `old_properties = None` for new
+/// nodes.
+pub fn update_fts_for_node(
+    conn: &Connection,
+    node_id: NodeId,
+    labels: &[String],
+    old_properties: Option<&Properties>,
+    new_properties: &Properties,
+) -> Result<()> {
+    for label in labels {
+        update_fts_for_label(conn, node_id, label, old_properties, new_properties)?;
     }
     Ok(())
 }
@@ -580,8 +600,8 @@ fn update_fts_for_node_one_index(
     Ok(())
 }
 
-/// Remove all fulltext index entries for a node being deleted.
-pub fn remove_fts_for_node(
+/// Remove the fulltext rows owned by a single `label` for a node.
+pub fn remove_fts_for_label(
     conn: &Connection,
     node_id: NodeId,
     label: &str,
@@ -601,6 +621,20 @@ pub fn remove_fts_for_node(
                 rusqlite::params![node_id.0 as i64],
             )?;
         }
+    }
+    Ok(())
+}
+
+/// Remove all fulltext index entries for a node being deleted, across ALL its
+/// labels.
+pub fn remove_fts_for_node(
+    conn: &Connection,
+    node_id: NodeId,
+    labels: &[String],
+    properties: &Properties,
+) -> Result<()> {
+    for label in labels {
+        remove_fts_for_label(conn, node_id, label, properties)?;
     }
     Ok(())
 }
@@ -793,7 +827,7 @@ mod tests {
         let c = conn();
         create_fulltext_index(&c, "Person", "bio").unwrap();
         let p = props(&[("bio", Value::String("hello world".into()))]);
-        update_fts_for_node(&c, NodeId(7), "Person", None, &p).unwrap();
+        update_fts_for_label(&c, NodeId(7), "Person", None, &p).unwrap();
         assert_eq!(fts_rowids(&c, "Person", "bio"), vec![7]);
     }
 
@@ -802,7 +836,7 @@ mod tests {
         let c = conn();
         create_fulltext_index(&c, "Person", "age").unwrap();
         let p = props(&[("age", Value::I64(42))]);
-        update_fts_for_node(&c, NodeId(7), "Person", None, &p).unwrap();
+        update_fts_for_label(&c, NodeId(7), "Person", None, &p).unwrap();
         assert_eq!(fts_rowids(&c, "Person", "age"), Vec::<i64>::new());
     }
 
@@ -812,8 +846,8 @@ mod tests {
         create_fulltext_index(&c, "Person", "bio").unwrap();
         let old = props(&[("bio", Value::String("hello".into()))]);
         let new = props(&[("bio", Value::String("goodbye".into()))]);
-        update_fts_for_node(&c, NodeId(7), "Person", None, &old).unwrap();
-        update_fts_for_node(&c, NodeId(7), "Person", Some(&old), &new).unwrap();
+        update_fts_for_label(&c, NodeId(7), "Person", None, &old).unwrap();
+        update_fts_for_label(&c, NodeId(7), "Person", Some(&old), &new).unwrap();
         assert_eq!(fts_rowids(&c, "Person", "bio"), vec![7]);
         let content: String = c
             .query_row(
@@ -831,8 +865,8 @@ mod tests {
         create_fulltext_index(&c, "Person", "bio").unwrap();
         let old = props(&[("bio", Value::String("hello".into()))]);
         let new = props(&[]);
-        update_fts_for_node(&c, NodeId(7), "Person", None, &old).unwrap();
-        update_fts_for_node(&c, NodeId(7), "Person", Some(&old), &new).unwrap();
+        update_fts_for_label(&c, NodeId(7), "Person", None, &old).unwrap();
+        update_fts_for_label(&c, NodeId(7), "Person", Some(&old), &new).unwrap();
         assert_eq!(fts_rowids(&c, "Person", "bio"), Vec::<i64>::new());
     }
 
@@ -845,8 +879,8 @@ mod tests {
             ("bio", Value::String("hello".into())),
             ("name", Value::String("Alice".into())),
         ]);
-        update_fts_for_node(&c, NodeId(7), "Person", None, &p).unwrap();
-        remove_fts_for_node(&c, NodeId(7), "Person", &p).unwrap();
+        update_fts_for_label(&c, NodeId(7), "Person", None, &p).unwrap();
+        remove_fts_for_label(&c, NodeId(7), "Person", &p).unwrap();
         assert_eq!(fts_rowids(&c, "Person", "bio"), Vec::<i64>::new());
         assert_eq!(fts_rowids(&c, "Person", "name"), Vec::<i64>::new());
     }
@@ -860,7 +894,7 @@ mod tests {
             (4, "FOOBAR matches case"),
         ] {
             let p = props(&[("text", Value::String(s.into()))]);
-            update_fts_for_node(c, NodeId(id as u64), "Doc", None, &p).unwrap();
+            update_fts_for_label(c, NodeId(id as u64), "Doc", None, &p).unwrap();
         }
     }
 
@@ -915,7 +949,7 @@ mod tests {
         let c = conn();
         create_fulltext_index(&c, "Doc", "text").unwrap();
         let p = props(&[("text", Value::String("say \"hello\" loudly".into()))]);
-        update_fts_for_node(&c, NodeId(1), "Doc", None, &p).unwrap();
+        update_fts_for_label(&c, NodeId(1), "Doc", None, &p).unwrap();
         let ids: Vec<NodeId> = fulltext_lookup(&c, "Doc", "text", "\"hello\"")
             .unwrap()
             .unwrap()
@@ -1421,7 +1455,7 @@ mod tests {
             ("title", Value::String("rust systems".to_string())),
             ("body", Value::String("memory safety is key".to_string())),
         ]);
-        update_fts_for_node(&c, id, "Article", None, &p).unwrap();
+        update_fts_for_label(&c, id, "Article", None, &p).unwrap();
 
         let title_hits: Vec<i64> = c
             .prepare("SELECT rowid FROM \"node_fts_multi_Article_1\" WHERE \"node_fts_multi_Article_1\" MATCH ?1")
@@ -1447,7 +1481,7 @@ mod tests {
         create_fulltext_index_word_multi(&c, "Article", &["title".to_string(), "body".to_string()])
             .unwrap();
         let p = props(&[("title", Value::String("only title".to_string()))]);
-        update_fts_for_node(&c, NodeId(7), "Article", None, &p).unwrap();
+        update_fts_for_label(&c, NodeId(7), "Article", None, &p).unwrap();
         let hits: Vec<i64> = c
             .prepare("SELECT rowid FROM \"node_fts_multi_Article_1\" WHERE \"node_fts_multi_Article_1\" MATCH ?1")
             .unwrap()
@@ -1467,8 +1501,8 @@ mod tests {
             ("title", Value::String("hello".to_string())),
             ("body", Value::String("world".to_string())),
         ]);
-        update_fts_for_node(&c, NodeId(1), "Article", None, &p).unwrap();
-        remove_fts_for_node(&c, NodeId(1), "Article", &p).unwrap();
+        update_fts_for_label(&c, NodeId(1), "Article", None, &p).unwrap();
+        remove_fts_for_label(&c, NodeId(1), "Article", &p).unwrap();
         let hits: Vec<i64> = c
             .prepare("SELECT rowid FROM \"node_fts_multi_Article_1\" WHERE \"node_fts_multi_Article_1\" MATCH ?1")
             .unwrap()
@@ -1488,12 +1522,12 @@ mod tests {
             ("title", Value::String("old".to_string())),
             ("body", Value::String("text".to_string())),
         ]);
-        update_fts_for_node(&c, NodeId(1), "Article", None, &old).unwrap();
+        update_fts_for_label(&c, NodeId(1), "Article", None, &old).unwrap();
         let new = props(&[
             ("title", Value::String("new".to_string())),
             ("body", Value::String("text".to_string())),
         ]);
-        update_fts_for_node(&c, NodeId(1), "Article", Some(&old), &new).unwrap();
+        update_fts_for_label(&c, NodeId(1), "Article", Some(&old), &new).unwrap();
         let old_hits: Vec<i64> = c
             .prepare("SELECT rowid FROM \"node_fts_multi_Article_1\" WHERE \"node_fts_multi_Article_1\" MATCH ?1")
             .unwrap()

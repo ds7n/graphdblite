@@ -267,17 +267,16 @@ impl<'a> WriteTransaction<'a> {
             self.max_property_value_bytes,
         )?;
         let id = node::create_node(&self.tx, labels, properties.clone())?;
-        index::update_indexes_for_node(&self.tx, id, primary_label, None, &properties)?;
-        fts::update_fts_for_node(&self.tx, id, primary_label, None, &properties)?;
+        index::update_indexes_for_node(&self.tx, id, labels, None, &properties)?;
+        fts::update_fts_for_node(&self.tx, id, labels, None, &properties)?;
         Ok(id)
     }
 
     /// Delete a node and all its edges.
     pub fn delete_node(&self, id: NodeId) -> Result<()> {
         let n = node::get_node(&self.tx, id)?;
-        let primary_label = n.labels.first().map(|s| s.as_str()).unwrap_or("");
-        index::remove_indexes_for_node(&self.tx, id, primary_label, &n.properties)?;
-        fts::remove_fts_for_node(&self.tx, id, primary_label, &n.properties)?;
+        index::remove_indexes_for_node(&self.tx, id, &n.labels, &n.properties)?;
+        fts::remove_fts_for_node(&self.tx, id, &n.labels, &n.properties)?;
         node::delete_node(&self.tx, id)
     }
 
@@ -297,17 +296,11 @@ impl<'a> WriteTransaction<'a> {
         index::update_indexes_for_node(
             &self.tx,
             id,
-            old.labels.first().map(|s| s.as_str()).unwrap_or(""),
+            &old.labels,
             Some(&old.properties),
             &new_props,
         )?;
-        fts::update_fts_for_node(
-            &self.tx,
-            id,
-            old.labels.first().map(|s| s.as_str()).unwrap_or(""),
-            Some(&old.properties),
-            &new_props,
-        )?;
+        fts::update_fts_for_node(&self.tx, id, &old.labels, Some(&old.properties), &new_props)?;
         Ok(())
     }
 
@@ -320,17 +313,11 @@ impl<'a> WriteTransaction<'a> {
         index::update_indexes_for_node(
             &self.tx,
             id,
-            old.labels.first().map(|s| s.as_str()).unwrap_or(""),
+            &old.labels,
             Some(&old.properties),
             &new_props,
         )?;
-        fts::update_fts_for_node(
-            &self.tx,
-            id,
-            old.labels.first().map(|s| s.as_str()).unwrap_or(""),
-            Some(&old.properties),
-            &new_props,
-        )?;
+        fts::update_fts_for_node(&self.tx, id, &old.labels, Some(&old.properties), &new_props)?;
         Ok(())
     }
 

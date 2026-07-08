@@ -779,7 +779,7 @@ mod tests {
         crate::storage::fts::update_fts_for_node(
             &conn,
             id,
-            "Article",
+            &["Article".to_string()],
             None,
             &props(&[
                 (
@@ -828,7 +828,7 @@ mod tests {
         crate::storage::fts::update_fts_for_node(
             &conn,
             id,
-            "Article",
+            &["Article".to_string()],
             None,
             &props(&[
                 (

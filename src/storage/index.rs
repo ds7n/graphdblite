@@ -15,12 +15,16 @@ pub struct IndexInfo {
     pub kind: &'static str,
 }
 
-/// Build the table name for a composite (or single-prop) index.
+/// Build the canonical table name for an index (single-prop or composite).
 ///
-/// - `N == 1` → legacy `node_idx_<label>_<prop>` (same as `index_table_name`).
-/// - `N >= 2` → `node_idx$<label>$<prop1>$…$<propN>`.
-///
-/// `$` is forbidden by `validate_name`, so the separator is unambiguous.
+/// Always `node_idx$<label>$<prop1>$…$<propN>`. `$` is forbidden by
+/// `validate_name`, so both the label/property boundaries and the separator are
+/// unambiguous — unlike the legacy single-prop `node_idx_<label>_<prop>` form,
+/// where an underscore in the label or property could collide two distinct
+/// `(label, property)` pairs onto one physical table (e.g. `(A_b, c)` and
+/// `(A, b_c)` both became `node_idx_A_b_c`). Legacy `_`-form tables created by
+/// earlier versions are still resolved for reads/writes via
+/// [`resolve_index_table`].
 fn composite_index_table_name(label: &str, properties: &[&str]) -> Result<String> {
     if properties.is_empty() {
         return Err(GraphError::InvalidIndexDefinition {
@@ -39,12 +43,43 @@ fn composite_index_table_name(label: &str, properties: &[&str]) -> Result<String
             });
         }
     }
-    if properties.len() == 1 {
-        Ok(format!("node_idx_{label}_{}", properties[0]))
-    } else {
-        let joined = properties.join("$");
-        Ok(format!("node_idx${label}${joined}"))
+    let joined = properties.join("$");
+    Ok(format!("node_idx${label}${joined}"))
+}
+
+/// Legacy single-prop table name (`node_idx_<label>_<prop>`), retained only so
+/// databases created before the `$`-delimited scheme continue to resolve.
+fn legacy_single_index_table_name(label: &str, property: &str) -> Result<String> {
+    validate_name(label)?;
+    validate_name(property)?;
+    Ok(format!("node_idx_{label}_{property}"))
+}
+
+/// Resolve the physical table backing `(label, properties)`, preferring the
+/// canonical `$`-delimited name but falling back to a pre-existing legacy
+/// single-prop `_` table so older databases keep working. Returns the canonical
+/// name when neither table exists yet (the create path then materializes it).
+fn resolve_index_table(conn: &Connection, label: &str, properties: &[&str]) -> Result<String> {
+    let canonical = composite_index_table_name(label, properties)?;
+    if table_exists(conn, &canonical)? {
+        return Ok(canonical);
     }
+    if properties.len() == 1 {
+        let legacy = legacy_single_index_table_name(label, properties[0])?;
+        if table_exists(conn, &legacy)? {
+            return Ok(legacy);
+        }
+    }
+    Ok(canonical)
+}
+
+fn table_exists(conn: &Connection, table: &str) -> Result<bool> {
+    let exists: bool = conn.query_row(
+        "SELECT COUNT(*) > 0 FROM sqlite_master WHERE type='table' AND name=?1",
+        [table],
+        |row| row.get(0),
+    )?;
+    Ok(exists)
 }
 
 /// Build the composite index key: [msgpack(v1)]…[msgpack(vN)][node_id: 8 bytes BE].
@@ -67,20 +102,6 @@ fn composite_index_key(values: &[Value], node_id: NodeId) -> Result<Vec<u8>> {
     Ok(key)
 }
 
-/// Build the index table name for a (label, property) pair.
-///
-/// Validates both components so that the returned name is safe to interpolate
-/// into raw SQL identifiers (`"{table}"`). Defense-in-depth: callers (the
-/// planner, the public `create_index` API) already validate their inputs, but
-/// re-validating here ensures any future caller can't accidentally smuggle a
-/// `"` through into the SQL identifier and corrupt the query. See security
-/// finding M1.
-fn index_table_name(label: &str, property: &str) -> Result<String> {
-    validate_name(label)?;
-    validate_name(property)?;
-    Ok(format!("node_idx_{label}_{property}"))
-}
-
 /// Create a composite (multi-column) secondary index.
 ///
 /// `properties.len() == 1` is permitted and resolves to the same on-disk
@@ -89,12 +110,13 @@ fn index_table_name(label: &str, property: &str) -> Result<String> {
 pub fn create_composite_index(conn: &Connection, label: &str, properties: &[&str]) -> Result<()> {
     let table = composite_index_table_name(label, properties)?;
 
-    let exists: bool = conn.query_row(
-        "SELECT COUNT(*) > 0 FROM sqlite_master WHERE type='table' AND name=?1",
-        [&table],
-        |row| row.get(0),
-    )?;
-    if exists {
+    // Reject a duplicate whether it exists under the canonical `$` name or a
+    // legacy `_` name from an older database.
+    let mut already = table_exists(conn, &table)?;
+    if !already && properties.len() == 1 {
+        already = table_exists(conn, &legacy_single_index_table_name(label, properties[0])?)?;
+    }
+    if already {
         return Err(GraphError::IndexAlreadyExists {
             label: label.to_string(),
             properties: properties.iter().map(|s| s.to_string()).collect(),
@@ -135,13 +157,8 @@ pub fn create_composite_index(conn: &Connection, label: &str, properties: &[&str
 
 /// Drop a composite (or N=1) secondary index.
 pub fn drop_composite_index(conn: &Connection, label: &str, properties: &[&str]) -> Result<()> {
-    let table = composite_index_table_name(label, properties)?;
-    let exists: bool = conn.query_row(
-        "SELECT COUNT(*) > 0 FROM sqlite_master WHERE type='table' AND name=?1",
-        [&table],
-        |row| row.get(0),
-    )?;
-    if !exists {
+    let table = resolve_index_table(conn, label, properties)?;
+    if !table_exists(conn, &table)? {
         return Err(GraphError::IndexNotFound {
             label: label.to_string(),
             properties: properties.iter().map(|s| s.to_string()).collect(),
@@ -170,7 +187,7 @@ pub fn index_lookup(
     property: &str,
     value: &Value,
 ) -> Result<Vec<NodeId>> {
-    let table = index_table_name(label, property)?;
+    let table = resolve_index_table(conn, label, &[property])?;
 
     // Build prefix from the serialized value.
     let prefix = rmp_serde::to_vec(value).map_err(|e| GraphError::Serialization {
@@ -224,7 +241,7 @@ pub fn composite_index_prefix_lookup(
         prefix_values.len() <= properties.len(),
         "prefix length exceeds index width"
     );
-    let table = composite_index_table_name(label, properties)?;
+    let table = resolve_index_table(conn, label, properties)?;
 
     // Encode the prefix: msgpack-concat of the prefix values, no node id.
     let mut prefix_bytes = Vec::new();
@@ -330,9 +347,14 @@ fn collect_values(props: &Properties, properties: &[String]) -> Option<Vec<Value
     Some(out)
 }
 
-/// Update indexes after a node is created or its properties change.
-/// Call with old_properties = None for new nodes.
-pub fn update_indexes_for_node(
+/// Update the index entries owned by a single `label` after a node is created
+/// or its properties change. Call with `old_properties = None` for new nodes.
+///
+/// A node's index entries are maintained per-label: a `CREATE INDEX ON
+/// :Person(x)` index is served for any node carrying the `Person` label,
+/// regardless of label ordering, so multi-label nodes must be maintained across
+/// every label they carry (see [`update_indexes_for_node`]).
+pub fn update_indexes_for_label(
     conn: &Connection,
     node_id: NodeId,
     label: &str,
@@ -341,7 +363,7 @@ pub fn update_indexes_for_node(
 ) -> Result<()> {
     for info in list_indexes_for_label(conn, label)? {
         let props_refs: Vec<&str> = info.properties.iter().map(String::as_str).collect();
-        let table = composite_index_table_name(label, &props_refs)?;
+        let table = resolve_index_table(conn, label, &props_refs)?;
 
         // Remove old entry, if any.
         if let Some(old_props) = old_properties {
@@ -359,8 +381,29 @@ pub fn update_indexes_for_node(
     Ok(())
 }
 
-/// Remove all index entries for a node being deleted.
-pub fn remove_indexes_for_node(
+/// Update indexes after a node is created or its properties change, across ALL
+/// of the node's labels.
+///
+/// Indexes are declared on a specific label and served for any node carrying
+/// that label, so maintenance must touch every label's index tables — not just
+/// the sorted-first "primary" label. Keying maintenance on `labels.first()`
+/// alone silently corrupts indexes on a node's non-primary labels. Call with
+/// `old_properties = None` for new nodes.
+pub fn update_indexes_for_node(
+    conn: &Connection,
+    node_id: NodeId,
+    labels: &[String],
+    old_properties: Option<&Properties>,
+    new_properties: &Properties,
+) -> Result<()> {
+    for label in labels {
+        update_indexes_for_label(conn, node_id, label, old_properties, new_properties)?;
+    }
+    Ok(())
+}
+
+/// Remove the index entries owned by a single `label` for a node.
+pub fn remove_indexes_for_label(
     conn: &Connection,
     node_id: NodeId,
     label: &str,
@@ -368,11 +411,24 @@ pub fn remove_indexes_for_node(
 ) -> Result<()> {
     for info in list_indexes_for_label(conn, label)? {
         let props_refs: Vec<&str> = info.properties.iter().map(String::as_str).collect();
-        let table = composite_index_table_name(label, &props_refs)?;
+        let table = resolve_index_table(conn, label, &props_refs)?;
         if let Some(values) = collect_values(properties, &info.properties) {
             let key = composite_index_key(&values, node_id)?;
             kv::delete(conn, &table, &key)?;
         }
+    }
+    Ok(())
+}
+
+/// Remove all index entries for a node being deleted, across ALL its labels.
+pub fn remove_indexes_for_node(
+    conn: &Connection,
+    node_id: NodeId,
+    labels: &[String],
+    properties: &Properties,
+) -> Result<()> {
+    for label in labels {
+        remove_indexes_for_label(conn, node_id, label, properties)?;
     }
     Ok(())
 }
@@ -448,10 +504,11 @@ pub fn list_all_indexes(conn: &Connection) -> Result<Vec<IndexInfo>> {
     for name in rows {
         let name = name?;
         if let Some(rest) = name.strip_prefix("node_idx$") {
-            // Composite: "node_idx$<label>$<prop1>$<prop2>$..."
+            // `$` scheme: "node_idx$<label>$<prop1>$<prop2>$..." — used for both
+            // single-prop (new) and composite indexes.
             let parts: Vec<&str> = rest.split('$').collect();
-            if parts.len() < 3 {
-                continue; // malformed (need at least label + 2 props)
+            if parts.len() < 2 {
+                continue; // malformed (need at least label + 1 prop)
             }
             let label = parts[0].to_string();
             let properties: Vec<String> = parts[1..].iter().map(|s| s.to_string()).collect();
@@ -483,7 +540,9 @@ fn parse_composite_table_name(name: &str, expected_label: &str) -> Option<Vec<St
     let prefix = format!("{expected_label}$");
     let after_label = rest.strip_prefix(&prefix)?;
     let props: Vec<String> = after_label.split('$').map(|s| s.to_string()).collect();
-    if props.len() < 2 {
+    // The `$` scheme is used for both single-prop (new) and composite indexes,
+    // so any positive property count is a valid index.
+    if props.is_empty() {
         return None;
     }
     Some(props)
@@ -560,10 +619,11 @@ mod tests {
 
     #[test]
     fn composite_table_name_uses_dollar_separator() {
-        // Single-prop preserves legacy naming.
+        // Single-prop now uses the unambiguous $-separated form (collision-free
+        // across underscore-containing label/property pairs).
         assert_eq!(
             composite_index_table_name("Person", &["name"]).unwrap(),
-            "node_idx_Person_name"
+            "node_idx$Person$name"
         );
         // Multi-prop uses $-separated form.
         assert_eq!(
@@ -573,6 +633,19 @@ mod tests {
         assert_eq!(
             composite_index_table_name("Person", &["a", "b", "c"]).unwrap(),
             "node_idx$Person$a$b$c"
+        );
+    }
+
+    #[test]
+    fn single_prop_table_names_do_not_collide_across_underscore_boundaries() {
+        // Regression (#3): (label="A_b", prop="c") and (label="A", prop="b_c")
+        // must map to DISTINCT physical tables. The legacy `_`-delimited scheme
+        // mapped both onto `node_idx_A_b_c`.
+        let t1 = composite_index_table_name("A_b", &["c"]).unwrap();
+        let t2 = composite_index_table_name("A", &["b_c"]).unwrap();
+        assert_ne!(
+            t1, t2,
+            "distinct (label, prop) pairs collided onto one table"
         );
     }
 
@@ -690,7 +763,7 @@ mod tests {
             ("b".to_string(), Value::String("x".into())),
         ]);
         let id = node::create_node(&conn, &["Person".to_string()], props.clone()).unwrap();
-        update_indexes_for_node(&conn, id, "Person", None, &props).unwrap();
+        update_indexes_for_label(&conn, id, "Person", None, &props).unwrap();
 
         let table = composite_index_table_name("Person", &["a", "b"]).unwrap();
         let count: i64 = conn
@@ -712,7 +785,7 @@ mod tests {
 
         let props = Properties::from_iter([("a".to_string(), Value::I64(1))]);
         let id = node::create_node(&conn, &["Person".to_string()], props.clone()).unwrap();
-        update_indexes_for_node(&conn, id, "Person", None, &props).unwrap();
+        update_indexes_for_label(&conn, id, "Person", None, &props).unwrap();
 
         let table = composite_index_table_name("Person", &["a", "b"]).unwrap();
         let count: i64 = conn
@@ -734,8 +807,8 @@ mod tests {
             ("b".to_string(), Value::String("x".into())),
         ]);
         let id = node::create_node(&conn, &["Person".to_string()], props.clone()).unwrap();
-        update_indexes_for_node(&conn, id, "Person", None, &props).unwrap();
-        remove_indexes_for_node(&conn, id, "Person", &props).unwrap();
+        update_indexes_for_label(&conn, id, "Person", None, &props).unwrap();
+        remove_indexes_for_label(&conn, id, "Person", &props).unwrap();
 
         let table = composite_index_table_name("Person", &["a", "b"]).unwrap();
         let count: i64 = conn
@@ -817,7 +890,7 @@ mod tests {
         // Backfill composite index for each node.
         for id in [id1, id2, id3] {
             let n = node::get_node(&conn, id).unwrap();
-            update_indexes_for_node(&conn, id, &n.labels[0], None, &n.properties).unwrap();
+            update_indexes_for_node(&conn, id, &n.labels, None, &n.properties).unwrap();
         }
 
         // Prefix match on a=1 → id1 and id3.

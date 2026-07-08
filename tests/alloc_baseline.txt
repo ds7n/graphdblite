@@ -1,7 +1,7 @@
-aggregate_group_by=3362
-complex_project=4573
-delete_many=1474
-indexed_lookup=94
-merge_pattern=89
-traversal_one_hop=5646
-var_length=411
+aggregate_group_by=3363
+complex_project=4574
+delete_many=1775
+indexed_lookup=103
+merge_pattern=99
+traversal_one_hop=5647
+var_length=420

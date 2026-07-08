@@ -1,6 +1,6 @@
 {
   "name": "graphdblite",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "Embedded graph database with Cypher support",
   "author": "ds7n",
   "keywords": ["graph", "database", "cypher", "embedded", "sqlite"],

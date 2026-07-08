@@ -7,6 +7,8 @@ ships.
 
 ## [Unreleased]
 
+## [0.1.2] - 2026-07-08
+
 ### Added
 
 - **Composite (multi-column) secondary indexes.** New

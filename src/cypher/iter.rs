@@ -500,7 +500,7 @@ pub fn build_iter<'a>(
                         .unwrap_or(Value::Null);
                     let vb = eval_expr(&item.expr, b, crate::cypher::eval::EvalCx::new(conn))
                         .unwrap_or(Value::Null);
-                    let ord = compare_values_for_sort(&va, &vb);
+                    let ord = crate::cypher::executor::compare_values_for_sort(&va, &vb);
                     let ord = if item.descending { ord.reverse() } else { ord };
                     if ord != std::cmp::Ordering::Equal {
                         return ord;
@@ -547,28 +547,10 @@ pub fn build_iter<'a>(
     }
 }
 
-/// Crate-internal accessor so `iter_slot::SortSlotIter` reuses this
-/// comparator unchanged. Keeping a single source ensures slot- and named-
-/// path Sort produce identical orderings on every TCK scenario.
+/// Crate-internal accessor so `iter_slot::SortSlotIter` reuses the single
+/// canonical comparator in `executor::util`. Keeping one source ensures the
+/// materialized, named-iter, and slot-iter Sort paths order rows identically
+/// across every value type (Bool, List, temporal, Duration, NaN-last).
 pub(crate) fn compare_values_for_sort_pub(a: &Value, b: &Value) -> std::cmp::Ordering {
-    compare_values_for_sort(a, b)
-}
-
-/// Compare two values for sorting (null-last semantics).
-fn compare_values_for_sort(a: &Value, b: &Value) -> std::cmp::Ordering {
-    match (a, b) {
-        (Value::I64(a), Value::I64(b)) => a.cmp(b),
-        (Value::F64(a), Value::F64(b)) => a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal),
-        (Value::I64(a), Value::F64(b)) => (*a as f64)
-            .partial_cmp(b)
-            .unwrap_or(std::cmp::Ordering::Equal),
-        (Value::F64(a), Value::I64(b)) => a
-            .partial_cmp(&(*b as f64))
-            .unwrap_or(std::cmp::Ordering::Equal),
-        (Value::String(a), Value::String(b)) => a.cmp(b),
-        (Value::Null, Value::Null) => std::cmp::Ordering::Equal,
-        (Value::Null, _) => std::cmp::Ordering::Greater,
-        (_, Value::Null) => std::cmp::Ordering::Less,
-        _ => std::cmp::Ordering::Equal,
-    }
+    crate::cypher::executor::compare_values_for_sort(a, b)
 }

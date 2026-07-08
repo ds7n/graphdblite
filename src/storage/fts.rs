@@ -6,15 +6,42 @@
 use crate::types::{validate_name, GraphError, NodeId, Properties, Result, Value};
 use rusqlite::Connection;
 
-/// Build the FTS table name for a (label, property) pair.
+/// Build the canonical FTS table name for a (label, property) pair.
 ///
-/// Validates both components so the returned name is safe to interpolate
-/// into raw SQL identifiers. The `fts_` infix prevents collision with the
-/// regular `node_idx_*` naming used by `storage::index`.
+/// Uses the `$`-delimited scheme `node_fts$<label>$<property>`. `$` is forbidden
+/// by `validate_name`, so the label/property boundary is unambiguous — unlike
+/// the legacy `node_fts_<label>_<property>` form, where an underscore in either
+/// component could collide two distinct pairs (e.g. `(A_b, c)` and `(A, b_c)`
+/// both became `node_fts_A_b_c`). Legacy `_`-form tables created by earlier
+/// versions still resolve via [`resolve_fts_table`].
 pub fn fts_table_name(label: &str, property: &str) -> Result<String> {
     validate_name(label)?;
     validate_name(property)?;
+    Ok(format!("node_fts${label}${property}"))
+}
+
+/// Legacy single-prop FTS table name, retained only so databases created before
+/// the `$`-delimited scheme continue to resolve.
+fn legacy_fts_table_name(label: &str, property: &str) -> Result<String> {
+    validate_name(label)?;
+    validate_name(property)?;
     Ok(format!("node_fts_{label}_{property}"))
+}
+
+/// Resolve the physical FTS table backing `(label, property)`, preferring the
+/// canonical `$` name but falling back to a pre-existing legacy `_` table.
+/// Returns the canonical name when neither exists (the create path materializes
+/// it).
+fn resolve_fts_table(conn: &Connection, label: &str, property: &str) -> Result<String> {
+    let canonical = fts_table_name(label, property)?;
+    if fts_table_exists(conn, &canonical)? {
+        return Ok(canonical);
+    }
+    let legacy = legacy_fts_table_name(label, property)?;
+    if fts_table_exists(conn, &legacy)? {
+        return Ok(legacy);
+    }
+    Ok(canonical)
 }
 
 fn fts_table_exists(conn: &Connection, table: &str) -> Result<bool> {
@@ -331,7 +358,11 @@ fn create_fulltext_index_impl(
     spec: FtsTokenizerSpec,
 ) -> Result<()> {
     let table = fts_table_name(label, property)?;
-    if fts_table_exists(conn, &table)? {
+    // Reject a duplicate whether it exists under the canonical `$` name or a
+    // legacy `_` name from an older database.
+    if fts_table_exists(conn, &table)?
+        || fts_table_exists(conn, &legacy_fts_table_name(label, property)?)?
+    {
         return Err(GraphError::IndexAlreadyExists {
             label: label.to_string(),
             properties: vec![property.to_string()],
@@ -372,7 +403,7 @@ fn create_fulltext_index_impl(
 
 /// Drop a fulltext index on `(label, property)`.
 pub fn drop_fulltext_index(conn: &Connection, label: &str, property: &str) -> Result<()> {
-    let table = fts_table_name(label, property)?;
+    let table = resolve_fts_table(conn, label, property)?;
     if !fts_table_exists(conn, &table)? {
         return Err(GraphError::IndexNotFound {
             label: label.to_string(),
@@ -427,10 +458,25 @@ pub fn list_all_fulltext_indexes(conn: &Connection) -> Result<Vec<FtsIndexInfo>>
         let kind = parse_tokenizer_kind(&sql);
         let properties = parse_column_list(&sql);
 
-        // Determine label from table name. Two naming schemes:
+        // Determine label from table name. Three naming schemes:
+        //   node_fts$<label>$<property>        (single-prop, canonical)
         //   node_fts_{label}_{property}        (single-prop, legacy)
         //   node_fts_multi_{label}_{N}         (multi-prop)
-        if let Some(rest) = name.strip_prefix("node_fts_multi_") {
+        if let Some(rest) = name.strip_prefix("node_fts$") {
+            // Canonical single-prop: "<label>$<property>" — unambiguous split on
+            // the (only) `$`. The property name comes from the table name, not
+            // the FTS5 column (which is always literally `content`).
+            let Some(split) = rest.find('$') else {
+                continue;
+            };
+            let (label, property) = rest.split_at(split);
+            result.push(FtsIndexInfo {
+                label: label.to_string(),
+                properties: vec![property[1..].to_string()],
+                kind,
+                table_name: name,
+            });
+        } else if let Some(rest) = name.strip_prefix("node_fts_multi_") {
             // Suffix is {label}_{N}; split on the LAST underscore.
             let Some(split) = rest.rfind('_') else {
                 continue;
@@ -655,7 +701,7 @@ pub fn fulltext_lookup(
     if term.chars().count() < 3 {
         return Ok(None);
     }
-    let table = fts_table_name(label, property)?;
+    let table = resolve_fts_table(conn, label, property)?;
     if !fts_table_exists(conn, &table)? {
         return Err(GraphError::IndexNotFound {
             label: label.to_string(),
@@ -719,7 +765,7 @@ mod tests {
     fn fts_table_name_uses_fts_infix() {
         assert_eq!(
             fts_table_name("Article", "body").unwrap(),
-            "node_fts_Article_body"
+            "node_fts$Article$body"
         );
     }
 
@@ -740,7 +786,7 @@ mod tests {
         let exists: bool = c
             .query_row(
                 "SELECT COUNT(*) > 0 FROM sqlite_master WHERE type='table' AND name=?1",
-                ["node_fts_Person_bio"],
+                ["node_fts$Person$bio"],
                 |r| r.get(0),
             )
             .unwrap();
@@ -750,7 +796,7 @@ mod tests {
         let exists_after: bool = c
             .query_row(
                 "SELECT COUNT(*) > 0 FROM sqlite_master WHERE type='table' AND name=?1",
-                ["node_fts_Person_bio"],
+                ["node_fts$Person$bio"],
                 |r| r.get(0),
             )
             .unwrap();
@@ -851,7 +897,7 @@ mod tests {
         assert_eq!(fts_rowids(&c, "Person", "bio"), vec![7]);
         let content: String = c
             .query_row(
-                "SELECT content FROM node_fts_Person_bio WHERE rowid=7",
+                "SELECT content FROM node_fts$Person$bio WHERE rowid=7",
                 [],
                 |r| r.get(0),
             )
@@ -1082,7 +1128,7 @@ mod tests {
         let sql: String = c
             .query_row(
                 "SELECT sql FROM sqlite_master WHERE type='table' AND name=?1",
-                ["node_fts_Person_bio"],
+                ["node_fts$Person$bio"],
                 |r| r.get(0),
             )
             .unwrap();
@@ -1167,7 +1213,7 @@ mod tests {
         let sql: String = c
             .query_row(
                 "SELECT sql FROM sqlite_master WHERE type='table' AND name=?1",
-                ["node_fts_Doc_body"],
+                ["node_fts$Doc$body"],
                 |r| r.get(0),
             )
             .unwrap();
@@ -1214,7 +1260,7 @@ mod tests {
         create_fulltext_index_word(&c, "Person", "bio").unwrap();
         let hits: Vec<i64> = c
             .prepare(
-                "SELECT rowid FROM \"node_fts_Person_bio\" WHERE \"node_fts_Person_bio\" MATCH ?1",
+                "SELECT rowid FROM \"node_fts$Person$bio\" WHERE \"node_fts$Person$bio\" MATCH ?1",
             )
             .unwrap()
             .query_map(["lic"], |r| r.get(0))
@@ -1240,7 +1286,7 @@ mod tests {
         create_fulltext_index_word(&c, "Person", "bio").unwrap();
         let hits: Vec<i64> = c
             .prepare(
-                "SELECT rowid FROM \"node_fts_Person_bio\" WHERE \"node_fts_Person_bio\" MATCH ?1",
+                "SELECT rowid FROM \"node_fts$Person$bio\" WHERE \"node_fts$Person$bio\" MATCH ?1",
             )
             .unwrap()
             .query_map(["alice"], |r| r.get(0))
@@ -1265,7 +1311,7 @@ mod tests {
 
     #[test]
     fn parse_column_list_handles_single_content_column() {
-        let sql = "CREATE VIRTUAL TABLE \"node_fts_Person_bio\" USING fts5(content, tokenize='trigram case_sensitive 1')";
+        let sql = "CREATE VIRTUAL TABLE \"node_fts$Person$bio\" USING fts5(content, tokenize='trigram case_sensitive 1')";
         assert_eq!(parse_column_list(sql), vec!["content".to_string()]);
     }
 
@@ -1289,7 +1335,7 @@ mod tests {
         assert_eq!(got[0].label, "Person");
         assert_eq!(got[0].properties, vec!["bio".to_string()]);
         assert_eq!(got[0].kind, FtsTokenizerKind::TrigramCaseInsensitive);
-        assert_eq!(got[0].table_name, "node_fts_Person_bio");
+        assert_eq!(got[0].table_name, "node_fts$Person$bio");
         assert_eq!(got[1].properties, vec!["name".to_string()]);
         assert_eq!(got[1].kind, FtsTokenizerKind::TrigramCaseSensitive);
     }

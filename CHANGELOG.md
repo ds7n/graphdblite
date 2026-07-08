@@ -49,11 +49,13 @@ ships.
   node matching two disjuncts of an OR-chain rewritten to `Union(FullTextLookup,
   …)` receives a different per-branch BM25 `__fts_score`; UNION dedup now ignores
   that synthetic key so the node collapses to one row.
-- **Index table names are collision-free across underscores.** Single-property
-  index tables now use the unambiguous `node_idx$<label>$<prop>` scheme (legacy
-  `node_idx_<label>_<prop>` tables still resolve for existing databases), so
-  `(A_b, c)` and `(A, b_c)` no longer collide onto one physical table. The
-  index-lookup executor also re-verifies label membership defensively.
+- **Index and FTS table names are collision-free across underscores.**
+  Single-property secondary-index tables now use the unambiguous
+  `node_idx$<label>$<prop>` scheme and single-property fulltext tables use
+  `node_fts$<label>$<prop>` (legacy `_`-delimited tables still resolve for
+  existing databases), so `(A_b, c)` and `(A, b_c)` no longer collide onto one
+  physical table. The index-lookup executor also re-verifies label membership
+  defensively.
 - **Contradictory equality predicates on an indexed property** (`n.x = 1 AND n.x
   = 2`) return zero rows again. The index-pushdown pass previously folded only
   the last value into the lookup and dropped the other conjunct, returning wrong

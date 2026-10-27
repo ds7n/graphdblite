@@ -678,7 +678,7 @@ dependencies = [
 
 [[package]]
 name = "graphdblite"
-version = "0.1.2"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "chrono",
@@ -700,7 +700,7 @@ dependencies = [
 
 [[package]]
 name = "graphdblite-ffi"
-version = "0.1.2"
+version = "0.2.0"
 dependencies = [
  "cbindgen",
  "graphdblite",
@@ -709,7 +709,7 @@ dependencies = [
 
 [[package]]
 name = "graphdblite-node"
-version = "0.1.2"
+version = "0.2.0"
 dependencies = [
  "graphdblite",
  "napi",
@@ -719,7 +719,7 @@ dependencies = [
 
 [[package]]
 name = "graphdblite-python"
-version = "0.1.2"
+version = "0.2.0"
 dependencies = [
  "graphdblite",
  "pyo3",

@@ -7,6 +7,8 @@ ships.
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-10-27
+
 ### Changed
 
 - **New limit `Config::max_materialized_bytes`** (default 1 GiB, 0 =

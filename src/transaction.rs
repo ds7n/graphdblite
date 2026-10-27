@@ -99,11 +99,15 @@ macro_rules! impl_read_ops {
                 cypher: &str,
                 params: Option<&std::collections::HashMap<String, Value>>,
             ) -> Result<Vec<NamedRecord>> {
+                let (max_property_value_bytes, max_name_bytes) = self.write_limits();
                 let ctx = ExecContext {
                     max_result_rows: self.max_result_rows,
                     max_traversal_depth: self.max_traversal_depth,
                     max_traversal_work: self.max_traversal_work,
+                    max_materialized_bytes: self.max_materialized_bytes,
                     require_read_only: $read_only,
+                    max_property_value_bytes,
+                    max_name_bytes,
                     ..Default::default()
                 };
                 execute_cypher(&self.tx, cypher, params, ctx, self.exec_caches())
@@ -116,12 +120,16 @@ macro_rules! impl_read_ops {
                 params: Option<&std::collections::HashMap<String, Value>>,
                 procedures: &crate::cypher::procedure::ProcedureRegistry,
             ) -> Result<Vec<NamedRecord>> {
+                let (max_property_value_bytes, max_name_bytes) = self.write_limits();
                 let ctx = ExecContext {
                     max_result_rows: self.max_result_rows,
                     max_traversal_depth: self.max_traversal_depth,
                     max_traversal_work: self.max_traversal_work,
+                    max_materialized_bytes: self.max_materialized_bytes,
                     procedures: procedures.clone(),
                     require_read_only: $read_only,
+                    max_property_value_bytes,
+                    max_name_bytes,
                     ..Default::default()
                 };
                 execute_cypher(&self.tx, cypher, params, ctx, self.exec_caches())
@@ -140,17 +148,20 @@ pub struct ReadTransaction<'a> {
     max_result_rows: usize,
     max_traversal_depth: u32,
     max_traversal_work: u64,
+    max_materialized_bytes: u64,
     parse_cache: &'a ParseCache,
     plan_cache: &'a PlanCache,
     schema_epoch: &'a AtomicU64,
 }
 
 impl<'a> ReadTransaction<'a> {
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn new(
         tx: rusqlite::Transaction<'a>,
         max_result_rows: usize,
         max_traversal_depth: u32,
         max_traversal_work: u64,
+        max_materialized_bytes: u64,
         parse_cache: &'a ParseCache,
         plan_cache: &'a PlanCache,
         schema_epoch: &'a AtomicU64,
@@ -160,6 +171,7 @@ impl<'a> ReadTransaction<'a> {
             max_result_rows,
             max_traversal_depth,
             max_traversal_work,
+            max_materialized_bytes,
             parse_cache,
             plan_cache,
             schema_epoch,
@@ -188,6 +200,13 @@ impl<'a> ReadTransaction<'a> {
     }
 }
 
+impl ReadTransaction<'_> {
+    /// Read transactions cannot write, so no write limits apply.
+    fn write_limits(&self) -> (usize, usize) {
+        (0, 0)
+    }
+}
+
 impl_read_ops!(ReadTransaction, true);
 
 /// A read-write transaction. Acquires the write lock via BEGIN IMMEDIATE.
@@ -202,6 +221,7 @@ pub struct WriteTransaction<'a> {
     max_result_rows: usize,
     max_traversal_depth: u32,
     max_traversal_work: u64,
+    max_materialized_bytes: u64,
     parse_cache: &'a ParseCache,
     plan_cache: &'a PlanCache,
     schema_epoch: &'a AtomicU64,
@@ -216,6 +236,7 @@ impl<'a> WriteTransaction<'a> {
         max_result_rows: usize,
         max_traversal_depth: u32,
         max_traversal_work: u64,
+        max_materialized_bytes: u64,
         parse_cache: &'a ParseCache,
         plan_cache: &'a PlanCache,
         schema_epoch: &'a AtomicU64,
@@ -227,6 +248,7 @@ impl<'a> WriteTransaction<'a> {
             max_result_rows,
             max_traversal_depth,
             max_traversal_work,
+            max_materialized_bytes,
             parse_cache,
             plan_cache,
             schema_epoch,
@@ -266,6 +288,10 @@ impl<'a> WriteTransaction<'a> {
             self.max_name_bytes,
             self.max_property_value_bytes,
         )?;
+        // A Null-valued property is the same as an absent one (matches Cypher
+        // `CREATE`, which skips nulls); storing it would also index a Null.
+        let mut properties = properties;
+        properties.retain(|_, v| *v != Value::Null);
         let id = node::create_node(&self.tx, labels, properties.clone())?;
         index::update_indexes_for_node(&self.tx, id, labels, None, &properties)?;
         fts::update_fts_for_node(&self.tx, id, labels, None, &properties)?;
@@ -292,7 +318,13 @@ impl<'a> WriteTransaction<'a> {
         let old = node::get_node(&self.tx, id)?;
         node::set_node_property(&self.tx, id, key, value.clone())?;
         let mut new_props = old.properties.clone();
-        new_props.insert(key.to_string(), value);
+        // Setting a property to Null removes it (as `node::set_node_property`
+        // does on disk); never index a Null value.
+        if value == Value::Null {
+            new_props.remove(key);
+        } else {
+            new_props.insert(key.to_string(), value);
+        }
         index::update_indexes_for_node(
             &self.tx,
             id,
@@ -321,14 +353,19 @@ impl<'a> WriteTransaction<'a> {
         Ok(())
     }
 
-    /// Create an edge.
+    /// Create an edge and return its sequence number, which identifies this
+    /// edge among parallel `(src, dst, label)` edges (see
+    /// [`delete_edge_at`](Self::delete_edge_at)). Null-valued properties are
+    /// dropped, matching Cypher `CREATE`.
     pub fn create_edge(
         &self,
         src: NodeId,
         dst: NodeId,
         label: &str,
         properties: Properties,
-    ) -> Result<()> {
+    ) -> Result<u64> {
+        let mut properties = properties;
+        properties.retain(|_, v| *v != Value::Null);
         validate_properties(
             label,
             &properties,
@@ -351,9 +388,25 @@ impl<'a> WriteTransaction<'a> {
         edge::create_edge(&self.tx, src, dst, label, properties)
     }
 
-    /// Delete an edge.
+    /// Delete every `(src, dst, label)` edge, including parallel ones.
     pub fn delete_edge(&self, src: NodeId, dst: NodeId, label: &str) -> Result<()> {
         edge::delete_edge(&self.tx, src, dst, label)
+    }
+
+    /// Delete the single edge `(src, dst, label)` with sequence number `seq`
+    /// (as returned by [`create_edge`](Self::create_edge)), leaving parallel
+    /// edges in place. Returns `GraphError::EdgeNotFound` when no such edge
+    /// exists.
+    pub fn delete_edge_at(&self, src: NodeId, dst: NodeId, label: &str, seq: u64) -> Result<()> {
+        if !edge::edge_exists_at(&self.tx, src, dst, label, seq)? {
+            return Err(GraphError::EdgeNotFound {
+                src,
+                label: label.to_string(),
+                dst,
+                hint: Some("no edge with this sequence number".to_string()),
+            });
+        }
+        edge::delete_single_edge(&self.tx, src, dst, label, seq)
     }
 
     /// Create a secondary index.
@@ -438,6 +491,13 @@ impl<'a> WriteTransaction<'a> {
     pub fn rollback(self) -> Result<()> {
         self.tx.rollback()?;
         Ok(())
+    }
+}
+
+impl WriteTransaction<'_> {
+    /// `(max_property_value_bytes, max_name_bytes)` enforced on Cypher writes.
+    fn write_limits(&self) -> (usize, usize) {
+        (self.max_property_value_bytes, self.max_name_bytes)
     }
 }
 
@@ -694,12 +754,20 @@ mod tx_guard_tests {
             tx.commit().unwrap();
         }
         {
-            // Case-insensitive: lowercase substring matches mixed-case content.
+            // The CI index serves the `toLower` idiom across case...
             let tx = db.read_tx().unwrap();
+            let rows = tx
+                .query(
+                    "MATCH (n:Doc) WHERE toLower(n.body) CONTAINS toLower('HELLO') \
+                     RETURN n.body AS body",
+                )
+                .unwrap();
+            assert_eq!(rows.len(), 1);
+            // ...while a plain CONTAINS keeps Cypher's case-sensitive semantics.
             let rows = tx
                 .query("MATCH (n:Doc) WHERE n.body CONTAINS 'hello' RETURN n.body AS body")
                 .unwrap();
-            assert_eq!(rows.len(), 1);
+            assert_eq!(rows.len(), 0);
         }
         {
             let tx = db.write_tx().unwrap();

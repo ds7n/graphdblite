@@ -2,7 +2,92 @@
 //!
 //! Three-valued equality (with null propagation), ordering, and type utilities.
 
+use std::borrow::Cow;
+use std::cmp::Ordering::{self, Equal};
+
 use crate::types::{ErrorCode, Value};
+
+/// Exact ordering of an Integer against a Float. Converting the integer to
+/// f64 would round above 2^53 (making 2^53 + 1 equal to the float 2^53), so
+/// compare the float's integral part as an integer instead. `None` for NaN.
+pub(super) fn cmp_int_float(i: i64, f: f64) -> Option<Ordering> {
+    if f.is_nan() {
+        return None;
+    }
+    // 2^63 is exactly representable; every i64 is below it.
+    const TWO_POW_63: f64 = 9_223_372_036_854_775_808.0;
+    if f >= TWO_POW_63 {
+        return Some(Ordering::Less);
+    }
+    if f < -TWO_POW_63 {
+        return Some(Ordering::Greater);
+    }
+    let whole = f.trunc();
+    // In range, so the cast is exact.
+    match i.cmp(&(whole as i64)) {
+        Equal if f > whole => Some(Ordering::Less),
+        Equal if f < whole => Some(Ordering::Greater),
+        other => Some(other),
+    }
+}
+
+/// The integer equal to `f`, if `f` is integral and fits an i64.
+fn integral_float(f: f64) -> Option<i64> {
+    const TWO_POW_63: f64 = 9_223_372_036_854_775_808.0;
+    (f.trunc() == f && (-TWO_POW_63..TWO_POW_63).contains(&f)).then_some(f as i64)
+}
+
+/// Whether [`grouping_key`] would change `v`.
+fn needs_grouping_norm(v: &Value) -> bool {
+    match v {
+        Value::F64(f) => integral_float(*f).is_some(),
+        Value::List(items) => items.iter().any(needs_grouping_norm),
+        Value::Map(m) => m.values().any(needs_grouping_norm),
+        _ => false,
+    }
+}
+
+/// The form of `v` used to group and deduplicate (DISTINCT, grouping keys,
+/// `count(DISTINCT ...)`, UNION). Cypher treats `1` and `1.0` as the same
+/// value there, so integral floats that fit an i64 become Integers
+/// (including `-0.0`), recursively inside lists and maps. Comparing two keys
+/// with `Value`'s `Eq`/`Hash` then matches Cypher equivalence; NaN stays a
+/// Float and groups with itself.
+pub(crate) fn grouping_key(v: &Value) -> Cow<'_, Value> {
+    if !needs_grouping_norm(v) {
+        return Cow::Borrowed(v);
+    }
+    Cow::Owned(into_grouping_key(v.clone()))
+}
+
+/// Owned form of [`grouping_key`].
+pub(crate) fn into_grouping_key(v: Value) -> Value {
+    match v {
+        Value::F64(f) => integral_float(f).map_or(Value::F64(f), Value::I64),
+        Value::List(items) if items.iter().any(needs_grouping_norm) => {
+            Value::List(items.into_iter().map(into_grouping_key).collect())
+        }
+        Value::Map(m) if m.values().any(needs_grouping_norm) => Value::Map(
+            m.into_iter()
+                .map(|(k, v)| (k, into_grouping_key(v)))
+                .collect(),
+        ),
+        other => other,
+    }
+}
+
+/// [`grouping_key`] for a row of key values.
+pub(crate) fn grouping_key_vec(vals: &[Value]) -> Cow<'_, [Value]> {
+    if !vals.iter().any(needs_grouping_norm) {
+        return Cow::Borrowed(vals);
+    }
+    Cow::Owned(vals.iter().cloned().map(into_grouping_key).collect())
+}
+
+/// Whether two values are the same for grouping / DISTINCT purposes.
+pub(crate) fn grouping_eq(a: &Value, b: &Value) -> bool {
+    a == b || *grouping_key(a) == *grouping_key(b)
+}
 
 /// Three-valued equality: returns Null if either operand is null.
 pub(super) fn values_equal(a: &Value, b: &Value) -> Value {
@@ -13,13 +98,14 @@ pub(super) fn values_equal(a: &Value, b: &Value) -> Value {
         (Value::Bool(a), Value::Bool(b)) => Value::Bool(a == b),
         (Value::I64(a), Value::I64(b)) => Value::Bool(a == b),
         (Value::F64(a), Value::F64(b)) => Value::Bool(a == b),
-        (Value::I64(a), Value::F64(b)) => Value::Bool((*a as f64) == *b),
-        (Value::F64(a), Value::I64(b)) => Value::Bool(*a == (*b as f64)),
+        (Value::I64(a), Value::F64(b)) => Value::Bool(cmp_int_float(*a, *b) == Some(Equal)),
+        (Value::F64(a), Value::I64(b)) => Value::Bool(cmp_int_float(*b, *a) == Some(Equal)),
         (Value::String(a), Value::String(b)) => Value::Bool(a == b),
         (Value::List(a), Value::List(b)) => lists_equal(a, b),
         (Value::Map(a), Value::Map(b)) => maps_equal(a, b),
         (Value::Node(a), Value::Node(b)) => Value::Bool(a.id == b.id),
-        (Value::Edge(a), Value::Edge(b)) => Value::Bool(a == b),
+        // Relationships compare by identity, not by (possibly stale) properties.
+        (Value::Edge(a), Value::Edge(b)) => Value::Bool(same_edge(a, b)),
         (Value::Date(a), Value::Date(b)) => Value::Bool(a == b),
         (Value::LocalTime(a), Value::LocalTime(b)) => Value::Bool(a == b),
         (Value::Time(a), Value::Time(b)) => Value::Bool(a == b),
@@ -29,6 +115,19 @@ pub(super) fn values_equal(a: &Value, b: &Value) -> Value {
         (Value::Path(a), Value::Path(b)) => paths_equal(a, b),
         _ => Value::Bool(false),
     }
+}
+
+/// Whether two relationship values denote the same stored relationship:
+/// equal `(src, dst, type, seq)` identity. Parallel edges differ in `seq`.
+fn same_edge(a: &crate::types::Edge, b: &crate::types::Edge) -> bool {
+    a.src == b.src && a.dst == b.dst && a.label == b.label && a.seq == b.seq
+}
+
+/// Cypher `=` collapsed to two values: true only when the comparison is
+/// true (null or false otherwise). Used where a stored value is matched
+/// against a pattern constraint, e.g. var-length relationship property maps.
+pub(crate) fn cypher_equals(a: &Value, b: &Value) -> bool {
+    values_equal(a, b) == Value::Bool(true)
 }
 
 /// Path equality: same sequence of node IDs and edge identities (src, dst, type, seq).
@@ -41,7 +140,7 @@ fn paths_equal(a: &crate::types::PathValue, b: &crate::types::PathValue) -> Valu
         .edges
         .iter()
         .zip(&b.edges)
-        .all(|(e1, e2)| e1.src == e2.src && e1.dst == e2.dst && e1.label == e2.label);
+        .all(|(e1, e2)| same_edge(e1, e2));
     Value::Bool(nodes_eq && edges_eq)
 }
 
@@ -127,8 +226,8 @@ pub(super) fn compare_values(a: &Value, b: &Value) -> Option<std::cmp::Ordering>
         (Value::Bool(a), Value::Bool(b)) => Some(a.cmp(b)),
         (Value::I64(a), Value::I64(b)) => Some(a.cmp(b)),
         (Value::F64(a), Value::F64(b)) => a.partial_cmp(b),
-        (Value::I64(a), Value::F64(b)) => (*a as f64).partial_cmp(b),
-        (Value::F64(a), Value::I64(b)) => a.partial_cmp(&(*b as f64)),
+        (Value::I64(a), Value::F64(b)) => cmp_int_float(*a, *b),
+        (Value::F64(a), Value::I64(b)) => cmp_int_float(*b, *a).map(Ordering::reverse),
         (Value::String(a), Value::String(b)) => Some(a.cmp(b)),
         (Value::Date(a), Value::Date(b)) => Some(a.0.cmp(&b.0)),
         (Value::LocalTime(a), Value::LocalTime(b)) => Some(a.0.cmp(&b.0)),
@@ -161,24 +260,7 @@ pub(super) fn compare_values(a: &Value, b: &Value) -> Option<std::cmp::Ordering>
 
 /// Get a human-readable type name for a value.
 pub(super) fn value_type_name(v: &Value) -> &'static str {
-    match v {
-        Value::Bool(_) => "Boolean",
-        Value::I64(_) => "Integer",
-        Value::F64(_) => "Float",
-        Value::String(_) => "String",
-        Value::List(_) => "List",
-        Value::Map(_) => "Map",
-        Value::Null => "Null",
-        Value::Node(_) => "Node",
-        Value::Edge(_) => "Relationship",
-        Value::Path(_) => "Path",
-        Value::Date(_) => "Date",
-        Value::LocalTime(_) => "LocalTime",
-        Value::Time(_) => "Time",
-        Value::LocalDateTime(_) => "LocalDateTime",
-        Value::DateTime(_) => "DateTime",
-        Value::Duration(_) => "Duration",
-    }
+    crate::types::value_type_name(v)
 }
 
 /// Convert a tribool Value to Option<bool>.

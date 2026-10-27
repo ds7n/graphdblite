@@ -342,10 +342,13 @@ pub(in crate::cypher::planner) fn check_return_vars_in_scope(
     }
 }
 
+/// Plan `stmt`. `subquery` is `None` for a top-level statement and
+/// `Some(outer)` for a subquery body (EXISTS), where `outer` holds the
+/// variables of the enclosing scope that the body may reference.
 pub(in crate::cypher::planner) fn plan_inner(
     conn: &Connection,
     stmt: &Statement,
-    subquery: bool,
+    subquery: Option<&HashSet<String>>,
 ) -> crate::types::Result<LogicalOp> {
     match stmt {
         Statement::Match(m) => plan_match(conn, m, subquery),
@@ -408,7 +411,7 @@ pub(in crate::cypher::planner) fn plan_inner(
 pub(in crate::cypher::planner) fn plan_match(
     conn: &Connection,
     stmt: &MatchStatement,
-    subquery: bool,
+    subquery: Option<&HashSet<String>>,
 ) -> crate::types::Result<LogicalOp> {
     // Validate variable-type consistency across patterns before planning.
     let mut var_types = validate_variable_types(&stmt.patterns)?;
@@ -463,11 +466,18 @@ pub(in crate::cypher::planner) fn plan_match(
                 }
             }
         }
-        check_expr_variables(predicate, &bound_vars)?;
+        // A subquery's WHERE may also reference the enclosing scope.
+        match subquery {
+            Some(outer) => {
+                let scope: HashSet<String> = bound_vars.union(outer).cloned().collect();
+                check_expr_variables(predicate, &scope)?;
+            }
+            None => check_expr_variables(predicate, &bound_vars)?,
+        }
         validate_expr_types(predicate, &var_types)?;
         // Only validate pattern predicate vars for top-level queries.
         // Subqueries (EXISTS) can reference outer scope variables.
-        if !subquery {
+        if subquery.is_none() {
             validate_pattern_predicate_vars(predicate, &bound_vars)?;
         }
     }
@@ -657,6 +667,9 @@ pub(in crate::cypher::planner) fn plan_match(
 
     // Validate that RETURN items only reference variables in scope.
     validate_return_variables(&stmt.return_clause.items, &scope_vars)?;
+    // ORDER BY may also use RETURN aliases, but not a variable an earlier
+    // WITH dropped (`WITH n.v AS v RETURN v ORDER BY n.w`).
+    validate_with_order_by_scope_input(&scope_vars, &stmt.return_clause.items, &stmt.order_by)?;
 
     // Reject pattern predicates in RETURN (only valid in WHERE).
     for item in &stmt.return_clause.items {

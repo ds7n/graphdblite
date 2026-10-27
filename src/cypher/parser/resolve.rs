@@ -51,7 +51,7 @@ pub(in crate::cypher::parser) fn humanize_rule_name(rule: &str) -> &str {
         "case_else_clause" => "an ELSE value",
         "case_expr" => "a CASE expression",
         "exists_subquery" => "an EXISTS { } subquery",
-        "exists_full_subquery" => "an EXISTS { MATCH ... } subquery",
+        "exists_full_subquery" | "exists_query" => "an EXISTS { MATCH ... } subquery",
         "pattern_comprehension" => "a pattern comprehension like [(n)-->() | expr]",
         "list_comprehension" => "a list comprehension like [x IN list | expr]",
         "comp_op" => "a comparison operator (=, <>, <, >)",

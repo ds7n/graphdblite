@@ -624,6 +624,7 @@ impl<'a> Parser<'a> {
             src: NodeId(0), // endpoints are ignored by structural equality
             dst: NodeId(0),
             label,
+            seq: 0,
             properties,
         }))
     }

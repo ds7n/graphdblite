@@ -16,7 +16,7 @@ use rusqlite::Connection;
 
 use crate::cypher::ast::{Expr, ExprKind, ReturnItem};
 use crate::cypher::eval::{eval_expr, eval_predicate, expr_to_column_name};
-use crate::cypher::executor::{literal_to_value, ExecContext};
+use crate::cypher::executor::{row_count_within_cap, ExecContext};
 use crate::cypher::ir::LogicalOp;
 use crate::cypher::record::NamedRecord;
 use crate::cypher::record_v2::{Record as SlotRecord, RecordSchema, SlotId};
@@ -39,12 +39,21 @@ pub trait SlotRecordIter {
 
 /// Drain a slot iterator, converting each row into a [`NamedRecord`] using
 /// the iterator's output schema. Used at the API boundary in
-/// [`super::executor::execute_with_ctx_slot`].
-pub fn collect_to_named(iter: &mut dyn SlotRecordIter) -> Result<Vec<NamedRecord>> {
+/// [`super::executor::execute_with_ctx`]. Fails on row `max_rows + 1`
+/// (0 = unlimited) so the result row cap holds on the slot path too.
+pub fn collect_to_named(
+    iter: &mut dyn SlotRecordIter,
+    max_rows: usize,
+) -> Result<Vec<NamedRecord>> {
     let schema = iter.schema().clone();
     let mut out = Vec::new();
     while let Some(rec) = iter.next_slot()? {
-        out.push(slot_to_named(&schema, &rec));
+        let named = slot_to_named(&schema, &rec);
+        crate::cypher::executor::charge_materialized(crate::cypher::executor::approx_named_bytes(
+            &named,
+        ))?;
+        out.push(named);
+        row_count_within_cap(out.len(), max_rows)?;
     }
     Ok(out)
 }
@@ -89,7 +98,17 @@ pub fn is_slot_supported(plan: &LogicalOp) -> bool {
             is_slot_supported(input) && !expr_has_bare_variable(predicate)
         }
         LogicalOp::Project { input, items, .. } => {
-            is_slot_supported(input) && items.iter().all(is_project_item_supported)
+            // Besides expressions with no bare variable: items an Aggregate
+            // below already computed, and expressions over the scalar
+            // aliases of `UNWIND range(...)` / `UNWIND [literals]` (so
+            // `UNWIND range(1, n) AS x RETURN x` streams).
+            let scalars = scalar_unwind_aliases(input);
+            is_slot_supported(input)
+                && items.iter().all(|item| {
+                    is_project_item_supported(item)
+                        || reads_aggregate_column(input, item)
+                        || only_scalar_variables(&item.expr, &scalars)
+                })
         }
         LogicalOp::Aggregate {
             input,
@@ -102,11 +121,18 @@ pub fn is_slot_supported(plan: &LogicalOp) -> bool {
             // via `build_compound_binding` from flat metadata + properties)
             // and `count(*)` (Star input is never evaluated). Pattern
             // subqueries open scopes the slot path doesn't track; gate them.
+            // A bare variable as an aggregate input (`collect(n)`) needs the
+            // compound node value, which slot rows only carry partially, so
+            // it stays on the named path unless the variable is an UNWIND
+            // alias known to hold scalars. `count(*)` has no input to read.
+            let scalars = scalar_unwind_aliases(input);
             is_slot_supported(input)
                 && group_keys.iter().all(|e| !expr_has_pattern_subquery(e))
-                && aggregates
-                    .iter()
-                    .all(|a| !expr_has_pattern_subquery(&a.input))
+                && aggregates.iter().all(|a| {
+                    !expr_has_pattern_subquery(&a.input)
+                        && (matches!(a.input.kind, ExprKind::Star)
+                            || only_scalar_variables(&a.input, &scalars))
+                })
         }
         // Phase 3f pass-through ops. Each preserves the input schema and
         // applies a row-level transformation that is independent of which
@@ -177,6 +203,93 @@ pub fn is_slot_supported(plan: &LogicalOp) -> bool {
         | LogicalOp::CreateIndex { .. }
         | LogicalOp::DropIndex { .. } => true,
         _ => false,
+    }
+}
+
+/// Aliases of `UNWIND range(...)` / `UNWIND [literals]` below `plan`, which
+/// always hold scalars (never nodes or edges), looking through operators
+/// that keep the scope. Stops at anything that can rebind names.
+fn scalar_unwind_aliases(plan: &LogicalOp) -> Vec<&str> {
+    let mut aliases = Vec::new();
+    let mut op = plan;
+    loop {
+        match op {
+            LogicalOp::Unwind { input, expr, alias } => {
+                let scalar_list = match &expr.kind {
+                    ExprKind::FunctionCall { name, .. } => name.eq_ignore_ascii_case("range"),
+                    ExprKind::List(items) => {
+                        items.iter().all(|i| matches!(i.kind, ExprKind::Literal(_)))
+                    }
+                    _ => false,
+                };
+                if scalar_list {
+                    aliases.push(alias.as_str());
+                }
+                op = input;
+            }
+            LogicalOp::Filter { input, .. }
+            | LogicalOp::Sort { input, .. }
+            | LogicalOp::Skip { input, .. }
+            | LogicalOp::Limit { input, .. }
+            | LogicalOp::Distinct { input } => op = input,
+            _ => return aliases,
+        }
+    }
+}
+
+/// True iff every bare variable in `e` is one of the known-`scalars`, so
+/// reading it from a slot row cannot need a node's or edge's properties.
+/// Understands the common expression shapes; any other shape that contains a
+/// bare variable is rejected.
+fn only_scalar_variables(e: &Expr, scalars: &[&str]) -> bool {
+    match &e.kind {
+        ExprKind::Variable(v) => scalars.contains(&v.as_str()),
+        ExprKind::BinaryOp { left, right, .. } => {
+            only_scalar_variables(left, scalars) && only_scalar_variables(right, scalars)
+        }
+        ExprKind::Not(x) | ExprKind::IsNull(x) | ExprKind::IsNotNull(x) => {
+            only_scalar_variables(x, scalars)
+        }
+        ExprKind::FunctionCall { args, .. } => {
+            args.iter().all(|a| only_scalar_variables(a, scalars))
+        }
+        _ => !expr_has_bare_variable(e),
+    }
+}
+
+/// True iff the nearest `Aggregate` below `plan` (through order-preserving
+/// operators) already computed `item` as one of its output columns: an
+/// aggregate call under its own or its aliased column name, or a group key
+/// under its column name. `ProjectSlotIter` reads such an item straight from
+/// that column and never evaluates the expression, so its `Star` / variable
+/// arguments do not matter.
+fn reads_aggregate_column(plan: &LogicalOp, item: &ReturnItem) -> bool {
+    let natural = expr_to_column_name(&item.expr);
+    let aliased = item
+        .alias
+        .as_deref()
+        .filter(|_| is_aggregate_call(&item.expr));
+    let mut op = plan;
+    loop {
+        match op {
+            LogicalOp::Aggregate {
+                group_keys,
+                aggregates,
+                ..
+            } => {
+                return group_keys.iter().any(|k| expr_to_column_name(k) == natural)
+                    || aggregates.iter().any(|a| {
+                        let col = crate::cypher::executor::aggregate_column_name(a);
+                        col == natural || Some(col.as_str()) == aliased
+                    });
+            }
+            LogicalOp::Sort { input, .. }
+            | LogicalOp::Filter { input, .. }
+            | LogicalOp::Skip { input, .. }
+            | LogicalOp::Limit { input, .. }
+            | LogicalOp::Distinct { input } => op = input,
+            _ => return false,
+        }
     }
 }
 
@@ -365,6 +478,11 @@ fn build_slot_iter_inner<'a>(
             let mut records = Vec::with_capacity(node_ids.len());
             for id in node_ids {
                 let n = node::get_node(conn, id)?;
+                // Only emit nodes that carry the queried label (mirrors
+                // `exec_index_lookup`).
+                if !label.is_empty() && !n.labels.iter().any(|l| l == label) {
+                    continue;
+                }
                 records.push(node_to_slot_record(&n, alias, &schema));
             }
             let base: Box<dyn SlotRecordIter + 'a> = Box::new(VecSlotIter::new(records, schema));
@@ -412,14 +530,7 @@ fn build_slot_iter_inner<'a>(
             let output_schema = infer_with_props(plan, refs);
             let named_input: Box<dyn crate::cypher::iter::RecordIter + 'a> =
                 Box::new(SlotToNamedAdapter::new(input_slot_iter));
-            let prop_filter_values: std::collections::HashMap<String, Value> =
-                var_length_prop_filters
-                    .iter()
-                    .filter_map(|(k, e)| match &e.kind {
-                        ExprKind::Literal(lit) => Some((k.clone(), literal_to_value(lit))),
-                        _ => None,
-                    })
-                    .collect();
+            let prop_filter_values = var_length_prop_filters.clone();
             let named_expand = crate::cypher::iter::ExpandIter::new(
                 named_input,
                 conn,
@@ -479,7 +590,12 @@ fn build_slot_iter_inner<'a>(
 
         LogicalOp::Sort { input, items } => {
             let input_iter = build_slot_iter_inner(conn, input, ctx, refs)?;
-            Ok(Box::new(SortSlotIter::new(input_iter, items.clone(), conn)))
+            Ok(Box::new(SortSlotIter::new(
+                input_iter,
+                items.clone(),
+                conn,
+                ctx.max_result_rows,
+            )))
         }
 
         LogicalOp::CrossProduct { .. }
@@ -905,13 +1021,10 @@ fn literal_to_value_local(lit: &crate::cypher::ast::LiteralValue) -> Value {
     }
 }
 
-/// Slot-aware `Aggregate` (blocking). Drains its input, materializes each
-/// row into a `NamedRecord` (so the existing
-/// `executor::aggregate_named_records` runs unchanged — same column-naming,
-/// same compound-binding semantics for Variable group keys), then re-shapes
-/// the produced named results back into slot records via
-/// [`named_to_slot`]. Per-row materialize/convert cost is the 3e trade-off,
-/// matching 3c–3d's pattern.
+/// Slot-aware `Aggregate`. Drains its input one row at a time into a
+/// [`StreamingAggregate`], so `count`/`sum`/`avg`/`min`/`max` over any
+/// number of rows need memory proportional to the number of groups. The
+/// groups are emitted once the input is exhausted.
 pub struct AggregateSlotIter<'a> {
     input: Box<dyn SlotRecordIter + 'a>,
     group_keys: Vec<Expr>,
@@ -941,21 +1054,16 @@ impl<'a> AggregateSlotIter<'a> {
     }
 
     fn materialize(&mut self) -> Result<()> {
-        // Drain input slot records — no NamedRecord materialization.
-        let input_schema = self.input.schema().clone();
-        let mut slot_inputs: Vec<SlotRecord> = Vec::new();
-        while let Some(rec) = self.input.next_slot()? {
-            slot_inputs.push(rec);
-        }
-        let agg_results = crate::cypher::executor::aggregate_slot_records(
-            self.conn,
-            &input_schema,
-            &slot_inputs,
+        let mut agg = crate::cypher::executor::StreamingAggregate::new(
+            self.input.schema().clone(),
             &self.output_schema,
             &self.group_keys,
             &self.aggregates,
-        )?;
-        self.results = Some(agg_results.into_iter());
+        );
+        while let Some(rec) = self.input.next_slot()? {
+            agg.push(&rec, self.conn)?;
+        }
+        self.results = Some(agg.finish(self.conn)?.into_iter());
         Ok(())
     }
 }
@@ -1022,15 +1130,13 @@ impl<'a> SlotRecordIter for LimitSlotIter<'a> {
     }
 }
 
-/// Slot-aware `Distinct` (blocking). Materializes input rows once and
-/// emits each unique slot record. Equality is on full slot-row contents
-/// using the input schema (ordered by slot index, identical to
-/// schema-name iteration order).
+/// Slot-aware `Distinct`. Streams the first occurrence of each row and
+/// remembers the rows seen (in grouping form, so 1 and 1.0 are one value)
+/// in a hash set; the set is charged to the materialization budget.
 pub struct DistinctSlotIter<'a> {
     input: Box<dyn SlotRecordIter + 'a>,
     schema: RecordSchema,
-    /// `None` until first `next_slot` triggers materialization.
-    results: Option<std::vec::IntoIter<SlotRecord>>,
+    seen: std::collections::HashSet<Vec<Value>>,
 }
 
 impl<'a> DistinctSlotIter<'a> {
@@ -1039,44 +1145,29 @@ impl<'a> DistinctSlotIter<'a> {
         Self {
             input,
             schema,
-            results: None,
+            seen: std::collections::HashSet::new(),
         }
-    }
-
-    fn materialize(&mut self) -> Result<()> {
-        let mut deduped: Vec<SlotRecord> = Vec::new();
-        while let Some(rec) = self.input.next_slot()? {
-            // O(n²) dedup using slot-row equality. Matches the named path's
-            // strategy in `iter::Distinct`; both rely on small result sets.
-            if !deduped.iter().any(|s| slot_rows_equal(s, &rec)) {
-                deduped.push(rec);
-            }
-        }
-        self.results = Some(deduped.into_iter());
-        Ok(())
     }
 }
 
 impl<'a> SlotRecordIter for DistinctSlotIter<'a> {
     fn next_slot(&mut self) -> Result<Option<SlotRecord>> {
-        if self.results.is_none() {
-            self.materialize()?;
+        while let Some(rec) = self.input.next_slot()? {
+            let key = crate::cypher::eval::grouping_key_vec(rec.as_slice());
+            if self.seen.contains(key.as_ref()) {
+                continue;
+            }
+            crate::cypher::executor::charge_materialized(
+                crate::cypher::executor::approx_slot_bytes(&rec) + 64,
+            )?;
+            self.seen.insert(key.into_owned());
+            return Ok(Some(rec));
         }
-        Ok(self.results.as_mut().and_then(|it| it.next()))
+        Ok(None)
     }
     fn schema(&self) -> &RecordSchema {
         &self.schema
     }
-}
-
-fn slot_rows_equal(a: &SlotRecord, b: &SlotRecord) -> bool {
-    if a.len() != b.len() {
-        return false;
-    }
-    (0..a.len()).all(|i| {
-        let s = SlotId(i as u32);
-        a.get(s) == b.get(s)
-    })
 }
 
 /// Slot-aware `Sort` (blocking). Drains input, materializes each row to
@@ -1089,6 +1180,8 @@ pub struct SortSlotIter<'a> {
     items: Vec<crate::cypher::ast::SortItem>,
     conn: &'a Connection,
     results: Option<std::vec::IntoIter<SlotRecord>>,
+    /// Row cap on the buffered input (0 = unlimited).
+    max_rows: usize,
 }
 
 impl<'a> SortSlotIter<'a> {
@@ -1096,12 +1189,14 @@ impl<'a> SortSlotIter<'a> {
         input: Box<dyn SlotRecordIter + 'a>,
         items: Vec<crate::cypher::ast::SortItem>,
         conn: &'a Connection,
+        max_rows: usize,
     ) -> Self {
         Self {
             input,
             items,
             conn,
             results: None,
+            max_rows,
         }
     }
 
@@ -1115,12 +1210,19 @@ impl<'a> SortSlotIter<'a> {
             let keys: Vec<Value> = self
                 .items
                 .iter()
-                .map(|si| {
-                    eval_expr(&si.expr, &view, crate::cypher::eval::EvalCx::new(self.conn))
-                        .unwrap_or(Value::Null)
-                })
-                .collect();
+                .map(|si| eval_expr(&si.expr, &view, crate::cypher::eval::EvalCx::new(self.conn)))
+                .collect::<Result<_>>()?;
+            // Sort must buffer its whole input; bound that buffer by row
+            // count and by size.
+            crate::cypher::executor::charge_materialized(
+                crate::cypher::executor::approx_slot_bytes(&rec)
+                    + keys
+                        .iter()
+                        .map(crate::cypher::executor::approx_value_bytes)
+                        .sum::<u64>(),
+            )?;
             tagged.push((keys, rec));
+            row_count_within_cap(tagged.len(), self.max_rows)?;
         }
         let descending: Vec<bool> = self.items.iter().map(|si| si.descending).collect();
         tagged.sort_by(|a, b| {
@@ -1157,22 +1259,24 @@ fn compare_values_for_sort(a: &Value, b: &Value) -> std::cmp::Ordering {
     crate::cypher::iter::compare_values_for_sort_pub(a, b)
 }
 
-/// Slot-aware `Unwind`. For each input row, materialize to a NamedRecord
-/// to evaluate the unwind expression, then emit one output slot record
-/// per list item — populating `alias.<…>` keys in the output schema with
-/// the same flat-binding rules `exec_unwind` uses (node metadata cluster
-/// for `Value::Node`, edge metadata for `Value::Edge`, otherwise just
-/// `alias` itself). `Value::Null` produces zero rows; non-list, non-null
-/// values raise a semantic error to match named-path behavior.
+/// Slot-aware `Unwind`. For each input row, evaluates the unwind
+/// expression (`UNWIND range(...)` lazily) and emits one output slot record
+/// per item, produced on demand so a downstream LIMIT, the row cap or an
+/// aggregate never sees (or waits for) rows it does not need. Items bind
+/// `alias.<...>` keys with the same flat-binding rules `exec_unwind` uses
+/// (node metadata cluster for `Value::Node`, edge metadata for
+/// `Value::Edge`, otherwise just `alias` itself). `Value::Null` produces
+/// zero rows; non-list, non-null values raise a semantic error to match
+/// named-path behavior.
 pub struct UnwindSlotIter<'a> {
     input: Box<dyn SlotRecordIter + 'a>,
     expr: Expr,
     alias: String,
+    input_schema: RecordSchema,
     output_schema: RecordSchema,
     conn: &'a Connection,
-    /// Buffered output rows for the current input row. Drained before
-    /// pulling the next input.
-    pending: std::vec::IntoIter<SlotRecord>,
+    /// The input row being expanded and the items still to emit for it.
+    current: Option<(SlotRecord, crate::cypher::eval::UnwindItems)>,
 }
 
 impl<'a> UnwindSlotIter<'a> {
@@ -1183,122 +1287,105 @@ impl<'a> UnwindSlotIter<'a> {
         output_schema: RecordSchema,
         conn: &'a Connection,
     ) -> Self {
+        let input_schema = input.schema().clone();
         Self {
             input,
             expr,
             alias,
+            input_schema,
             output_schema,
             conn,
-            pending: Vec::new().into_iter(),
+            current: None,
         }
     }
+}
 
-    /// Convert one input slot row + its expanded NamedRecord (alias
-    /// already populated with flat keys) into a slot record laid out
-    /// against `output_schema`. Carries forward every input-schema slot
-    /// and overlays the alias bindings.
-    fn project(
-        &self,
-        input_schema: &RecordSchema,
-        base: &SlotRecord,
-        named: &NamedRecord,
-    ) -> SlotRecord {
-        let mut out = SlotRecord::with_capacity(self.output_schema.len());
-        // Carry forward every slot the input row already had.
-        for (in_slot, name) in input_schema.iter() {
-            if let Some(out_slot) = self.output_schema.slot(name) {
-                out.set(out_slot, base.get(in_slot).clone());
+/// Lay out one unwound item as a slot record against `output_schema`:
+/// carries forward every slot of the input row and overlays the bindings
+/// for `alias` that `item` produces.
+fn unwind_row(
+    input_schema: &RecordSchema,
+    output_schema: &RecordSchema,
+    alias: &str,
+    base: &SlotRecord,
+    item: Value,
+) -> SlotRecord {
+    let mut named = NamedRecord::new();
+    match item {
+        Value::Node(n) => {
+            let node_rec = crate::cypher::executor::node_to_record_pub(&n, alias);
+            for (k, v) in &node_rec.fields {
+                named.set(k.clone(), v.clone());
             }
         }
-        // Overlay alias-related bindings the named expansion just wrote.
-        let prefix = format!("{}.", self.alias);
-        for (k, v) in &named.fields {
-            if k == &self.alias || k.starts_with(&prefix) {
-                if let Some(out_slot) = self.output_schema.slot(k) {
-                    out.set(out_slot, v.clone());
-                }
-            }
+        Value::Edge(e) => {
+            named.set(alias.to_string(), Value::Edge(e.clone()));
+            crate::cypher::executor::populate_edge_bindings(&mut named, &e, alias);
         }
-        out
+        Value::Map(entries) => {
+            // Mirror Node/Edge: bind the compound value AND flatten entries
+            // to `alias.<key>` so the slot path's Property fast-path doesn't
+            // read a reserved-but-unwritten Null slot. (The named path
+            // doesn't bother because its `eval_property` falls back to a
+            // runtime DotAccess on the Map; the slot path's eager slot reads
+            // can't.)
+            for (k, v) in &entries {
+                named.set(format!("{alias}.{k}"), v.clone());
+            }
+            named.set(alias.to_string(), Value::Map(entries));
+        }
+        other => named.set(alias.to_string(), other),
     }
+    let mut out = SlotRecord::with_capacity(output_schema.len());
+    // Carry forward every slot the input row already had.
+    for (in_slot, name) in input_schema.iter() {
+        if let Some(out_slot) = output_schema.slot(name) {
+            out.set(out_slot, base.get(in_slot).clone());
+        }
+    }
+    // Overlay the alias-related bindings.
+    let prefix = format!("{alias}.");
+    for (k, v) in &named.fields {
+        if k == alias || k.starts_with(&prefix) {
+            if let Some(out_slot) = output_schema.slot(k) {
+                out.set(out_slot, v.clone());
+            }
+        }
+    }
+    out
 }
 
 impl<'a> SlotRecordIter for UnwindSlotIter<'a> {
     fn next_slot(&mut self) -> Result<Option<SlotRecord>> {
         loop {
-            if let Some(rec) = self.pending.next() {
-                return Ok(Some(rec));
+            if let Some((base, items)) = self.current.as_mut() {
+                match items.next() {
+                    Some(item) => {
+                        return Ok(Some(unwind_row(
+                            &self.input_schema,
+                            &self.output_schema,
+                            &self.alias,
+                            base,
+                            item,
+                        )));
+                    }
+                    None => self.current = None,
+                }
             }
             let Some(input_rec) = self.input.next_slot()? else {
                 return Ok(None);
             };
-            let input_schema = self.input.schema();
-            let val = {
-                let view = SlotView::new(input_schema, &input_rec);
-                eval_expr(
+            let items = {
+                let view = SlotView::new(&self.input_schema, &input_rec);
+                crate::cypher::eval::eval_unwind_items(
                     &self.expr,
                     &view,
                     crate::cypher::eval::EvalCx::new(self.conn),
                 )?
             };
-            let items = match val {
-                Value::List(items) => items,
-                Value::Null => continue,
-                other => {
-                    return Err(crate::types::GraphError::semantic(format!(
-                        "UNWIND requires a list, got: {other}"
-                    )));
-                }
-            };
-            if items.is_empty() {
-                continue;
+            if items.remaining() > 0 {
+                self.current = Some((input_rec, items));
             }
-            // Materialize once after we know there's at least one item to
-            // emit; each output row clones from this base + adds the
-            // alias bindings (mirrors `exec_unwind`).
-            let view = materialize_named(input_schema, &input_rec);
-            let mut produced = Vec::with_capacity(items.len());
-            for item in items {
-                let mut named = view.clone();
-                match &item {
-                    Value::Node(n) => {
-                        let node_rec = crate::cypher::executor::node_to_record_pub(n, &self.alias);
-                        for (k, v) in &node_rec.fields {
-                            named.set(k.clone(), v.clone());
-                        }
-                    }
-                    Value::Edge(e) => {
-                        named.set(self.alias.clone(), Value::Edge(e.clone()));
-                        named.set(format!("{}.__src", self.alias), Value::I64(e.src.0 as i64));
-                        named.set(format!("{}.__dst", self.alias), Value::I64(e.dst.0 as i64));
-                        named.set(
-                            format!("{}.__type", self.alias),
-                            Value::String(e.label.clone()),
-                        );
-                        for (k, v) in &e.properties {
-                            named.set(format!("{}.{}", self.alias, k), v.clone());
-                        }
-                    }
-                    Value::Map(entries) => {
-                        // Mirror Node/Edge: bind the compound value AND
-                        // flatten entries to `alias.<key>` so the slot
-                        // path's Property fast-path doesn't read a
-                        // reserved-but-unwritten Null slot. (The named
-                        // path doesn't bother because its `eval_property`
-                        // falls back to a runtime DotAccess on the Map;
-                        // the slot path's eager slot reads can't.)
-                        named.set(self.alias.clone(), Value::Map(entries.clone()));
-                        for (k, v) in entries {
-                            named.set(format!("{}.{}", self.alias, k), v.clone());
-                        }
-                    }
-                    _ => {
-                        named.set(self.alias.clone(), item.clone());
-                    }
-                }
-                produced.push(self.project(input_schema, &input_rec, &named));
-            }
-            self.pending = produced.into_iter();
         }
     }
 

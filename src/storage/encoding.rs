@@ -4,6 +4,8 @@
 /// This compresses sequential IDs significantly: 1000 sequential u64s go from
 /// 8KB to ~1.5KB.
 /// Encode a sorted slice of u64 values using delta-varint encoding.
+use crate::types::{GraphError, Result};
+
 pub fn encode_id_list(ids: &[u64]) -> Vec<u8> {
     let mut buf = Vec::with_capacity(ids.len() * 2);
     let mut prev = 0u64;
@@ -18,22 +20,34 @@ pub fn encode_id_list(ids: &[u64]) -> Vec<u8> {
 
 /// Decode a delta-varint encoded byte buffer back to sorted u64 values.
 ///
-/// Silently stops on truncated/corrupt varints rather than producing garbage.
-pub fn decode_id_list(data: &[u8]) -> Vec<u64> {
+/// The buffer comes from the database file, which may be corrupt or crafted:
+/// a truncated or over-long varint, or deltas whose running sum overflows
+/// `u64`, return `GraphError::Serialization` instead of panicking or
+/// producing wrapped ids.
+pub fn decode_id_list(data: &[u8]) -> Result<Vec<u64>> {
     let mut ids = Vec::new();
     let mut pos = 0;
     let mut prev = 0u64;
     while pos < data.len() {
-        match decode_varint(&data[pos..]) {
-            Some((delta, bytes_read)) => {
-                pos += bytes_read;
-                prev += delta;
-                ids.push(prev);
-            }
-            None => break, // truncated varint — stop decoding
-        }
+        let (delta, bytes_read) = decode_varint(&data[pos..])?;
+        pos += bytes_read;
+        prev = prev
+            .checked_add(delta)
+            .ok_or_else(|| corrupt_id_list("node id delta overflows u64"))?;
+        ids.push(prev);
     }
-    ids
+    Ok(ids)
+}
+
+/// Maximum encoded length of a u64 LEB128 varint (ceil(64 / 7)).
+const MAX_VARINT_BYTES: usize = 10;
+
+fn corrupt_id_list(reason: &str) -> GraphError {
+    GraphError::Serialization {
+        context: "adjacency list".to_string(),
+        source: format!("corrupt varint id list: {reason}"),
+        hint: Some("the database file is damaged or was not written by graphdblite".to_string()),
+    }
 }
 
 /// Encode a u64 as unsigned LEB128 varint.
@@ -51,19 +65,28 @@ fn encode_varint(mut value: u64, buf: &mut Vec<u8>) {
     }
 }
 
-/// Decode an unsigned LEB128 varint. Returns `None` if the input is
-/// truncated (all bytes have the continuation bit set).
-fn decode_varint(data: &[u8]) -> Option<(u64, usize)> {
+/// Decode an unsigned LEB128 varint, returning `(value, bytes_read)`.
+/// Errors when the input is truncated (no terminating byte), longer than
+/// [`MAX_VARINT_BYTES`], or encodes a value that does not fit in a u64.
+fn decode_varint(data: &[u8]) -> Result<(u64, usize)> {
     let mut value: u64 = 0;
-    let mut shift = 0;
-    for (i, &byte) in data.iter().enumerate() {
-        value |= ((byte & 0x7F) as u64) << shift;
-        if byte & 0x80 == 0 {
-            return Some((value, i + 1));
+    for (i, &byte) in data.iter().take(MAX_VARINT_BYTES).enumerate() {
+        let bits = (byte & 0x7F) as u64;
+        let shift = 7 * i as u32;
+        // The 10th byte may only carry the single remaining bit of a u64.
+        if i == MAX_VARINT_BYTES - 1 && bits > 1 {
+            return Err(corrupt_id_list("varint overflows u64"));
         }
-        shift += 7;
+        value |= bits << shift;
+        if byte & 0x80 == 0 {
+            return Ok((value, i + 1));
+        }
     }
-    None // truncated — no terminating byte found
+    if data.len() > MAX_VARINT_BYTES {
+        Err(corrupt_id_list("varint longer than 10 bytes"))
+    } else {
+        Err(corrupt_id_list("truncated varint"))
+    }
 }
 
 /// Insert an ID into a sorted list (maintains sorted order, no duplicates).
@@ -94,14 +117,14 @@ mod tests {
         let ids: Vec<u64> = vec![];
         let encoded = encode_id_list(&ids);
         assert!(encoded.is_empty());
-        assert_eq!(decode_id_list(&encoded), ids);
+        assert_eq!(decode_id_list(&encoded).unwrap(), ids);
     }
 
     #[test]
     fn roundtrip_single() {
         let ids = vec![42];
         let encoded = encode_id_list(&ids);
-        assert_eq!(decode_id_list(&encoded), ids);
+        assert_eq!(decode_id_list(&encoded).unwrap(), ids);
     }
 
     #[test]
@@ -110,14 +133,61 @@ mod tests {
         let encoded = encode_id_list(&ids);
         // Sequential IDs should compress well — each delta is 1, which is 1 byte
         assert_eq!(encoded.len(), 1000);
-        assert_eq!(decode_id_list(&encoded), ids);
+        assert_eq!(decode_id_list(&encoded).unwrap(), ids);
     }
 
     #[test]
     fn roundtrip_sparse() {
         let ids = vec![100, 10_000, 1_000_000, u64::MAX / 2];
         let encoded = encode_id_list(&ids);
-        assert_eq!(decode_id_list(&encoded), ids);
+        assert_eq!(decode_id_list(&encoded).unwrap(), ids);
+    }
+
+    fn assert_corrupt(data: &[u8], reason: &str) {
+        match decode_id_list(data) {
+            Err(GraphError::Serialization { source, .. }) => {
+                assert!(source.contains(reason), "{source}")
+            }
+            other => panic!("expected Serialization error ({reason}), got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn roundtrip_u64_max_uses_ten_bytes() {
+        let ids = vec![u64::MAX];
+        let encoded = encode_id_list(&ids);
+        assert_eq!(encoded.len(), MAX_VARINT_BYTES);
+        assert_eq!(decode_id_list(&encoded).unwrap(), ids);
+    }
+
+    #[test]
+    fn decode_rejects_ten_byte_varint_overflowing_u64() {
+        // u64::MAX's last byte is 0x01; 0x02 sets bit 64.
+        let mut bad = vec![0xFF; 9];
+        bad.push(0x02);
+        assert_corrupt(&bad, "overflows u64");
+    }
+
+    #[test]
+    fn decode_rejects_eleven_byte_varint() {
+        // Boundary: 10 continuation bytes then a terminator (11 bytes).
+        let mut bad = vec![0x80; 10];
+        bad.push(0x00);
+        assert_corrupt(&bad, "longer than 10 bytes");
+        assert_corrupt(&[0xFF; 20], "overflows u64");
+    }
+
+    #[test]
+    fn decode_rejects_truncated_varint() {
+        assert_corrupt(&[0x01, 0x80], "truncated");
+        assert_corrupt(&[0xFF; 10], "overflows u64");
+    }
+
+    #[test]
+    fn decode_rejects_delta_sum_overflow() {
+        let mut data = encode_id_list(&[u64::MAX]);
+        data.push(0x01); // delta 1 on top of u64::MAX
+        assert_corrupt(&data, "delta overflows u64");
     }
 
     #[test]

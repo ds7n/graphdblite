@@ -433,6 +433,7 @@ pub(in crate::cypher::planner) fn plan_multi_clause(
         // Validate RETURN references only in-scope variables.
         if !scope_vars.is_empty() {
             validate_return_variables(&rc.items, &scope_vars)?;
+            validate_with_order_by_scope_input(&scope_vars, &rc.items, &stmt.order_by)?;
         }
         result =
             apply_return_projection(conn, result, rc, &stmt.order_by, &stmt.skip, &stmt.limit)?;
@@ -564,62 +565,30 @@ pub(in crate::cypher::planner) fn plan_with_scoped(
                     }
                 }
             }
-            // Don't resolve aliases here — aggregate results are stored
-            // under alias names, so ORDER BY c evaluates directly against "c".
-            op = LogicalOp::Sort {
-                input: Box::new(op),
-                items: with.order_by.clone(),
-            };
-        }
-    }
-
-    if let Some(ref predicate) = with.where_clause {
-        if has_aggregates {
-            // When WITH has aggregates, filter AFTER projection because
-            // aggregate results are only available after Aggregate + Project.
-            op = LogicalOp::Project {
-                input: Box::new(op),
-                items: with.items.clone(),
-                emit_compound: false,
-            };
-            op = LogicalOp::Filter {
-                input: Box::new(op),
-                predicate: predicate.clone(),
-            };
-        } else {
-            // No aggregates: filter BEFORE projection so WHERE can access
-            // pre-projection variables (e.g. WITH c WHERE r IS NULL).
-            // Substitute alias names with original expressions so aliases
-            // like `WHERE age > 25` (age = n.age) resolve correctly.
-            let alias_map: std::collections::HashMap<String, Expr> = with
+            // Aggregate results are stored under their alias, so ORDER BY c
+            // evaluates directly against "c". Group keys are stored under
+            // their column name (`x % 2`), so an alias of a group key
+            // (`x % 2 AS k ... ORDER BY k`) is rewritten to that column.
+            let key_columns: Vec<ReturnItem> = with
                 .items
                 .iter()
-                .filter_map(|item| item.alias.as_ref().map(|a| (a.clone(), item.expr.clone())))
+                .map(|item| {
+                    if is_aggregate_fn(&item.expr) {
+                        return item.clone();
+                    }
+                    ReturnItem {
+                        expr: Expr::synthetic(ExprKind::Variable(
+                            crate::cypher::eval::expr_to_column_name(&item.expr),
+                        )),
+                        alias: item.alias.clone(),
+                    }
+                })
                 .collect();
-            let resolved = substitute_aliases(predicate, &alias_map);
-            op = LogicalOp::Filter {
-                input: Box::new(op),
-                predicate: resolved,
-            };
-            op = LogicalOp::Project {
-                input: Box::new(op),
-                items: with.items.clone(),
-                emit_compound: false,
-            };
-        }
-    } else {
-        // No WHERE — Sort before Project so ORDER BY can reference
-        // pre-projection variables (e.g. ORDER BY a.name when WITH projects a.name AS name).
-        if !with.order_by.is_empty() && !has_aggregates {
-            validate_no_aggregation_in_order_by(&with.order_by)?;
-            if let Some(scope) = input_scope {
-                validate_with_order_by_scope_input(scope, &with.items, &with.order_by)?;
-            }
             let resolved: Vec<SortItem> = with
                 .order_by
                 .iter()
                 .map(|si| SortItem {
-                    expr: resolve_sort_aliases(&si.expr, &with.items),
+                    expr: resolve_sort_aliases(&si.expr, &key_columns),
                     descending: si.descending,
                 })
                 .collect();
@@ -628,25 +597,81 @@ pub(in crate::cypher::planner) fn plan_with_scoped(
                 items: resolved,
             };
         }
+    } else if !with.order_by.is_empty() {
+        // Sort before Project so ORDER BY can reference pre-projection
+        // variables (e.g. ORDER BY a.name when WITH projects a.name AS name).
+        validate_no_aggregation_in_order_by(&with.order_by)?;
+        if let Some(scope) = input_scope {
+            validate_with_order_by_scope_input(scope, &with.items, &with.order_by)?;
+        }
+        let resolved: Vec<SortItem> = with
+            .order_by
+            .iter()
+            .map(|si| SortItem {
+                expr: resolve_sort_aliases(&si.expr, &with.items),
+                descending: si.descending,
+            })
+            .collect();
+        op = LogicalOp::Sort {
+            input: Box::new(op),
+            items: resolved,
+        };
+    }
+
+    // openCypher applies WITH's WHERE after projection, ORDER BY, SKIP and
+    // LIMIT, against the projected values (so `WITH rand() AS r WHERE r < 0.1`
+    // tests the value it returns). A non-aggregating, non-DISTINCT WITH may
+    // also reference variables it does not project (`WITH a.x AS x WHERE
+    // a.y > 1`); those conjuncts cannot run after Project, so they run on the
+    // pre-projection row with aliases substituted. Projection is 1:1 in that
+    // case, so applying SKIP/LIMIT and that filter before Project is
+    // equivalent.
+    let (pre_where, post_where) = match &with.where_clause {
+        Some(predicate) => split_with_where(predicate, with, has_aggregates, input_scope)?,
+        None => (None, None),
+    };
+
+    if let Some(pre) = pre_where {
+        op = apply_with_skip_limit(conn, op, with)?;
+        op = LogicalOp::Filter {
+            input: Box::new(op),
+            predicate: pre,
+        };
         op = LogicalOp::Project {
             input: Box::new(op),
             items: with.items.clone(),
             emit_compound: false,
         };
+    } else {
+        op = LogicalOp::Project {
+            input: Box::new(op),
+            items: with.items.clone(),
+            emit_compound: false,
+        };
+        if with.distinct {
+            op = LogicalOp::Distinct {
+                input: Box::new(op),
+            };
+        }
+        op = apply_with_skip_limit(conn, op, with)?;
     }
 
-    // Apply DISTINCT.
-    if with.distinct {
-        op = LogicalOp::Distinct {
+    if let Some(post) = post_where {
+        op = LogicalOp::Filter {
             input: Box::new(op),
+            predicate: post,
         };
     }
 
-    // Note: ORDER BY for both aggregate and non-aggregate cases is handled
-    // above (before Project) so sort expressions can reference pre-projection
-    // variables/columns.
+    Ok(op)
+}
 
-    // Apply SKIP.
+/// Wrap `op` in the WITH clause's SKIP and LIMIT, in that order.
+fn apply_with_skip_limit(
+    conn: &Connection,
+    mut op: LogicalOp,
+    with: &WithClause,
+) -> crate::types::Result<LogicalOp> {
     if let Some(ref expr) = with.skip {
         let count = eval_skip_limit(expr, conn)?;
         op = LogicalOp::Skip {
@@ -654,8 +679,6 @@ pub(in crate::cypher::planner) fn plan_with_scoped(
             count,
         };
     }
-
-    // Apply LIMIT.
     if let Some(ref expr) = with.limit {
         let count = eval_skip_limit(expr, conn)?;
         op = LogicalOp::Limit {
@@ -663,8 +686,465 @@ pub(in crate::cypher::planner) fn plan_with_scoped(
             count,
         };
     }
-
     Ok(op)
+}
+
+/// Split a WITH WHERE predicate into `(pre_projection, post_projection)`
+/// filters.
+///
+/// Conjuncts that only read names the WITH projects run after projection
+/// against the projected values. Conjuncts that read a variable the WITH
+/// drops (or whose scope can't be determined, e.g. pattern predicates) run on
+/// the pre-projection row, which is only possible for a non-aggregating,
+/// non-DISTINCT WITH; otherwise a dropped variable is an `UndefinedVariable`
+/// error. When `input_scope` is known, a dropped variable must exist in it.
+fn split_with_where(
+    predicate: &Expr,
+    with: &WithClause,
+    has_aggregates: bool,
+    input_scope: Option<&HashSet<String>>,
+) -> crate::types::Result<(Option<Expr>, Option<Expr>)> {
+    if with
+        .items
+        .iter()
+        .any(|item| matches!(item.expr.kind, ExprKind::Star))
+    {
+        // `WITH *` projects every input variable.
+        return Ok((None, Some(predicate.clone())));
+    }
+    let mut projected: HashSet<String> = HashSet::new();
+    let mut projected_props: HashSet<(String, String)> = HashSet::new();
+    for item in &with.items {
+        match (&item.alias, &item.expr.kind) {
+            (Some(alias), _) => {
+                projected.insert(alias.clone());
+            }
+            (None, ExprKind::Variable(v)) => {
+                projected.insert(v.clone());
+            }
+            (None, ExprKind::Property(v, p)) => {
+                projected_props.insert((v.clone(), p.clone()));
+            }
+            _ => {}
+        }
+    }
+
+    let can_filter_before_projection = !has_aggregates && !with.distinct;
+    let mut pre: Vec<Expr> = Vec::new();
+    let mut post: Vec<Expr> = Vec::new();
+    for conjunct in flatten_top_level_and(predicate) {
+        let mut refs = WhereRefs::default();
+        collect_where_refs(conjunct, &projected, &projected_props, &mut refs);
+        if refs.dropped.is_empty() {
+            // An opaque form (pattern predicate, EXISTS) can run before
+            // projection only when every variable it names exists in the
+            // pre-projection row. A renamed or computed alias (`a AS z`,
+            // `m.k AS mk`) exists only after projection, so such a conjunct
+            // must run on the projected row.
+            if refs.opaque
+                && can_filter_before_projection
+                && !mentions_computed_alias(conjunct, with)
+            {
+                pre.push(conjunct.clone());
+            } else {
+                post.push(conjunct.clone());
+            }
+            continue;
+        }
+        if !can_filter_before_projection {
+            // After DISTINCT / aggregation only projected values survive, but
+            // a projected expression may be repeated verbatim
+            // (`WITH DISTINCT a.x AS x WHERE a.x = 'B'`): read its alias.
+            let rewritten = alias_projected_exprs(conjunct, &with.items);
+            let mut refs = WhereRefs::default();
+            collect_where_refs(&rewritten, &projected, &projected_props, &mut refs);
+            if let Some((name, span)) = refs.dropped.first() {
+                return Err(undefined_variable_error(name, &projected, *span));
+            }
+            post.push(rewritten);
+            continue;
+        }
+        if let Some(scope) = input_scope {
+            if let Some((name, span)) = refs.dropped.iter().find(|(n, _)| !scope.contains(n)) {
+                return Err(undefined_variable_error(name, scope, *span));
+            }
+        }
+        pre.push(conjunct.clone());
+    }
+
+    let alias_map: HashMap<String, Expr> = with
+        .items
+        .iter()
+        .filter_map(|item| item.alias.as_ref().map(|a| (a.clone(), item.expr.clone())))
+        .collect();
+    let pre =
+        rebuild_and(&pre.iter().collect::<Vec<_>>()).map(|e| substitute_aliases(&e, &alias_map));
+    Ok((pre, rebuild_and(&post.iter().collect::<Vec<_>>())))
+}
+
+/// True when `expr` names a WITH alias whose value is not simply the
+/// same-named variable (`a AS z`, `m.k AS mk`), so the alias exists only in the
+/// projected row.
+fn mentions_computed_alias(expr: &Expr, with: &WithClause) -> bool {
+    let mut mentioned = MentionedNames::default();
+    mentioned.expr(expr);
+    with.items.iter().any(|item| {
+        let Some(alias) = &item.alias else {
+            return false;
+        };
+        if matches!(&item.expr.kind, ExprKind::Variable(v) if v == alias) {
+            return false;
+        }
+        mentioned.unknown || mentioned.names.contains(alias)
+    })
+}
+
+/// Every variable name an expression mentions, including names bound or used
+/// inside patterns, comprehensions and EXISTS subqueries (which
+/// `collect_where_refs` treats as opaque). Locally bound names are included:
+/// over-reporting a name only moves a filter after projection.
+#[derive(Default)]
+struct MentionedNames {
+    names: HashSet<String>,
+    /// A construct whose variables were not walked (a statement kind that can
+    /// not appear in an EXISTS body); callers must assume any name is used.
+    unknown: bool,
+}
+
+impl MentionedNames {
+    fn name(&mut self, n: &str) {
+        self.names.insert(n.to_string());
+    }
+
+    fn expr(&mut self, e: &Expr) {
+        match &e.kind {
+            ExprKind::Literal(_) | ExprKind::Parameter(_) | ExprKind::Star => {}
+            ExprKind::Variable(v) | ExprKind::Property(v, _) | ExprKind::HasLabel(v, _) => {
+                self.name(v)
+            }
+            ExprKind::BinaryOp { left, right, .. } => {
+                self.expr(left);
+                self.expr(right);
+            }
+            ExprKind::Not(x)
+            | ExprKind::IsNull(x)
+            | ExprKind::IsNotNull(x)
+            | ExprKind::DotAccess { expr: x, .. } => self.expr(x),
+            ExprKind::FunctionCall { args, .. } => args.iter().for_each(|a| self.expr(a)),
+            ExprKind::List(items) => items.iter().for_each(|a| self.expr(a)),
+            ExprKind::MapLiteral(pairs) => pairs.iter().for_each(|(_, v)| self.expr(v)),
+            ExprKind::Case {
+                operand,
+                alternatives,
+                default,
+            } => {
+                operand.iter().for_each(|x| self.expr(x));
+                for (cond, result) in alternatives {
+                    self.expr(cond);
+                    self.expr(result);
+                }
+                default.iter().for_each(|x| self.expr(x));
+            }
+            ExprKind::Index { expr, index } => {
+                self.expr(expr);
+                self.expr(index);
+            }
+            ExprKind::Slice { expr, start, end } => {
+                self.expr(expr);
+                start.iter().for_each(|x| self.expr(x));
+                end.iter().for_each(|x| self.expr(x));
+            }
+            ExprKind::ListComprehension {
+                variable,
+                list_expr,
+                filter,
+                map_expr,
+            } => {
+                self.name(variable);
+                self.expr(list_expr);
+                filter.iter().for_each(|x| self.expr(x));
+                map_expr.iter().for_each(|x| self.expr(x));
+            }
+            ExprKind::Quantifier {
+                variable,
+                list_expr,
+                predicate,
+                ..
+            } => {
+                self.name(variable);
+                self.expr(list_expr);
+                self.expr(predicate);
+            }
+            ExprKind::PatternComprehension {
+                path_variable,
+                pattern,
+                where_clause,
+                map_expr,
+            } => {
+                path_variable.iter().for_each(|v| self.name(v));
+                self.pattern(pattern);
+                where_clause.iter().for_each(|x| self.expr(x));
+                self.expr(map_expr);
+            }
+            ExprKind::Exists {
+                patterns,
+                where_clause,
+            } => {
+                patterns.iter().for_each(|p| self.pattern(p));
+                where_clause.iter().for_each(|x| self.expr(x));
+            }
+            ExprKind::ExistsSubquery(stmt) => self.statement(stmt),
+            ExprKind::PatternPredicate(pattern) => self.pattern(pattern),
+        }
+    }
+
+    fn pattern(&mut self, pattern: &Pattern) {
+        pattern.path_variable.iter().for_each(|v| self.name(v));
+        for element in &pattern.elements {
+            let (variable, properties) = match element {
+                PatternElement::Node(n) => (&n.variable, &n.properties),
+                PatternElement::Relationship(r) => (&r.variable, &r.properties),
+            };
+            variable.iter().for_each(|v| self.name(v));
+            properties.values().for_each(|x| self.expr(x));
+        }
+    }
+
+    fn match_parts(&mut self, patterns: &[Pattern], optional: &[OptionalMatch], w: &Option<Expr>) {
+        patterns.iter().for_each(|p| self.pattern(p));
+        for opt in optional {
+            opt.patterns.iter().for_each(|p| self.pattern(p));
+            opt.where_clause.iter().for_each(|x| self.expr(x));
+        }
+        w.iter().for_each(|x| self.expr(x));
+    }
+
+    fn with_clause(&mut self, with: &WithClause) {
+        for item in &with.items {
+            self.expr(&item.expr);
+            item.alias.iter().for_each(|a| self.name(a));
+        }
+        with.order_by.iter().for_each(|si| self.expr(&si.expr));
+        for x in [&with.skip, &with.limit, &with.where_clause]
+            .into_iter()
+            .flatten()
+        {
+            self.expr(x);
+        }
+    }
+
+    fn return_tail(
+        &mut self,
+        ret: &ReturnClause,
+        order_by: &[SortItem],
+        skip: &Option<Expr>,
+        limit: &Option<Expr>,
+    ) {
+        for item in &ret.items {
+            self.expr(&item.expr);
+            item.alias.iter().for_each(|a| self.name(a));
+        }
+        order_by.iter().for_each(|si| self.expr(&si.expr));
+        skip.iter().chain(limit.iter()).for_each(|x| self.expr(x));
+    }
+
+    /// Walk the statement forms the parser can produce for an EXISTS body.
+    fn statement(&mut self, stmt: &Statement) {
+        match stmt {
+            Statement::Match(m) => {
+                self.match_parts(&m.patterns, &m.optional_patterns, &m.where_clause);
+                for clause in &m.intermediate_clauses {
+                    match clause {
+                        IntermediateClause::With(w) => self.with_clause(w),
+                        IntermediateClause::Unwind(u) => {
+                            self.expr(&u.expr);
+                            self.name(&u.alias);
+                        }
+                        IntermediateClause::Match(im) => {
+                            self.match_parts(&im.patterns, &im.optional_patterns, &im.where_clause)
+                        }
+                    }
+                }
+                self.return_tail(&m.return_clause, &m.order_by, &m.skip, &m.limit);
+            }
+            Statement::MultiClause(mc) => {
+                for clause in &mc.clauses {
+                    match clause {
+                        Clause::Match {
+                            patterns,
+                            optional_patterns,
+                            where_clause,
+                        } => self.match_parts(patterns, optional_patterns, where_clause),
+                        Clause::With(w) => self.with_clause(w),
+                        Clause::Unwind(u) => {
+                            self.expr(&u.expr);
+                            self.name(&u.alias);
+                        }
+                        _ => self.unknown = true,
+                    }
+                }
+                if let Some(ret) = &mc.return_clause {
+                    self.return_tail(ret, &mc.order_by, &mc.skip, &mc.limit);
+                }
+            }
+            Statement::Union { statements, .. } => {
+                statements.iter().for_each(|s| self.statement(s))
+            }
+            _ => self.unknown = true,
+        }
+    }
+}
+
+/// Replace every subexpression of `expr` that equals an aliased WITH item's
+/// expression with a reference to that alias. Covers the operator, function,
+/// list and CASE forms; anything else is kept as written.
+fn alias_projected_exprs(expr: &Expr, items: &[ReturnItem]) -> Expr {
+    for item in items {
+        if let Some(alias) = &item.alias {
+            if item.expr == *expr {
+                return Expr::new(ExprKind::Variable(alias.clone()), expr.span);
+            }
+        }
+    }
+    let rec = |e: &Expr| Box::new(alias_projected_exprs(e, items));
+    let kind = match &expr.kind {
+        ExprKind::BinaryOp { left, op, right } => ExprKind::BinaryOp {
+            left: rec(left),
+            op: *op,
+            right: rec(right),
+        },
+        ExprKind::Not(e) => ExprKind::Not(rec(e)),
+        ExprKind::IsNull(e) => ExprKind::IsNull(rec(e)),
+        ExprKind::IsNotNull(e) => ExprKind::IsNotNull(rec(e)),
+        ExprKind::FunctionCall {
+            name,
+            args,
+            distinct,
+            original_text,
+        } => ExprKind::FunctionCall {
+            name: name.clone(),
+            args: args
+                .iter()
+                .map(|a| alias_projected_exprs(a, items))
+                .collect(),
+            distinct: *distinct,
+            original_text: original_text.clone(),
+        },
+        ExprKind::List(list) => ExprKind::List(
+            list.iter()
+                .map(|e| alias_projected_exprs(e, items))
+                .collect(),
+        ),
+        ExprKind::Case {
+            operand,
+            alternatives,
+            default,
+        } => ExprKind::Case {
+            operand: operand.as_deref().map(rec),
+            alternatives: alternatives.iter().map(|(c, r)| (rec(c), rec(r))).collect(),
+            default: default.as_deref().map(rec),
+        },
+        _ => return expr.clone(),
+    };
+    Expr::new(kind, expr.span)
+}
+
+/// Variable references found by `collect_where_refs`.
+#[derive(Default)]
+struct WhereRefs {
+    /// Variables read by the predicate that the WITH does not project.
+    dropped: Vec<(String, Span)>,
+    /// The predicate contains a form whose variable use isn't inspected
+    /// (pattern predicates, subqueries).
+    opaque: bool,
+}
+
+/// Walk `expr`, recording variables outside `projected` (names) and
+/// `projected_props` (unaliased `var.prop` items) into `refs`.
+fn collect_where_refs(
+    expr: &Expr,
+    projected: &HashSet<String>,
+    projected_props: &HashSet<(String, String)>,
+    refs: &mut WhereRefs,
+) {
+    let mut walk = |e: &Expr| collect_where_refs(e, projected, projected_props, refs);
+    match &expr.kind {
+        ExprKind::Variable(v) | ExprKind::HasLabel(v, _) => {
+            if !projected.contains(v) {
+                refs.dropped.push((v.clone(), expr.span));
+            }
+        }
+        ExprKind::Property(v, p) => {
+            if !projected.contains(v) && !projected_props.contains(&(v.clone(), p.clone())) {
+                refs.dropped.push((v.clone(), expr.span));
+            }
+        }
+        ExprKind::Literal(_) | ExprKind::Parameter(_) | ExprKind::Star => {}
+        ExprKind::BinaryOp { left, right, .. } => {
+            walk(left);
+            walk(right);
+        }
+        ExprKind::Not(e)
+        | ExprKind::IsNull(e)
+        | ExprKind::IsNotNull(e)
+        | ExprKind::DotAccess { expr: e, .. } => walk(e),
+        ExprKind::FunctionCall { args, .. } => args.iter().for_each(walk),
+        ExprKind::List(items) => items.iter().for_each(walk),
+        ExprKind::MapLiteral(pairs) => pairs.iter().for_each(|(_, v)| walk(v)),
+        ExprKind::Case {
+            operand,
+            alternatives,
+            default,
+        } => {
+            operand.iter().for_each(|e| walk(e));
+            for (cond, result) in alternatives {
+                walk(cond);
+                walk(result);
+            }
+            default.iter().for_each(|e| walk(e));
+        }
+        ExprKind::Index { expr: e, index } => {
+            walk(e);
+            walk(index);
+        }
+        ExprKind::Slice {
+            expr: e,
+            start,
+            end,
+        } => {
+            walk(e);
+            start.iter().for_each(|e| walk(e));
+            end.iter().for_each(|e| walk(e));
+        }
+        ExprKind::ListComprehension {
+            variable,
+            list_expr,
+            filter,
+            map_expr,
+        } => {
+            walk(list_expr);
+            let mut inner = projected.clone();
+            inner.insert(variable.clone());
+            for e in filter.iter().chain(map_expr.iter()) {
+                collect_where_refs(e, &inner, projected_props, refs);
+            }
+        }
+        ExprKind::Quantifier {
+            variable,
+            list_expr,
+            predicate,
+            ..
+        } => {
+            walk(list_expr);
+            let mut inner = projected.clone();
+            inner.insert(variable.clone());
+            collect_where_refs(predicate, &inner, projected_props, refs);
+        }
+        ExprKind::PatternComprehension { .. }
+        | ExprKind::Exists { .. }
+        | ExprKind::ExistsSubquery(_)
+        | ExprKind::PatternPredicate(_) => refs.opaque = true,
+    }
 }
 
 /// Plan an intermediate MATCH clause with an explicit set of already-bound variables.

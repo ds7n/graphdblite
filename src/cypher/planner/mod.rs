@@ -17,7 +17,7 @@ static ANON_COUNTER: AtomicUsize = AtomicUsize::new(0);
 /// is found — callers should not blindly attach a suggestion that's only
 /// vaguely similar.
 pub fn plan(conn: &Connection, stmt: &Statement) -> crate::types::Result<LogicalOp> {
-    let mut op = plan_inner(conn, stmt, false)?;
+    let mut op = plan_inner(conn, stmt, None)?;
     apply_post_passes(conn, &mut op);
     Ok(op)
 }
@@ -227,13 +227,14 @@ pub(in crate::cypher::planner) fn rewrite_text_filter_to_fts(
             if let Some((prop, fts_op, term, residual, needs_ci)) =
                 extract_fts_predicate(&predicate, alias)
             {
-                if fts_rewrite_is_usable(conn, label, &prop, needs_ci) {
+                if let Some(case_insensitive) = fts_rewrite_mode(conn, label, &prop, needs_ci) {
                     *op = LogicalOp::FullTextLookup {
                         label: label.clone(),
                         alias: alias.clone(),
                         property: prop,
                         op: fts_op,
                         term,
+                        case_insensitive,
                         remaining_filters: residual,
                     };
                     return;
@@ -257,7 +258,7 @@ pub(in crate::cypher::planner) fn rewrite_text_filter_to_fts(
                 if let Some((prop, fts_op, term, residual, needs_ci)) =
                     extract_fts_predicate(&predicate, alias)
                 {
-                    if fts_rewrite_is_usable(conn, label, &prop, needs_ci) {
+                    if let Some(case_insensitive) = fts_rewrite_mode(conn, label, &prop, needs_ci) {
                         let label = label.clone();
                         let alias = alias.clone();
                         let LogicalOp::CorrelatedJoin {
@@ -274,6 +275,7 @@ pub(in crate::cypher::planner) fn rewrite_text_filter_to_fts(
                             property: prop,
                             op: fts_op,
                             term,
+                            case_insensitive,
                             remaining_filters: residual,
                         };
                         *op = LogicalOp::CorrelatedJoin {
@@ -310,15 +312,24 @@ fn fts_kind_for(conn: &Connection, label: &str, property: &str) -> Option<FtsKin
     }
 }
 
-/// Whether an FTS rewrite is safe given the index kind and whether the
-/// matched predicate needs case-insensitive semantics. Case-insensitive
-/// predicates require a CI index; case-sensitive predicates work with
-/// either kind.
-fn fts_rewrite_is_usable(conn: &Connection, label: &str, property: &str, needs_ci: bool) -> bool {
+/// How a `FullTextLookup` on `(label, property)` should compare, or `None`
+/// when no usable FTS index exists. Returns `Some(case_insensitive)`.
+///
+/// The `toLower` idiom (`needs_ci`) requires a CI index (a case-sensitive one
+/// would miss candidates). A plain predicate is served by either kind and
+/// stays case-sensitive: the index only narrows candidates, and the executor
+/// re-checks each one with the exact predicate, so an index never changes
+/// query results.
+fn fts_rewrite_mode(
+    conn: &Connection,
+    label: &str,
+    property: &str,
+    needs_ci: bool,
+) -> Option<bool> {
     match fts_kind_for(conn, label, property) {
-        Some(FtsKind::CaseInsensitive) => true,
-        Some(FtsKind::CaseSensitive) => !needs_ci,
-        None => false,
+        Some(FtsKind::CaseInsensitive) => Some(needs_ci),
+        Some(FtsKind::CaseSensitive) if !needs_ci => Some(false),
+        _ => None,
     }
 }
 
@@ -395,15 +406,14 @@ fn try_rewrite_or_chain_to_union(
             term,
             needs_ci,
         } = matched;
-        if !fts_rewrite_is_usable(conn, label, &prop, needs_ci) {
-            return None;
-        }
+        let case_insensitive = fts_rewrite_mode(conn, label, &prop, needs_ci)?;
         inputs.push(LogicalOp::FullTextLookup {
             label: label.to_string(),
             alias: alias.to_string(),
             property: prop,
             op: fts_op,
             term,
+            case_insensitive,
             remaining_filters: None,
         });
     }
@@ -423,6 +433,86 @@ fn try_rewrite_or_chain_to_union(
 /// (only one side `toLower`'d) return `None` — callers fall back to a
 /// label scan with per-row eval, which is correct but unaccelerated.
 fn match_fts_binop(e: &Expr, alias: &str) -> Option<MatchedFts> {
+    let matched = match_fts_binop_shape(e, alias)?;
+    fts_term_is_rewritable(&matched.term, alias).then_some(matched)
+}
+
+/// Whether `term` can be evaluated once, before the lookup, to drive an FTS
+/// index probe for `alias`.
+///
+/// Rejected terms fall back to a label scan with per-row eval:
+/// - a term that references the scanned alias itself (`n.t CONTAINS n.u`)
+///   has a different value per candidate row, so it cannot be evaluated
+///   up front;
+/// - a literal that is definitely not a string (`CONTAINS 123`) makes the
+///   predicate null on every row; the scan gives that result directly.
+fn fts_term_is_rewritable(term: &Expr, alias: &str) -> bool {
+    let non_string_literal = match &term.kind {
+        ExprKind::Literal(lit) => !matches!(lit, LiteralValue::String(_)),
+        ExprKind::List(_) | ExprKind::MapLiteral(_) => true,
+        _ => false,
+    };
+    !non_string_literal && !expr_may_reference_var(term, alias)
+}
+
+/// Conservative "does `expr` (possibly) read `var`" check. Subquery and
+/// pattern forms answer `true` without inspecting their scope.
+fn expr_may_reference_var(expr: &Expr, var: &str) -> bool {
+    let any = |items: &[Expr]| items.iter().any(|e| expr_may_reference_var(e, var));
+    let opt = |e: &Option<Box<Expr>>| e.as_deref().is_some_and(|e| expr_may_reference_var(e, var));
+    match &expr.kind {
+        ExprKind::Variable(v) | ExprKind::Property(v, _) | ExprKind::HasLabel(v, _) => v == var,
+        ExprKind::Literal(_) | ExprKind::Parameter(_) | ExprKind::Star => false,
+        ExprKind::BinaryOp { left, right, .. } => {
+            expr_may_reference_var(left, var) || expr_may_reference_var(right, var)
+        }
+        ExprKind::Not(e)
+        | ExprKind::IsNull(e)
+        | ExprKind::IsNotNull(e)
+        | ExprKind::DotAccess { expr: e, .. } => expr_may_reference_var(e, var),
+        ExprKind::FunctionCall { args, .. } => any(args),
+        ExprKind::List(items) => any(items),
+        ExprKind::MapLiteral(pairs) => pairs.iter().any(|(_, v)| expr_may_reference_var(v, var)),
+        ExprKind::Case {
+            operand,
+            alternatives,
+            default,
+        } => {
+            opt(operand)
+                || alternatives
+                    .iter()
+                    .any(|(c, r)| expr_may_reference_var(c, var) || expr_may_reference_var(r, var))
+                || opt(default)
+        }
+        ExprKind::Index { expr: e, index } => {
+            expr_may_reference_var(e, var) || expr_may_reference_var(index, var)
+        }
+        ExprKind::Slice {
+            expr: e,
+            start,
+            end,
+        } => expr_may_reference_var(e, var) || opt(start) || opt(end),
+        ExprKind::ListComprehension {
+            list_expr,
+            filter,
+            map_expr,
+            ..
+        } => expr_may_reference_var(list_expr, var) || opt(filter) || opt(map_expr),
+        ExprKind::Quantifier {
+            list_expr,
+            predicate,
+            ..
+        } => expr_may_reference_var(list_expr, var) || expr_may_reference_var(predicate, var),
+        ExprKind::PatternComprehension { .. }
+        | ExprKind::Exists { .. }
+        | ExprKind::ExistsSubquery(_)
+        | ExprKind::PatternPredicate(_) => true,
+    }
+}
+
+/// Shape-only half of `match_fts_binop`: recognizes the operator and the
+/// `alias.prop` side without vetting the term.
+fn match_fts_binop_shape(e: &Expr, alias: &str) -> Option<MatchedFts> {
     use crate::cypher::ir::FullTextOp;
     let ExprKind::BinaryOp { left, op, right } = &e.kind else {
         return None;
@@ -542,15 +632,7 @@ fn flatten_top_level_or(e: &Expr) -> Vec<&Expr> {
 /// Rebuild an `AND` chain from a slice of expression references.
 /// Returns `None` if the slice is empty.
 fn rebuild_and(parts: &[&Expr]) -> Option<Expr> {
-    let mut iter = parts.iter().copied().cloned();
-    let first = iter.next()?;
-    Some(iter.fold(first, |acc, e| {
-        Expr::synthetic(ExprKind::BinaryOp {
-            left: Box::new(acc),
-            op: BinOp::And,
-            right: Box::new(e),
-        })
-    }))
+    helpers::and_all(parts.iter().copied().cloned().collect())
 }
 
 /// Return true if `expr` references the named variable anywhere in its tree.
@@ -679,9 +761,15 @@ pub(in crate::cypher::planner) fn walk_children_mut(op: &mut LogicalOp, f: fn(&m
 }
 
 /// Plan a statement that may be inside a subquery (EXISTS).
-/// Subquery context disables certain validations that require full scope.
-pub fn plan_subquery(conn: &Connection, stmt: &Statement) -> crate::types::Result<LogicalOp> {
-    let mut op = plan_inner(conn, stmt, true)?;
+/// Subquery context disables certain validations that require full scope;
+/// `outer_vars` are the enclosing scope's variables, which the body's WHERE
+/// may reference (`EXISTS { MATCH (n) WHERE n.k = m.k }`).
+pub fn plan_subquery(
+    conn: &Connection,
+    stmt: &Statement,
+    outer_vars: &std::collections::HashSet<String>,
+) -> crate::types::Result<LogicalOp> {
+    let mut op = plan_inner(conn, stmt, Some(outer_vars))?;
     apply_post_passes(conn, &mut op);
     Ok(op)
 }

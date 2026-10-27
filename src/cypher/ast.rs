@@ -433,6 +433,110 @@ impl Expr {
             span: Span::synthetic(),
         }
     }
+
+    /// Depth of this expression tree (a leaf counts as 1), capped at `cap`.
+    ///
+    /// Recursion stops after `cap` levels, so this is safe on arbitrarily
+    /// deep trees: it never uses more than `cap` stack frames. Subquery and
+    /// pattern bodies (`EXISTS { ... }`, pattern predicates, pattern parts)
+    /// count as leaves; their own expressions are checked when parsed.
+    pub fn depth_capped(&self, cap: usize) -> usize {
+        if cap == 0 {
+            return 0;
+        }
+        let mut deepest = 0;
+        let mut visit = |e: &Expr| {
+            if deepest < cap - 1 {
+                deepest = deepest.max(e.depth_capped(cap - 1));
+            }
+        };
+        match &self.kind {
+            ExprKind::Literal(_)
+            | ExprKind::Property(..)
+            | ExprKind::Variable(_)
+            | ExprKind::Parameter(_)
+            | ExprKind::HasLabel(..)
+            | ExprKind::PatternPredicate(_)
+            | ExprKind::ExistsSubquery(_)
+            | ExprKind::Star => {}
+            ExprKind::BinaryOp { left, right, .. } => {
+                visit(left);
+                visit(right);
+            }
+            ExprKind::Not(e) | ExprKind::IsNull(e) | ExprKind::IsNotNull(e) => visit(e),
+            ExprKind::DotAccess { expr, .. } => visit(expr),
+            ExprKind::FunctionCall { args, .. } => args.iter().for_each(visit),
+            ExprKind::List(items) => items.iter().for_each(visit),
+            ExprKind::MapLiteral(pairs) => pairs.iter().for_each(|(_, e)| visit(e)),
+            ExprKind::Case {
+                operand,
+                alternatives,
+                default,
+            } => {
+                if let Some(e) = operand {
+                    visit(e);
+                }
+                for (when, then) in alternatives {
+                    visit(when);
+                    visit(then);
+                }
+                if let Some(e) = default {
+                    visit(e);
+                }
+            }
+            ExprKind::ListComprehension {
+                list_expr,
+                filter,
+                map_expr,
+                ..
+            } => {
+                visit(list_expr);
+                if let Some(e) = filter {
+                    visit(e);
+                }
+                if let Some(e) = map_expr {
+                    visit(e);
+                }
+            }
+            ExprKind::PatternComprehension {
+                where_clause,
+                map_expr,
+                ..
+            } => {
+                if let Some(e) = where_clause {
+                    visit(e);
+                }
+                visit(map_expr);
+            }
+            ExprKind::Exists { where_clause, .. } => {
+                if let Some(e) = where_clause {
+                    visit(e);
+                }
+            }
+            ExprKind::Index { expr, index } => {
+                visit(expr);
+                visit(index);
+            }
+            ExprKind::Slice { expr, start, end } => {
+                visit(expr);
+                if let Some(e) = start {
+                    visit(e);
+                }
+                if let Some(e) = end {
+                    visit(e);
+                }
+            }
+            ExprKind::Quantifier {
+                list_expr,
+                predicate,
+                ..
+            } => {
+                visit(list_expr);
+                visit(predicate);
+            }
+        }
+        1 + deepest
+    }
 }
 
 /// Discriminant for expression AST nodes — see `Expr` for the spanned wrapper.

@@ -82,6 +82,12 @@ impl Record {
         slot
     }
 
+    /// The row's values in slot order.
+    #[inline]
+    pub fn as_slice(&self) -> &[Value] {
+        &self.values
+    }
+
     /// Iterate values in slot order.
     pub fn iter(&self) -> std::slice::Iter<'_, Value> {
         self.values.iter()

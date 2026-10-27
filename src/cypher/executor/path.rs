@@ -9,15 +9,18 @@ use crate::{edge, node};
 use super::read::*;
 use super::*;
 
-pub(in crate::cypher::executor) fn exec_materialize_path(
+/// Bind `path_alias` to the path value of each record (the `MaterializePath`
+/// operator over already executed input). Shared by the materialized and
+/// correlated executors. A record whose path would use the same relationship
+/// twice (e.g. a var-length segment reusing a fixed segment's edge) is
+/// dropped: relationship uniqueness within a pattern.
+pub(in crate::cypher::executor) fn materialize_paths(
     conn: &Connection,
-    input: &LogicalOp,
+    records: Vec<NamedRecord>,
     path_alias: &str,
     node_aliases: &[String],
     rel_aliases: &[String],
-    ctx: &ExecContext,
 ) -> Result<Vec<NamedRecord>> {
-    let records = exec(conn, input, ctx)?;
     let mut results = Vec::new();
 
     for rec in records {
@@ -51,6 +54,13 @@ pub(in crate::cypher::executor) fn exec_materialize_path(
                 }
             } else if let Some(Value::Edge(e)) = build_compound_binding(&rec, alias) {
                 edges.push(e);
+            }
+        }
+
+        if !has_null && edges.len() > 1 {
+            let mut seen = std::collections::HashSet::with_capacity(edges.len());
+            if !edges.iter().all(|e| seen.insert(edge_key(e))) {
+                continue;
             }
         }
 
@@ -103,103 +113,145 @@ pub(in crate::cypher::executor) fn exec_materialize_path(
     Ok(results)
 }
 
-/// Aggregate pre-computed records (used by correlated execution).
-/// Reuses the existing `compute_aggregate` function.
-pub(in crate::cypher::executor) fn build_path_value(
+/// Turn a BFS result into `PathValue`s, loading each node and the stored
+/// edge(s) for each hop in storage orientation (so undirected hops keep
+/// their real start/end nodes).
+///
+/// With `all_parallel`, every combination of parallel edges along the path
+/// is a separate value (allShortestPaths); otherwise only the first edge per
+/// hop is used, giving exactly one value (shortestPath).
+pub(in crate::cypher::executor) fn build_path_values(
     conn: &Connection,
-    node_ids: Vec<NodeId>,
-    label: &str,
-) -> Result<crate::types::PathValue> {
+    path: &edge::LabeledPath,
+    direction: Direction,
+    all_parallel: bool,
+) -> Result<Vec<crate::types::PathValue>> {
     use crate::types::{Edge, PathValue};
 
-    if node_ids.is_empty() {
-        return Ok(PathValue {
-            nodes: Vec::new(),
-            edges: Vec::new(),
-        });
-    }
-
-    let mut nodes = Vec::with_capacity(node_ids.len());
-    for id in &node_ids {
+    let mut nodes = Vec::with_capacity(path.nodes.len());
+    for id in &path.nodes {
         nodes.push(crate::node::get_node(conn, *id)?);
     }
 
-    let mut edges = Vec::with_capacity(node_ids.len().saturating_sub(1));
-    for pair in node_ids.windows(2) {
-        let (a, b) = (pair[0], pair[1]);
-        // Try forward first; fall back to reverse for Direction::Both traversals.
-        let (src, dst) = if edge::edge_exists(conn, a, b, label)? {
-            (a, b)
-        } else {
-            (b, a)
-        };
-        let properties = edge::get_edge_properties(conn, src, dst, label)?;
-        edges.push(Edge {
-            src,
-            dst,
-            label: label.to_string(),
-            properties,
-        });
+    // Cartesian product of the parallel-edge choices for each hop.
+    let mut edge_lists: Vec<Vec<Edge>> = vec![Vec::with_capacity(path.labels.len())];
+    for (pair, label) in path.nodes.windows(2).zip(&path.labels) {
+        let mut choices = edge::hop_edges(conn, pair[0], pair[1], label, direction)?;
+        if !all_parallel {
+            choices.truncate(1);
+        }
+        let mut next = Vec::with_capacity(edge_lists.len() * choices.len());
+        for prefix in &edge_lists {
+            for (src, dst, seq, properties) in &choices {
+                let mut edges = prefix.clone();
+                edges.push(Edge {
+                    src: *src,
+                    dst: *dst,
+                    label: label.clone(),
+                    seq: *seq,
+                    properties: properties.clone(),
+                });
+                next.push(edges);
+            }
+        }
+        edge_lists = next;
     }
 
-    Ok(PathValue { nodes, edges })
+    Ok(edge_lists
+        .into_iter()
+        .map(|edges| PathValue {
+            nodes: nodes.clone(),
+            edges,
+        })
+        .collect())
 }
 
-#[allow(clippy::too_many_arguments)]
+/// Run the materialized `ShortestPath` operator.
 pub(in crate::cypher::executor) fn exec_shortest_path(
     conn: &Connection,
-    input: &LogicalOp,
-    src_alias: &str,
-    dst_alias: &str,
-    path_alias: &str,
-    edge_type: Option<&str>,
-    direction: Direction,
-    max_hops: u32,
-    all_paths: bool,
+    plan: &LogicalOp,
     ctx: &ExecContext,
 ) -> Result<Vec<NamedRecord>> {
+    let LogicalOp::ShortestPath { input, .. } = plan else {
+        unreachable!("exec_shortest_path called with {}", plan.op_name());
+    };
     let records = exec(conn, input, ctx)?;
-    let label = edge_type.unwrap_or("");
+    extend_with_shortest_paths(conn, plan, records, ctx)
+}
+
+/// Bind the shortest path(s) between each record's endpoints.
+///
+/// `plan` must be a `LogicalOp::ShortestPath`; `records` is its already
+/// executed input. A record with no path within the hop bounds is dropped
+/// (plain MATCH semantics); `OPTIONAL MATCH` turns that into a null through
+/// its `LeftOuterJoin`. All searches in the query share one
+/// `max_traversal_work` budget (`ctx.shortest_path_work`).
+pub(in crate::cypher::executor) fn extend_with_shortest_paths(
+    conn: &Connection,
+    plan: &LogicalOp,
+    records: Vec<NamedRecord>,
+    ctx: &ExecContext,
+) -> Result<Vec<NamedRecord>> {
+    let LogicalOp::ShortestPath {
+        src_alias,
+        dst_alias,
+        path_alias,
+        edge_types,
+        direction,
+        min_hops,
+        max_hops,
+        all_paths,
+        ..
+    } = plan
+    else {
+        unreachable!("extend_with_shortest_paths called with {}", plan.op_name());
+    };
+    let labels: Vec<&str> = edge_types.iter().map(String::as_str).collect();
+    let mut budget = edge::WorkBudget::resume(ctx.max_traversal_work, ctx.shortest_path_work.get());
     let mut results = Vec::new();
 
-    for rec in &records {
-        let src_id = match rec.get(src_alias).and_then(value_to_node_id) {
-            Some(id) => id,
-            _ => continue,
+    for rec in records {
+        let Some(src_id) = rec.get(src_alias).and_then(value_to_node_id) else {
+            continue;
         };
-        let dst_id = match rec.get(dst_alias).and_then(value_to_node_id) {
-            Some(id) => id,
-            _ => continue,
+        let Some(dst_id) = rec.get(dst_alias).and_then(value_to_node_id) else {
+            continue;
         };
 
-        if all_paths {
-            let paths = edge::all_shortest_paths(conn, src_id, dst_id, label, direction, max_hops)?;
-            if paths.is_empty() {
-                // No path found — emit record with null path.
-                let mut new_rec = rec.clone();
-                new_rec.set(path_alias.to_string(), Value::Null);
-                results.push(new_rec);
-            } else {
-                for path in paths {
-                    let path_value = build_path_value(conn, path, label)?;
-                    let mut new_rec = rec.clone();
-                    new_rec.set(path_alias.to_string(), Value::Path(path_value));
-                    results.push(new_rec);
-                }
-            }
+        let found = if *all_paths {
+            edge::all_shortest_paths(
+                conn,
+                src_id,
+                dst_id,
+                &labels,
+                *direction,
+                *min_hops,
+                *max_hops,
+                &mut budget,
+            )
         } else {
-            let path = edge::shortest_path(conn, src_id, dst_id, label, direction, max_hops)?;
-            let mut new_rec = rec.clone();
-            match path {
-                Some(p) => {
-                    let path_value = build_path_value(conn, p, label)?;
-                    new_rec.set(path_alias.to_string(), Value::Path(path_value));
-                }
-                None => new_rec.set(path_alias.to_string(), Value::Null),
+            edge::shortest_path(
+                conn,
+                src_id,
+                dst_id,
+                &labels,
+                *direction,
+                *min_hops,
+                *max_hops,
+                &mut budget,
+            )
+            .map(|p| p.into_iter().collect())
+        };
+        ctx.shortest_path_work.set(budget.used());
+        for path in found? {
+            for value in build_path_values(conn, &path, *direction, *all_paths)? {
+                let mut new_rec = rec.clone();
+                new_rec.set(path_alias.clone(), Value::Path(value));
+                results.push(new_rec);
             }
-            results.push(new_rec);
         }
     }
 
+    check_row_limit(&results, ctx)?;
     Ok(results)
 }

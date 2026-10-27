@@ -7,4 +7,6 @@ pub mod kv;
 pub(crate) mod edge;
 pub(crate) mod fts;
 pub(crate) mod index;
+pub(crate) mod migrate;
+pub(crate) mod naming;
 pub(crate) mod node;

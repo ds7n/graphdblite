@@ -29,7 +29,7 @@ def test_snapshot_to_rejects_existing_target(tmp_path):
     db = graphdblite.Database.open_memory()
     existing = tmp_path / "exists.db"
     existing.write_bytes(b"")
-    with pytest.raises(Exception):
+    with pytest.raises(graphdblite.StorageError, match=r"snapshot target already exists"):
         db.snapshot_to(str(existing))
 
 
@@ -38,6 +38,9 @@ def test_snapshot_to_rejects_when_tx_active(tmp_path):
     dst = tmp_path / "snap.db"
     with db.begin_write() as tx:
         tx.execute("CREATE (:X)")
-        with pytest.raises(Exception):
+        with pytest.raises(
+            graphdblite.TransactionError,
+            match=r"^transaction error: snapshot_to: a Write transaction is already active",
+        ):
             db.snapshot_to(str(dst))
         tx.rollback()

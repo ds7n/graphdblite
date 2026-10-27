@@ -1,7 +1,7 @@
 use rusqlite::Connection;
 
 use crate::node;
-use crate::storage::kv;
+use crate::storage::{kv, naming};
 use crate::types::{validate_name, GraphError, NodeId, Properties, Result, Value};
 
 /// Metadata for one secondary index.
@@ -15,16 +15,12 @@ pub struct IndexInfo {
     pub kind: &'static str,
 }
 
-/// Build the canonical table name for an index (single-prop or composite).
-///
-/// Always `node_idx$<label>$<prop1>$…$<propN>`. `$` is forbidden by
-/// `validate_name`, so both the label/property boundaries and the separator are
-/// unambiguous — unlike the legacy single-prop `node_idx_<label>_<prop>` form,
-/// where an underscore in the label or property could collide two distinct
-/// `(label, property)` pairs onto one physical table (e.g. `(A_b, c)` and
-/// `(A, b_c)` both became `node_idx_A_b_c`). Legacy `_`-form tables created by
-/// earlier versions are still resolved for reads/writes via
-/// [`resolve_index_table`].
+/// Validate an index definition and build its table name (single-prop or
+/// composite). See `storage::naming` for the scheme: `$`-separated
+/// components with uppercase letters escaped, so `(A_b, c)` / `(A, b_c)` and
+/// `:Person` / `:person` all map to distinct tables. Databases created with
+/// the older `node_idx_<label>_<prop>` names are migrated on open
+/// (`storage::migrate`).
 fn composite_index_table_name(label: &str, properties: &[&str]) -> Result<String> {
     if properties.is_empty() {
         return Err(GraphError::InvalidIndexDefinition {
@@ -43,39 +39,14 @@ fn composite_index_table_name(label: &str, properties: &[&str]) -> Result<String
             });
         }
     }
-    let joined = properties.join("$");
-    Ok(format!("node_idx${label}${joined}"))
+    Ok(naming::btree_table_name(label, properties))
 }
 
-/// Legacy single-prop table name (`node_idx_<label>_<prop>`), retained only so
-/// databases created before the `$`-delimited scheme continue to resolve.
-fn legacy_single_index_table_name(label: &str, property: &str) -> Result<String> {
-    validate_name(label)?;
-    validate_name(property)?;
-    Ok(format!("node_idx_{label}_{property}"))
-}
-
-/// Resolve the physical table backing `(label, properties)`, preferring the
-/// canonical `$`-delimited name but falling back to a pre-existing legacy
-/// single-prop `_` table so older databases keep working. Returns the canonical
-/// name when neither table exists yet (the create path then materializes it).
-fn resolve_index_table(conn: &Connection, label: &str, properties: &[&str]) -> Result<String> {
-    let canonical = composite_index_table_name(label, properties)?;
-    if table_exists(conn, &canonical)? {
-        return Ok(canonical);
-    }
-    if properties.len() == 1 {
-        let legacy = legacy_single_index_table_name(label, properties[0])?;
-        if table_exists(conn, &legacy)? {
-            return Ok(legacy);
-        }
-    }
-    Ok(canonical)
-}
-
+/// Whether a regular (non-virtual) table named `table` exists.
 fn table_exists(conn: &Connection, table: &str) -> Result<bool> {
     let exists: bool = conn.query_row(
-        "SELECT COUNT(*) > 0 FROM sqlite_master WHERE type='table' AND name=?1",
+        "SELECT COUNT(*) > 0 FROM sqlite_master \
+         WHERE type='table' AND name=?1 AND sql NOT LIKE 'CREATE VIRTUAL TABLE%'",
         [table],
         |row| row.get(0),
     )?;
@@ -110,13 +81,7 @@ fn composite_index_key(values: &[Value], node_id: NodeId) -> Result<Vec<u8>> {
 pub fn create_composite_index(conn: &Connection, label: &str, properties: &[&str]) -> Result<()> {
     let table = composite_index_table_name(label, properties)?;
 
-    // Reject a duplicate whether it exists under the canonical `$` name or a
-    // legacy `_` name from an older database.
-    let mut already = table_exists(conn, &table)?;
-    if !already && properties.len() == 1 {
-        already = table_exists(conn, &legacy_single_index_table_name(label, properties[0])?)?;
-    }
-    if already {
+    if table_exists(conn, &table)? {
         return Err(GraphError::IndexAlreadyExists {
             label: label.to_string(),
             properties: properties.iter().map(|s| s.to_string()).collect(),
@@ -157,7 +122,7 @@ pub fn create_composite_index(conn: &Connection, label: &str, properties: &[&str
 
 /// Drop a composite (or N=1) secondary index.
 pub fn drop_composite_index(conn: &Connection, label: &str, properties: &[&str]) -> Result<()> {
-    let table = resolve_index_table(conn, label, properties)?;
+    let table = composite_index_table_name(label, properties)?;
     if !table_exists(conn, &table)? {
         return Err(GraphError::IndexNotFound {
             label: label.to_string(),
@@ -187,7 +152,7 @@ pub fn index_lookup(
     property: &str,
     value: &Value,
 ) -> Result<Vec<NodeId>> {
-    let table = resolve_index_table(conn, label, &[property])?;
+    let table = composite_index_table_name(label, &[property])?;
 
     // Build prefix from the serialized value.
     let prefix = rmp_serde::to_vec(value).map_err(|e| GraphError::Serialization {
@@ -241,7 +206,7 @@ pub fn composite_index_prefix_lookup(
         prefix_values.len() <= properties.len(),
         "prefix length exceeds index width"
     );
-    let table = resolve_index_table(conn, label, properties)?;
+    let table = composite_index_table_name(label, properties)?;
 
     // Encode the prefix: msgpack-concat of the prefix values, no node id.
     let mut prefix_bytes = Vec::new();
@@ -363,7 +328,7 @@ pub fn update_indexes_for_label(
 ) -> Result<()> {
     for info in list_indexes_for_label(conn, label)? {
         let props_refs: Vec<&str> = info.properties.iter().map(String::as_str).collect();
-        let table = resolve_index_table(conn, label, &props_refs)?;
+        let table = composite_index_table_name(label, &props_refs)?;
 
         // Remove old entry, if any.
         if let Some(old_props) = old_properties {
@@ -411,7 +376,7 @@ pub fn remove_indexes_for_label(
 ) -> Result<()> {
     for info in list_indexes_for_label(conn, label)? {
         let props_refs: Vec<&str> = info.properties.iter().map(String::as_str).collect();
-        let table = resolve_index_table(conn, label, &props_refs)?;
+        let table = composite_index_table_name(label, &props_refs)?;
         if let Some(values) = collect_values(properties, &info.properties) {
             let key = composite_index_key(&values, node_id)?;
             kv::delete(conn, &table, &key)?;
@@ -446,106 +411,51 @@ pub fn list_indexes_for_label(conn: &Connection, label: &str) -> Result<Vec<Inde
     if validate_name(label).is_err() {
         return Ok(Vec::new());
     }
-    let single_prefix = format!("node_idx_{label}_");
-    let composite_prefix = format!("node_idx${label}$");
-
-    let mut stmt = conn.prepare_cached(
-        "SELECT name FROM sqlite_master \
-         WHERE type='table' \
-           AND (name LIKE ?1 OR name LIKE ?2)",
-    )?;
-    let rows = stmt.query_map(
-        [format!("{single_prefix}%"), format!("{composite_prefix}%")],
-        |row| row.get::<_, String>(0),
-    )?;
-
-    let mut result = Vec::new();
-    for name in rows {
-        let name = name?;
-        if let Some(props) = parse_composite_table_name(&name, label) {
-            result.push(IndexInfo {
-                label: label.to_string(),
-                properties: props,
-                kind: "btree",
-            });
-        } else if let Some(property) = name.strip_prefix(&single_prefix) {
-            result.push(IndexInfo {
-                label: label.to_string(),
-                properties: vec![property.to_string()],
-                kind: "btree",
-            });
-        }
-    }
-    Ok(result)
+    // `LIKE` narrows the scan (its `_` wildcard and case folding can only
+    // widen it); the exact label check happens on the parsed name.
+    let mut prefix = naming::btree_table_name(label, &[]);
+    prefix.push_str("$%");
+    list_btree_tables(conn, &prefix, Some(label))
 }
 
 /// List every secondary index in the database.
 ///
-/// Order is unspecified — callers should sort if they need determinism.
-///
-/// Note: the single-prop table name is `node_idx_<label>_<property>`.
-/// Both labels and properties may contain underscores
-/// (`validate_name` allows `[A-Za-z0-9_]`), so the split between label
-/// and property is ambiguous in principle. We split on the **first**
-/// underscore after the `node_idx_` prefix, which round-trips correctly
-/// when labels do not contain underscores (the common case). Labels
-/// with underscores will be misparsed by this label-agnostic listing;
-/// callers needing exact label scoping should use
-/// `list_indexes_for_label`.
+/// Order is unspecified; callers should sort if they need determinism.
+/// Tables whose name does not parse as a canonical index name (for example
+/// ones planted in a crafted file) are ignored.
 pub fn list_all_indexes(conn: &Connection) -> Result<Vec<IndexInfo>> {
+    list_btree_tables(conn, "node_idx$%", None)
+}
+
+/// Btree index tables whose name matches the `LIKE` pattern, optionally
+/// restricted to one label.
+fn list_btree_tables(
+    conn: &Connection,
+    like_pattern: &str,
+    label: Option<&str>,
+) -> Result<Vec<IndexInfo>> {
     let mut stmt = conn.prepare_cached(
         "SELECT name FROM sqlite_master \
-         WHERE type='table' \
-           AND (name LIKE 'node_idx\\_%' ESCAPE '\\' OR name LIKE 'node_idx$%')",
+         WHERE type='table' AND name LIKE ?1 \
+           AND sql NOT LIKE 'CREATE VIRTUAL TABLE%'",
     )?;
-    let rows = stmt.query_map([], |row| row.get::<_, String>(0))?;
+    let rows = stmt.query_map([like_pattern], |row| row.get::<_, String>(0))?;
 
     let mut result = Vec::new();
     for name in rows {
-        let name = name?;
-        if let Some(rest) = name.strip_prefix("node_idx$") {
-            // `$` scheme: "node_idx$<label>$<prop1>$<prop2>$..." — used for both
-            // single-prop (new) and composite indexes.
-            let parts: Vec<&str> = rest.split('$').collect();
-            if parts.len() < 2 {
-                continue; // malformed (need at least label + 1 prop)
-            }
-            let label = parts[0].to_string();
-            let properties: Vec<String> = parts[1..].iter().map(|s| s.to_string()).collect();
-            result.push(IndexInfo {
-                label,
-                properties,
-                kind: "btree",
-            });
-        } else if let Some(rest) = name.strip_prefix("node_idx_") {
-            // Single-prop legacy: split on first underscore (existing behavior).
-            let Some(split) = rest.find('_') else {
-                continue;
-            };
-            let (label, property) = rest.split_at(split);
-            result.push(IndexInfo {
-                label: label.to_string(),
-                properties: vec![property[1..].to_string()],
-                kind: "btree",
-            });
+        let Some((parsed_label, properties)) = naming::parse_btree_table_name(&name?) else {
+            continue;
+        };
+        if label.is_some_and(|l| l != parsed_label) {
+            continue;
         }
+        result.push(IndexInfo {
+            label: parsed_label,
+            properties,
+            kind: "btree",
+        });
     }
     Ok(result)
-}
-
-/// Parse `node_idx$<label>$<prop1>$…$<propN>` and return the property list
-/// when the label matches; `None` for non-composite or wrong-label names.
-fn parse_composite_table_name(name: &str, expected_label: &str) -> Option<Vec<String>> {
-    let rest = name.strip_prefix("node_idx$")?;
-    let prefix = format!("{expected_label}$");
-    let after_label = rest.strip_prefix(&prefix)?;
-    let props: Vec<String> = after_label.split('$').map(|s| s.to_string()).collect();
-    // The `$` scheme is used for both single-prop (new) and composite indexes,
-    // so any positive property count is a valid index.
-    if props.is_empty() {
-        return None;
-    }
-    Some(props)
 }
 
 #[cfg(test)]
@@ -621,18 +531,20 @@ mod tests {
     fn composite_table_name_uses_dollar_separator() {
         // Single-prop now uses the unambiguous $-separated form (collision-free
         // across underscore-containing label/property pairs).
+        // Uppercase letters are escaped as `^x` (SQLite table names are
+        // case-insensitive).
         assert_eq!(
             composite_index_table_name("Person", &["name"]).unwrap(),
-            "node_idx$Person$name"
+            "node_idx$^person$name"
         );
         // Multi-prop uses $-separated form.
         assert_eq!(
             composite_index_table_name("Person", &["tenant_id", "external_id"]).unwrap(),
-            "node_idx$Person$tenant_id$external_id"
+            "node_idx$^person$tenant_id$external_id"
         );
         assert_eq!(
             composite_index_table_name("Person", &["a", "b", "c"]).unwrap(),
-            "node_idx$Person$a$b$c"
+            "node_idx$^person$a$b$c"
         );
     }
 

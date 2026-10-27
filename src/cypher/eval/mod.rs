@@ -2,6 +2,8 @@ mod column_name;
 mod comparison;
 mod comprehension;
 mod functions;
+mod list_cap;
+mod range;
 pub(in crate::cypher) mod regex_cache;
 mod subquery;
 mod temporal_ops;
@@ -14,6 +16,9 @@ use rusqlite::Connection;
 use crate::cypher::ast::{BinOp, Expr, ExprKind};
 use crate::cypher::record_view::RecordView;
 use crate::types::{ErrorCode, GraphError, QueryPhase, Value};
+
+pub(crate) use list_cap::{ListBudget, MAX_LIST_LEN};
+pub(crate) use range::{eval_unwind_items, UnwindItems};
 
 // Thread-local pointer to the current query's `$param` map.
 //
@@ -33,25 +38,46 @@ thread_local! {
         const { Cell::new(std::ptr::null()) };
     static CURRENT_REGEX_CACHE: Cell<*const std::cell::RefCell<regex_cache::RegexCache>> =
         const { Cell::new(std::ptr::null()) };
+    // The statement clock: the instant `date()`, `datetime()`, ... return,
+    // fixed once per outermost statement by `ParamScope::enter` so every
+    // call within one query sees the same "now".
+    static STATEMENT_CLOCK: Cell<Option<chrono::NaiveDateTime>> = const { Cell::new(None) };
+}
+
+/// The current statement's clock reading (UTC). Outside any statement
+/// (eval-level unit tests) this is the wall clock.
+pub(crate) fn statement_now() -> chrono::NaiveDateTime {
+    STATEMENT_CLOCK
+        .with(|c| c.get())
+        .unwrap_or_else(|| chrono::Utc::now().naive_utc())
 }
 
 /// RAII guard that publishes a `&RefCell<RegexCache>` to the thread-local
 /// for the lifetime of the guard, restoring the previous value on drop.
 /// Mirrors `ParamScope` — set at the top of `execute_cypher` so eval can
 /// reach a per-query LRU through the existing `EvalCx`-only call paths.
-pub(crate) struct RegexCacheScope {
+///
+/// The guard borrows the cache for `'a`, so the borrow checker rejects any
+/// use where the cache could be dropped while the guard (and therefore the
+/// published pointer) is still alive.
+#[must_use = "the cache is only published while the guard is alive"]
+pub(crate) struct RegexCacheScope<'a> {
     prev: *const std::cell::RefCell<regex_cache::RegexCache>,
+    _cache: std::marker::PhantomData<&'a std::cell::RefCell<regex_cache::RegexCache>>,
 }
 
-impl RegexCacheScope {
-    pub(crate) fn enter(cache: &std::cell::RefCell<regex_cache::RegexCache>) -> Self {
+impl<'a> RegexCacheScope<'a> {
+    pub(crate) fn enter(cache: &'a std::cell::RefCell<regex_cache::RegexCache>) -> Self {
         let new_ptr = cache as *const _;
         let prev = CURRENT_REGEX_CACHE.with(|c| c.replace(new_ptr));
-        Self { prev }
+        Self {
+            prev,
+            _cache: std::marker::PhantomData,
+        }
     }
 }
 
-impl Drop for RegexCacheScope {
+impl Drop for RegexCacheScope<'_> {
     fn drop(&mut self) {
         CURRENT_REGEX_CACHE.with(|c| c.set(self.prev));
     }
@@ -59,21 +85,42 @@ impl Drop for RegexCacheScope {
 
 /// RAII guard that publishes a `&HashMap<String, Value>` to the thread-local
 /// for the lifetime of the guard, restoring the previous value on drop.
-pub(crate) struct ParamScope {
+///
+/// The guard borrows the map for `'a`, so the map cannot be moved or dropped
+/// while the guard is alive.
+#[must_use = "the params are only published while the guard is alive"]
+///
+/// The outermost guard on a thread also starts the statement clock (see
+/// [`statement_now`]); nested guards (subqueries) keep the outer reading.
+pub(crate) struct ParamScope<'a> {
     prev: *const HashMap<String, Value>,
+    prev_now: Option<chrono::NaiveDateTime>,
+    _params: std::marker::PhantomData<&'a HashMap<String, Value>>,
 }
 
-impl ParamScope {
-    pub(crate) fn enter(params: Option<&HashMap<String, Value>>) -> Self {
+impl<'a> ParamScope<'a> {
+    pub(crate) fn enter(params: Option<&'a HashMap<String, Value>>) -> Self {
         let new_ptr = params.map_or(std::ptr::null(), |p| p as *const _);
         let prev = CURRENT_PARAMS.with(|c| c.replace(new_ptr));
-        Self { prev }
+        let prev_now = STATEMENT_CLOCK.with(|c| {
+            let prev = c.get();
+            if prev.is_none() {
+                c.set(Some(chrono::Utc::now().naive_utc()));
+            }
+            prev
+        });
+        Self {
+            prev,
+            prev_now,
+            _params: std::marker::PhantomData,
+        }
     }
 }
 
-impl Drop for ParamScope {
+impl Drop for ParamScope<'_> {
     fn drop(&mut self) {
         CURRENT_PARAMS.with(|c| c.set(self.prev));
+        STATEMENT_CLOCK.with(|c| c.set(self.prev_now));
     }
 }
 
@@ -137,6 +184,7 @@ pub(crate) fn lookup_param(name: &str) -> Option<Value> {
 }
 
 use comparison::{compare_to_value, literal_to_value, to_tribool, value_type_name, values_equal};
+pub(crate) use comparison::{cypher_equals, grouping_eq, grouping_key_vec, into_grouping_key};
 use temporal_ops::{
     eval_duration_div, eval_duration_mul, eval_temporal_add, eval_temporal_sub, temporal_accessor,
 };
@@ -251,8 +299,54 @@ pub fn is_known_function(name: &str) -> bool {
     KNOWN_FUNCTION_NAMES.iter().any(|n| *n == lc)
 }
 
+/// Maximum nesting of [`eval_expr`] calls on one thread, summed across the
+/// subqueries (EXISTS, pattern comprehensions) evaluated inside an
+/// expression. The parser already caps a single expression tree at
+/// `MAX_EXPR_DEPTH`; this backstop is twice that, leaving headroom for
+/// planner-built predicates, and turns runaway recursion (e.g. deeply nested
+/// subqueries) into a `SizeLimit` error instead of a stack overflow.
+pub(crate) const MAX_EVAL_DEPTH: usize = 2 * crate::cypher::parser::MAX_EXPR_DEPTH;
+
+thread_local! {
+    static EVAL_DEPTH: Cell<usize> = const { Cell::new(0) };
+}
+
+/// RAII guard counting one level of [`eval_expr`] recursion.
+struct EvalDepthGuard;
+
+impl EvalDepthGuard {
+    fn enter() -> crate::types::Result<Self> {
+        let depth = EVAL_DEPTH.with(|c| c.get()) + 1;
+        if depth > MAX_EVAL_DEPTH {
+            return Err(GraphError::SizeLimit {
+                what: "expression evaluation depth".to_string(),
+                limit: MAX_EVAL_DEPTH,
+                actual: depth,
+                hint: Some("simplify the query or split it into multiple statements".to_string()),
+            });
+        }
+        EVAL_DEPTH.with(|c| c.set(depth));
+        Ok(EvalDepthGuard)
+    }
+}
+
+impl Drop for EvalDepthGuard {
+    fn drop(&mut self) {
+        EVAL_DEPTH.with(|c| c.set(c.get().saturating_sub(1)));
+    }
+}
+
 /// Evaluate an expression against a record, producing a Value.
 pub fn eval_expr(
+    expr: &Expr,
+    record: &dyn RecordView,
+    ecx: EvalCx<'_>,
+) -> crate::types::Result<Value> {
+    let _depth = EvalDepthGuard::enter()?;
+    eval_expr_inner(expr, record, ecx)
+}
+
+fn eval_expr_inner(
     expr: &Expr,
     record: &dyn RecordView,
     ecx: EvalCx<'_>,
@@ -330,7 +424,7 @@ pub fn eval_expr(
             // Temporal component accessor: d.year, d.month, etc.
             if let Some(val) = record.get(var) {
                 if let Some(result) = temporal_accessor(val, prop) {
-                    return Ok(result);
+                    return result;
                 }
                 // If the variable is a pure scalar (no compound node/edge
                 // metadata), property access is a type error.
@@ -357,9 +451,14 @@ pub fn eval_expr(
             Ok(Value::Null)
         }
         ExprKind::List(items) => {
-            let values: crate::types::Result<Vec<Value>> =
-                items.iter().map(|e| eval_expr(e, record, ecx)).collect();
-            Ok(Value::List(values?))
+            let mut budget = ListBudget::default();
+            let mut values = Vec::with_capacity(items.len());
+            for e in items {
+                let v = eval_expr(e, record, ecx)?;
+                budget.add(&v)?;
+                values.push(v);
+            }
+            Ok(Value::List(values))
         }
         ExprKind::Index { expr, index } => {
             // If the base is a variable, first try to build a compound binding
@@ -450,7 +549,7 @@ pub fn eval_expr(
                 Value::Null => Ok(Value::Null),
                 _ => {
                     if let Some(result) = temporal_accessor(&base, key) {
-                        return Ok(result);
+                        return result;
                     }
                     Ok(Value::Null)
                 }
@@ -780,16 +879,27 @@ pub(in crate::cypher::eval) fn eval_binop(
                 // List concatenation and append/prepend.
                 match (left, right) {
                     (Value::List(a), Value::List(b)) => {
+                        list_cap::check_list_len(
+                            list_cap::elements_size(a).saturating_add(list_cap::elements_size(b)),
+                        )?;
                         let mut result = a.clone();
                         result.extend(b.iter().cloned());
                         Ok(Value::List(result))
                     }
                     (Value::List(a), val) => {
+                        list_cap::check_list_len(
+                            list_cap::elements_size(a)
+                                .saturating_add(list_cap::elements_size(std::slice::from_ref(val))),
+                        )?;
                         let mut result = a.clone();
                         result.push(val.clone());
                         Ok(Value::List(result))
                     }
                     (val, Value::List(b)) => {
+                        list_cap::check_list_len(
+                            list_cap::elements_size(std::slice::from_ref(val))
+                                .saturating_add(list_cap::elements_size(b)),
+                        )?;
                         let mut result = vec![val.clone()];
                         result.extend(b.iter().cloned());
                         Ok(Value::List(result))
@@ -818,81 +928,45 @@ pub(in crate::cypher::eval) fn eval_binop(
             if let Some(result) = eval_duration_div(left, right) {
                 return result;
             }
-            // Division by zero → Null (Cypher semantics).
+            // Integer / Integer by zero is an error; once a Float is involved
+            // the result follows IEEE 754 (x/0.0 = +-Infinity, 0/0.0 = NaN).
             match (left, right) {
                 (Value::Null, _) | (_, Value::Null) => Ok(Value::Null),
                 (Value::I64(a), Value::I64(b)) => {
                     if *b == 0 {
-                        Ok(Value::Null)
-                    } else {
-                        a.checked_div(*b).map(Value::I64).ok_or_else(|| {
-                            GraphError::number_out_of_range(
-                                QueryPhase::Runtime,
-                                format!("integer overflow: {a} / {b}"),
-                            )
-                        })
+                        return Err(division_by_zero(left, "/", right));
                     }
+                    a.checked_div(*b).map(Value::I64).ok_or_else(|| {
+                        GraphError::number_out_of_range(
+                            QueryPhase::Runtime,
+                            format!("integer overflow: {a} / {b}"),
+                        )
+                    })
                 }
-                (Value::F64(a), Value::F64(b)) => {
-                    // Float division: 0.0/0.0 → NaN, x/0.0 → ±Inf (IEEE 754)
-                    Ok(Value::F64(a / b))
-                }
-                (Value::I64(a), Value::F64(b)) => {
-                    if *b == 0.0 && *a == 0 {
-                        Ok(Value::F64(f64::NAN))
-                    } else if *b == 0.0 {
-                        Ok(Value::Null)
-                    } else {
-                        Ok(Value::F64(*a as f64 / b))
-                    }
-                }
-                (Value::F64(a), Value::I64(b)) => {
-                    if *b == 0 {
-                        Ok(Value::Null)
-                    } else {
-                        Ok(Value::F64(a / *b as f64))
-                    }
-                }
+                (Value::F64(a), Value::F64(b)) => Ok(Value::F64(a / b)),
+                (Value::I64(a), Value::F64(b)) => Ok(Value::F64(*a as f64 / b)),
+                (Value::F64(a), Value::I64(b)) => Ok(Value::F64(a / *b as f64)),
                 _ => Err(arithmetic_type_error("/", left, right)),
             }
         }
         BinOp::Mod => {
-            // Modulo with null propagation and div-by-zero → Null.
+            // Same zero rules as division; IEEE `x % 0.0` is NaN.
             match (left, right) {
                 (Value::Null, _) | (_, Value::Null) => Ok(Value::Null),
                 (Value::I64(a), Value::I64(b)) => {
                     if *b == 0 {
-                        Ok(Value::Null)
-                    } else {
-                        a.checked_rem(*b).map(Value::I64).ok_or_else(|| {
-                            GraphError::number_out_of_range(
-                                QueryPhase::Runtime,
-                                format!("integer overflow: {a} % {b}"),
-                            )
-                        })
+                        return Err(division_by_zero(left, "%", right));
                     }
+                    a.checked_rem(*b).map(Value::I64).ok_or_else(|| {
+                        GraphError::number_out_of_range(
+                            QueryPhase::Runtime,
+                            format!("integer overflow: {a} % {b}"),
+                        )
+                    })
                 }
-                (Value::F64(a), Value::F64(b)) => {
-                    if *b == 0.0 {
-                        Ok(Value::Null)
-                    } else {
-                        Ok(Value::F64(a % b))
-                    }
-                }
-                (Value::I64(a), Value::F64(b)) => {
-                    if *b == 0.0 {
-                        Ok(Value::Null)
-                    } else {
-                        Ok(Value::F64(*a as f64 % b))
-                    }
-                }
-                (Value::F64(a), Value::I64(b)) => {
-                    if *b == 0 {
-                        Ok(Value::Null)
-                    } else {
-                        Ok(Value::F64(a % *b as f64))
-                    }
-                }
+                (Value::F64(a), Value::F64(b)) => Ok(Value::F64(a % b)),
+                (Value::I64(a), Value::F64(b)) => Ok(Value::F64(*a as f64 % b)),
+                (Value::F64(a), Value::I64(b)) => Ok(Value::F64(a % *b as f64)),
                 _ => Err(arithmetic_type_error("%", left, right)),
             }
         }
@@ -935,6 +1009,22 @@ pub(in crate::cypher::eval) fn eval_arithmetic(
         (Value::String(a), Value::String(b)) => Ok(Value::String(format!("{a}{b}"))),
         _ => Err(arithmetic_type_error(op_name, left, right)),
     }
+}
+
+/// The `DivisionByZero` error for `left op right` with an Integer zero divisor.
+pub(in crate::cypher::eval) fn division_by_zero(
+    left: &Value,
+    op: &str,
+    right: &Value,
+) -> GraphError {
+    let show = |v: &Value| match v {
+        Value::I64(n) => n.to_string(),
+        other => value_type_name(other).to_string(),
+    };
+    GraphError::division_by_zero(
+        QueryPhase::Runtime,
+        format!("division by zero: {} {op} {}", show(left), show(right)),
+    )
 }
 
 /// Build a TypeError for an arithmetic op applied to incompatible non-null operands.

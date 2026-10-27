@@ -2052,13 +2052,17 @@ fn e2e_integer_overflow_errors() {
 }
 
 #[test]
-fn e2e_division_by_zero_returns_null() {
+fn e2e_integer_division_by_zero_errors() {
     let mut db = Database::open_memory().unwrap();
     let tx = db.read_tx().unwrap();
-    let rows = tx.query("RETURN 1 / 0 AS x, 1 % 0 AS y").unwrap();
-    assert_eq!(rows.len(), 1);
-    assert_eq!(rows[0].get("x").unwrap(), &Value::Null);
-    assert_eq!(rows[0].get("y").unwrap(), &Value::Null);
+    for q in ["RETURN 1 / 0 AS x", "RETURN 1 % 0 AS y"] {
+        match tx.query(q) {
+            Err(graphdblite::GraphError::Query(e)) => {
+                assert_eq!(e.code(), graphdblite::ErrorCode::DivisionByZero, "{q}: {e}")
+            }
+            other => panic!("expected DivisionByZero for {q}, got {other:?}"),
+        }
+    }
     tx.commit().unwrap();
 }
 
@@ -2873,8 +2877,8 @@ fn e2e_shortest_path_no_path() {
              RETURN p",
         )
         .unwrap();
-    assert_eq!(results.len(), 1);
-    assert_eq!(results[0].get("p").unwrap(), &Value::Null);
+    // Unreachable pair in a plain MATCH: no row (OPTIONAL MATCH yields null).
+    assert!(results.is_empty(), "expected no rows, got {results:?}");
     tx.commit().unwrap();
 }
 
@@ -2979,20 +2983,20 @@ fn e2e_shortest_path_respects_direction() {
              RETURN p",
         )
         .unwrap();
-    // No outgoing path from B to A.
-    assert_eq!(results[0].get("p").unwrap(), &Value::Null);
+    // No outgoing path from B to A: a plain MATCH drops the row.
+    assert!(results.is_empty(), "expected no rows, got {results:?}");
     tx.commit().unwrap();
 }
 
 #[test]
-fn e2e_shortest_path_same_node() {
-    // Path from A to A should be a single-node path.
+fn e2e_shortest_path_same_node_min_zero() {
+    // With a zero minimum length, A to A is the single-node path.
     let mut db = setup_path_graph();
     let tx = db.read_tx().unwrap();
     let results = tx
         .query(
             "MATCH (a:Person {name: 'A'}), (a2:Person {name: 'A'}), \
-             p = shortestPath((a)-[:KNOWS*1..10]->(a2)) \
+             p = shortestPath((a)-[:KNOWS*0..10]->(a2)) \
              RETURN p, length(p) AS len",
         )
         .unwrap();
@@ -3000,6 +3004,476 @@ fn e2e_shortest_path_same_node() {
     assert_eq!(path_ids(results[0].get("p").unwrap()), vec![1]);
     assert_eq!(results[0].get("len").unwrap(), &Value::I64(0));
     tx.commit().unwrap();
+}
+
+#[test]
+fn e2e_shortest_path_same_node_min_one_has_no_row() {
+    // `*1..10` requires at least one hop, so a zero-length A to A path
+    // does not match (Neo4j semantics, minus its default runtime error).
+    let mut db = setup_path_graph();
+    let tx = db.read_tx().unwrap();
+    for query in [
+        "MATCH (a:Person {name: 'A'}), (a2:Person {name: 'A'}), \
+         p = shortestPath((a)-[:KNOWS*1..10]->(a2)) RETURN p",
+        "MATCH (a:Person {name: 'A'}), (a2:Person {name: 'A'}), \
+         p = allShortestPaths((a)-[:KNOWS*1..10]->(a2)) RETURN p",
+    ] {
+        let results = tx.query(query).unwrap();
+        assert!(
+            results.is_empty(),
+            "{query}: expected no rows, got {results:?}"
+        );
+    }
+    tx.commit().unwrap();
+}
+
+#[test]
+fn e2e_shortest_path_rejects_min_length_above_one() {
+    let mut db = setup_path_graph();
+    let tx = db.read_tx().unwrap();
+    let err = tx
+        .query(
+            "MATCH (a:Person {name: 'A'}), (d:Person {name: 'D'}), \
+             p = shortestPath((a)-[:KNOWS*2..10]->(d)) RETURN p",
+        )
+        .unwrap_err();
+    assert!(
+        err.to_string()
+            .contains("shortestPath does not support a minimal length different from 0 or 1"),
+        "unexpected error: {err}"
+    );
+    tx.commit().unwrap();
+}
+
+/// Graph with mixed relationship types (GitHub issue #2):
+///   (A)-[:KNOWS]->(B)-[:WORKS_WITH]->(C)
+///   (A)-[:LIKES]->(E)
+///   (D) isolated
+fn setup_mixed_type_graph() -> Database {
+    let mut db = Database::open_memory().unwrap();
+    db.execute(
+        "CREATE (a:P {name: 'A'})-[:KNOWS]->(b:P {name: 'B'})-[:WORKS_WITH]->(c:P {name: 'C'}), \
+         (d:P {name: 'D'}), (a)-[:LIKES]->(e:P {name: 'E'})",
+    )
+    .unwrap();
+    db
+}
+
+fn str_of(val: &Value) -> String {
+    match val {
+        Value::String(s) => s.clone(),
+        _ => panic!("expected Value::String, got {val:?}"),
+    }
+}
+
+fn str_list(val: &Value) -> Vec<String> {
+    match val {
+        Value::List(items) => items.iter().map(str_of).collect(),
+        _ => panic!("expected Value::List, got {val:?}"),
+    }
+}
+
+#[test]
+fn e2e_shortest_path_untyped_crosses_relationship_types() {
+    let mut db = setup_mixed_type_graph();
+    let rows = db
+        .execute(
+            "MATCH (a:P {name: 'A'}), (c:P {name: 'C'}), p = shortestPath((a)-[*]->(c)) \
+             RETURN [n IN nodes(p) | n.name] AS names, \
+                    [r IN relationships(p) | type(r)] AS types",
+        )
+        .unwrap();
+    assert_eq!(rows.len(), 1);
+    assert_eq!(str_list(rows[0].get("names").unwrap()), ["A", "B", "C"]);
+    assert_eq!(
+        str_list(rows[0].get("types").unwrap()),
+        ["KNOWS", "WORKS_WITH"]
+    );
+}
+
+#[test]
+fn e2e_shortest_path_unbound_endpoints_issue_2() {
+    // The reporter's query: every reachable ordered pair, no self-pairs,
+    // no rows for unreachable pairs.
+    let mut db = setup_mixed_type_graph();
+    let rows = db
+        .execute(
+            "MATCH p = shortestPath((a)-[*]->(b)) WHERE p IS NOT NULL \
+             RETURN a.name AS src, b.name AS dst, length(p) AS len",
+        )
+        .unwrap();
+    let mut got: Vec<(String, String, Value)> = rows
+        .iter()
+        .map(|r| {
+            (
+                str_of(r.get("src").unwrap()),
+                str_of(r.get("dst").unwrap()),
+                r.get("len").unwrap().clone(),
+            )
+        })
+        .collect();
+    got.sort_by(|x, y| (&x.0, &x.1).cmp(&(&y.0, &y.1)));
+    let expected = vec![
+        ("A".to_string(), "B".to_string(), Value::I64(1)),
+        ("A".to_string(), "C".to_string(), Value::I64(2)),
+        ("A".to_string(), "E".to_string(), Value::I64(1)),
+        ("B".to_string(), "C".to_string(), Value::I64(1)),
+    ];
+    assert_eq!(got, expected);
+}
+
+#[test]
+fn e2e_shortest_path_multi_type_uses_every_listed_type() {
+    let mut db = setup_mixed_type_graph();
+    let found = db
+        .execute(
+            "MATCH (a:P {name: 'A'}), (c:P {name: 'C'}), \
+             p = shortestPath((a)-[:KNOWS|WORKS_WITH*]->(c)) RETURN length(p) AS len",
+        )
+        .unwrap();
+    assert_eq!(found.len(), 1);
+    assert_eq!(found[0].get("len").unwrap(), &Value::I64(2));
+
+    // LIKES does not lead to C, and KNOWS alone stops at B.
+    let missing = db
+        .execute(
+            "MATCH (a:P {name: 'A'}), (c:P {name: 'C'}), \
+             p = shortestPath((a)-[:KNOWS|LIKES*]->(c)) RETURN p",
+        )
+        .unwrap();
+    assert!(missing.is_empty(), "expected no rows, got {missing:?}");
+}
+
+#[test]
+fn e2e_shortest_path_undirected_keeps_edge_orientation() {
+    let mut db = setup_mixed_type_graph();
+    let rows = db
+        .execute(
+            "MATCH (c:P {name: 'C'}), (a:P {name: 'A'}), p = shortestPath((c)-[*]-(a)) \
+             RETURN [n IN nodes(p) | n.name] AS names, \
+                    [r IN relationships(p) | startNode(r).name] AS starts, \
+                    [r IN relationships(p) | type(r)] AS types",
+        )
+        .unwrap();
+    assert_eq!(rows.len(), 1);
+    assert_eq!(str_list(rows[0].get("names").unwrap()), ["C", "B", "A"]);
+    assert_eq!(str_list(rows[0].get("starts").unwrap()), ["B", "A"]);
+    assert_eq!(
+        str_list(rows[0].get("types").unwrap()),
+        ["WORKS_WITH", "KNOWS"]
+    );
+}
+
+#[test]
+fn e2e_shortest_path_in_separate_match_uses_bound_endpoints() {
+    let mut db = setup_mixed_type_graph();
+    let rows = db
+        .execute(
+            "MATCH (a:P {name: 'A'}), (c:P {name: 'C'}) \
+             MATCH p = shortestPath((a)-[*]->(c)) \
+             RETURN a.name AS src, c.name AS dst, length(p) AS len",
+        )
+        .unwrap();
+    assert_eq!(rows.len(), 1);
+    assert_eq!(str_of(rows[0].get("src").unwrap()), "A");
+    assert_eq!(str_of(rows[0].get("dst").unwrap()), "C");
+    assert_eq!(rows[0].get("len").unwrap(), &Value::I64(2));
+}
+
+#[test]
+fn e2e_shortest_path_scans_endpoint_not_bound_by_other_patterns() {
+    // `c` appears only inside shortestPath(...), with an inline filter.
+    let mut db = setup_mixed_type_graph();
+    let rows = db
+        .execute(
+            "MATCH (a:P {name: 'A'}), p = shortestPath((a)-[*]->(c:P {name: 'C'})) \
+             RETURN c.name AS dst, length(p) AS len",
+        )
+        .unwrap();
+    assert_eq!(rows.len(), 1);
+    assert_eq!(str_of(rows[0].get("dst").unwrap()), "C");
+    assert_eq!(rows[0].get("len").unwrap(), &Value::I64(2));
+}
+
+#[test]
+fn e2e_shortest_path_optional_match_yields_null_when_unreachable() {
+    let mut db = setup_mixed_type_graph();
+    let rows = db
+        .execute(
+            "MATCH (c:P {name: 'C'}), (a:P {name: 'A'}) \
+             OPTIONAL MATCH p = shortestPath((c)-[*]->(a)) \
+             RETURN c.name AS src, p",
+        )
+        .unwrap();
+    assert_eq!(rows.len(), 1);
+    assert_eq!(str_of(rows[0].get("src").unwrap()), "C");
+    assert_eq!(rows[0].get("p").unwrap(), &Value::Null);
+}
+
+#[test]
+fn e2e_shortest_path_without_star_is_single_hop() {
+    // `-[:KNOWS]->` without `*` matches exactly one hop: A to B (1 hop)
+    // matches, A to C (needs 2 hops) does not.
+    let mut db = setup_mixed_type_graph();
+    let rows = db
+        .execute(
+            "MATCH p = shortestPath((a:P {name: 'A'})-[]->(b)) \
+             RETURN b.name AS dst, length(p) AS len",
+        )
+        .unwrap();
+    let mut got: Vec<(String, Value)> = rows
+        .iter()
+        .map(|r| (str_of(r.get("dst").unwrap()), r.get("len").unwrap().clone()))
+        .collect();
+    got.sort_by(|x, y| x.0.cmp(&y.0));
+    assert_eq!(
+        got,
+        vec![
+            ("B".to_string(), Value::I64(1)),
+            ("E".to_string(), Value::I64(1))
+        ]
+    );
+}
+
+#[test]
+fn e2e_all_shortest_paths_untyped_distinguishes_parallel_types() {
+    // A-[:X]->B and A-[:Y]->B are two distinct shortest paths.
+    let mut db = Database::open_memory().unwrap();
+    db.execute("CREATE (a:N {name: 'A'})-[:X]->(b:N {name: 'B'}), (a)-[:Y]->(b)")
+        .unwrap();
+    let rows = db
+        .execute(
+            "MATCH (a:N {name: 'A'}), (b:N {name: 'B'}), p = allShortestPaths((a)-[*]->(b)) \
+             RETURN [r IN relationships(p) | type(r)] AS types",
+        )
+        .unwrap();
+    let mut types: Vec<Vec<String>> = rows
+        .iter()
+        .map(|r| str_list(r.get("types").unwrap()))
+        .collect();
+    types.sort();
+    assert_eq!(types, vec![vec!["X".to_string()], vec!["Y".to_string()]]);
+}
+
+#[test]
+fn e2e_shortest_path_anonymous_endpoints() {
+    let mut db = setup_mixed_type_graph();
+    let rows = db
+        .execute("MATCH p = shortestPath(()-[*]->()) RETURN length(p) AS len ORDER BY len")
+        .unwrap();
+    let lens: Vec<Value> = rows.iter().map(|r| r.get("len").unwrap().clone()).collect();
+    // A->B, A->E, B->C (1 hop) and A->C (2 hops).
+    assert_eq!(
+        lens,
+        vec![Value::I64(1), Value::I64(1), Value::I64(1), Value::I64(2)]
+    );
+}
+
+#[test]
+fn e2e_two_shortest_paths_in_one_match() {
+    let mut db = setup_mixed_type_graph();
+    let rows = db
+        .execute(
+            "MATCH (a:P {name: 'A'}), (c:P {name: 'C'}), \
+             p = shortestPath((a)-[*]->(c)), \
+             q = shortestPath((a)-[*]->(:P {name: 'E'})) \
+             RETURN length(p) AS lp, length(q) AS lq",
+        )
+        .unwrap();
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].get("lp").unwrap(), &Value::I64(2));
+    assert_eq!(rows[0].get("lq").unwrap(), &Value::I64(1));
+}
+
+#[test]
+fn e2e_two_shortest_paths_with_anonymous_endpoints_do_not_collide() {
+    // Each shortestPath gets its own internal endpoint names. If they
+    // shared one, the second pattern would be forced onto the first one's
+    // endpoints (B vs E) and return nothing.
+    let mut db = setup_mixed_type_graph();
+    let rows = db
+        .execute(
+            "MATCH p = shortestPath(()-[:KNOWS]->()), q = shortestPath(()-[:LIKES]->()) \
+             RETURN [n IN nodes(p) | n.name] AS pn, [n IN nodes(q) | n.name] AS qn",
+        )
+        .unwrap();
+    assert_eq!(rows.len(), 1);
+    assert_eq!(str_list(rows[0].get("pn").unwrap()), ["A", "B"]);
+    assert_eq!(str_list(rows[0].get("qn").unwrap()), ["A", "E"]);
+}
+
+#[test]
+fn e2e_shortest_path_max_hops_bound_untyped() {
+    let mut db = setup_mixed_type_graph();
+    let rows = db
+        .execute(
+            "MATCH p = shortestPath((a:P {name: 'A'})-[*..1]->(b)) \
+             RETURN b.name AS dst ORDER BY dst",
+        )
+        .unwrap();
+    let dsts: Vec<String> = rows.iter().map(|r| str_of(r.get("dst").unwrap())).collect();
+    // C is 2 hops away, so `*..1` excludes it.
+    assert_eq!(dsts, ["B", "E"]);
+}
+
+#[test]
+fn e2e_all_shortest_paths_optional_match_yields_null_when_unreachable() {
+    let mut db = setup_mixed_type_graph();
+    let rows = db
+        .execute(
+            "MATCH (c:P {name: 'C'}) \
+             OPTIONAL MATCH p = allShortestPaths((c)-[*]->(a:P {name: 'A'})) \
+             RETURN c.name AS src, p",
+        )
+        .unwrap();
+    assert_eq!(rows.len(), 1);
+    assert_eq!(str_of(rows[0].get("src").unwrap()), "C");
+    assert_eq!(rows[0].get("p").unwrap(), &Value::Null);
+}
+
+#[test]
+fn e2e_all_shortest_paths_undirected_mixed_types() {
+    let mut db = setup_mixed_type_graph();
+    let rows = db
+        .execute(
+            "MATCH (c:P {name: 'C'}), (a:P {name: 'A'}), p = allShortestPaths((c)-[*]-(a)) \
+             RETURN [n IN nodes(p) | n.name] AS names, \
+                    [r IN relationships(p) | type(r)] AS types",
+        )
+        .unwrap();
+    assert_eq!(rows.len(), 1);
+    assert_eq!(str_list(rows[0].get("names").unwrap()), ["C", "B", "A"]);
+    assert_eq!(
+        str_list(rows[0].get("types").unwrap()),
+        ["WORKS_WITH", "KNOWS"]
+    );
+}
+
+#[test]
+fn e2e_all_shortest_paths_distinguishes_parallel_same_type_edges() {
+    // Two KNOWS edges A->B (different props) are two distinct paths.
+    let mut db = Database::open_memory().unwrap();
+    db.execute(
+        "CREATE (a:N {name: 'A'})-[:KNOWS {w: 1}]->(b:N {name: 'B'}), \
+         (a)-[:KNOWS {w: 2}]->(b)",
+    )
+    .unwrap();
+    let rows = db
+        .execute(
+            "MATCH (a:N {name: 'A'}), (b:N {name: 'B'}), \
+             p = allShortestPaths((a)-[:KNOWS*]->(b)) \
+             RETURN [r IN relationships(p) | r.w] AS ws ORDER BY ws",
+        )
+        .unwrap();
+    let ws: Vec<Value> = rows.iter().map(|r| r.get("ws").unwrap().clone()).collect();
+    assert_eq!(
+        ws,
+        vec![
+            Value::List(vec![Value::I64(1)]),
+            Value::List(vec![Value::I64(2)])
+        ]
+    );
+
+    // shortestPath still returns exactly one of them.
+    let one = db
+        .execute(
+            "MATCH (a:N {name: 'A'}), (b:N {name: 'B'}), \
+             p = shortestPath((a)-[:KNOWS*]->(b)) RETURN length(p) AS len",
+        )
+        .unwrap();
+    assert_eq!(one.len(), 1);
+}
+
+#[test]
+fn e2e_all_shortest_paths_parallel_edges_multiply_across_hops() {
+    // A=>B has 2 parallel KNOWS edges, B->C has 1: 2 x 1 = 2 paths;
+    // adding a second B->C edge makes it 2 x 2 = 4.
+    let mut db = Database::open_memory().unwrap();
+    db.execute(
+        "CREATE (a:N {name: 'A'})-[:KNOWS]->(b:N {name: 'B'})-[:KNOWS]->(c:N {name: 'C'}), \
+         (a)-[:KNOWS]->(b)",
+    )
+    .unwrap();
+    let q = "MATCH (a:N {name: 'A'}), (c:N {name: 'C'}), \
+             p = allShortestPaths((a)-[:KNOWS*]->(c)) RETURN length(p) AS len";
+    assert_eq!(db.execute(q).unwrap().len(), 2);
+    db.execute("MATCH (b:N {name: 'B'}), (c:N {name: 'C'}) CREATE (b)-[:KNOWS]->(c)")
+        .unwrap();
+    assert_eq!(db.execute(q).unwrap().len(), 4);
+}
+
+/// Chain n0 -> n1 -> ... -> n{len-1} over NEXT edges in a db with the given
+/// traversal work budget.
+fn chain_db(len: usize, max_traversal_work: u64) -> (tempfile::TempDir, Database) {
+    use graphdblite::Config;
+    let dir = tempfile::tempdir().unwrap();
+    let mut db = Database::open_with_config(
+        dir.path().join("chain.db"),
+        Config {
+            max_traversal_work,
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    db.execute(&format!(
+        "UNWIND range(0, {}) AS i CREATE (:C {{i: i}})",
+        len - 1
+    ))
+    .unwrap();
+    db.execute("MATCH (a:C), (b:C) WHERE b.i = a.i + 1 CREATE (a)-[:NEXT]->(b)")
+        .unwrap();
+    (dir, db)
+}
+
+#[test]
+fn e2e_shortest_path_respects_traversal_work_budget() {
+    let query = "MATCH (a:C {i: 0}), (b:C {i: 9}), p = shortestPath((a)-[*]->(b)) \
+                 RETURN length(p) AS len";
+
+    // 9 hops need 9 edge visits: a budget of 5 must fail with SizeLimit.
+    let (_dir, mut small) = chain_db(10, 5);
+    match small.execute(query) {
+        Err(graphdblite::GraphError::SizeLimit { what, limit, .. }) => {
+            assert_eq!(what, "shortestPath traversal work");
+            assert_eq!(limit, 5);
+        }
+        other => panic!("expected SizeLimit, got {other:?}"),
+    }
+
+    // Boundary: exactly 9 visits fits in a budget of 9.
+    let (_dir, mut exact) = chain_db(10, 9);
+    let rows = exact.execute(query).unwrap();
+    assert_eq!(rows[0].get("len").unwrap(), &Value::I64(9));
+
+    // 0 disables the budget.
+    let (_dir, mut unlimited) = chain_db(10, 0);
+    let rows = unlimited.execute(query).unwrap();
+    assert_eq!(rows[0].get("len").unwrap(), &Value::I64(9));
+}
+
+#[test]
+fn e2e_shortest_path_work_budget_spans_all_pairs() {
+    // Unbound endpoints run one search per pair (100 pairs on a 10-chain).
+    // Each search alone fits in a budget of 20, but the budget is per
+    // query, so the all-pairs query must still hit the cap.
+    let (_dir, mut db) = chain_db(10, 20);
+    db.execute("MATCH (a:C {i: 0}), (b:C {i: 9}), p = shortestPath((a)-[*]->(b)) RETURN p")
+        .unwrap();
+    for query in [
+        // One operator run over all pairs.
+        "MATCH p = shortestPath((a:C)-[*]->(b:C)) RETURN count(p) AS n",
+        // Correlated: one operator run per outer row, each costing at most
+        // 9 visits (under the cap) but 45 in total. The budget must not
+        // reset between rows.
+        "MATCH (a:C) MATCH p = shortestPath((a)-[*]->(b:C {i: 9})) RETURN count(p) AS n",
+    ] {
+        match db.execute(query) {
+            Err(graphdblite::GraphError::SizeLimit { what, .. }) => {
+                assert_eq!(what, "shortestPath traversal work", "{query}");
+            }
+            other => panic!("{query}: expected SizeLimit, got {other:?}"),
+        }
+    }
 }
 
 // === Cost optimizer / EXPLAIN tests ===
@@ -3738,7 +4212,7 @@ fn merge_relationship_is_idempotent() {
 }
 
 #[test]
-fn merge_relationship_reuses_existing_nodes() {
+fn merge_relationship_creates_whole_pattern_when_unmatched() {
     let mut db = Database::open_memory().unwrap();
     {
         let tx = db.write_tx().unwrap();
@@ -3747,14 +4221,23 @@ fn merge_relationship_reuses_existing_nodes() {
     }
     {
         let tx = db.write_tx().unwrap();
-        // Alice already exists — should reuse her.
+        // The existing Alice has no KNOWS Bob, so the whole pattern does not
+        // match and MERGE creates all of it (openCypher semantics); a bound
+        // variable (`MATCH (a ...) MERGE (a)-[:KNOWS]->(b ...)`) reuses a node.
+        tx.query("MERGE (a:Person {name: 'Alice'})-[:KNOWS]->(b:Person {name: 'Bob'})")
+            .unwrap();
+        // Now the pattern matches: nothing new.
         tx.query("MERGE (a:Person {name: 'Alice'})-[:KNOWS]->(b:Person {name: 'Bob'})")
             .unwrap();
         tx.commit().unwrap();
     }
     let tx = db.read_tx().unwrap();
     let people = tx.query("MATCH (n:Person) RETURN n.name").unwrap();
-    assert_eq!(people.len(), 2); // Not 3!
+    assert_eq!(people.len(), 3);
+    let knows = tx
+        .query("MATCH (:Person)-[k:KNOWS]->(:Person) RETURN k")
+        .unwrap();
+    assert_eq!(knows.len(), 1);
     tx.commit().unwrap();
 }
 
@@ -4934,13 +5417,26 @@ fn fts_ci_index_matches_across_case() {
     db.execute("CREATE (:Person {name:'Alice Smith'}), (:Person {name:'Bob Jones'})")
         .unwrap();
 
+    // Case-insensitive matching is expressed with the `toLower` idiom, which
+    // the CI index accelerates.
     let rows = db
         .execute(
-            "MATCH (n:Person) WHERE n.name CONTAINS 'alice' RETURN n.name AS name ORDER BY name",
+            "MATCH (n:Person) WHERE toLower(n.name) CONTAINS toLower('alice') \
+             RETURN n.name AS name ORDER BY name",
         )
         .unwrap();
     let names: Vec<String> = rows.iter().map(|r| string_field(r, "name")).collect();
     assert_eq!(names, vec!["Alice Smith".to_string()]);
+
+    // An index must not change query semantics: a plain CONTAINS stays
+    // case-sensitive even when served by the CI index.
+    let rows = db
+        .execute("MATCH (n:Person) WHERE n.name CONTAINS 'alice' RETURN n.name AS name")
+        .unwrap();
+    assert!(
+        rows.is_empty(),
+        "plain CONTAINS must be case-sensitive: {rows:?}"
+    );
 }
 
 #[test]
@@ -5392,4 +5888,68 @@ fn cypher_drop_nonexistent_index_is_error() {
         msg.contains("IndexNotFound") || msg.contains("not found"),
         "expected IndexNotFound error, got: {msg}"
     );
+}
+
+// Scenarios from @arupkamal's fork review (github.com/arupkamal/graphdblite),
+// adapted to Neo4j's no-row semantics for unreachable pairs.
+
+#[test]
+fn e2e_shortest_path_second_match_on_cyclic_graph() {
+    // A->B->C->D->A cycle, a C self-loop and an isolated K.
+    let mut db = Database::open_memory().unwrap();
+    db.execute(
+        "CREATE (a:N {id: 'A'})-[:LINK]->(b:N {id: 'B'})-[:LINK]->(c:N {id: 'C'})\
+         -[:LINK]->(d:N {id: 'D'}), (d)-[:LINK]->(a), (c)-[:LINK]->(c), (:N {id: 'K'})",
+    )
+    .unwrap();
+    let hops = |db: &mut Database, q: &str| -> Vec<Value> {
+        db.execute(q)
+            .unwrap()
+            .iter()
+            .map(|r| r.get("hops").unwrap().clone())
+            .collect()
+    };
+    assert_eq!(
+        hops(
+            &mut db,
+            "MATCH (a:N {id: 'A'}), (d:N {id: 'D'}) \
+             MATCH p = shortestPath((a)-[:LINK*]->(d)) RETURN length(p) AS hops",
+        ),
+        vec![Value::I64(3)]
+    );
+    // Undirected: the D->A edge makes them neighbours.
+    assert_eq!(
+        hops(
+            &mut db,
+            "MATCH (a:N {id: 'A'}), (d:N {id: 'D'}) \
+             MATCH p = allShortestPaths((a)-[*]-(d)) RETURN length(p) AS hops",
+        ),
+        vec![Value::I64(1)]
+    );
+    // Unreachable K: no row.
+    assert!(hops(
+        &mut db,
+        "MATCH (a:N {id: 'A'}), (k:N {id: 'K'}) \
+         MATCH p = shortestPath((a)-[:LINK*]->(k)) RETURN length(p) AS hops",
+    )
+    .is_empty());
+}
+
+#[test]
+fn e2e_shortest_path_bound_endpoint_must_satisfy_pattern_label() {
+    let mut db = setup_mixed_type_graph();
+    let rows = db
+        .execute(
+            "MATCH (a:P {name: 'A'}), (c:P {name: 'C'}) \
+             MATCH p = shortestPath((a)-[*]->(c:Missing)) RETURN p",
+        )
+        .unwrap();
+    assert!(rows.is_empty(), "c lacks :Missing, got {rows:?}");
+    let rows = db
+        .execute(
+            "MATCH (a:P {name: 'A'}), (c:P {name: 'C'}), \
+             p = shortestPath((a)-[*]->(c:Missing)) RETURN p",
+        )
+        .unwrap();
+    assert!(rows.is_empty(), "c lacks :Missing, got {rows:?}");
 }

@@ -1,7 +1,7 @@
 // graphdblite Cypher subset grammar (PEG)
 
 WHITESPACE = _{ " " | "\t" | "\r" | "\n" }
-COMMENT = _{ "//" ~ (!"\n" ~ ANY)* }
+COMMENT = _{ ("//" ~ (!"\n" ~ ANY)*) | ("/*" ~ (!"*/" ~ ANY)* ~ "*/") }
 
 // === Top-level ===
 
@@ -183,7 +183,7 @@ unwind_create = {
 
 unwind_return = {
     where_clause? ~
-    ((with_clause ~ match_part?) | unwind_clause)* ~
+    ((with_clause ~ match_part?) | match_part | unwind_clause)* ~
     return_clause ~
     order_by_clause? ~
     skip_clause? ~
@@ -359,7 +359,8 @@ null_kw = @{ ^"NULL" ~ !(ASCII_ALPHANUMERIC | "_") }
 not_kw = @{ ^"NOT" ~ !(ASCII_ALPHANUMERIC | "_") }
 
 exists_subquery = { ^"EXISTS" ~ "{" ~ pattern_list ~ where_clause? ~ "}" }
-exists_full_subquery = { ^"EXISTS" ~ "{" ~ ^"MATCH" ~ pattern_list ~ where_clause? ~ ((with_clause ~ (^"MATCH" ~ pattern_list ~ where_clause?)?) | unwind_clause | multi_set_clause | multi_delete_clause | multi_remove_clause | multi_create_clause | multi_merge_clause)* ~ (return_clause ~ order_by_clause? ~ skip_clause? ~ limit_clause?)? ~ "}" }
+exists_full_subquery = { ^"EXISTS" ~ "{" ~ exists_query ~ (union_op ~ exists_query)* ~ "}" }
+exists_query = { unwind_clause* ~ ^"MATCH" ~ pattern_list ~ where_clause? ~ ((with_clause ~ (^"MATCH" ~ pattern_list ~ where_clause?)?) | unwind_clause | multi_set_clause | multi_delete_clause | multi_remove_clause | multi_create_clause | multi_merge_clause)* ~ (return_clause ~ order_by_clause? ~ skip_clause? ~ limit_clause?)? }
 
 case_expr = {
     ^"CASE"

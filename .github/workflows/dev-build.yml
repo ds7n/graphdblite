@@ -300,19 +300,25 @@ jobs:
           path: bindings/node/*.node
 
   # On tag push, publish the per-platform .node packages and the main
-  # wrapper to npm. Uses a long-lived NPM_TOKEN; first publish; future
-  # versions can migrate to npm trusted publishing once the package
-  # exists on npm.
+  # wrapper to npm via npm trusted publishing (OIDC): no token. Each of the
+  # 8 packages has a GitHub Actions trusted publisher for this repo and
+  # workflow file (dev-build.yml) on npmjs.com. Requires npm >= 11.5.1 and
+  # Node >= 22.14; provenance is attached automatically.
   publish-npm:
     if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
     needs: build-node
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
     steps:
       - uses: actions/checkout@v6
       - uses: actions/setup-node@v6
         with:
           node-version: "22"
           registry-url: "https://registry.npmjs.org"
+      - name: Upgrade npm for trusted publishing
+        run: npm install -g npm@11.21.1 && npm --version
       - name: Install Node deps
         working-directory: bindings/node
         run: npm install
@@ -336,8 +342,6 @@ jobs:
           ls -R npm
       - name: Publish per-platform packages
         working-directory: bindings/node
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: |
           for d in npm/*/; do
             echo "Publishing $d"
@@ -345,8 +349,6 @@ jobs:
           done
       - name: Publish main wrapper
         working-directory: bindings/node
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: npm publish --access public
 
   build-wheels:

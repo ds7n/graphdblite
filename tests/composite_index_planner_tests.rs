@@ -45,10 +45,12 @@ fn composite_index_picked_for_full_match() {
     );
 }
 
-/// After Task 9: composite index exists on (tenant_id, ext_id); query only
-/// provides the leading column — planner picks a prefix scan, returning 2 rows.
+/// Composite index exists on (tenant_id, ext_id); query only provides the
+/// leading column. The planner must not use the composite index for a bare
+/// prefix (nodes missing `ext_id` have no index entry), so it scans the label
+/// and still returns 2 rows.
 #[test]
-fn composite_index_picked_for_prefix_match() {
+fn composite_index_not_used_for_prefix_match() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("composite_prefix.db");
     let mut db = Database::open(&path).unwrap();

@@ -178,6 +178,34 @@ fn fts_search_type_error(message: impl Into<String>) -> GraphError {
     })
 }
 
+/// Map an SQLite error raised while running an `fts.search` MATCH.
+///
+/// FTS5 reports query problems as `fts5: syntax error near "<token>"` or
+/// `no such column: <name>`, i.e. with fragments of the user's query. The
+/// query text is user data (often logged with the error), so it is never
+/// echoed: the message only says which kind of failure happened.
+fn fts_query_error(e: rusqlite::Error) -> GraphError {
+    let detail = e.to_string();
+    let message = if detail.contains("fts5") || detail.contains("no such column") {
+        "fts.search: invalid fulltext query syntax (fts5)".to_string()
+    } else {
+        let code = e
+            .sqlite_error_code()
+            .map_or_else(|| "unknown".to_string(), |c| format!("{c:?}"));
+        format!("fts.search: fulltext query failed (sqlite error: {code})")
+    };
+    GraphError::Query(QueryError::ProcedureError {
+        phase: QueryPhase::Runtime,
+        code: ErrorCode::Other,
+        message,
+        hint: Some(
+            "check the FTS5 query syntax: balanced quotes and parentheses, AND/OR/NOT, prefix*"
+                .to_string(),
+        ),
+        span: None,
+    })
+}
+
 /// Resolve the `(label, property)` arg pair for `fts.search` to the
 /// matching index + optional column scope.
 ///
@@ -219,13 +247,9 @@ fn resolve_fts_target(
         for info in &infos {
             if info.properties.iter().any(|p| p == property) {
                 // For multi-column tables, scope to the column. For
-                // legacy single-prop tables (one FTS5 column named
-                // `content`), no scope needed — MATCH the bare query.
-                let scope = if info.table_name.starts_with("node_fts_multi_") {
-                    Some(property.to_string())
-                } else {
-                    None
-                };
+                // single-prop tables (one FTS5 column named `content`), no
+                // scope is needed: MATCH the bare query.
+                let scope = info.is_multi().then(|| property.to_string());
                 return Ok((info.table_name.clone(), scope));
             }
         }
@@ -271,18 +295,24 @@ fn exec_fts_search(args: &[Value], conn: &Connection) -> Result<Vec<HashMap<Stri
 
     let (table, scope) = resolve_fts_target(conn, label, property)?;
 
-    let match_term = match &scope {
-        Some(col) => format!("\"{col}\":({query})"),
-        None => query.to_string(),
+    // The column scope is bound outside the user query: a column-named
+    // left-hand side (`"<col>" MATCH ?`) makes FTS5 intersect every column
+    // filter inside the query with that column, so text such as
+    // `x) OR title:(y` cannot widen the search to other columns. The user
+    // query is only ever a bound parameter.
+    let qt = crate::storage::naming::quote_ident(&table);
+    let match_lhs = match &scope {
+        Some(col) => crate::storage::naming::quote_ident(col),
+        None => qt.clone(),
     };
 
     // bm25(t) is FTS5's built-in ranking function. It returns a negative
     // score; lower (more negative) = more relevant. We negate below so
     // higher = better in the output.
     let sql = format!(
-        "SELECT rowid, bm25(\"{table}\") AS rank \
-         FROM \"{table}\" \
-         WHERE \"{table}\" MATCH ?1 \
+        "SELECT rowid, bm25({qt}) AS rank \
+         FROM {qt} \
+         WHERE {match_lhs} MATCH ?1 \
          ORDER BY rank ASC"
     );
 
@@ -291,36 +321,20 @@ fn exec_fts_search(args: &[Value], conn: &Connection) -> Result<Vec<HashMap<Stri
             phase: QueryPhase::Runtime,
             code: ErrorCode::Other,
             message: format!("fts.search: failed to prepare fulltext query: {e}"),
-            hint: Some(format!("query was: {query}")),
+            hint: None,
             span: None,
         })
     })?;
 
     let mapped = stmt
-        .query_map([&match_term], |row| {
+        .query_map([query], |row| {
             Ok((row.get::<_, i64>(0)?, row.get::<_, f64>(1)?))
         })
-        .map_err(|e| {
-            GraphError::Query(QueryError::ProcedureError {
-                phase: QueryPhase::Runtime,
-                code: ErrorCode::Other,
-                message: format!("fts.search: invalid fulltext query syntax (fts5): {e}"),
-                hint: Some(format!("query was: {query}")),
-                span: None,
-            })
-        })?;
+        .map_err(fts_query_error)?;
 
     let mut out = Vec::new();
     for r in mapped {
-        let (rowid, rank) = r.map_err(|e| {
-            GraphError::Query(QueryError::ProcedureError {
-                phase: QueryPhase::Runtime,
-                code: ErrorCode::Other,
-                message: format!("fts.search: error iterating fulltext rows: {e}"),
-                hint: Some(format!("query was: {query}")),
-                span: None,
-            })
-        })?;
+        let (rowid, rank) = r.map_err(fts_query_error)?;
         let node_id = NodeId(rowid as u64);
         let node = match crate::storage::node::get_node(conn, node_id) {
             Ok(n) => n,

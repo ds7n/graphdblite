@@ -15,7 +15,7 @@ use serde::de::{self, MapAccess, SeqAccess, Visitor};
 use serde::ser::SerializeStruct;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
-use crate::types::{GraphError, Result, Value};
+use crate::types::{GraphError, QueryPhase, Result, Value};
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -29,17 +29,88 @@ fn get_i64(map: &BTreeMap<String, Value>, key: &str) -> Option<i64> {
     }
 }
 
-/// Extract a numeric value as `f64` from a map (handles both I64 and F64).
-fn get_f64(map: &BTreeMap<String, Value>, key: &str) -> Option<f64> {
-    match map.get(key) {
-        Some(Value::I64(n)) => Some(*n as f64),
-        Some(Value::F64(n)) => Some(*n),
-        _ => None,
+/// An `InvalidArgumentValue` error for a bad temporal map component.
+fn invalid_map(message: impl fmt::Display) -> GraphError {
+    GraphError::invalid_argument_value(QueryPhase::Runtime, "temporal map", message)
+}
+
+/// An `InvalidArgumentValue` error for a temporal string that fails to parse.
+/// The message names the problem, never the offending input (decision D10).
+fn parse_error(message: impl fmt::Display) -> GraphError {
+    GraphError::invalid_argument_value(QueryPhase::Runtime, "temporal", message)
+}
+
+/// The `NumberOutOfRange` error for a temporal value that does not fit.
+fn out_of_range(what: impl fmt::Display) -> GraphError {
+    GraphError::number_out_of_range(QueryPhase::Runtime, format!("{what} is out of range"))
+}
+
+/// Read an integer map component and narrow it to `T`. A value that does not
+/// fit is an error: an `as` cast would silently wrap (hour 2^32 + 1 -> 1).
+fn get_int<T: TryFrom<i64>>(map: &BTreeMap<String, Value>, key: &str) -> Result<Option<T>> {
+    match get_i64(map, key) {
+        None => Ok(None),
+        Some(n) => T::try_from(n)
+            .map(Some)
+            .map_err(|_| invalid_map(format!("{key} {n} is out of range"))),
     }
+}
+
+/// Keys accepted by the date part of a temporal map.
+const DATE_KEYS: &[&str] = &[
+    "year",
+    "month",
+    "day",
+    "week",
+    "dayOfWeek",
+    "ordinalDay",
+    "quarter",
+    "dayOfQuarter",
+];
+
+/// Keys accepted by the time part of a temporal map.
+const TIME_KEYS: &[&str] = &[
+    "hour",
+    "minute",
+    "second",
+    "millisecond",
+    "microsecond",
+    "nanosecond",
+];
+
+/// Reject map keys outside `groups`, so a typo like `{yaer: 2024}` is an
+/// error instead of a silently defaulted component.
+fn check_keys(map: &BTreeMap<String, Value>, func: &str, groups: &[&[&str]]) -> Result<()> {
+    for key in map.keys() {
+        if !groups.iter().any(|g| g.contains(&key.as_str())) {
+            return Err(GraphError::invalid_argument_value(
+                QueryPhase::Runtime,
+                func,
+                format!("unknown key '{key}' in temporal map"),
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// Reject temporal strings containing non-ASCII characters.
+///
+/// Every valid ISO 8601 temporal string (including IANA zone names) is pure
+/// ASCII, and the parsers below slice at fixed byte offsets. Checking once up
+/// front guarantees every byte offset is a char boundary, so a multi-byte
+/// character can never make a slice panic; it fails here with a parse error.
+fn ensure_ascii(s: &str, what: &str) -> Result<()> {
+    if s.is_ascii() {
+        return Ok(());
+    }
+    Err(parse_error(format!(
+        "invalid {what} string: contains non-ASCII characters"
+    )))
 }
 
 /// Parse a timezone offset string into a `FixedOffset`.
 fn parse_offset(s: &str) -> Result<FixedOffset> {
+    ensure_ascii(s, "offset")?;
     if s == "Z" || s == "z" {
         return Ok(FixedOffset::east_opt(0).unwrap());
     }
@@ -48,99 +119,52 @@ fn parse_offset(s: &str) -> Result<FixedOffset> {
     } else if s.starts_with('-') {
         -1
     } else {
-        return Err(GraphError::Serialization {
-            context: String::new(),
-            source: format!("invalid offset: {s}"),
-            hint: None,
-        });
+        return Err(parse_error("invalid offset"));
     };
     let body = &s[1..];
     let (h, m) = if body.len() == 2 {
         // +HH
         (
-            body.parse::<i32>().map_err(|e| GraphError::Serialization {
-                context: String::new(),
-                source: e.to_string(),
-                hint: None,
-            })?,
+            body.parse::<i32>()
+                .map_err(|e| parse_error(e.to_string()))?,
             0,
         )
     } else if body.len() == 4 {
         // +HHMM
         let hh = body[..2]
             .parse::<i32>()
-            .map_err(|e| GraphError::Serialization {
-                context: String::new(),
-                source: e.to_string(),
-                hint: None,
-            })?;
+            .map_err(|e| parse_error(e.to_string()))?;
         let mm = body[2..]
             .parse::<i32>()
-            .map_err(|e| GraphError::Serialization {
-                context: String::new(),
-                source: e.to_string(),
-                hint: None,
-            })?;
+            .map_err(|e| parse_error(e.to_string()))?;
         (hh, mm)
     } else if body.len() == 5 && body.as_bytes()[2] == b':' {
         // +HH:MM
         let hh = body[..2]
             .parse::<i32>()
-            .map_err(|e| GraphError::Serialization {
-                context: String::new(),
-                source: e.to_string(),
-                hint: None,
-            })?;
+            .map_err(|e| parse_error(e.to_string()))?;
         let mm = body[3..]
             .parse::<i32>()
-            .map_err(|e| GraphError::Serialization {
-                context: String::new(),
-                source: e.to_string(),
-                hint: None,
-            })?;
+            .map_err(|e| parse_error(e.to_string()))?;
         (hh, mm)
     } else if body.len() == 8 && body.as_bytes()[2] == b':' && body.as_bytes()[5] == b':' {
         // +HH:MM:SS — historical offsets with seconds precision
         let hh = body[..2]
             .parse::<i32>()
-            .map_err(|e| GraphError::Serialization {
-                context: String::new(),
-                source: e.to_string(),
-                hint: None,
-            })?;
+            .map_err(|e| parse_error(e.to_string()))?;
         let mm = body[3..5]
             .parse::<i32>()
-            .map_err(|e| GraphError::Serialization {
-                context: String::new(),
-                source: e.to_string(),
-                hint: None,
-            })?;
+            .map_err(|e| parse_error(e.to_string()))?;
         let ss = body[6..8]
             .parse::<i32>()
-            .map_err(|e| GraphError::Serialization {
-                context: String::new(),
-                source: e.to_string(),
-                hint: None,
-            })?;
+            .map_err(|e| parse_error(e.to_string()))?;
         let total = sign * (hh * 3600 + mm * 60 + ss);
-        return FixedOffset::east_opt(total).ok_or_else(|| GraphError::Serialization {
-            context: String::new(),
-            source: format!("offset out of range: {s}"),
-            hint: None,
-        });
+        return FixedOffset::east_opt(total).ok_or_else(|| parse_error("offset out of range"));
     } else {
-        return Err(GraphError::Serialization {
-            context: String::new(),
-            source: format!("invalid offset: {s}"),
-            hint: None,
-        });
+        return Err(parse_error("invalid offset"));
     };
     let secs = sign * (h * 3600 + m * 60);
-    FixedOffset::east_opt(secs).ok_or_else(|| GraphError::Serialization {
-        context: String::new(),
-        source: format!("offset out of range: {s}"),
-        hint: None,
-    })
+    FixedOffset::east_opt(secs).ok_or_else(|| parse_error("offset out of range"))
 }
 
 /// Split a time string from its trailing timezone offset.
@@ -166,63 +190,34 @@ fn split_time_offset(s: &str) -> (&str, Option<&str>) {
 
 /// Parse a time string (without offset) into `NaiveTime`.
 fn parse_time_str(s: &str) -> Result<NaiveTime> {
+    ensure_ascii(s, "time")?;
     if s.contains(':') {
         // Colon-separated: HH:MM, HH:MM:SS, HH:MM:SS.nnn
         let parts: Vec<&str> = s.splitn(3, ':').collect();
-        let h: u32 =
-            parts[0]
-                .parse()
-                .map_err(|e: std::num::ParseIntError| GraphError::Serialization {
-                    context: String::new(),
-                    source: e.to_string(),
-                    hint: None,
-                })?;
-        let m: u32 =
-            parts
-                .get(1)
-                .unwrap_or(&"0")
-                .parse()
-                .map_err(|e: std::num::ParseIntError| GraphError::Serialization {
-                    context: String::new(),
-                    source: e.to_string(),
-                    hint: None,
-                })?;
+        let h: u32 = parts[0]
+            .parse()
+            .map_err(|e: std::num::ParseIntError| parse_error(e.to_string()))?;
+        let m: u32 = parts
+            .get(1)
+            .unwrap_or(&"0")
+            .parse()
+            .map_err(|e: std::num::ParseIntError| parse_error(e.to_string()))?;
         if parts.len() < 3 {
-            return NaiveTime::from_hms_opt(h, m, 0).ok_or_else(|| GraphError::Serialization {
-                context: String::new(),
-                source: format!("invalid time: {s}"),
-                hint: None,
-            });
+            return NaiveTime::from_hms_opt(h, m, 0).ok_or_else(|| parse_error("invalid time"));
         }
         let sec_part = parts[2];
         if let Some(dot_pos) = sec_part.find('.') {
             let sec: u32 = sec_part[..dot_pos]
                 .parse()
-                .map_err(|e: std::num::ParseIntError| GraphError::Serialization {
-                    context: String::new(),
-                    source: e.to_string(),
-                    hint: None,
-                })?;
+                .map_err(|e: std::num::ParseIntError| parse_error(e.to_string()))?;
             let frac = &sec_part[dot_pos + 1..];
             let nano = parse_frac_nanos(frac)?;
-            NaiveTime::from_hms_nano_opt(h, m, sec, nano).ok_or_else(|| GraphError::Serialization {
-                context: String::new(),
-                source: format!("invalid time: {s}"),
-                hint: None,
-            })
+            NaiveTime::from_hms_nano_opt(h, m, sec, nano).ok_or_else(|| parse_error("invalid time"))
         } else {
-            let sec: u32 = sec_part.parse().map_err(|e: std::num::ParseIntError| {
-                GraphError::Serialization {
-                    context: String::new(),
-                    source: e.to_string(),
-                    hint: None,
-                }
-            })?;
-            NaiveTime::from_hms_opt(h, m, sec).ok_or_else(|| GraphError::Serialization {
-                context: String::new(),
-                source: format!("invalid time: {s}"),
-                hint: None,
-            })
+            let sec: u32 = sec_part
+                .parse()
+                .map_err(|e: std::num::ParseIntError| parse_error(e.to_string()))?;
+            NaiveTime::from_hms_opt(h, m, sec).ok_or_else(|| parse_error("invalid time"))
         }
     } else {
         // Compact: HH, HHMM, HHMMSS, HHMMSS.nnn
@@ -235,73 +230,39 @@ fn parse_time_str(s: &str) -> Result<NaiveTime> {
             2 => (
                 digits
                     .parse::<u32>()
-                    .map_err(|e| GraphError::Serialization {
-                        context: String::new(),
-                        source: e.to_string(),
-                        hint: None,
-                    })?,
+                    .map_err(|e| parse_error(e.to_string()))?,
                 0u32,
                 0u32,
             ),
             4 => {
                 let hh = digits[..2]
                     .parse::<u32>()
-                    .map_err(|e| GraphError::Serialization {
-                        context: String::new(),
-                        source: e.to_string(),
-                        hint: None,
-                    })?;
+                    .map_err(|e| parse_error(e.to_string()))?;
                 let mm = digits[2..]
                     .parse::<u32>()
-                    .map_err(|e| GraphError::Serialization {
-                        context: String::new(),
-                        source: e.to_string(),
-                        hint: None,
-                    })?;
+                    .map_err(|e| parse_error(e.to_string()))?;
                 (hh, mm, 0)
             }
             6 => {
                 let hh = digits[..2]
                     .parse::<u32>()
-                    .map_err(|e| GraphError::Serialization {
-                        context: String::new(),
-                        source: e.to_string(),
-                        hint: None,
-                    })?;
+                    .map_err(|e| parse_error(e.to_string()))?;
                 let mm = digits[2..4]
                     .parse::<u32>()
-                    .map_err(|e| GraphError::Serialization {
-                        context: String::new(),
-                        source: e.to_string(),
-                        hint: None,
-                    })?;
+                    .map_err(|e| parse_error(e.to_string()))?;
                 let ss = digits[4..]
                     .parse::<u32>()
-                    .map_err(|e| GraphError::Serialization {
-                        context: String::new(),
-                        source: e.to_string(),
-                        hint: None,
-                    })?;
+                    .map_err(|e| parse_error(e.to_string()))?;
                 (hh, mm, ss)
             }
-            _ => {
-                return Err(GraphError::Serialization {
-                    context: String::new(),
-                    source: format!("invalid compact time: {s}"),
-                    hint: None,
-                })
-            }
+            _ => return Err(parse_error("invalid compact time")),
         };
         let nano = if let Some(f) = frac {
             parse_frac_nanos(f)?
         } else {
             0
         };
-        NaiveTime::from_hms_nano_opt(h, m, sec, nano).ok_or_else(|| GraphError::Serialization {
-            context: String::new(),
-            source: format!("invalid time: {s}"),
-            hint: None,
-        })
+        NaiveTime::from_hms_nano_opt(h, m, sec, nano).ok_or_else(|| parse_error("invalid time"))
     }
 }
 
@@ -310,15 +271,12 @@ fn parse_num<T: std::str::FromStr>(s: &str) -> Result<T>
 where
     T::Err: fmt::Display,
 {
-    s.parse::<T>().map_err(|e| GraphError::Serialization {
-        context: String::new(),
-        source: e.to_string(),
-        hint: None,
-    })
+    s.parse::<T>().map_err(|e| parse_error(e.to_string()))
 }
 
 /// Parse fractional seconds string (up to 9 digits) into nanoseconds.
 fn parse_frac_nanos(frac: &str) -> Result<u32> {
+    ensure_ascii(frac, "fractional seconds")?;
     let mut padded = String::from(frac);
     while padded.len() < 9 {
         padded.push('0');
@@ -326,15 +284,12 @@ fn parse_frac_nanos(frac: &str) -> Result<u32> {
     padded.truncate(9);
     padded
         .parse::<u32>()
-        .map_err(|e| GraphError::Serialization {
-            context: String::new(),
-            source: e.to_string(),
-            hint: None,
-        })
+        .map_err(|e| parse_error(e.to_string()))
 }
 
 /// Parse a date string into `NaiveDate`.
 fn parse_date_str(s: &str) -> Result<NaiveDate> {
+    ensure_ascii(s, "date")?;
     // Week date: YYYY-Www-D or YYYYWwwD or YYYY-Www or YYYYWww
     if s.contains('W') {
         return parse_week_date(s);
@@ -344,69 +299,34 @@ fn parse_date_str(s: &str) -> Result<NaiveDate> {
         let parts: Vec<&str> = s.split('-').collect();
         match parts.len() {
             3 => {
-                let y: i32 = parts[0].parse().map_err(|e: std::num::ParseIntError| {
-                    GraphError::Serialization {
-                        context: String::new(),
-                        source: e.to_string(),
-                        hint: None,
-                    }
-                })?;
-                let m: u32 = parts[1].parse().map_err(|e: std::num::ParseIntError| {
-                    GraphError::Serialization {
-                        context: String::new(),
-                        source: e.to_string(),
-                        hint: None,
-                    }
-                })?;
-                let d: u32 = parts[2].parse().map_err(|e: std::num::ParseIntError| {
-                    GraphError::Serialization {
-                        context: String::new(),
-                        source: e.to_string(),
-                        hint: None,
-                    }
-                })?;
-                NaiveDate::from_ymd_opt(y, m, d).ok_or_else(|| GraphError::Serialization {
-                    context: String::new(),
-                    source: format!("invalid date: {s}"),
-                    hint: None,
-                })
+                let y: i32 = parts[0]
+                    .parse()
+                    .map_err(|e: std::num::ParseIntError| parse_error(e.to_string()))?;
+                let m: u32 = parts[1]
+                    .parse()
+                    .map_err(|e: std::num::ParseIntError| parse_error(e.to_string()))?;
+                let d: u32 = parts[2]
+                    .parse()
+                    .map_err(|e: std::num::ParseIntError| parse_error(e.to_string()))?;
+                NaiveDate::from_ymd_opt(y, m, d).ok_or_else(|| parse_error("invalid date"))
             }
             2 => {
-                let y: i32 = parts[0].parse().map_err(|e: std::num::ParseIntError| {
-                    GraphError::Serialization {
-                        context: String::new(),
-                        source: e.to_string(),
-                        hint: None,
-                    }
-                })?;
-                let part2: u32 = parts[1].parse().map_err(|e: std::num::ParseIntError| {
-                    GraphError::Serialization {
-                        context: String::new(),
-                        source: e.to_string(),
-                        hint: None,
-                    }
-                })?;
+                let y: i32 = parts[0]
+                    .parse()
+                    .map_err(|e: std::num::ParseIntError| parse_error(e.to_string()))?;
+                let part2: u32 = parts[1]
+                    .parse()
+                    .map_err(|e: std::num::ParseIntError| parse_error(e.to_string()))?;
                 if parts[1].len() == 3 {
                     // Ordinal: YYYY-DDD
-                    NaiveDate::from_yo_opt(y, part2).ok_or_else(|| GraphError::Serialization {
-                        context: String::new(),
-                        source: format!("invalid ordinal date: {s}"),
-                        hint: None,
-                    })
+                    NaiveDate::from_yo_opt(y, part2)
+                        .ok_or_else(|| parse_error("invalid ordinal date"))
                 } else {
                     // YYYY-MM (day defaults to 1)
-                    NaiveDate::from_ymd_opt(y, part2, 1).ok_or_else(|| GraphError::Serialization {
-                        context: String::new(),
-                        source: format!("invalid date: {s}"),
-                        hint: None,
-                    })
+                    NaiveDate::from_ymd_opt(y, part2, 1).ok_or_else(|| parse_error("invalid date"))
                 }
             }
-            _ => Err(GraphError::Serialization {
-                context: String::new(),
-                source: format!("invalid date: {s}"),
-                hint: None,
-            }),
+            _ => Err(parse_error("invalid date")),
         }
     } else {
         // Compact forms: YYYYMMDD, YYYYMM, YYYY, YYYYDDD
@@ -415,99 +335,57 @@ fn parse_date_str(s: &str) -> Result<NaiveDate> {
                 let y: i32 = parse_num(&s[..4])?;
                 let m: u32 = parse_num(&s[4..6])?;
                 let d: u32 = parse_num(&s[6..])?;
-                NaiveDate::from_ymd_opt(y, m, d).ok_or_else(|| GraphError::Serialization {
-                    context: String::new(),
-                    source: format!("invalid date: {s}"),
-                    hint: None,
-                })
+                NaiveDate::from_ymd_opt(y, m, d).ok_or_else(|| parse_error("invalid date"))
             }
             7 => {
                 // YYYYDDD
                 let y: i32 = parse_num(&s[..4])?;
                 let d: u32 = parse_num(&s[4..])?;
-                NaiveDate::from_yo_opt(y, d).ok_or_else(|| GraphError::Serialization {
-                    context: String::new(),
-                    source: format!("invalid ordinal date: {s}"),
-                    hint: None,
-                })
+                NaiveDate::from_yo_opt(y, d).ok_or_else(|| parse_error("invalid ordinal date"))
             }
             6 => {
                 // YYYYMM
                 let y: i32 = parse_num(&s[..4])?;
                 let m: u32 = parse_num(&s[4..])?;
-                NaiveDate::from_ymd_opt(y, m, 1).ok_or_else(|| GraphError::Serialization {
-                    context: String::new(),
-                    source: format!("invalid date: {s}"),
-                    hint: None,
-                })
+                NaiveDate::from_ymd_opt(y, m, 1).ok_or_else(|| parse_error("invalid date"))
             }
             4 => {
                 let y: i32 = parse_num(s)?;
-                NaiveDate::from_ymd_opt(y, 1, 1).ok_or_else(|| GraphError::Serialization {
-                    context: String::new(),
-                    source: format!("invalid date: {s}"),
-                    hint: None,
-                })
+                NaiveDate::from_ymd_opt(y, 1, 1).ok_or_else(|| parse_error("invalid date"))
             }
-            _ => Err(GraphError::Serialization {
-                context: String::new(),
-                source: format!("invalid date: {s}"),
-                hint: None,
-            }),
+            _ => Err(parse_error("invalid date")),
         }
     }
 }
 
 /// Parse ISO week date forms.
 fn parse_week_date(s: &str) -> Result<NaiveDate> {
+    ensure_ascii(s, "week date")?;
     // Strip hyphens for uniform handling, but track original for error messages.
     let compact = s.replace('-', "");
     // Expected: YYYYWww or YYYYWwwD
-    let w_pos = compact.find('W').ok_or_else(|| GraphError::Serialization {
-        context: String::new(),
-        source: format!("invalid week date: {s}"),
-        hint: None,
-    })?;
+    let w_pos = compact
+        .find('W')
+        .ok_or_else(|| parse_error("invalid week date"))?;
     let year: i32 = compact[..w_pos]
         .parse()
-        .map_err(|e: std::num::ParseIntError| GraphError::Serialization {
-            context: String::new(),
-            source: e.to_string(),
-            hint: None,
-        })?;
+        .map_err(|e: std::num::ParseIntError| parse_error(e.to_string()))?;
     let after_w = &compact[w_pos + 1..];
     let (week, day) = if after_w.len() >= 3 {
-        let wk: u32 = after_w[..2].parse().map_err(|e: std::num::ParseIntError| {
-            GraphError::Serialization {
-                context: String::new(),
-                source: e.to_string(),
-                hint: None,
-            }
-        })?;
+        let wk: u32 = after_w[..2]
+            .parse()
+            .map_err(|e: std::num::ParseIntError| parse_error(e.to_string()))?;
         let d: u32 = after_w[2..3]
             .parse()
-            .map_err(|e: std::num::ParseIntError| GraphError::Serialization {
-                context: String::new(),
-                source: e.to_string(),
-                hint: None,
-            })?;
+            .map_err(|e: std::num::ParseIntError| parse_error(e.to_string()))?;
         (wk, d)
     } else if after_w.len() == 2 {
-        let wk: u32 =
-            after_w
-                .parse()
-                .map_err(|e: std::num::ParseIntError| GraphError::Serialization {
-                    context: String::new(),
-                    source: e.to_string(),
-                    hint: None,
-                })?;
+        let wk: u32 = after_w
+            .parse()
+            .map_err(|e: std::num::ParseIntError| parse_error(e.to_string()))?;
         (wk, 1) // default to Monday
     } else {
-        return Err(GraphError::Serialization {
-            context: String::new(),
-            source: format!("invalid week date: {s}"),
-            hint: None,
-        });
+        return Err(parse_error("invalid week date"));
     };
     let weekday = match day {
         1 => chrono::Weekday::Mon,
@@ -517,19 +395,9 @@ fn parse_week_date(s: &str) -> Result<NaiveDate> {
         5 => chrono::Weekday::Fri,
         6 => chrono::Weekday::Sat,
         7 => chrono::Weekday::Sun,
-        _ => {
-            return Err(GraphError::Serialization {
-                context: String::new(),
-                source: format!("invalid day of week {day} in: {s}"),
-                hint: None,
-            })
-        }
+        _ => return Err(parse_error("invalid day of week")),
     };
-    NaiveDate::from_isoywd_opt(year, week, weekday).ok_or_else(|| GraphError::Serialization {
-        context: String::new(),
-        source: format!("invalid week date: {s}"),
-        hint: None,
-    })
+    NaiveDate::from_isoywd_opt(year, week, weekday).ok_or_else(|| parse_error("invalid week date"))
 }
 
 /// Format a `NaiveTime` using the TCK local-time rules:
@@ -634,25 +502,33 @@ fn time_from_map(map: &BTreeMap<String, Value>) -> Result<NaiveTime> {
         _ => None,
     };
 
-    let h = get_i64(map, "hour")
-        .or_else(|| base_time.map(|t| t.hour() as i64))
-        .unwrap_or(0) as u32;
-    let m = get_i64(map, "minute")
-        .or_else(|| base_time.map(|t| t.minute() as i64))
-        .unwrap_or(0) as u32;
-    let s = get_i64(map, "second")
-        .or_else(|| base_time.map(|t| t.second() as i64))
-        .unwrap_or(0) as u32;
-    let mut nano = get_i64(map, "nanosecond")
+    let invalid = || parse_error("invalid time components".to_string());
+    let h = get_int::<u32>(map, "hour")?
+        .or_else(|| base_time.map(|t| t.hour()))
+        .unwrap_or(0);
+    let m = get_int::<u32>(map, "minute")?
+        .or_else(|| base_time.map(|t| t.minute()))
+        .unwrap_or(0);
+    let s = get_int::<u32>(map, "second")?
+        .or_else(|| base_time.map(|t| t.second()))
+        .unwrap_or(0);
+    let nano = get_i64(map, "nanosecond")
         .or_else(|| base_time.map(|t| (t.nanosecond() % 1_000_000_000) as i64))
-        .unwrap_or(0) as u32;
-    nano += get_i64(map, "millisecond").unwrap_or(0) as u32 * 1_000_000;
-    nano += get_i64(map, "microsecond").unwrap_or(0) as u32 * 1_000;
-    NaiveTime::from_hms_nano_opt(h, m, s, nano).ok_or_else(|| GraphError::Serialization {
-        context: String::new(),
-        source: "invalid time components".to_string(),
-        hint: None,
-    })
+        .unwrap_or(0);
+    // Sub-second parts add up; anything past one second is invalid.
+    let nano = get_i64(map, "millisecond")
+        .unwrap_or(0)
+        .checked_mul(1_000_000)
+        .and_then(|ms| ms.checked_add(nano))
+        .and_then(|n| {
+            get_i64(map, "microsecond")
+                .unwrap_or(0)
+                .checked_mul(1_000)
+                .and_then(|us| us.checked_add(n))
+        })
+        .and_then(|n| u32::try_from(n).ok())
+        .ok_or_else(invalid)?;
+    NaiveTime::from_hms_nano_opt(h, m, s, nano).ok_or_else(invalid)
 }
 
 /// Build a `NaiveDate` from map keys (year, month, day, week, dayOfWeek, ordinalDay, quarter, dayOfQuarter).
@@ -667,16 +543,30 @@ fn date_from_map(map: &BTreeMap<String, Value>) -> Result<NaiveDate> {
         _ => None,
     };
 
-    if let Some(week) = get_i64(map, "week") {
+    // The year comes from the map or the base date; there is no default.
+    let year = |iso_week_year: bool| -> Result<i32> {
+        match get_int::<i32>(map, "year")? {
+            Some(y) => Ok(y),
+            None => base_date
+                .map(|d| {
+                    if iso_week_year {
+                        d.iso_week().year()
+                    } else {
+                        d.year()
+                    }
+                })
+                .ok_or_else(|| invalid_map("year must be specified")),
+        }
+    };
+
+    if let Some(week) = get_int::<u32>(map, "week")? {
         // For ISO week dates, the year should be the ISO week year, not the calendar year.
-        let year = get_i64(map, "year")
-            .or_else(|| base_date.map(|d| d.iso_week().year() as i64))
-            .unwrap_or(0) as i32;
-        let dow = get_i64(map, "dayOfWeek").unwrap_or(
+        let year = year(true)?;
+        let dow = get_int::<u32>(map, "dayOfWeek")?.unwrap_or(
             base_date
-                .map(|d| d.weekday().num_days_from_monday() as i64 + 1)
+                .map(|d| d.weekday().num_days_from_monday() + 1)
                 .unwrap_or(1),
-        ) as u32;
+        );
         let weekday = match dow {
             1 => chrono::Weekday::Mon,
             2 => chrono::Weekday::Tue,
@@ -685,88 +575,58 @@ fn date_from_map(map: &BTreeMap<String, Value>) -> Result<NaiveDate> {
             5 => chrono::Weekday::Fri,
             6 => chrono::Weekday::Sat,
             7 => chrono::Weekday::Sun,
-            _ => {
-                return Err(GraphError::Serialization {
-                    context: String::new(),
-                    source: format!("invalid dayOfWeek: {dow}"),
-                    hint: None,
-                })
-            }
+            _ => return Err(parse_error(format!("invalid dayOfWeek: {dow}"))),
         };
-        NaiveDate::from_isoywd_opt(year, week as u32, weekday).ok_or_else(|| {
-            GraphError::Serialization {
-                context: String::new(),
-                source: "invalid week date components".to_string(),
-                hint: None,
-            }
-        })
-    } else if let Some(ord) = get_i64(map, "ordinalDay") {
-        let year = get_i64(map, "year")
-            .or_else(|| base_date.map(|d| d.year() as i64))
-            .unwrap_or(0) as i32;
-        NaiveDate::from_yo_opt(year, ord as u32).ok_or_else(|| GraphError::Serialization {
-            context: String::new(),
-            source: "invalid ordinal date components".to_string(),
-            hint: None,
-        })
+        NaiveDate::from_isoywd_opt(year, week, weekday)
+            .ok_or_else(|| parse_error("invalid week date components".to_string()))
+    } else if let Some(ord) = get_int::<u32>(map, "ordinalDay")? {
+        let year = year(false)?;
+        NaiveDate::from_yo_opt(year, ord)
+            .ok_or_else(|| parse_error("invalid ordinal date components".to_string()))
     } else if let Some(quarter) = get_i64(map, "quarter") {
-        let year = get_i64(map, "year")
-            .or_else(|| base_date.map(|d| d.year() as i64))
-            .unwrap_or(0) as i32;
+        if !(1..=4).contains(&quarter) {
+            return Err(invalid_map(format!("quarter {quarter} is out of range")));
+        }
+        let year = year(false)?;
         let quarter_start_month = ((quarter - 1) * 3 + 1) as u32;
         if let Some(doq) = get_i64(map, "dayOfQuarter") {
             // Explicit dayOfQuarter: count from first day of the quarter.
-            let start = NaiveDate::from_ymd_opt(year, quarter_start_month, 1).ok_or_else(|| {
-                GraphError::Serialization {
-                    context: String::new(),
-                    source: "invalid quarter".to_string(),
-                    hint: None,
-                }
-            })?;
-            start
-                .checked_add_signed(chrono::Duration::days(doq - 1))
-                .ok_or_else(|| GraphError::Serialization {
-                    context: String::new(),
-                    source: "dayOfQuarter out of range".to_string(),
-                    hint: None,
-                })
+            let start = NaiveDate::from_ymd_opt(year, quarter_start_month, 1)
+                .ok_or_else(|| parse_error("invalid quarter".to_string()))?;
+            doq.checked_sub(1)
+                .and_then(chrono::TimeDelta::try_days)
+                .and_then(|delta| start.checked_add_signed(delta))
+                .ok_or_else(|| parse_error("dayOfQuarter out of range".to_string()))
         } else if let Some(bd) = base_date {
             // No explicit dayOfQuarter but base date present: preserve month-offset
             // within the quarter and day-of-month from the base date.
             let base_month_in_quarter = (bd.month() - 1) % 3; // 0, 1, or 2
             let month = quarter_start_month + base_month_in_quarter;
-            let day = get_i64(map, "day").unwrap_or(bd.day() as i64) as u32;
-            NaiveDate::from_ymd_opt(year, month, day).ok_or_else(|| GraphError::Serialization {
-                context: String::new(),
-                source: "invalid quarter date".to_string(),
-                hint: None,
-            })
+            let day = get_int::<u32>(map, "day")?.unwrap_or(bd.day());
+            NaiveDate::from_ymd_opt(year, month, day)
+                .ok_or_else(|| parse_error("invalid quarter date".to_string()))
         } else {
             // No base date, no dayOfQuarter: first day of the quarter.
-            NaiveDate::from_ymd_opt(year, quarter_start_month, 1).ok_or_else(|| {
-                GraphError::Serialization {
-                    context: String::new(),
-                    source: "invalid quarter".to_string(),
-                    hint: None,
-                }
-            })
+            NaiveDate::from_ymd_opt(year, quarter_start_month, 1)
+                .ok_or_else(|| parse_error("invalid quarter".to_string()))
         }
     } else {
-        let year = get_i64(map, "year")
-            .or_else(|| base_date.map(|d| d.year() as i64))
-            .unwrap_or(0) as i32;
-        let month = get_i64(map, "month")
-            .or_else(|| base_date.map(|d| d.month() as i64))
-            .unwrap_or(1) as u32;
-        let day = get_i64(map, "day")
-            .or_else(|| base_date.map(|d| d.day() as i64))
-            .unwrap_or(1) as u32;
-        NaiveDate::from_ymd_opt(year, month, day).ok_or_else(|| GraphError::Serialization {
-            context: String::new(),
-            source: "invalid date components".to_string(),
-            hint: None,
-        })
+        let year = year(false)?;
+        let month = get_int::<u32>(map, "month")?
+            .or_else(|| base_date.map(|d| d.month()))
+            .unwrap_or(1);
+        let day = get_int::<u32>(map, "day")?
+            .or_else(|| base_date.map(|d| d.day()))
+            .unwrap_or(1);
+        NaiveDate::from_ymd_opt(year, month, day)
+            .ok_or_else(|| parse_error("invalid date components".to_string()))
     }
+}
+
+/// Whether a `timezone` value is an offset literal (`+01:00`, `Z`) rather
+/// than an IANA zone name.
+fn is_offset_literal(s: &str) -> bool {
+    s.starts_with('+') || s.starts_with('-') || s == "Z" || s == "z"
 }
 
 /// Extract an offset from the `timezone` map key.
@@ -803,11 +663,7 @@ fn offset_from_map(map: &BTreeMap<String, Value>) -> Result<(FixedOffset, Option
 /// Resolve an IANA timezone name to offset using the current time.
 /// Used when no specific datetime context is available (e.g. CypherTime).
 fn resolve_tz_name_now(name: &str) -> Result<(FixedOffset, Option<String>)> {
-    let tz: chrono_tz::Tz = name.parse().map_err(|_| GraphError::Serialization {
-        context: String::new(),
-        source: format!("unknown timezone: {name}"),
-        hint: None,
-    })?;
+    let tz: chrono_tz::Tz = name.parse().map_err(|_| parse_error("unknown timezone"))?;
     let now = chrono::Utc::now().with_timezone(&tz);
     let off = now.offset().fix();
     Ok((off, Some(name.to_string())))
@@ -816,19 +672,11 @@ fn resolve_tz_name_now(name: &str) -> Result<(FixedOffset, Option<String>)> {
 /// Resolve an IANA timezone name to offset at a specific NaiveDateTime.
 /// Uses the earliest valid local time (handles DST transitions).
 fn resolve_tz_name_at(name: &str, dt: &NaiveDateTime) -> Result<(FixedOffset, Option<String>)> {
-    let tz: chrono_tz::Tz = name.parse().map_err(|_| GraphError::Serialization {
-        context: String::new(),
-        source: format!("unknown timezone: {name}"),
-        hint: None,
-    })?;
+    let tz: chrono_tz::Tz = name.parse().map_err(|_| parse_error("unknown timezone"))?;
     let aware = tz
         .from_local_datetime(dt)
         .earliest()
-        .ok_or_else(|| GraphError::Serialization {
-            context: String::new(),
-            source: format!("ambiguous or invalid datetime in timezone: {name}"),
-            hint: None,
-        })?;
+        .ok_or_else(|| parse_error("ambiguous or invalid datetime in timezone"))?;
     let off = aware.offset().fix();
     Ok((off, Some(name.to_string())))
 }
@@ -935,11 +783,13 @@ impl<'de> Deserialize<'de> for CypherDate {
 impl CypherDate {
     /// Parse a date from an ISO 8601 string.
     pub fn from_iso_string(s: &str) -> Result<Self> {
+        ensure_ascii(s, "date")?;
         parse_date_str(s).map(CypherDate)
     }
 
     /// Build a date from a property map.
     pub fn from_map(map: &BTreeMap<String, Value>) -> Result<Self> {
+        check_keys(map, "date()", &[DATE_KEYS, &["date", "datetime"]])?;
         date_from_map(map).map(CypherDate)
     }
 }
@@ -1047,11 +897,13 @@ impl<'de> Deserialize<'de> for CypherLocalTime {
 impl CypherLocalTime {
     /// Parse a local time from an ISO 8601 string.
     pub fn from_iso_string(s: &str) -> Result<Self> {
+        ensure_ascii(s, "local time")?;
         parse_time_str(s).map(CypherLocalTime)
     }
 
     /// Build a local time from a property map.
     pub fn from_map(map: &BTreeMap<String, Value>) -> Result<Self> {
+        check_keys(map, "localtime()", &[TIME_KEYS, &["time", "datetime"]])?;
         time_from_map(map).map(CypherLocalTime)
     }
 }
@@ -1175,6 +1027,7 @@ impl CypherTime {
     /// Parse a time with offset from an ISO 8601 string.
     /// When no offset is present, defaults to UTC (+00:00).
     pub fn from_iso_string(s: &str) -> Result<Self> {
+        ensure_ascii(s, "time")?;
         let (time_part, off_part) = split_time_offset(s);
         let t = parse_time_str(time_part)?;
         let off = match off_part {
@@ -1186,6 +1039,11 @@ impl CypherTime {
 
     /// Build from a property map.
     pub fn from_map(map: &BTreeMap<String, Value>) -> Result<Self> {
+        check_keys(
+            map,
+            "time()",
+            &[TIME_KEYS, &["time", "datetime", "timezone"]],
+        )?;
         let t = time_from_map(map)?;
         let (off, _tz_name) = offset_from_map(map)?;
         // If the base temporal had a different offset and an explicit timezone was
@@ -1347,14 +1205,11 @@ impl<'de> Deserialize<'de> for CypherLocalDateTime {
 impl CypherLocalDateTime {
     /// Parse from ISO 8601, e.g. `1984-10-11T12:31:14`.
     pub fn from_iso_string(s: &str) -> Result<Self> {
-        let t_pos =
-            s.find('T')
-                .or_else(|| s.find('t'))
-                .ok_or_else(|| GraphError::Serialization {
-                    context: String::new(),
-                    source: format!("expected 'T' separator in: {s}"),
-                    hint: None,
-                })?;
+        ensure_ascii(s, "local datetime")?;
+        let t_pos = s
+            .find('T')
+            .or_else(|| s.find('t'))
+            .ok_or_else(|| parse_error("expected 'T' separator"))?;
         let date = parse_date_str(&s[..t_pos])?;
         let time = parse_time_str(&s[t_pos + 1..])?;
         Ok(CypherLocalDateTime(NaiveDateTime::new(date, time)))
@@ -1362,6 +1217,11 @@ impl CypherLocalDateTime {
 
     /// Build from a property map.
     pub fn from_map(map: &BTreeMap<String, Value>) -> Result<Self> {
+        check_keys(
+            map,
+            "localdatetime()",
+            &[DATE_KEYS, TIME_KEYS, &["date", "time", "datetime"]],
+        )?;
         let d = date_from_map(map)?;
         let t = time_from_map(map)?;
         Ok(CypherLocalDateTime(NaiveDateTime::new(d, t)))
@@ -1532,14 +1392,11 @@ impl CypherDateTime {
     /// Parse from ISO 8601 with timezone, e.g. `1984-10-11T12:31:14Z` or
     /// `2015-07-21T21:40:32.142+02:00[Europe/Stockholm]`.
     pub fn from_iso_string(s: &str) -> Result<Self> {
-        let t_pos =
-            s.find('T')
-                .or_else(|| s.find('t'))
-                .ok_or_else(|| GraphError::Serialization {
-                    context: String::new(),
-                    source: format!("expected 'T' separator in: {s}"),
-                    hint: None,
-                })?;
+        ensure_ascii(s, "datetime")?;
+        let t_pos = s
+            .find('T')
+            .or_else(|| s.find('t'))
+            .ok_or_else(|| parse_error("expected 'T' separator"))?;
         let date = parse_date_str(&s[..t_pos])?;
         let time_and_off = &s[t_pos + 1..];
 
@@ -1564,11 +1421,7 @@ impl CypherDateTime {
             let (resolved, _) = resolve_tz_name_at(tz, &ndt)?;
             resolved
         } else {
-            return Err(GraphError::Serialization {
-                context: String::new(),
-                source: format!("CypherDateTime requires an offset or timezone: {s}"),
-                hint: None,
-            });
+            return Err(parse_error("CypherDateTime requires an offset or timezone"));
         };
 
         Ok(CypherDateTime(NaiveDateTime::new(date, time), off, tz_name))
@@ -1576,6 +1429,18 @@ impl CypherDateTime {
 
     /// Build from a property map.
     pub fn from_map(map: &BTreeMap<String, Value>) -> Result<Self> {
+        if map.contains_key("epochSeconds") || map.contains_key("epochMillis") {
+            return Self::from_epoch_map(map);
+        }
+        check_keys(
+            map,
+            "datetime()",
+            &[
+                DATE_KEYS,
+                TIME_KEYS,
+                &["date", "time", "datetime", "timezone"],
+            ],
+        )?;
         let d = date_from_map(map)?;
         let t = time_from_map(map)?;
         let ndt = NaiveDateTime::new(d, t);
@@ -1597,11 +1462,7 @@ impl CypherDateTime {
                         let utc_ndt =
                             ndt - chrono::Duration::seconds(src_off.local_minus_utc() as i64);
                         let tz: chrono_tz::Tz =
-                            s.parse().map_err(|_| GraphError::Serialization {
-                                context: String::new(),
-                                source: format!("unknown timezone: {s}"),
-                                hint: None,
-                            })?;
+                            s.parse().map_err(|_| parse_error("unknown timezone"))?;
                         let aware = tz.from_utc_datetime(&utc_ndt);
                         let off = aware.offset().fix();
                         let converted = aware.naive_local();
@@ -1647,22 +1508,83 @@ impl CypherDateTime {
     }
 
     /// Create from epoch seconds and nanoseconds (UTC).
-    pub fn from_epoch(seconds: i64, nanos: i64) -> Self {
-        let total_nanos = seconds * 1_000_000_000 + nanos;
-        let secs = total_nanos.div_euclid(1_000_000_000);
-        let ns = total_nanos.rem_euclid(1_000_000_000) as u32;
-        let dt = chrono::DateTime::from_timestamp(secs, ns)
-            .unwrap_or_else(|| chrono::DateTime::from_timestamp(0, 0).unwrap());
-        CypherDateTime(dt.naive_utc(), FixedOffset::east_opt(0).unwrap(), None)
+    ///
+    /// Errors with `NumberOutOfRange` when the instant is outside chrono's
+    /// calendar range (roughly +-262,000 years).
+    pub fn from_epoch(seconds: i64, nanos: i64) -> Result<Self> {
+        Self::from_epoch_nanos(seconds as i128 * 1_000_000_000 + nanos as i128)
     }
 
-    /// Create from epoch milliseconds (UTC).
-    pub fn from_epoch_millis(millis: i64) -> Self {
-        let secs = millis.div_euclid(1000);
-        let ms = millis.rem_euclid(1000) as u32;
-        let dt = chrono::DateTime::from_timestamp(secs, ms * 1_000_000)
-            .unwrap_or_else(|| chrono::DateTime::from_timestamp(0, 0).unwrap());
-        CypherDateTime(dt.naive_utc(), FixedOffset::east_opt(0).unwrap(), None)
+    /// Create from epoch milliseconds (UTC). Errors like [`Self::from_epoch`].
+    pub fn from_epoch_millis(millis: i64) -> Result<Self> {
+        Self::from_epoch_nanos(millis as i128 * 1_000_000)
+    }
+
+    /// Create from nanoseconds since the Unix epoch (UTC).
+    fn from_epoch_nanos(total: i128) -> Result<Self> {
+        let secs = i64::try_from(total.div_euclid(1_000_000_000));
+        let ns = total.rem_euclid(1_000_000_000) as u32;
+        let dt = secs
+            .ok()
+            .and_then(|s| chrono::DateTime::from_timestamp(s, ns))
+            .ok_or_else(|| out_of_range(format!("epoch instant {total}ns")))?;
+        Ok(CypherDateTime(
+            dt.naive_utc(),
+            FixedOffset::east_opt(0).unwrap(),
+            None,
+        ))
+    }
+
+    /// `datetime({epochSeconds | epochMillis, [millisecond, microsecond,
+    /// nanosecond], [timezone]})`: an instant since the Unix epoch, shown in
+    /// `timezone` (UTC by default).
+    fn from_epoch_map(map: &BTreeMap<String, Value>) -> Result<Self> {
+        check_keys(
+            map,
+            "datetime()",
+            &[
+                &["epochSeconds", "epochMillis", "timezone"],
+                &["millisecond", "microsecond", "nanosecond"],
+            ],
+        )
+        .map_err(|_| {
+            GraphError::invalid_argument_value(
+                QueryPhase::Runtime,
+                "datetime()",
+                "epochSeconds/epochMillis can only be combined with millisecond, \
+                 microsecond, nanosecond and timezone",
+            )
+        })?;
+        let int = |key: &str| -> Result<i128> {
+            match map.get(key) {
+                None | Some(Value::Null) => Ok(0),
+                Some(Value::I64(n)) => Ok(*n as i128),
+                Some(_) => Err(invalid_map(format!("{key} must be an integer"))),
+            }
+        };
+        let total = int("epochSeconds")? * 1_000_000_000
+            + int("epochMillis")? * 1_000_000
+            + int("millisecond")? * 1_000_000
+            + int("microsecond")? * 1_000
+            + int("nanosecond")?;
+        let utc = Self::from_epoch_nanos(total)?;
+        match map.get("timezone") {
+            Some(Value::String(s)) if is_offset_literal(s) => {
+                let off = parse_offset(s)?;
+                Ok(CypherDateTime(utc.0 + off, off, None))
+            }
+            Some(Value::String(name)) => {
+                let tz: chrono_tz::Tz =
+                    name.parse().map_err(|_| parse_error("unknown timezone"))?;
+                let aware = tz.from_utc_datetime(&utc.0);
+                Ok(CypherDateTime(
+                    aware.naive_local(),
+                    aware.offset().fix(),
+                    Some(name.clone()),
+                ))
+            }
+            _ => Ok(utc),
+        }
     }
 }
 
@@ -1845,13 +1767,13 @@ impl<'de> Deserialize<'de> for CypherDuration {
 
 impl CypherDuration {
     /// Parse an ISO 8601 duration string, e.g. `P1Y2M3DT4H5M6.789S`.
+    ///
+    /// Integer components are exact; a component that overflows the i64
+    /// months/days/seconds fields is a `NumberOutOfRange` error.
     pub fn from_iso_string(s: &str) -> Result<Self> {
+        ensure_ascii(s, "duration")?;
         if !s.starts_with('P') && !s.starts_with('p') {
-            return Err(GraphError::Serialization {
-                context: String::new(),
-                source: format!("duration must start with 'P': {s}"),
-                hint: None,
-            });
+            return Err(parse_error("duration must start with 'P'"));
         }
         let body = &s[1..];
 
@@ -1873,35 +1795,11 @@ impl CypherDuration {
                 // Date-format duration: P2012-02-02T14:37:21.545
                 let parts: Vec<&str> = date_part.split('-').collect();
                 if parts.len() == 3 {
-                    let y: i64 = parts[0].parse().map_err(|e: std::num::ParseIntError| {
-                        GraphError::Serialization {
-                            context: String::new(),
-                            source: e.to_string(),
-                            hint: None,
-                        }
-                    })?;
-                    let m: i64 = parts[1].parse().map_err(|e: std::num::ParseIntError| {
-                        GraphError::Serialization {
-                            context: String::new(),
-                            source: e.to_string(),
-                            hint: None,
-                        }
-                    })?;
-                    let d: i64 = parts[2].parse().map_err(|e: std::num::ParseIntError| {
-                        GraphError::Serialization {
-                            context: String::new(),
-                            source: e.to_string(),
-                            hint: None,
-                        }
-                    })?;
-                    months += y * 12 + m;
-                    days += d;
+                    add_scaled(&mut months, parse_component(parts[0])?, 12, "months")?;
+                    add_scaled(&mut months, parse_component(parts[1])?, 1, "months")?;
+                    add_scaled(&mut days, parse_component(parts[2])?, 1, "days")?;
                 } else {
-                    return Err(GraphError::Serialization {
-                        context: String::new(),
-                        source: format!("invalid date-format duration: {date_part}"),
-                        hint: None,
-                    });
+                    return Err(parse_error("invalid date-format duration"));
                 }
             } else {
                 parse_duration_date_part(
@@ -1921,21 +1819,8 @@ impl CypherDuration {
                     // Colon-format time: hh:mm:ss[.fff]
                     let parts: Vec<&str> = tp.split(':').collect();
                     if parts.len() >= 2 {
-                        let h: i64 = parts[0].parse().map_err(|e: std::num::ParseIntError| {
-                            GraphError::Serialization {
-                                context: String::new(),
-                                source: e.to_string(),
-                                hint: None,
-                            }
-                        })?;
-                        let m: i64 = parts[1].parse().map_err(|e: std::num::ParseIntError| {
-                            GraphError::Serialization {
-                                context: String::new(),
-                                source: e.to_string(),
-                                hint: None,
-                            }
-                        })?;
-                        seconds += h * 3600 + m * 60;
+                        add_scaled(&mut seconds, parse_component(parts[0])?, 3600, "seconds")?;
+                        add_scaled(&mut seconds, parse_component(parts[1])?, 60, "seconds")?;
                         if parts.len() == 3 {
                             let s_str = parts[2];
                             if let Some(dot_pos) = s_str.find('.') {
@@ -1944,26 +1829,12 @@ impl CypherDuration {
                                 let int_val: i64 = if int_part.is_empty() {
                                     0
                                 } else {
-                                    int_part.parse().map_err(|e: std::num::ParseIntError| {
-                                        GraphError::Serialization {
-                                            context: String::new(),
-                                            source: e.to_string(),
-                                            hint: None,
-                                        }
-                                    })?
+                                    parse_component(int_part)?
                                 };
-                                seconds += int_val;
+                                add_scaled(&mut seconds, int_val, 1, "seconds")?;
                                 nanos += parse_frac_nanos(frac_part)? as i64;
                             } else {
-                                let s_val: i64 =
-                                    s_str.parse().map_err(|e: std::num::ParseIntError| {
-                                        GraphError::Serialization {
-                                            context: String::new(),
-                                            source: e.to_string(),
-                                            hint: None,
-                                        }
-                                    })?;
-                                seconds += s_val;
+                                add_scaled(&mut seconds, parse_component(s_str)?, 1, "seconds")?;
                             }
                         }
                     }
@@ -1982,83 +1853,155 @@ impl CypherDuration {
     }
 
     /// Build from a property map.
+    ///
+    /// Integer components are added exactly (seconds and smaller in i128
+    /// nanoseconds); only fractional parts go through floating point.
+    /// Fractions cascade down: years to months (x12), months to days
+    /// (x30.436875, Neo4j's average month), days to nanoseconds. A total that
+    /// does not fit the i64 fields is a `NumberOutOfRange` error.
     pub fn from_map(map: &BTreeMap<String, Value>) -> Result<Self> {
-        // Use f64 to support fractional values. Fractions cascade down:
-        // years → months (×12), months → days (×30), days → hours (×24),
-        // hours → minutes (×60), minutes → seconds (×60),
-        // seconds → nanos (×10^9).
-        let years = get_f64(map, "years").unwrap_or(0.0);
-        let mons = get_f64(map, "months").unwrap_or(0.0);
-        let weeks = get_f64(map, "weeks").unwrap_or(0.0);
-        let days = get_f64(map, "days").unwrap_or(0.0);
-        let hours = get_f64(map, "hours").unwrap_or(0.0);
-        let minutes = get_f64(map, "minutes").unwrap_or(0.0);
-        let secs = get_f64(map, "seconds").unwrap_or(0.0);
-        let millis = get_f64(map, "milliseconds").unwrap_or(0.0);
-        let micros = get_f64(map, "microseconds").unwrap_or(0.0);
-        let ns = get_f64(map, "nanoseconds").unwrap_or(0.0);
+        const UNITS: &[&str] = &[
+            "years",
+            "months",
+            "weeks",
+            "days",
+            "hours",
+            "minutes",
+            "seconds",
+            "milliseconds",
+            "microseconds",
+            "nanoseconds",
+        ];
+        check_keys(map, "duration()", &[UNITS])?;
+        // (exact integer part, fractional part) of a component. Every
+        // integer part fits in i64, so the i128 sums below cannot overflow.
+        let part = |key: &str| -> Result<(i128, f64)> {
+            match map.get(key) {
+                Some(Value::I64(n)) => Ok((*n as i128, 0.0)),
+                Some(Value::F64(f)) if f.is_finite() && f.abs() < 9.2e18 => {
+                    let whole = f.trunc();
+                    Ok((whole as i128, f - whole))
+                }
+                Some(Value::F64(f)) => Err(out_of_range(format!("duration {key} {f}"))),
+                _ => Ok((0, 0.0)),
+            }
+        };
+        let (years, years_f) = part("years")?;
+        let (mons, mons_f) = part("months")?;
+        let (weeks, weeks_f) = part("weeks")?;
+        let (days, days_f) = part("days")?;
+        let (hours, hours_f) = part("hours")?;
+        let (minutes, minutes_f) = part("minutes")?;
+        let (secs, secs_f) = part("seconds")?;
+        let (millis, millis_f) = part("milliseconds")?;
+        let (micros, micros_f) = part("microseconds")?;
+        let (ns, ns_f) = part("nanoseconds")?;
 
-        // Cascade: truncate each level, push fraction to next unit down.
-        let months_f = years * 12.0 + mons;
-        let total_months = months_f.trunc() as i64;
-        let frac_months = months_f - months_f.trunc();
+        // Months: exact integer part plus the whole months of the fractions.
+        let frac_months = years_f * 12.0 + mons_f;
+        let months = years * 12 + mons + frac_months.trunc() as i128;
+        let frac_months = frac_months - frac_months.trunc();
 
-        // Neo4j uses average days per month: 365.2425 / 12 = 30.436875
-        let days_f = weeks * 7.0 + days + frac_months * 30.436875;
-        let total_days = days_f.trunc() as i64;
-        let frac_days = days_f - days_f.trunc();
+        // Days: Neo4j uses average days per month: 365.2425 / 12 = 30.436875
+        let frac_days = weeks_f * 7.0 + days_f + frac_months * 30.436875;
+        let total_days = weeks * 7 + days + frac_days.trunc() as i128;
+        let frac_days = frac_days - frac_days.trunc();
 
-        // Accumulate time from fractional days downward into nanos.
-        let nanos_from_time = (hours + frac_days * 24.0) * 3_600_000_000_000.0
-            + minutes * 60_000_000_000.0
-            + secs * 1_000_000_000.0
-            + millis * 1_000_000.0
-            + micros * 1_000.0
+        // Clock part in nanoseconds: exact integers, rounded fractions.
+        let exact_nanos = hours * 3_600_000_000_000
+            + minutes * 60_000_000_000
+            + secs * 1_000_000_000
+            + millis * 1_000_000
+            + micros * 1_000
             + ns;
-        let total_nanos_i = nanos_from_time.round() as i64;
+        let frac_nanos = (frac_days * 24.0 + hours_f) * 3_600_000_000_000.0
+            + minutes_f * 60_000_000_000.0
+            + secs_f * 1_000_000_000.0
+            + millis_f * 1_000_000.0
+            + micros_f * 1_000.0
+            + ns_f;
+        let total_nanos = exact_nanos + frac_nanos.round() as i128;
 
-        let mut total_seconds = total_nanos_i / 1_000_000_000;
-        let mut total_nanos = total_nanos_i % 1_000_000_000;
-
-        // Ensure seconds and nanos have the same sign.
-        if total_seconds > 0 && total_nanos < 0 {
-            total_seconds -= 1;
-            total_nanos += 1_000_000_000;
-        } else if total_seconds < 0 && total_nanos > 0 {
-            total_seconds += 1;
-            total_nanos -= 1_000_000_000;
-        }
-
+        let fit = |v: i128, what: &str| {
+            i64::try_from(v).map_err(|_| out_of_range(format!("duration {what}")))
+        };
+        // Truncating division keeps seconds and nanos on the same sign.
         Ok(CypherDuration {
-            months: total_months,
-            days: total_days,
-            seconds: total_seconds,
-            nanos: total_nanos,
+            months: fit(months, "months")?,
+            days: fit(total_days, "days")?,
+            seconds: fit(total_nanos / 1_000_000_000, "seconds")?,
+            nanos: (total_nanos % 1_000_000_000) as i64,
         })
     }
 }
 
+/// `*acc += value * unit`, failing with `NumberOutOfRange` on overflow.
+fn add_scaled(acc: &mut i64, value: i64, unit: i64, what: &str) -> Result<()> {
+    *acc = value
+        .checked_mul(unit)
+        .and_then(|v| acc.checked_add(v))
+        .ok_or_else(|| out_of_range(format!("duration {what}")))?;
+    Ok(())
+}
+
+/// Parse an integer duration component; overflow is `NumberOutOfRange`,
+/// anything else unparseable is a serialization error.
+fn parse_component(s: &str) -> Result<i64> {
+    s.parse::<i64>().map_err(|e| match e.kind() {
+        std::num::IntErrorKind::PosOverflow | std::num::IntErrorKind::NegOverflow => {
+            out_of_range(format!("duration component {s}"))
+        }
+        _ => parse_error(e.to_string()),
+    })
+}
+
+/// Split a decimal component like `-1.5` into its exact integer part and its
+/// (signed) fraction.
+fn split_decimal(s: &str) -> Result<(i64, f64)> {
+    let (int_str, frac_str) = s.split_once('.').unwrap_or((s, ""));
+    let negative = int_str.starts_with('-');
+    if matches!(int_str, "" | "-") && frac_str.is_empty() {
+        return Err(parse_error("invalid duration component"));
+    }
+    let int_val = if matches!(int_str, "" | "-") {
+        0
+    } else {
+        parse_component(int_str)?
+    };
+    let frac = if frac_str.is_empty() {
+        0.0
+    } else {
+        format!("0.{frac_str}")
+            .parse::<f64>()
+            .map_err(|e| parse_error(e.to_string()))?
+    };
+    Ok((int_val, if negative { -frac } else { frac }))
+}
+
 /// Cascade fractional months into days/seconds/nanos.
-fn cascade_frac_months(frac: f64, days: &mut i64, seconds: &mut i64, nanos: &mut i64) {
+fn cascade_frac_months(
+    frac: f64,
+    days: &mut i64,
+    seconds: &mut i64,
+    nanos: &mut i64,
+) -> Result<()> {
     if frac == 0.0 {
-        return;
+        return Ok(());
     }
     let days_f = frac * 30.436875;
-    let int_days = days_f.trunc() as i64;
-    *days += int_days;
-    let frac_days = days_f - days_f.trunc();
-    cascade_frac_days(frac_days, seconds, nanos);
+    add_scaled(days, days_f.trunc() as i64, 1, "days")?;
+    cascade_frac_days(days_f - days_f.trunc(), seconds, nanos)
 }
 
 /// Cascade fractional days into seconds/nanos.
-fn cascade_frac_days(frac: f64, seconds: &mut i64, nanos: &mut i64) {
+fn cascade_frac_days(frac: f64, seconds: &mut i64, nanos: &mut i64) -> Result<()> {
     if frac == 0.0 {
-        return;
+        return Ok(());
     }
-    let total_nanos_f = frac * 86400.0 * 1_000_000_000.0;
-    let total_nanos_i = total_nanos_f.round() as i64;
-    *seconds += total_nanos_i / 1_000_000_000;
+    let total_nanos_i = (frac * 86400.0 * 1_000_000_000.0).round() as i64;
+    add_scaled(seconds, total_nanos_i / 1_000_000_000, 1, "seconds")?;
     *nanos += total_nanos_i % 1_000_000_000;
+    Ok(())
 }
 
 /// Parse the date portion of a duration string (before T).
@@ -2069,6 +2012,7 @@ fn parse_duration_date_part(
     seconds: &mut i64,
     nanos: &mut i64,
 ) -> Result<()> {
+    ensure_ascii(s, "duration")?;
     let mut num_start = 0;
     let bytes = s.as_bytes();
     let mut i = 0;
@@ -2082,47 +2026,30 @@ fn parse_duration_date_part(
             i += 1;
             continue;
         }
-        let num_str = &s[num_start..i];
-        let n: f64 =
-            num_str
-                .parse()
-                .map_err(|e: std::num::ParseFloatError| GraphError::Serialization {
-                    context: String::new(),
-                    source: e.to_string(),
-                    hint: None,
-                })?;
-        let int_part = n.trunc() as i64;
-        let frac = n - n.trunc();
+        let (int_part, frac) = split_decimal(&s[num_start..i])?;
         match b {
             b'Y' | b'y' => {
                 // Integer years → months, fractional years → fractional months
-                *months += int_part * 12;
+                add_scaled(months, int_part, 12, "months")?;
                 let frac_months = frac * 12.0;
-                let int_frac_months = frac_months.trunc() as i64;
-                *months += int_frac_months;
-                cascade_frac_months(frac_months - frac_months.trunc(), days, seconds, nanos);
+                add_scaled(months, frac_months.trunc() as i64, 1, "months")?;
+                cascade_frac_months(frac_months - frac_months.trunc(), days, seconds, nanos)?;
             }
             b'M' | b'm' => {
-                *months += int_part;
-                cascade_frac_months(frac, days, seconds, nanos);
+                add_scaled(months, int_part, 1, "months")?;
+                cascade_frac_months(frac, days, seconds, nanos)?;
             }
             b'W' | b'w' => {
-                let days_f = n * 7.0;
-                let int_days = days_f.trunc() as i64;
-                *days += int_days;
-                cascade_frac_days(days_f - days_f.trunc(), seconds, nanos);
+                add_scaled(days, int_part, 7, "days")?;
+                let days_f = frac * 7.0;
+                add_scaled(days, days_f.trunc() as i64, 1, "days")?;
+                cascade_frac_days(days_f - days_f.trunc(), seconds, nanos)?;
             }
             b'D' | b'd' => {
-                *days += int_part;
-                cascade_frac_days(frac, seconds, nanos);
+                add_scaled(days, int_part, 1, "days")?;
+                cascade_frac_days(frac, seconds, nanos)?;
             }
-            _ => {
-                return Err(GraphError::Serialization {
-                    context: String::new(),
-                    source: format!("unexpected char '{b}' in duration date part"),
-                    hint: None,
-                })
-            }
+            _ => return Err(parse_error("unexpected character in duration date part")),
         }
         i += 1;
         num_start = i;
@@ -2136,6 +2063,7 @@ fn parse_duration_date_part(
 
 /// Parse the time portion of a duration string (after T).
 fn parse_duration_time_part(s: &str, seconds: &mut i64, nanos: &mut i64) -> Result<()> {
+    ensure_ascii(s, "duration")?;
     let mut num_start = 0;
     let bytes = s.as_bytes();
     let mut i = 0;
@@ -2151,42 +2079,18 @@ fn parse_duration_time_part(s: &str, seconds: &mut i64, nanos: &mut i64) -> Resu
         }
         let num_str = &s[num_start..i];
         match b {
-            b'H' | b'h' => {
-                let n: f64 = num_str.parse().map_err(|e: std::num::ParseFloatError| {
-                    GraphError::Serialization {
-                        context: String::new(),
-                        source: e.to_string(),
-                        hint: None,
-                    }
-                })?;
-                let int_part = n.trunc() as i64;
-                let frac = n - n.trunc();
-                *seconds += int_part * 3600;
+            b'H' | b'h' | b'M' | b'm' => {
+                let unit: i64 = if matches!(b, b'H' | b'h') { 3600 } else { 60 };
+                let (int_part, frac) = split_decimal(num_str)?;
+                add_scaled(seconds, int_part, unit, "seconds")?;
                 if frac != 0.0 {
-                    let frac_nanos = (frac * 3_600_000_000_000.0).round() as i64;
-                    *seconds += frac_nanos / 1_000_000_000;
-                    *nanos += frac_nanos % 1_000_000_000;
-                }
-            }
-            b'M' | b'm' => {
-                let n: f64 = num_str.parse().map_err(|e: std::num::ParseFloatError| {
-                    GraphError::Serialization {
-                        context: String::new(),
-                        source: e.to_string(),
-                        hint: None,
-                    }
-                })?;
-                let int_part = n.trunc() as i64;
-                let frac = n - n.trunc();
-                *seconds += int_part * 60;
-                if frac != 0.0 {
-                    let frac_nanos = (frac * 60_000_000_000.0).round() as i64;
-                    *seconds += frac_nanos / 1_000_000_000;
+                    let frac_nanos = (frac * unit as f64 * 1_000_000_000.0).round() as i64;
+                    add_scaled(seconds, frac_nanos / 1_000_000_000, 1, "seconds")?;
                     *nanos += frac_nanos % 1_000_000_000;
                 }
             }
             b'S' | b's' => {
-                // May be fractional
+                // May be fractional; the fraction is parsed exactly.
                 if let Some(dot_pos) = num_str.find('.') {
                     let int_part = &num_str[..dot_pos];
                     let frac_part = &num_str[dot_pos + 1..];
@@ -2194,35 +2098,16 @@ fn parse_duration_time_part(s: &str, seconds: &mut i64, nanos: &mut i64) -> Resu
                     let int_val: i64 = if int_part.is_empty() || int_part == "-" {
                         0
                     } else {
-                        int_part.parse().map_err(|e: std::num::ParseIntError| {
-                            GraphError::Serialization {
-                                context: String::new(),
-                                source: e.to_string(),
-                                hint: None,
-                            }
-                        })?
+                        parse_component(int_part)?
                     };
                     let frac_nanos = parse_frac_nanos(frac_part)? as i64;
-                    *seconds += int_val;
+                    add_scaled(seconds, int_val, 1, "seconds")?;
                     *nanos += if negative { -frac_nanos } else { frac_nanos };
                 } else {
-                    let n: i64 = num_str.parse().map_err(|e: std::num::ParseIntError| {
-                        GraphError::Serialization {
-                            context: String::new(),
-                            source: e.to_string(),
-                            hint: None,
-                        }
-                    })?;
-                    *seconds += n;
+                    add_scaled(seconds, parse_component(num_str)?, 1, "seconds")?;
                 }
             }
-            _ => {
-                return Err(GraphError::Serialization {
-                    context: String::new(),
-                    source: format!("unexpected char '{b}' in duration time part"),
-                    hint: None,
-                })
-            }
+            _ => return Err(parse_error("unexpected character in duration time part")),
         }
         i += 1;
         num_start = i;
@@ -2540,17 +2425,20 @@ pub fn duration_in_days(lhs: &Value, rhs: &Value) -> CypherDuration {
     }
 
     if let (Some(date1), Some(date2)) = (d1, d2) {
-        // Compute total elapsed nanoseconds including time components.
-        let day_nanos = date2.signed_duration_since(date1).num_days() * 86_400_000_000_000i64;
+        // Compute total elapsed nanoseconds including time components. i128:
+        // a span over ~292 years overflows i64 nanoseconds.
+        let day_nanos =
+            date2.signed_duration_since(date1).num_days() as i128 * 86_400_000_000_000i128;
         let t1_nanos = extract_time(lhs).map(time_to_nanos).unwrap_or(0)
             - effective_offset_dst(lhs, rhs) * 1_000_000_000;
         let t2_nanos = extract_time(rhs).map(time_to_nanos).unwrap_or(0)
             - effective_offset_dst(rhs, lhs) * 1_000_000_000;
-        let total_nanos = day_nanos + (t2_nanos - t1_nanos);
+        let total_nanos = day_nanos + (t2_nanos - t1_nanos) as i128;
 
-        // Truncate toward zero to get whole days.
-        let nanos_per_day: i64 = 86_400_000_000_000;
-        let days = total_nanos / nanos_per_day; // truncates toward zero
+        // Truncate toward zero to get whole days (always fits: chrono dates
+        // span far fewer than i64::MAX days).
+        let nanos_per_day: i128 = 86_400_000_000_000;
+        let days = (total_nanos / nanos_per_day) as i64;
 
         CypherDuration {
             months: 0,
@@ -2596,10 +2484,12 @@ pub fn duration_in_seconds(lhs: &Value, rhs: &Value) -> CypherDuration {
     }
 
     if let (Some(date1), Some(date2)) = (d1, d2) {
-        let total_day_secs = date2.signed_duration_since(date1).num_days() * 86400;
-        let total_nanos = total_day_secs * 1_000_000_000 + time_diff;
-        let secs = total_nanos.div_euclid(1_000_000_000);
-        let ns = total_nanos.rem_euclid(1_000_000_000);
+        // i128: a span over ~292 years overflows i64 nanoseconds. The
+        // seconds always fit i64 (chrono dates span ~5e14 days at most).
+        let total_day_secs = date2.signed_duration_since(date1).num_days() as i128 * 86400;
+        let total_nanos = total_day_secs * 1_000_000_000 + time_diff as i128;
+        let secs = total_nanos.div_euclid(1_000_000_000) as i64;
+        let ns = total_nanos.rem_euclid(1_000_000_000) as i64;
         CypherDuration {
             months: 0,
             days: 0,
@@ -2627,22 +2517,15 @@ pub fn parse_offset_public(s: &str) -> Result<i32> {
 
 /// Truncate a date to the given unit, then apply optional map overrides.
 pub fn truncate_date(unit: &str, val: &Value, map: &BTreeMap<String, Value>) -> Result<NaiveDate> {
-    let date = extract_date(val).ok_or_else(|| GraphError::Serialization {
-        context: String::new(),
-        source: "truncate_date requires a temporal with a date component".into(),
-        hint: None,
-    })?;
+    let date = extract_date(val)
+        .ok_or_else(|| parse_error("truncate_date requires a temporal with a date component"))?;
     let mut d = truncate_date_core(unit, date)?;
 
     // Apply map overrides.
     if let Some(Value::I64(day)) = map.get("day") {
         d = d
             .with_day(*day as u32)
-            .ok_or_else(|| GraphError::Serialization {
-                context: String::new(),
-                source: format!("invalid day: {day}"),
-                hint: None,
-            })?;
+            .ok_or_else(|| parse_error(format!("invalid day: {day}")))?;
     }
     if let Some(Value::I64(dow)) = map.get("dayOfWeek") {
         // dayOfWeek override: keep the same week, change to the given day.
@@ -2654,11 +2537,7 @@ pub fn truncate_date(unit: &str, val: &Value, map: &BTreeMap<String, Value>) -> 
     if let Some(Value::I64(m)) = map.get("month") {
         d = d
             .with_month(*m as u32)
-            .ok_or_else(|| GraphError::Serialization {
-                context: String::new(),
-                source: format!("invalid month: {m}"),
-                hint: None,
-            })?;
+            .ok_or_else(|| parse_error(format!("invalid month: {m}")))?;
     }
 
     Ok(d)
@@ -2689,21 +2568,14 @@ fn truncate_date_core(unit: &str, date: NaiveDate) -> Result<NaiveDate> {
             Ok(date - chrono::Duration::days(dow))
         }
         "day" | "hour" | "minute" | "second" | "millisecond" | "microsecond" => Ok(date),
-        _ => Err(GraphError::Serialization {
-            context: String::new(),
-            source: format!("unsupported truncation unit for date: {unit}"),
-            hint: None,
-        }),
+        _ => Err(parse_error("unsupported truncation unit for date")),
     }
 }
 
 /// Truncate a time to the given unit, then apply optional map overrides.
 pub fn truncate_time(unit: &str, val: &Value, map: &BTreeMap<String, Value>) -> Result<NaiveTime> {
-    let time = extract_time(val).ok_or_else(|| GraphError::Serialization {
-        context: String::new(),
-        source: "truncate_time requires a temporal with a time component".into(),
-        hint: None,
-    })?;
+    let time = extract_time(val)
+        .ok_or_else(|| parse_error("truncate_time requires a temporal with a time component"))?;
     let mut t = truncate_time_core(unit, time)?;
 
     // Apply nano override from map.
@@ -2715,11 +2587,7 @@ pub fn truncate_time(unit: &str, val: &Value, map: &BTreeMap<String, Value>) -> 
         let new_nanos = truncated_nanos + *ns as u32;
         t = t
             .with_nanosecond(new_nanos)
-            .ok_or_else(|| GraphError::Serialization {
-                context: String::new(),
-                source: format!("invalid nanosecond: {ns}"),
-                hint: None,
-            })?;
+            .ok_or_else(|| parse_error(format!("invalid nanosecond: {ns}")))?;
     }
 
     Ok(t)
@@ -2750,11 +2618,7 @@ fn truncate_time_core(unit: &str, time: NaiveTime) -> Result<NaiveTime> {
                     .unwrap(),
             )
         }
-        _ => Err(GraphError::Serialization {
-            context: String::new(),
-            source: format!("unsupported truncation unit for time: {unit}"),
-            hint: None,
-        }),
+        _ => Err(parse_error("unsupported truncation unit for time")),
     }
 }
 

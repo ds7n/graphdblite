@@ -41,6 +41,7 @@ rusqlite = { version = "0.32", features = ["bundled"] }
 rmp-serde = "1"
 serde = { version = "1", features = ["derive"] }
 indexmap = "2"
+stacker = "0.1"
 pest = "2"
 pest_derive = "2"
 regex = "1"
@@ -65,6 +66,10 @@ dhat-heap = []
 # points. Only intended for `cargo fuzz` targets in `fuzz/` — not part of the
 # public API and offers no semver guarantees.
 fuzzing = []
+# Test-only hook for the bindings' panic-containment tests: the exact query
+# `CALL graphdblite.testPanic()` panics inside the core. Never enable in
+# release builds. Bindings forward it as their own `test-hooks` feature.
+test-hooks = []
 
 [dev-dependencies]
 tempfile = "3"
@@ -97,5 +102,13 @@ required-features = ["tck-support"]
 # `plans/record-v2.md`.
 [[test]]
 name = "alloc_regression"
+harness = false
+required-features = ["dhat-heap"]
+
+# Peak-heap bounds for queries that used to materialize their whole
+# intermediate result before a limit fired - see tests/memory_peak.rs.
+# Run: cargo test --test memory_peak --features dhat-heap --release
+[[test]]
+name = "memory_peak"
 harness = false
 required-features = ["dhat-heap"]

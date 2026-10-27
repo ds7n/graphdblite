@@ -62,9 +62,7 @@ func TestSnapshotToRejectsExistingTarget(t *testing.T) {
 	if err := os.WriteFile(dst, []byte{}, 0o600); err != nil {
 		t.Fatalf("WriteFile: %v", err)
 	}
-	if err := db.SnapshotTo(dst); err == nil {
-		t.Fatalf("SnapshotTo should fail when target exists")
-	}
+	wantErr(t, db.SnapshotTo(dst), "graphdblite snapshot_to: storage error: snapshot target already exists: ")
 }
 
 func TestSnapshotToRejectsWhenTxActive(t *testing.T) {
@@ -80,7 +78,6 @@ func TestSnapshotToRejectsWhenTxActive(t *testing.T) {
 		t.Fatalf("BeginWrite: %v", err)
 	}
 	defer tx.Rollback()
-	if err := db.SnapshotTo(filepath.Join(dir, "snap.db")); err == nil {
-		t.Fatalf("SnapshotTo should fail when tx active")
-	}
+	wantErr(t, db.SnapshotTo(filepath.Join(dir, "snap.db")),
+		"graphdblite snapshot_to: transaction error: snapshot_to: a Write transaction is already active")
 }

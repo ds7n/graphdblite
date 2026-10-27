@@ -10,6 +10,11 @@ publish = false
 name = "_graphdblite"
 crate-type = ["cdylib"]
 
+[features]
+# Test-only: compiles the core's deliberate-panic hook so the test suite can
+# check panic containment. Never enable for release builds.
+test-hooks = ["graphdblite/test-hooks"]
+
 [dependencies]
 graphdblite = { path = "../.." }
 pyo3 = { version = "0.28", features = ["extension-module", "abi3-py310", "generate-import-lib"] }

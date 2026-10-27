@@ -15,6 +15,10 @@ def _open(tmp_path, name: str = "db.sqlite") -> graphdblite.Database:
     return graphdblite.Database(str(tmp_path / name))
 
 
+NESTED = r"a Write transaction is already active; nested transactions are not supported"
+FINISHED = r"^transaction is already finished$"
+
+
 def _person_count(tx_or_db) -> int:
     rows = tx_or_db.query("MATCH (n:Person) RETURN count(n) AS c")
     return int(rows[0]["c"])
@@ -64,8 +68,14 @@ def test_BC_03_exception_rolls_back(tmp_path):
 def test_BC_04_nested_begin_rejected(tmp_path):
     db = _open(tmp_path)
     with db.begin_write() as tx:
-        with pytest.raises(Exception):
+        with pytest.raises(
+            graphdblite.TransactionError, match=r"^transaction error: begin_write: " + NESTED
+        ):
             db.begin_write()
+        with pytest.raises(
+            graphdblite.TransactionError, match=r"^transaction error: begin_read: " + NESTED
+        ):
+            db.begin_read()
         # First tx remains usable
         tx.execute("CREATE (n:Person {name: 'Alice'})")
     assert _person_count(db) == 1
@@ -77,8 +87,13 @@ def test_BC_04_nested_begin_rejected(tmp_path):
 def test_BC_05_write_in_read_tx_rejected(tmp_path):
     db = _open(tmp_path)
     with db.begin_read() as tx:
-        with pytest.raises(Exception):
+        with pytest.raises(
+            graphdblite.TransactionError,
+            match=r"^transaction error: write operations are not permitted inside a read transaction",
+        ):
             tx.query("CREATE (n:Person {name: 'Alice'})")
+        # The read transaction stays usable.
+        assert _person_count(tx) == 0
     assert _person_count(db) == 0
 
 
@@ -93,7 +108,7 @@ def test_BC_06_commit_without_tx(tmp_path):
     with db.begin_write() as tx:
         tx.execute("CREATE (n:Person {name: 'Alice'})")
         tx.commit()
-        with pytest.raises(Exception):
+        with pytest.raises(RuntimeError, match=FINISHED):
             tx.commit()
 
 
@@ -105,10 +120,11 @@ def test_BC_07_use_after_commit(tmp_path):
     tx = db.begin_write()
     tx.execute("CREATE (n:Person {name: 'Alice'})")
     tx.commit()
-    with pytest.raises(Exception):
+    with pytest.raises(RuntimeError, match=FINISHED):
         tx.execute("CREATE (n:Person {name: 'Bob'})")
-    with pytest.raises(Exception):
+    with pytest.raises(RuntimeError, match=FINISHED):
         tx.rollback()
+    assert _person_count(db) == 1
 
 
 def test_BC_07_use_after_rollback(tmp_path):
@@ -116,8 +132,9 @@ def test_BC_07_use_after_rollback(tmp_path):
     tx = db.begin_write()
     tx.execute("CREATE (n:Person {name: 'Alice'})")
     tx.rollback()
-    with pytest.raises(Exception):
+    with pytest.raises(RuntimeError, match=FINISHED):
         tx.execute("CREATE (n:Person {name: 'Bob'})")
+    assert _person_count(db) == 0
 
 
 # --------------------------------------------------------------------------
@@ -162,3 +179,19 @@ def test_BC_09_close_with_open_tx(tmp_path):
     with db2.begin_write() as tx2:
         tx2.execute("CREATE (n:Person {name: 'Recovered'})")
     assert _person_count(db2) == 1
+
+
+# --------------------------------------------------------------------------
+# BC-13: a failed statement inside a transaction is rolled back on its own
+# --------------------------------------------------------------------------
+def test_BC_13_statement_atomicity(tmp_path):
+    db = _open(tmp_path)
+    with db.begin_write() as tx:
+        tx.execute("CREATE (n:Person {name: 'Kept'})")
+        with pytest.raises(graphdblite.CypherTypeError):
+            tx.execute(
+                "UNWIND [1, 'a'] AS i CREATE (:Person {name: 'Lost'}) RETURN i - 1 AS x"
+            )
+        tx.execute("CREATE (n:Person {name: 'After'})")
+    names = [r["n"] for r in db.query("MATCH (p:Person) RETURN p.name AS n ORDER BY n")]
+    assert names == ["After", "Kept"]

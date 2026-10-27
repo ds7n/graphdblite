@@ -10,7 +10,7 @@ test('createIndex / dropIndex round-trip', () => {
     const tx = db.beginWrite();
     tx.createIndex('Person', 'name');
     assert.throws(() => tx.createIndex('Person', 'name'),
-      /already exists|index/i,
+      { message: /^index already exists: :Person\(name\)/ },
       'duplicate create_index should error');
     tx.dropIndex('Person', 'name');
     tx.commit();
@@ -19,7 +19,7 @@ test('createIndex / dropIndex round-trip', () => {
   }
 });
 
-test('createFulltextIndexCi enables case-insensitive CONTAINS via FTS', () => {
+test('createFulltextIndexCi serves the toLower CONTAINS idiom via FTS', () => {
   const db = gdb.Database.openMemory();
   try {
     const tx = db.beginWrite();
@@ -27,9 +27,14 @@ test('createFulltextIndexCi enables case-insensitive CONTAINS via FTS', () => {
     tx.execute("CREATE (:Doc {body: 'Hello World'})");
     tx.commit();
 
-    const rows = db.query("MATCH (n:Doc) WHERE n.body CONTAINS 'hello' RETURN n.body AS body");
+    const rows = db.query(
+      "MATCH (n:Doc) WHERE toLower(n.body) CONTAINS toLower('hello') RETURN n.body AS body",
+    );
     assert.equal(rows.length, 1);
     assert.equal(rows[0].body, 'Hello World');
+    // An index never changes results: plain CONTAINS stays case-sensitive.
+    const plain = db.query("MATCH (n:Doc) WHERE n.body CONTAINS 'hello' RETURN n.body AS body");
+    assert.equal(plain.length, 0);
 
     const tx2 = db.beginWrite();
     tx2.dropFulltextIndex('Doc', 'body');
@@ -95,7 +100,7 @@ test('createFulltextIndex enables CONTAINS via FTS', () => {
     const tx2 = db.beginWrite();
     tx2.dropFulltextIndex('Doc', 'body');
     assert.throws(() => tx2.dropFulltextIndex('Doc', 'body'),
-      /not found|index/i,
+      { message: /^index not found: :Doc\(body\)/ },
       'drop of missing index should error');
     tx2.rollback();
   } finally {
@@ -110,7 +115,7 @@ test('createCompositeIndex / dropCompositeIndex round-trip', () => {
     tx.createCompositeIndex('Person', ['tenant_id', 'ext_id']);
     assert.throws(
       () => tx.createCompositeIndex('Person', ['tenant_id', 'ext_id']),
-      /already exists|index/i,
+      { message: /^index already exists: :Person\(tenant_id, ext_id\)/ },
       'duplicate createCompositeIndex should error'
     );
     tx.commit();

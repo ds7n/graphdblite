@@ -25,8 +25,9 @@ Cypher query string
        │
        ▼
 ┌─────────────┐
-│ Executor    │  Pull-based RecordIter for read-only plans (iter.rs)
-│             │  Materialized push (Vec<Record>) for writes and correlated ops
+│ Executor    │  Pull-based slot iterators for read-only plans (iter_slot.rs)
+│             │  Materialized push (Vec<Record>) for writes and correlated ops;
+│             │  every engine shares one implementation per operator
 └──────┬──────┘
        │
        ▼
@@ -52,7 +53,7 @@ data structures are stored as opaque binary blobs in `WITHOUT ROWID` tables.
 | Table | Key | Value |
 |-------|-----|-------|
 | `nodes` | `node_id` (u64, big-endian) | msgpack `{ label, properties }` |
-| `node_idx_{label}_{property}` | `property_value + node_id` | (empty — key-only index) |
+| `node_idx${label}${p1}$...` | `msgpack(v1)...msgpack(vN) + node_id` | (empty, key-only index; table naming in `src/storage/naming.rs`) |
 | `adj_out` | `src_node_id + edge_label` | sorted varint array of `dst_node_ids` |
 | `adj_in` | `dst_node_id + edge_label` | sorted varint array of `src_node_ids` |
 | `edge_props` | `src_node_id + edge_label + dst_node_id` | msgpack `{ properties }` |
@@ -199,9 +200,11 @@ Two cases bypass the plan cache:
 
 - **CALL statements/clauses.** `plan_call` consults the procedure registry at
   plan time, and the registry is supplied per-execute via `ExecContext`.
-- **`SKIP $n` / `LIMIT $n`.** The planner evaluates these to a `u64` at plan
-  time via `eval_skip_limit`, so a cached plan would carry a stale count for
-  a different parameter value.
+- **SKIP / LIMIT that is not a plain literal** (`SKIP $n`,
+  `LIMIT toInteger(rand() * 10) + 1`, `LIMIT 1 + 1`). The planner evaluates
+  these to a `u64` at plan time via `eval_skip_limit`, so a cached plan would
+  carry a stale count for a different parameter value or a non-deterministic
+  expression.
 
 `is_plan_cacheable(stmt)` rejects exactly these AST shapes; everything else
 (WHERE filters, properties, projections, list comprehensions referring to

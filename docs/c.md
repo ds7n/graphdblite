@@ -65,7 +65,7 @@ int main(void) {
 ```c
 int graphdb_open(const char *path, GraphDB **out);
 ```
-Open or create a database at `path`. Writes the handle to `*out`. Uses the default busy timeout (5000 ms).
+Open or create a database at `path`. Writes the handle to `*out`. Uses the default busy timeout (5000 ms). The path `:memory:` opens a private in-memory database (same as `graphdb_open_memory`; no file is created).
 
 ---
 
@@ -118,6 +118,34 @@ Execute a write Cypher query (`CREATE`, `SET`, `DELETE`, `MERGE`) in a write tra
 
 ---
 
+### Parameters
+
+```c
+int graphdb_query_params(GraphDB *db, const char *cypher, const char *params_json, GraphResult **out);
+int graphdb_execute_params(GraphDB *db, const char *cypher, const char *params_json, GraphResult **out);
+int graphdb_tx_execute_params(GraphDB *db, const char *cypher, const char *params_json, GraphResult **out);
+```
+Like `graphdb_query` / `graphdb_execute` / `graphdb_tx_execute`, with `$name` parameters passed as a JSON object (`NULL` means no parameters):
+
+```c
+graphdb_query_params(db, "MATCH (p:Person) WHERE p.age > $min RETURN p.name",
+                     "{\"min\": 30}", &result);
+```
+
+| JSON | Cypher |
+|------|--------|
+| `null` | null |
+| `true` / `false` | boolean |
+| number without fraction or exponent, in the signed 64-bit range | integer |
+| any other number (`1.0`, `2.5`, `1e3`) | float |
+| string | string |
+| array | list (nested values allowed) |
+| object | map (nested values allowed) |
+
+Integers outside the signed 64-bit range, malformed JSON and a non-object top level are rejected (`-1`, `graphdb_last_error()` starts with `invalid params JSON:`). There are no temporal literals: pass an ISO string and convert in Cypher (`date($d)`).
+
+---
+
 ### Manual transactions
 
 Use these when you need multiple queries in a single atomic transaction.
@@ -128,12 +156,21 @@ int graphdb_tx_begin_write(GraphDB *db);
 ```
 Begin a read or write transaction on `db`. Do not call other query functions on the same handle until the transaction is committed or rolled back.
 
+The transaction belongs to the thread that began it. Transaction calls (`graphdb_tx_execute*`, commit, rollback, index DDL) from another thread fail with `transaction error: the active transaction belongs to another thread` until it ends, so another thread's work cannot land in (or be rolled back with) this transaction.
+
+```c
+int graphdb_tx_begin_read_shared(GraphDB *db);
+int graphdb_tx_begin_write_shared(GraphDB *db);
+```
+Same, without the owning-thread check. For language bindings whose own transaction objects decide who may use them (the Go binding uses these because goroutines move between OS threads).
+
 ---
 
 ```c
-int graphdb_tx_query(GraphDB *db, const char *cypher, GraphResult **out);
+int graphdb_tx_execute(GraphDB *db, const char *cypher, GraphResult **out);
+int graphdb_tx_query(GraphDB *db, const char *cypher, GraphResult **out); /* deprecated alias */
 ```
-Execute a Cypher query within the current transaction. Works for both read and write transactions.
+Execute a Cypher query within the current transaction. Works for both read and write transactions. A statement that fails is rolled back on its own (a per-statement savepoint): its partial writes are undone and the transaction stays open, so the caller can continue or roll back. With no transaction open, the statement runs in its own auto-committed transaction.
 
 ---
 
@@ -165,7 +202,7 @@ Return the column name at index `col`. Returns `NULL` if out of bounds. The poin
 ```c
 const char *graphdb_result_value_str(const GraphResult *result, int64_t row, int64_t col);
 ```
-Return the value at `(row, col)` as a string. All types are formatted: numbers as decimal, booleans as `true`/`false`, lists as `[a, b, c]`, `null` as `"null"`. Returns `NULL` if out of bounds. The pointer is valid until the next call to `graphdb_result_value_str` on any result on the current thread.
+Return the value at `(row, col)` as a string. All types are formatted: integers as decimal, floats with a fractional part (`1.0`), booleans as `true`/`false`, lists as `[a, b, c]`, paths as `{nodes: [...], relationships: [...]}`, `null` as `"null"`. Returns `NULL` if out of bounds. The string is owned by the result and stays valid until `graphdb_result_free` is called on it, whatever other calls happen in between (asking for the same cell again returns the same pointer).
 
 ---
 
@@ -194,8 +231,15 @@ Return the type tag of the value at `(row, col)`:
 | 6 | path |
 | 7 | map |
 | 8 | node |
-| 9 | edge |
-| 10–15 | temporal (Date, LocalTime, Time, LocalDateTime, DateTime, Duration) |
+| 9 | relationship |
+| 10 | Date |
+| 11 | LocalTime |
+| 12 | Time |
+| 13 | LocalDateTime |
+| 14 | DateTime |
+| 15 | Duration |
+
+Out-of-bounds cells report 0 (null).
 
 ---
 
@@ -203,6 +247,19 @@ Return the type tag of the value at `(row, col)`:
 const char *graphdb_result_json(GraphResult *result);
 ```
 Return the entire result as a JSON array of objects. Built lazily on first call; the pointer is valid until `graphdb_result_free` is called.
+
+Value shapes in the JSON:
+
+| Value | JSON |
+|-------|------|
+| integer | number without fraction (`1`) |
+| float | number with a fraction or exponent (`1.0`, `1e300`); NaN and infinities become `null` (JSON has no representation for them) |
+| node | `{"__id": 1, "__labels": ["Person"], ...properties}` |
+| relationship | `{"__src": 1, "__dst": 2, "__type": "KNOWS", "__label": "KNOWS", "__edge_seq": 0, ...properties}` (`__label` is a deprecated alias of `__type`) |
+| path | `{"nodes": [node, ...], "relationships": [relationship, ...]}` |
+| temporal | ISO 8601 string |
+
+Property names starting with `__` are reserved for these metadata keys (writes of such properties are rejected); if older data has one, the metadata key wins and the property is left out.
 
 ---
 
@@ -225,9 +282,8 @@ Return the last error message for the current thread, or `NULL` if no error has 
 ## Ownership rules
 
 - `graphdb_open` / `graphdb_open_with_timeout` / `graphdb_open_memory` — caller owns the `GraphDB*`; must free with `graphdb_close`.
-- `graphdb_query` / `graphdb_execute` / `graphdb_tx_query` — caller owns the `GraphResult*`; must free with `graphdb_result_free`.
-- Strings returned by `graphdb_result_column_name` and `graphdb_result_json` are owned by the `GraphResult` and are valid until `graphdb_result_free`.
-- The string returned by `graphdb_result_value_str` is stored in a thread-local buffer and is valid only until the next call to that function on the current thread.
+- `graphdb_query*` / `graphdb_execute*` / `graphdb_tx_execute*`: caller owns the `GraphResult*`; must free with `graphdb_result_free`.
+- Strings returned by `graphdb_result_column_name`, `graphdb_result_value_str` and `graphdb_result_json` are owned by the `GraphResult` and are valid until `graphdb_result_free`.
 - The string returned by `graphdb_last_error` is stored in thread-local storage and is valid only until the next API call on the current thread.
 
 ## Error handling

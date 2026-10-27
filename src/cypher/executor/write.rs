@@ -8,6 +8,7 @@ use crate::cypher::record::NamedRecord;
 use crate::types::*;
 use crate::{edge, fts, index, node};
 
+use super::util::{bind_edge_fields, populate_node_bindings};
 use super::*;
 
 pub(in crate::cypher::executor) fn exec_create_node(
@@ -16,34 +17,8 @@ pub(in crate::cypher::executor) fn exec_create_node(
     alias: Option<&str>,
     properties: &HashMap<String, Expr>,
 ) -> Result<Vec<NamedRecord>> {
-    let mut props = Properties::new();
-    let dummy_rec = NamedRecord::new();
-    for (key, expr) in properties {
-        let val = eval_expr(expr, &dummy_rec, crate::cypher::eval::EvalCx::new(conn))?;
-        if val == Value::Null {
-            continue;
-        }
-        props.insert(key.clone(), val);
-    }
-
-    let id = node::create_node(conn, labels, props.clone())?;
-    index::update_indexes_for_node(conn, id, labels, None, &props)?;
-    fts::update_fts_for_node(conn, id, labels, None, &props)?;
-
     let mut rec = NamedRecord::new();
-    if let Some(alias) = alias {
-        rec.set(alias.to_string(), Value::I64(id.0 as i64));
-        rec.set(format!("{alias}.__id"), Value::I64(id.0 as i64));
-        // Populate property bindings so the slot bridge can fill prop slots
-        // declared in the inferred schema. Deliberately *not* setting
-        // `__label`/`__labels` — that pair triggers `build_compound_binding`,
-        // and a Variable-resolution shift here would change downstream
-        // semantics (e.g. `WITH a, ...` where `a` was previously `Value::I64`
-        // but would become `Value::Node`).
-        for (k, v) in &props {
-            rec.set(format!("{alias}.{k}"), v.clone());
-        }
-    }
+    create_node_into(conn, &mut rec, labels, alias, properties)?;
     Ok(vec![rec])
 }
 
@@ -63,82 +38,9 @@ pub(in crate::cypher::executor) fn exec_create_sequence(
     conn: &Connection,
     ops: &[LogicalOp],
 ) -> Result<Vec<NamedRecord>> {
-    // Track variable → NodeId bindings for edge creation.
-    let mut bindings: HashMap<String, NodeId> = HashMap::new();
-    let mut last_record = NamedRecord::new();
-
-    for op in ops {
-        match op {
-            LogicalOp::CreateNode {
-                labels,
-                alias,
-                properties,
-            } => {
-                let mut props = Properties::new();
-                for (key, expr) in properties {
-                    let val =
-                        eval_expr(expr, &last_record, crate::cypher::eval::EvalCx::new(conn))?;
-                    if val == Value::Null {
-                        continue;
-                    }
-                    props.insert(key.clone(), val);
-                }
-                let id = node::create_node(conn, labels, props.clone())?;
-                index::update_indexes_for_node(conn, id, labels, None, &props)?;
-                fts::update_fts_for_node(conn, id, labels, None, &props)?;
-                if let Some(alias) = alias {
-                    bindings.insert(alias.clone(), id);
-                    last_record.set(alias.clone(), Value::I64(id.0 as i64));
-                    last_record.set(format!("{alias}.__id"), Value::I64(id.0 as i64));
-                    for (k, v) in &props {
-                        last_record.set(format!("{alias}.{k}"), v.clone());
-                    }
-                }
-            }
-            LogicalOp::CreateEdge {
-                src_alias,
-                dst_alias,
-                edge_type,
-                rel_alias,
-                properties,
-            } => {
-                let src = bindings.get(src_alias).ok_or_else(|| {
-                    GraphError::semantic(format!("unbound variable: {src_alias}"))
-                })?;
-                let dst = bindings.get(dst_alias).ok_or_else(|| {
-                    GraphError::semantic(format!("unbound variable: {dst_alias}"))
-                })?;
-                let mut props = Properties::new();
-                for (key, expr) in properties {
-                    let val =
-                        eval_expr(expr, &last_record, crate::cypher::eval::EvalCx::new(conn))?;
-                    if val == Value::Null {
-                        continue;
-                    }
-                    props.insert(key.clone(), val);
-                }
-                edge::create_edge(conn, *src, *dst, edge_type, props.clone())?;
-                // Bind edge metadata for RETURN access.
-                if let Some(r_alias) = rel_alias {
-                    last_record.set(r_alias.clone(), Value::String(edge_type.clone()));
-                    last_record.set(format!("{r_alias}.__src"), Value::I64(src.0 as i64));
-                    last_record.set(format!("{r_alias}.__dst"), Value::I64(dst.0 as i64));
-                    last_record.set(
-                        format!("{r_alias}.__type"),
-                        Value::String(edge_type.clone()),
-                    );
-                    for (key, val) in &props {
-                        last_record.set(format!("{r_alias}.{key}"), val.clone());
-                    }
-                }
-            }
-            _ => {
-                // Shouldn't happen in a CreateSequence.
-            }
-        }
-    }
-
-    Ok(vec![last_record])
+    let mut rec = NamedRecord::new();
+    run_create_ops(conn, &mut rec, ops)?;
+    Ok(vec![rec])
 }
 
 pub(in crate::cypher::executor) fn exec_match_create(
@@ -147,103 +49,151 @@ pub(in crate::cypher::executor) fn exec_match_create(
     create_ops: &[LogicalOp],
     ctx: &ExecContext,
 ) -> Result<Vec<NamedRecord>> {
-    let records = exec(conn, input, ctx)?;
-    let mut result = Vec::with_capacity(records.len());
-
-    for rec in &records {
-        // Seed bindings from MATCH-bound variables (var → NodeId).
-        let mut bindings: HashMap<String, NodeId> = HashMap::new();
-        for (key, val) in &rec.fields {
-            if !key.contains('.') {
-                if let Value::I64(id) = val {
-                    bindings.insert(key.clone(), NodeId(*id as u64));
-                }
-            }
-        }
-
-        // Start with a copy of the input record so MATCH-bound vars are available.
-        let mut out_rec = rec.clone();
-
-        // Execute each CREATE op using the bindings.
-        for op in create_ops {
-            match op {
-                LogicalOp::CreateNode {
-                    labels,
-                    alias,
-                    properties,
-                } => {
-                    // Skip if this alias is already bound from the MATCH pipeline.
-                    if let Some(a) = alias {
-                        if bindings.contains_key(a) {
-                            continue;
-                        }
-                    }
-                    let mut props = Properties::new();
-                    for (key, expr) in properties {
-                        let val = eval_expr(expr, rec, crate::cypher::eval::EvalCx::new(conn))?;
-                        if val == Value::Null {
-                            continue;
-                        }
-                        props.insert(key.clone(), val);
-                    }
-                    let id = node::create_node(conn, labels, props.clone())?;
-                    index::update_indexes_for_node(conn, id, labels, None, &props)?;
-                    fts::update_fts_for_node(conn, id, labels, None, &props)?;
-                    if let Some(alias) = alias {
-                        bindings.insert(alias.clone(), id);
-                        out_rec.set(alias.clone(), Value::I64(id.0 as i64));
-                        out_rec.set(format!("{alias}.__id"), Value::I64(id.0 as i64));
-                        // Property keys only — see exec_create_node note re:
-                        // compound-binding heuristic and __label.
-                        for (k, v) in &props {
-                            out_rec.set(format!("{alias}.{k}"), v.clone());
-                        }
-                    }
-                }
-                LogicalOp::CreateEdge {
-                    src_alias,
-                    dst_alias,
-                    edge_type,
-                    rel_alias,
-                    properties,
-                } => {
-                    let src = bindings.get(src_alias).ok_or_else(|| {
-                        GraphError::semantic(format!("unbound variable: {src_alias}"))
-                    })?;
-                    let dst = bindings.get(dst_alias).ok_or_else(|| {
-                        GraphError::semantic(format!("unbound variable: {dst_alias}"))
-                    })?;
-                    let mut props = Properties::new();
-                    for (key, expr) in properties {
-                        let val = eval_expr(expr, rec, crate::cypher::eval::EvalCx::new(conn))?;
-                        if val == Value::Null {
-                            continue;
-                        }
-                        props.insert(key.clone(), val);
-                    }
-                    edge::create_edge(conn, *src, *dst, edge_type, props.clone())?;
-                    // Bind edge metadata for RETURN access.
-                    if let Some(r_alias) = rel_alias {
-                        out_rec.set(r_alias.clone(), Value::String(edge_type.clone()));
-                        out_rec.set(format!("{r_alias}.__src"), Value::I64(src.0 as i64));
-                        out_rec.set(format!("{r_alias}.__dst"), Value::I64(dst.0 as i64));
-                        out_rec.set(
-                            format!("{r_alias}.__type"),
-                            Value::String(edge_type.clone()),
-                        );
-                        for (key, val) in &props {
-                            out_rec.set(format!("{r_alias}.{key}"), val.clone());
-                        }
-                    }
-                }
-                _ => {}
-            }
-        }
-
-        result.push(out_rec);
+    let mut records = exec(conn, input, ctx)?;
+    for rec in &mut records {
+        run_create_ops(conn, rec, create_ops)?;
     }
+    Ok(records)
+}
 
-    Ok(result)
+/// Run the `CreateNode` / `CreateEdge` ops of one CREATE clause against the
+/// row `rec`, binding every created entity into it. Property expressions see
+/// the row as built so far, so later elements can read earlier ones.
+fn run_create_ops(conn: &Connection, rec: &mut NamedRecord, ops: &[LogicalOp]) -> Result<()> {
+    for op in ops {
+        match op {
+            LogicalOp::CreateNode {
+                labels,
+                alias,
+                properties,
+            } => {
+                // A variable bound by an earlier clause names an existing
+                // node; the pattern only refers to it. Anonymous nodes are
+                // always new (the planner numbers them per pattern, so two
+                // patterns of one CREATE can share an `__anon_N` alias).
+                if let Some(a) = alias {
+                    if !a.starts_with("__anon_") && rec.get(a).is_some() {
+                        continue;
+                    }
+                }
+                create_node_into(conn, rec, labels, alias.as_deref(), properties)?;
+            }
+            LogicalOp::CreateEdge {
+                src_alias,
+                dst_alias,
+                edge_type,
+                rel_alias,
+                properties,
+            } => {
+                let src = bound_node_id(conn, rec, src_alias, "CREATE")?;
+                let dst = bound_node_id(conn, rec, dst_alias, "CREATE")?;
+                let props = eval_create_properties(conn, rec, properties)?;
+                validate_write_labels(std::slice::from_ref(edge_type))?;
+                validate_write_properties(&props)?;
+                let seq = edge::create_edge(conn, src, dst, edge_type, props.clone())?;
+                if let Some(r_alias) = rel_alias {
+                    rec.set(r_alias.clone(), Value::String(edge_type.clone()));
+                    bind_edge_fields(rec, r_alias, src, dst, edge_type, seq, &props);
+                }
+            }
+            _ => {
+                // Shouldn't happen in a CREATE clause.
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Evaluate a CREATE pattern's property map against `rec`; null entries are
+/// dropped (creating a property with a null value is a no-op).
+fn eval_create_properties(
+    conn: &Connection,
+    rec: &NamedRecord,
+    properties: &HashMap<String, Expr>,
+) -> Result<Properties> {
+    let mut props = Properties::new();
+    for (key, expr) in properties {
+        let val = eval_expr(expr, rec, crate::cypher::eval::EvalCx::new(conn))?;
+        if val != Value::Null {
+            props.insert(key.clone(), val);
+        }
+    }
+    Ok(props)
+}
+
+/// Create a node from a CREATE pattern element and bind it under `alias`
+/// as a full node binding (id, labels and properties).
+fn create_node_into(
+    conn: &Connection,
+    rec: &mut NamedRecord,
+    labels: &[String],
+    alias: Option<&str>,
+    properties: &HashMap<String, Expr>,
+) -> Result<NodeId> {
+    let props = eval_create_properties(conn, rec, properties)?;
+    let node = create_indexed_node(conn, labels, props)?;
+    if let Some(alias) = alias {
+        populate_node_bindings(rec, &node, alias);
+    }
+    Ok(node.id)
+}
+
+/// Create a node and its secondary-index / FTS entries; returns the node as
+/// stored (labels normalized).
+pub(in crate::cypher::executor) fn create_indexed_node(
+    conn: &Connection,
+    labels: &[String],
+    props: Properties,
+) -> Result<Node> {
+    validate_write_labels(labels)?;
+    validate_write_properties(&props)?;
+    let id = node::create_node(conn, labels, props.clone())?;
+    let labels = node::normalize_labels(labels);
+    index::update_indexes_for_node(conn, id, &labels, None, &props)?;
+    fts::update_fts_for_node(conn, id, &labels, None, &props)?;
+    Ok(Node {
+        id,
+        labels,
+        properties: props,
+    })
+}
+
+/// The live node `var` refers to in `rec`, for use as a relationship
+/// endpoint by `what` (CREATE / MERGE). The binding must be a node (a flat
+/// node binding or a node value) that still exists; a plain integer is not a
+/// node reference.
+pub(in crate::cypher::executor) fn bound_node_id(
+    conn: &Connection,
+    rec: &NamedRecord,
+    var: &str,
+    what: &str,
+) -> Result<NodeId> {
+    let id = match rec.get(var) {
+        Some(Value::I64(id)) if is_node_binding(rec, var) => NodeId(*id as u64),
+        Some(Value::Node(n)) => n.id,
+        None => return Err(GraphError::semantic(format!("unbound variable: {var}"))),
+        Some(Value::Null) => {
+            return Err(GraphError::query(
+                QueryPhase::Runtime,
+                ErrorCode::Other,
+                format!("{what} cannot use `{var}` as a relationship endpoint: it is null"),
+            ))
+        }
+        Some(other) => {
+            return Err(GraphError::type_error(
+                QueryPhase::Runtime,
+                format!(
+                    "{what} expected a node for `{var}`, got {}",
+                    value_type_name(other)
+                ),
+            )
+            .with_code(ErrorCode::InvalidArgumentType))
+        }
+    };
+    if !node::node_exists(conn, id)? {
+        return Err(GraphError::NodeNotFound { id, hint: None });
+    }
+    Ok(id)
 }
 
 pub(in crate::cypher::executor) fn exec_delete(
@@ -263,21 +213,22 @@ pub(in crate::cypher::executor) fn exec_delete(
     for rec in &mut records {
         for expr in exprs {
             if let ExprKind::Variable(var) = &expr.kind {
-                collect_var_entities(rec, var, &mut edges_to_delete, &mut nodes_to_delete);
+                collect_var_entities(rec, var, &mut edges_to_delete, &mut nodes_to_delete)?;
                 rec.set(format!("{var}.__deleted"), Value::Bool(true));
             } else {
                 let val = eval_expr(expr, rec, crate::cypher::eval::EvalCx::new(conn))?;
-                collect_value_entities(&val, &mut edges_to_delete, &mut nodes_to_delete);
+                collect_value_entities(&val, &mut edges_to_delete, &mut nodes_to_delete)?;
             }
         }
     }
 
-    // Phase 1: delete all edges.
+    // Phase 1: delete all edges. Both storage calls are no-ops for an edge
+    // that is already gone (the same edge bound in several rows).
     for (src, dst, label, seq) in &edges_to_delete {
         if let Some(s) = seq {
-            let _ = edge::delete_single_edge(conn, *src, *dst, label, *s);
+            edge::delete_single_edge(conn, *src, *dst, label, *s)?;
         } else {
-            let _ = edge::delete_edge(conn, *src, *dst, label);
+            edge::delete_edge(conn, *src, *dst, label)?;
         }
     }
 
@@ -290,28 +241,34 @@ pub(in crate::cypher::executor) fn exec_delete(
             ))
             .with_code(ErrorCode::DeleteConnectedNode));
         }
+        // A node listed twice (bound in several rows) is already gone on
+        // its second visit, along with its index entries: skip it.
+        let n = match node::get_node(conn, *node_id) {
+            Ok(n) => n,
+            Err(GraphError::NodeNotFound { .. }) => continue,
+            Err(e) => return Err(e),
+        };
         // Clean up secondary indexes (btree + FTS) before removing the node
         // itself. Mirrors WriteTransaction::delete_node in transaction.rs.
-        // Missing node (already deleted via duplicate in nodes_to_delete or
-        // an earlier edge cascade) is silently ignored — index entries
-        // would have been cleared at first removal.
-        if let Ok(n) = node::get_node(conn, *node_id) {
-            let _ = index::remove_indexes_for_node(conn, *node_id, &n.labels, &n.properties);
-            let _ = fts::remove_fts_for_node(conn, *node_id, &n.labels, &n.properties);
-        }
-        let _ = node::delete_node(conn, *node_id);
+        index::remove_indexes_for_node(conn, *node_id, &n.labels, &n.properties)?;
+        fts::remove_fts_for_node(conn, *node_id, &n.labels, &n.properties)?;
+        node::delete_node(conn, *node_id)?;
     }
 
     Ok(records)
 }
 
 /// Collect entities from a variable binding for two-phase delete.
+///
+/// Node bindings are stored as `Value::I64(id)` plus an `alias.__id` marker;
+/// a bare integer without the marker is an ordinary integer value (e.g. from
+/// `WITH n.k AS x`) and must not be treated as a node reference.
 pub(in crate::cypher::executor) fn collect_var_entities(
     rec: &NamedRecord,
     var: &str,
     edges: &mut Vec<(NodeId, NodeId, String, Option<u64>)>,
     nodes: &mut Vec<NodeId>,
-) {
+) -> Result<()> {
     let edge_src_key = format!("{var}.__src");
     let edge_dst_key = format!("{var}.__dst");
     let edge_type_key = format!("{var}.__type");
@@ -327,43 +284,431 @@ pub(in crate::cypher::executor) fn collect_var_entities(
             None
         };
         edges.push((NodeId(*src as u64), NodeId(*dst as u64), label.clone(), seq));
-    } else if let Some(Value::I64(id)) = rec.get(var) {
-        nodes.push(NodeId(*id as u64));
-    } else if let Some(val) = rec.get(var).cloned() {
-        collect_value_entities(&val, edges, nodes);
+        return Ok(());
+    }
+    match rec.get(var) {
+        Some(Value::I64(id)) if is_node_binding(rec, var) => {
+            nodes.push(NodeId(*id as u64));
+            Ok(())
+        }
+        Some(val) => {
+            let val = val.clone();
+            collect_value_entities(&val, edges, nodes)
+        }
+        None => Ok(()),
     }
 }
 
-/// Collect entities from a Value for two-phase delete.
+/// Whether `var` in `rec` is a node binding (flat `I64` id + `__id` marker).
+pub(in crate::cypher::executor) fn is_node_binding(rec: &NamedRecord, var: &str) -> bool {
+    matches!(rec.get(var), Some(Value::I64(_)))
+        && matches!(rec.get(&format!("{var}.__id")), Some(Value::I64(_)))
+}
+
+fn not_an_entity(what: &str, val: &Value) -> GraphError {
+    GraphError::type_error(
+        crate::types::QueryPhase::Runtime,
+        format!(
+            "{what} requires a node, relationship, or path, got {}",
+            value_type_name(val)
+        ),
+    )
+    .with_code(ErrorCode::InvalidArgumentType)
+}
+
+/// Collect entities from a Value for two-phase delete. Nulls are skipped;
+/// any other non-entity value is a type error.
 pub(in crate::cypher::executor) fn collect_value_entities(
     val: &Value,
     edges: &mut Vec<(NodeId, NodeId, String, Option<u64>)>,
     nodes: &mut Vec<NodeId>,
-) {
+) -> Result<()> {
     match val {
+        Value::Null => {}
         Value::Node(n) => {
             nodes.push(n.id);
         }
+        // Relationship values carry their parallel-edge `seq`, so exactly
+        // that edge is deleted (not every edge sharing its endpoints/type).
         Value::Edge(e) => {
-            edges.push((e.src, e.dst, e.label.clone(), None));
+            edges.push((e.src, e.dst, e.label.clone(), Some(e.seq)));
         }
         Value::Path(p) => {
             for e in &p.edges {
-                edges.push((e.src, e.dst, e.label.clone(), None));
+                edges.push((e.src, e.dst, e.label.clone(), Some(e.seq)));
             }
             for n in &p.nodes {
                 nodes.push(n.id);
             }
         }
-        Value::I64(id) => {
-            nodes.push(NodeId(*id as u64));
-        }
         Value::List(items) => {
             for item in items {
-                collect_value_entities(item, edges, nodes);
+                collect_value_entities(item, edges, nodes)?;
             }
         }
+        other => return Err(not_an_entity("DELETE", other)),
+    }
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// SET / REMOVE
+//
+// Every SET / REMOVE form (and MERGE's ON CREATE / ON MATCH items) goes
+// through the per-row `apply_*` functions below. Each one resolves the target
+// variable to a stored entity, re-reads it (so a row sees the writes of
+// earlier rows to the same entity), applies the change with index / FTS
+// maintenance, and rebinds the variable in the row to the new state.
+
+/// The stored entity a SET / REMOVE target variable refers to.
+enum WriteTarget {
+    Node(NodeId),
+    Edge {
+        src: NodeId,
+        dst: NodeId,
+        label: String,
+        seq: u64,
+    },
+}
+
+/// Resolve `var` in `rec` to the entity it names. `Ok(None)` for a null or
+/// absent binding (an unmatched OPTIONAL MATCH: the write is skipped) and for
+/// paths; any other non-entity value is a type error.
+fn resolve_write_target(
+    conn: &Connection,
+    rec: &NamedRecord,
+    var: &str,
+    what: &str,
+) -> Result<Option<WriteTarget>> {
+    if let (Some(Value::I64(src)), Some(Value::I64(dst)), Some(Value::String(label))) = (
+        rec.get(&format!("{var}.__src")),
+        rec.get(&format!("{var}.__dst")),
+        rec.get(&format!("{var}.__type")),
+    ) {
+        let (src, dst) = (NodeId(*src as u64), NodeId(*dst as u64));
+        let seq = match rec.get(&format!("{var}.__edge_seq")) {
+            Some(Value::I64(s)) => *s as u64,
+            // No seq recorded: the first parallel edge of the triple.
+            _ => {
+                let prefix = edge::edge_props_prefix(src, dst, label);
+                let entries = crate::storage::kv::scan_prefix(
+                    conn,
+                    crate::storage::kv::TABLE_EDGE_PROPS,
+                    &prefix,
+                )?;
+                entries
+                    .first()
+                    .map(|(k, _)| edge::edge_seq_from_key(k, prefix.len()))
+                    .unwrap_or(0)
+            }
+        };
+        return Ok(Some(WriteTarget::Edge {
+            src,
+            dst,
+            label: label.clone(),
+            seq,
+        }));
+    }
+    match rec.get(var) {
+        None | Some(Value::Null) | Some(Value::Path(_)) => Ok(None),
+        Some(Value::I64(id)) if is_node_binding(rec, var) => {
+            Ok(Some(WriteTarget::Node(NodeId(*id as u64))))
+        }
+        Some(Value::Node(n)) => Ok(Some(WriteTarget::Node(n.id))),
+        Some(Value::Edge(e)) => Ok(Some(WriteTarget::Edge {
+            src: e.src,
+            dst: e.dst,
+            label: e.label.clone(),
+            seq: e.seq,
+        })),
+        Some(other) => Err(not_an_entity(what, other)),
+    }
+}
+
+/// A stored entity as currently persisted.
+enum Entity {
+    Node(Node),
+    Edge(Edge),
+}
+
+/// Read the current state of `target`. A deleted node is `NodeNotFound`, a
+/// deleted relationship `EdgeNotFound`.
+fn load_target(conn: &Connection, target: &WriteTarget) -> Result<Entity> {
+    match target {
+        WriteTarget::Node(id) => Ok(Entity::Node(node::get_node(conn, *id)?)),
+        WriteTarget::Edge {
+            src,
+            dst,
+            label,
+            seq,
+        } => {
+            if !edge::edge_exists_at(conn, *src, *dst, label, *seq)? {
+                return Err(GraphError::EdgeNotFound {
+                    src: *src,
+                    label: label.clone(),
+                    dst: *dst,
+                    hint: None,
+                });
+            }
+            let properties = edge::get_edge_properties_at(conn, *src, *dst, label, *seq)?;
+            Ok(Entity::Edge(Edge {
+                src: *src,
+                dst: *dst,
+                label: label.clone(),
+                seq: *seq,
+                properties,
+            }))
+        }
+    }
+}
+
+/// Overwrite `var`'s binding in `rec` with `entity`. A node / relationship
+/// held as a value is replaced; a flat binding gets its property keys
+/// rebuilt (stale keys removed) and, for nodes, its label keys.
+fn rebind(rec: &mut NamedRecord, var: &str, entity: &Entity) {
+    match (rec.fields.get_mut(var), entity) {
+        (Some(Value::Node(n)), Entity::Node(new)) => {
+            *n = new.clone();
+            return;
+        }
+        (Some(Value::Edge(e)), Entity::Edge(new)) => {
+            *e = new.clone();
+            return;
+        }
         _ => {}
+    }
+    let prefix = format!("{var}.");
+    rec.fields.retain(|k, _| match k.strip_prefix(&prefix) {
+        Some(rest) => rest.starts_with("__"),
+        None => true,
+    });
+    match entity {
+        Entity::Node(n) => populate_node_bindings(rec, n, var),
+        Entity::Edge(e) => populate_edge_bindings(rec, e, var),
+    }
+}
+
+/// Persist `new_props` as the full property set of node `old`, keeping the
+/// secondary and FTS indexes in sync. Returns the node's new state.
+fn write_node_props(conn: &Connection, old: &Node, new_props: Properties) -> Result<Node> {
+    node::set_all_node_properties(conn, old.id, new_props.clone())?;
+    index::update_indexes_for_node(conn, old.id, &old.labels, Some(&old.properties), &new_props)?;
+    fts::update_fts_for_node(conn, old.id, &old.labels, Some(&old.properties), &new_props)?;
+    Ok(Node {
+        id: old.id,
+        labels: old.labels.clone(),
+        properties: new_props,
+    })
+}
+
+/// Persist `new_props` as the full property set of edge `old`.
+fn write_edge_props(conn: &Connection, old: &Edge, new_props: Properties) -> Result<Edge> {
+    edge::set_all_edge_properties_at(
+        conn,
+        old.src,
+        old.dst,
+        &old.label,
+        old.seq,
+        new_props.clone(),
+    )?;
+    Ok(Edge {
+        properties: new_props,
+        ..old.clone()
+    })
+}
+
+/// Write `new_props` to `entity` and rebind `var` in `rec`.
+fn write_props(
+    conn: &Connection,
+    rec: &mut NamedRecord,
+    var: &str,
+    entity: &Entity,
+    new_props: Properties,
+) -> Result<()> {
+    let new = match entity {
+        Entity::Node(n) => Entity::Node(write_node_props(conn, n, new_props)?),
+        Entity::Edge(e) => Entity::Edge(write_edge_props(conn, e, new_props)?),
+    };
+    rebind(rec, var, &new);
+    Ok(())
+}
+
+fn entity_props(entity: &Entity) -> &Properties {
+    match entity {
+        Entity::Node(n) => &n.properties,
+        Entity::Edge(e) => &e.properties,
+    }
+}
+
+/// Resolve `var`, re-read the entity and refresh its binding in `rec` so
+/// expressions evaluated next see the stored state. `Ok(None)` when the
+/// write must be skipped (null binding).
+fn load_and_refresh(
+    conn: &Connection,
+    rec: &mut NamedRecord,
+    var: &str,
+    what: &str,
+) -> Result<Option<Entity>> {
+    let Some(target) = resolve_write_target(conn, rec, var, what)? else {
+        return Ok(None);
+    };
+    let entity = load_target(conn, &target)?;
+    rebind(rec, var, &entity);
+    Ok(Some(entity))
+}
+
+/// `SET var.prop = expr` on one row.
+pub(in crate::cypher::executor) fn apply_set_property(
+    conn: &Connection,
+    rec: &mut NamedRecord,
+    assignment: &Assignment,
+) -> Result<()> {
+    let var = &assignment.variable;
+    let Some(entity) = load_and_refresh(conn, rec, var, "SET")? else {
+        return Ok(());
+    };
+    let val = eval_expr(
+        &assignment.value,
+        rec,
+        crate::cypher::eval::EvalCx::new(conn),
+    )?;
+    validate_write_value(&assignment.property, &val)?;
+    if matches!(entity, Entity::Node(_)) {
+        crate::types::validate_name(&assignment.property)?;
+    }
+    let mut new_props = entity_props(&entity).clone();
+    set_or_remove(&mut new_props, &assignment.property, val);
+    write_props(conn, rec, var, &entity, new_props)
+}
+
+/// The property map a `SET x = value` / `SET x += value` copies from: a map
+/// (null entries kept, they mean "remove"), or the properties of a node or
+/// relationship. `Ok(None)` for null (nothing to set); anything else is a
+/// type error.
+fn props_source(val: Value) -> Result<Option<Properties>> {
+    match val {
+        Value::Map(m) => Ok(Some(m.into_iter().collect())),
+        Value::Node(n) => Ok(Some(n.properties)),
+        Value::Edge(e) => Ok(Some(e.properties)),
+        Value::Null => Ok(None),
+        other => Err(GraphError::type_error(
+            QueryPhase::Runtime,
+            format!(
+                "SET requires a map, node or relationship value, got {}",
+                value_type_name(&other)
+            ),
+        )
+        .with_code(ErrorCode::InvalidArgumentType)),
+    }
+}
+
+/// `SET var = value` (`merge == false`) or `SET var += value` (`merge ==
+/// true`) on one row.
+pub(in crate::cypher::executor) fn apply_set_properties(
+    conn: &Connection,
+    rec: &mut NamedRecord,
+    variable: &str,
+    value_expr: &Expr,
+    merge: bool,
+) -> Result<()> {
+    let Some(entity) = load_and_refresh(conn, rec, variable, "SET")? else {
+        return Ok(());
+    };
+    let val = eval_expr(value_expr, rec, crate::cypher::eval::EvalCx::new(conn))?;
+    let Some(map) = props_source(val)? else {
+        return Ok(());
+    };
+    // Merge: start from the stored properties; overwrite: from empty.
+    let mut new_props = if merge {
+        entity_props(&entity).clone()
+    } else {
+        Properties::new()
+    };
+    for (k, v) in map {
+        if v == Value::Null {
+            new_props.remove(&k);
+        } else {
+            validate_write_value(&k, &v)?;
+            crate::types::validate_name(&k)?;
+            new_props.insert(k, v);
+        }
+    }
+    write_props(conn, rec, variable, &entity, new_props)
+}
+
+/// `SET var:Label...` on one row.
+pub(in crate::cypher::executor) fn apply_set_labels(
+    conn: &Connection,
+    rec: &mut NamedRecord,
+    variable: &str,
+    labels: &[String],
+) -> Result<()> {
+    let Some(Entity::Node(n)) = load_and_refresh(conn, rec, variable, "SET")? else {
+        return Ok(());
+    };
+    validate_write_labels(labels)?;
+    for label in labels {
+        node::add_node_label(conn, n.id, label)?;
+    }
+    // Adding labels can bring new per-label indexes into scope; insert
+    // entries across the full (post-add) label set. Idempotent for labels
+    // the node already had.
+    let new = node::get_node(conn, n.id)?;
+    index::update_indexes_for_node(conn, n.id, &new.labels, None, &new.properties)?;
+    fts::update_fts_for_node(conn, n.id, &new.labels, None, &new.properties)?;
+    rebind(rec, variable, &Entity::Node(new));
+    Ok(())
+}
+
+/// One `REMOVE` item on one row.
+pub(in crate::cypher::executor) fn apply_remove_item(
+    conn: &Connection,
+    rec: &mut NamedRecord,
+    item: &RemoveItem,
+) -> Result<()> {
+    match item {
+        RemoveItem::Property { variable, property } => {
+            let Some(entity) = load_and_refresh(conn, rec, variable, "REMOVE")? else {
+                return Ok(());
+            };
+            let mut new_props = entity_props(&entity).clone();
+            new_props.remove(property);
+            write_props(conn, rec, variable, &entity, new_props)
+        }
+        RemoveItem::Label { variable, labels } => {
+            let Some(Entity::Node(old)) = load_and_refresh(conn, rec, variable, "REMOVE")? else {
+                return Ok(());
+            };
+            // A removed label's per-label index entries must be dropped;
+            // entries owned by the node's remaining labels stay valid.
+            for label in labels {
+                index::remove_indexes_for_label(conn, old.id, label, &old.properties)?;
+                fts::remove_fts_for_label(conn, old.id, label, &old.properties)?;
+                node::remove_node_label(conn, old.id, label)?;
+            }
+            let new = node::get_node(conn, old.id)?;
+            rebind(rec, variable, &Entity::Node(new));
+            Ok(())
+        }
+    }
+}
+
+/// Apply one SET item (from a SET clause or a MERGE ON CREATE / ON MATCH)
+/// to whichever variable it names in `rec`.
+pub(in crate::cypher::executor) fn apply_set_item(
+    conn: &Connection,
+    rec: &mut NamedRecord,
+    item: &SetItem,
+) -> Result<()> {
+    match item {
+        SetItem::Property(assignment) => apply_set_property(conn, rec, assignment),
+        SetItem::Label { variable, labels } => apply_set_labels(conn, rec, variable, labels),
+        SetItem::MapOverwrite { variable, value } => {
+            apply_set_properties(conn, rec, variable, value, false)
+        }
+        SetItem::MapMerge { variable, value } => {
+            apply_set_properties(conn, rec, variable, value, true)
+        }
     }
 }
 
@@ -376,109 +721,77 @@ pub(in crate::cypher::executor) fn exec_set_property(
     let mut records = exec(conn, input, ctx)?;
     for rec in &mut records {
         for assignment in assignments {
-            let var = &assignment.variable;
-            // Check if this is a relationship variable (has edge identity metadata).
-            let edge_src_key = format!("{var}.__src");
-            let edge_dst_key = format!("{var}.__dst");
-            let edge_type_key = format!("{var}.__type");
-            if let (Some(Value::I64(src)), Some(Value::I64(dst)), Some(Value::String(label))) = (
-                rec.get(&edge_src_key),
-                rec.get(&edge_dst_key),
-                rec.get(&edge_type_key),
-            ) {
-                let val = eval_expr(
-                    &assignment.value,
-                    rec,
-                    crate::cypher::eval::EvalCx::new(conn),
-                )?;
-                validate_property_value(&val)?;
-                let edge_seq_key = format!("{var}.__edge_seq");
-                if let Some(Value::I64(seq)) = rec.get(&edge_seq_key) {
-                    edge::set_edge_property_at(
-                        conn,
-                        NodeId(*src as u64),
-                        NodeId(*dst as u64),
-                        label,
-                        *seq as u64,
-                        &assignment.property,
-                        val.clone(),
-                    )?;
-                } else {
-                    edge::set_edge_property(
-                        conn,
-                        NodeId(*src as u64),
-                        NodeId(*dst as u64),
-                        label,
-                        &assignment.property,
-                        val.clone(),
-                    )?;
-                }
-                // Update record so downstream RETURN sees the new value.
-                let prop_key = format!("{var}.{}", assignment.property);
-                if val == Value::Null {
-                    rec.fields.swap_remove(&prop_key);
-                } else {
-                    rec.set(prop_key, val);
-                }
-            } else if let Some(Value::I64(id)) = rec.get(var) {
-                let node_id = NodeId(*id as u64);
-                let old = node::get_node(conn, node_id)?;
-                let val = eval_expr(
-                    &assignment.value,
-                    rec,
-                    crate::cypher::eval::EvalCx::new(conn),
-                )?;
-                validate_property_value(&val)?;
-                node::set_node_property(conn, node_id, &assignment.property, val.clone())?;
-                let mut new_props = old.properties.clone();
-                if val == Value::Null {
-                    new_props.remove(&assignment.property);
-                } else {
-                    new_props.insert(assignment.property.clone(), val.clone());
-                }
-                index::update_indexes_for_node(
-                    conn,
-                    node_id,
-                    &old.labels,
-                    Some(&old.properties),
-                    &new_props,
-                )?;
-                fts::update_fts_for_node(
-                    conn,
-                    node_id,
-                    &old.labels,
-                    Some(&old.properties),
-                    &new_props,
-                )?;
-                // Update record so downstream RETURN sees the new value.
-                let prop_key = format!("{var}.{}", assignment.property);
-                if val == Value::Null {
-                    rec.fields.swap_remove(&prop_key);
-                } else {
-                    rec.set(prop_key, val);
-                }
-            }
+            apply_set_property(conn, rec, assignment)?;
         }
     }
     Ok(records)
 }
 
-/// Validate that a value is storable as a property (no nested maps/nodes/edges).
-pub(in crate::cypher::executor) fn validate_property_value(val: &Value) -> Result<()> {
-    match val {
-        Value::Map(_) | Value::Node(_) | Value::Edge(_) | Value::Path(_) => {
-            return Err(GraphError::type_error(
-                crate::types::QueryPhase::Runtime,
-                "maps, nodes, relationships, and paths cannot be stored as properties".to_string(),
-            )
-            .with_code(ErrorCode::InvalidPropertyType));
-        }
-        Value::List(items) => {
-            for item in items {
-                validate_property_value(item)?;
-            }
-        }
-        _ => {} // Scalars and Null are fine.
+/// Apply `SET .prop = val` to an in-record property map (null removes).
+fn set_or_remove(props: &mut Properties, key: &str, val: Value) {
+    if val == Value::Null {
+        props.remove(key);
+    } else {
+        props.insert(key.to_string(), val);
+    }
+}
+
+thread_local! {
+    /// `(max_property_value_bytes, max_name_bytes)` for the query currently
+    /// executing on this thread; 0 = unlimited. Installed by
+    /// [`WriteLimitsScope`] from the `ExecContext` in `execute_with_ctx`.
+    static WRITE_LIMITS: std::cell::Cell<(usize, usize)> = const { std::cell::Cell::new((0, 0)) };
+}
+
+/// RAII guard that installs the write limits for one query execution and
+/// restores the previous limits (supporting nested executions) on drop.
+pub(crate) struct WriteLimitsScope {
+    prev: (usize, usize),
+}
+
+impl WriteLimitsScope {
+    pub(crate) fn enter(max_property_value_bytes: usize, max_name_bytes: usize) -> Self {
+        let prev = WRITE_LIMITS.with(|c| c.replace((max_property_value_bytes, max_name_bytes)));
+        Self { prev }
+    }
+}
+
+impl Drop for WriteLimitsScope {
+    fn drop(&mut self) {
+        WRITE_LIMITS.with(|c| c.set(self.prev));
+    }
+}
+
+fn current_write_limits() -> (usize, usize) {
+    let (v, n) = WRITE_LIMITS.with(|c| c.get());
+    (
+        if v == 0 { usize::MAX } else { v },
+        if n == 0 { usize::MAX } else { n },
+    )
+}
+
+/// Validate one property assignment written by Cypher: storable type
+/// (no maps / entities, recursively in lists), key length, and value size.
+pub(in crate::cypher::executor) fn validate_write_value(key: &str, val: &Value) -> Result<()> {
+    let (max_value, max_name) = current_write_limits();
+    let one = Properties::from([(key.to_string(), val.clone())]);
+    crate::types::validate_properties("", &one, max_name, max_value)
+}
+
+/// [`validate_write_value`] for every entry of a property map.
+pub(in crate::cypher::executor) fn validate_write_properties(props: &Properties) -> Result<()> {
+    for (k, v) in props {
+        validate_write_value(k, v)?;
+    }
+    Ok(())
+}
+
+/// Validate label / relationship-type names written by Cypher against the
+/// configured name-length limit.
+pub(in crate::cypher::executor) fn validate_write_labels(labels: &[String]) -> Result<()> {
+    let (_, max_name) = current_write_limits();
+    for l in labels {
+        crate::types::validate_name_length(l, max_name)?;
     }
     Ok(())
 }
@@ -492,58 +805,7 @@ pub(in crate::cypher::executor) fn exec_set_label(
 ) -> Result<Vec<NamedRecord>> {
     let mut records = exec(conn, input, ctx)?;
     for rec in &mut records {
-        // Skip null variables (from OPTIONAL MATCH).
-        if let Some(Value::I64(id)) = rec.get(variable) {
-            let node_id = NodeId(*id as u64);
-            for label in labels {
-                node::add_node_label(conn, node_id, label)?;
-            }
-            // Adding labels can bring new per-label indexes into scope; insert
-            // entries across the full (post-add) label set. Idempotent for
-            // labels the node already had.
-            let new = node::get_node(conn, node_id)?;
-            index::update_indexes_for_node(conn, node_id, &new.labels, None, &new.properties)?;
-            fts::update_fts_for_node(conn, node_id, &new.labels, None, &new.properties)?;
-            // Update the labels in the record (__labels list and __label colon-joined string).
-            let labels_key = format!("{variable}.__labels");
-            if let Some(Value::List(current_labels)) = rec.get(&labels_key) {
-                let mut updated = current_labels.clone();
-                for label in labels {
-                    let val = Value::String(label.clone());
-                    if !updated.contains(&val) {
-                        updated.push(val);
-                    }
-                }
-                // Sort for consistency.
-                updated.sort_by(|a, b| {
-                    let sa = if let Value::String(s) = a {
-                        s.as_str()
-                    } else {
-                        ""
-                    };
-                    let sb = if let Value::String(s) = b {
-                        s.as_str()
-                    } else {
-                        ""
-                    };
-                    sa.cmp(sb)
-                });
-                // Update the colon-joined __label string.
-                let label_strs: Vec<&str> = updated
-                    .iter()
-                    .filter_map(|v| {
-                        if let Value::String(s) = v {
-                            Some(s.as_str())
-                        } else {
-                            None
-                        }
-                    })
-                    .collect();
-                let label_key = format!("{variable}.__label");
-                rec.set(label_key, Value::String(label_strs.join(":")));
-                rec.set(labels_key, Value::List(updated));
-            }
-        }
+        apply_set_labels(conn, rec, variable, labels)?;
     }
     Ok(records)
 }
@@ -558,143 +820,7 @@ pub(in crate::cypher::executor) fn exec_set_properties(
 ) -> Result<Vec<NamedRecord>> {
     let mut records = exec(conn, input, ctx)?;
     for rec in &mut records {
-        // Edge variant: the variable carries edge identity metadata
-        // (`__src`/`__dst`/`__type`, plus `__edge_seq` for parallel edges).
-        let edge_src_key = format!("{variable}.__src");
-        let edge_dst_key = format!("{variable}.__dst");
-        let edge_type_key = format!("{variable}.__type");
-        if let (Some(Value::I64(src)), Some(Value::I64(dst)), Some(Value::String(label))) = (
-            rec.get(&edge_src_key),
-            rec.get(&edge_dst_key),
-            rec.get(&edge_type_key),
-        ) {
-            let src = NodeId(*src as u64);
-            let dst = NodeId(*dst as u64);
-            let label = label.clone();
-            let edge_seq_key = format!("{variable}.__edge_seq");
-            let seq = match rec.get(&edge_seq_key) {
-                Some(Value::I64(s)) => *s as u64,
-                _ => {
-                    let prefix = crate::edge::edge_props_prefix(src, dst, &label);
-                    let entries = crate::storage::kv::scan_prefix(
-                        conn,
-                        crate::storage::kv::TABLE_EDGE_PROPS,
-                        &prefix,
-                    )?;
-                    entries
-                        .first()
-                        .map(|(k, _)| crate::edge::edge_seq_from_key(k, prefix.len()))
-                        .unwrap_or(0)
-                }
-            };
-
-            let map_val = eval_expr(value_expr, rec, crate::cypher::eval::EvalCx::new(conn))?;
-            let map = match &map_val {
-                Value::Map(m) => m,
-                Value::Null => continue,
-                _ => {
-                    return Err(GraphError::semantic("SET properties requires a map value"));
-                }
-            };
-
-            let old_props = edge::get_edge_properties_at(conn, src, dst, &label, seq)?;
-            let new_props: Properties = if merge {
-                let mut props = old_props.clone();
-                for (k, v) in map {
-                    if *v == Value::Null {
-                        props.remove(k);
-                    } else {
-                        validate_property_value(v)?;
-                        props.insert(k.clone(), v.clone());
-                    }
-                }
-                props
-            } else {
-                let mut props = Properties::new();
-                for (k, v) in map {
-                    if *v != Value::Null {
-                        validate_property_value(v)?;
-                        props.insert(k.clone(), v.clone());
-                    }
-                }
-                props
-            };
-
-            edge::set_all_edge_properties_at(conn, src, dst, &label, seq, new_props.clone())?;
-
-            // Update the record so downstream RETURN sees the new values.
-            for key in old_props.keys() {
-                let prop_key = format!("{variable}.{key}");
-                rec.remove(&prop_key);
-            }
-            for (key, val) in &new_props {
-                let prop_key = format!("{variable}.{key}");
-                rec.set(prop_key, val.clone());
-            }
-            continue;
-        }
-
-        // Skip null variables (from OPTIONAL MATCH).
-        if let Some(Value::I64(id)) = rec.get(variable) {
-            let node_id = NodeId(*id as u64);
-            let map_val = eval_expr(value_expr, rec, crate::cypher::eval::EvalCx::new(conn))?;
-
-            // The map value must be a Map (or Null to skip).
-            let map = match &map_val {
-                Value::Map(m) => m,
-                Value::Null => continue,
-                _ => {
-                    return Err(GraphError::semantic("SET properties requires a map value"));
-                }
-            };
-
-            let old = node::get_node(conn, node_id)?;
-            let old_props = old.properties.clone();
-
-            let new_props: Properties = if merge {
-                // Merge: start from existing, overlay map, remove nulls.
-                let mut props = old.properties.clone();
-                for (k, v) in map {
-                    if *v == Value::Null {
-                        props.remove(k);
-                    } else {
-                        props.insert(k.clone(), v.clone());
-                    }
-                }
-                props
-            } else {
-                // Overwrite: start from empty, add non-null entries from map.
-                let mut props = Properties::new();
-                for (k, v) in map {
-                    if *v != Value::Null {
-                        props.insert(k.clone(), v.clone());
-                    }
-                }
-                props
-            };
-
-            node::set_all_node_properties(conn, node_id, new_props.clone())?;
-            index::update_indexes_for_node(
-                conn,
-                node_id,
-                &old.labels,
-                Some(&old_props),
-                &new_props,
-            )?;
-            fts::update_fts_for_node(conn, node_id, &old.labels, Some(&old_props), &new_props)?;
-
-            // Update the record: remove old property keys, add new ones.
-            // First, remove all old flattened property keys.
-            for key in old_props.keys() {
-                let prop_key = format!("{variable}.{key}");
-                rec.remove(&prop_key);
-            }
-            // Add new property keys.
-            for (key, val) in &new_props {
-                let prop_key = format!("{variable}.{key}");
-                rec.set(prop_key, val.clone());
-            }
-        }
+        apply_set_properties(conn, rec, variable, value_expr, merge)?;
     }
     Ok(records)
 }
@@ -708,108 +834,7 @@ pub(in crate::cypher::executor) fn exec_remove(
     let mut records = exec(conn, input, ctx)?;
     for rec in &mut records {
         for item in items {
-            match item {
-                crate::cypher::ast::RemoveItem::Property { variable, property } => {
-                    // Check if this is an edge variable.
-                    let edge_src_key = format!("{variable}.__src");
-                    let edge_dst_key = format!("{variable}.__dst");
-                    let edge_type_key = format!("{variable}.__type");
-                    if let (
-                        Some(Value::I64(src)),
-                        Some(Value::I64(dst)),
-                        Some(Value::String(label)),
-                    ) = (
-                        rec.get(&edge_src_key),
-                        rec.get(&edge_dst_key),
-                        rec.get(&edge_type_key),
-                    ) {
-                        let src = *src;
-                        let dst = *dst;
-                        let label = label.clone();
-                        // Remove edge property by setting to Null.
-                        let edge_seq_key = format!("{variable}.__edge_seq");
-                        if let Some(Value::I64(seq)) = rec.get(&edge_seq_key) {
-                            let seq = *seq;
-                            edge::set_edge_property_at(
-                                conn,
-                                NodeId(src as u64),
-                                NodeId(dst as u64),
-                                &label,
-                                seq as u64,
-                                property,
-                                Value::Null,
-                            )?;
-                        } else {
-                            edge::set_edge_property(
-                                conn,
-                                NodeId(src as u64),
-                                NodeId(dst as u64),
-                                &label,
-                                property,
-                                Value::Null,
-                            )?;
-                        }
-                        // Update record to reflect removal.
-                        let prop_key = format!("{variable}.{property}");
-                        rec.fields.swap_remove(&prop_key);
-                    } else if let Some(Value::I64(id)) = rec.get(variable) {
-                        let id = *id;
-                        let node_id = NodeId(id as u64);
-                        let old = node::get_node(conn, node_id)?;
-                        node::remove_node_property(conn, node_id, property)?;
-                        let mut new_props = old.properties.clone();
-                        new_props.remove(property);
-                        index::update_indexes_for_node(
-                            conn,
-                            node_id,
-                            &old.labels,
-                            Some(&old.properties),
-                            &new_props,
-                        )?;
-                        fts::update_fts_for_node(
-                            conn,
-                            node_id,
-                            &old.labels,
-                            Some(&old.properties),
-                            &new_props,
-                        )?;
-                        // Update record to reflect removal.
-                        let prop_key = format!("{variable}.{property}");
-                        rec.fields.swap_remove(&prop_key);
-                    }
-                }
-                crate::cypher::ast::RemoveItem::Label { variable, labels } => {
-                    if let Some(Value::I64(id)) = rec.get(variable) {
-                        let id = *id;
-                        let node_id = NodeId(id as u64);
-                        // A removed label's per-label index entries must be
-                        // dropped; entries owned by the node's remaining labels
-                        // stay valid.
-                        let old = node::get_node(conn, node_id)?;
-                        for label in labels {
-                            index::remove_indexes_for_label(conn, node_id, label, &old.properties)?;
-                            fts::remove_fts_for_label(conn, node_id, label, &old.properties)?;
-                            node::remove_node_label(conn, node_id, label)?;
-                        }
-                        // Update the labels in the record.
-                        let label_key = format!("{variable}.__labels");
-                        if let Some(Value::List(current_labels)) = rec.get(&label_key) {
-                            let updated: Vec<Value> = current_labels
-                                .iter()
-                                .filter(|l| {
-                                    if let Value::String(s) = l {
-                                        !labels.contains(s)
-                                    } else {
-                                        true
-                                    }
-                                })
-                                .cloned()
-                                .collect();
-                            rec.set(label_key, Value::List(updated));
-                        }
-                    }
-                }
-            }
+            apply_remove_item(conn, rec, item)?;
         }
     }
     Ok(records)
@@ -838,4 +863,41 @@ pub(in crate::cypher::executor) fn exec_drop_index(
     let props: Vec<&str> = properties.iter().map(String::as_str).collect();
     index::drop_composite_index(conn, label, &props)?;
     Ok(vec![])
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::{Database, GraphError};
+
+    /// A storage failure while deleting must fail the statement, not be
+    /// swallowed (the statement rolls back and the entity survives).
+    #[test]
+    fn delete_propagates_storage_errors() {
+        for (trigger_table, query) in [
+            ("edge_props", "MATCH ()-[r:R]->() DELETE r"),
+            ("nodes", "MATCH (n:B) DETACH DELETE n"),
+        ] {
+            let mut db = Database::open_memory().unwrap();
+            db.execute("CREATE (:A)-[:R]->(:B)").unwrap();
+            db.connection()
+                .execute_batch(&format!(
+                    "CREATE TEMP TRIGGER fail_delete BEFORE DELETE ON main.{trigger_table} \
+                     BEGIN SELECT RAISE(ABORT, 'injected failure'); END;"
+                ))
+                .unwrap();
+            match db.execute(query) {
+                Err(GraphError::Storage { source, .. }) => {
+                    assert!(source.to_string().contains("injected failure"), "{source}")
+                }
+                other => panic!("expected a storage error from {query}, got {other:?}"),
+            }
+            db.connection()
+                .execute_batch("DROP TRIGGER fail_delete")
+                .unwrap();
+            let rows = db
+                .execute("MATCH (:A)-[r:R]->(:B) RETURN count(r)")
+                .unwrap();
+            assert_eq!(rows[0].values().next(), Some(&crate::Value::I64(1)));
+        }
+    }
 }

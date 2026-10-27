@@ -75,6 +75,13 @@ This is approximate by design — `Duration("P1M") * 0.5` doesn't have a
 single right answer, so Cypher picks "half a Gregorian-mean month" as
 its definition. Documented behavior.
 
+All temporal arithmetic is checked: a component that leaves the i64
+range, or a date outside chrono's calendar (about +-262,000 years), is a
+`NumberOutOfRange` error rather than a panic or a silently clamped value.
+Duration maps (`duration({hours: 3000000, nanoseconds: 1})`) add integer
+components exactly in i128 nanoseconds; only fractional components go
+through `f64`.
+
 ### 4. DST-aware operations on named-timezone DateTimes
 
 `CypherDateTime`'s third field — `Option<String>` — stores the IANA
@@ -85,9 +92,14 @@ when arithmetic crosses DST boundaries.
 
 Affected operations:
 
-- **`+ Duration` / `- Duration`** when the duration shifts the wall
-  clock across a DST transition (`temporal.rs:1593-1631`). The base
-  resolves the new offset in the stored zone via `chrono_tz`.
+- **`+ Duration` / `- Duration`** (`shift_zoned` in
+  `cypher::eval::temporal_ops`), with java.time `ZonedDateTime` semantics:
+  months and days shift the *local* date-time (calendar arithmetic, so
+  `+ duration({days: 1})` keeps 12:00 across a DST change), then seconds
+  and nanoseconds shift the *instant*, and the offset is re-resolved in
+  the stored zone (`2024-03-10T00:30[America/New_York] + PT3H` is
+  `04:30-04:00`). A local time in a spring-forward gap moves later by the
+  gap length; in an overlap the original offset is kept when still valid.
 - **`duration.between` / `inMonths` / `inDays` / `inSeconds`** when one
   side is a named-tz DateTime and the other is local
   (`effective_offset_dst`, `temporal.rs:2300-2360`). The local side's

@@ -1,7 +1,7 @@
 use std::fmt;
 use std::path::Path;
 
-use rusqlite::{Connection, OpenFlags, TransactionBehavior};
+use rusqlite::{config::DbConfig, Connection, OpenFlags, TransactionBehavior};
 
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -24,7 +24,15 @@ const GRAPHDBLITE_APPLICATION_ID: i32 = 0x4744_424C;
 /// build refuses to open a file whose `user_version` is greater than this
 /// constant — it was written by a newer release that may have introduced
 /// layout changes the older code can't safely interpret.
-const GRAPHDBLITE_SCHEMA_VERSION: i32 = 1;
+///
+/// History: 1 = graphdblite 0.1.x; 2 = index / FTS table names use the
+/// `storage::naming` scheme (case-escaped, `$`-separated), migrated on open
+/// by `storage::migrate::migrate_to_v2`.
+const GRAPHDBLITE_SCHEMA_VERSION: i32 = 2;
+
+/// Path that [`Database::open`] treats as "open a private in-memory
+/// database", matching SQLite's own convention.
+const MEMORY_PATH: &str = ":memory:";
 
 /// State of the stateful transaction lifecycle on a `Database` handle.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -70,9 +78,22 @@ pub struct Config {
     /// traversal. Default: 10,000,000. Set to 0 to disable. This is the
     /// runtime sibling to `max_traversal_depth`: even within the hop cap,
     /// dense graphs can produce factorial path enumeration that pegs CPU
-    /// long before result limits would stop it. Exceeding this returns
-    /// `GraphError::SizeLimit`.
+    /// long before result limits would stop it. `shortestPath` /
+    /// `allShortestPaths` searches share one budget of this size per query.
+    /// Exceeding this returns `GraphError::SizeLimit`.
     pub max_traversal_work: u64,
+    /// Approximate budget, in bytes, for everything one query keeps
+    /// materialized in memory: rows buffered by operators that cannot
+    /// stream (joins, sort, distinct, the named fallback executor), the
+    /// groups and collected values of aggregations, and the lists built by
+    /// `range()`, comprehensions and `collect()`. Default: 1 GiB. Set to 0
+    /// to disable. Streaming operators (scan, filter, project, unwind,
+    /// `count`/`sum`/... over few groups) are not counted. The count is an
+    /// estimate of resident size (96 bytes per value plus keys and string
+    /// contents), cumulative over the operators of one query, so a query's
+    /// memory stays within a small multiple of this regardless of how wide
+    /// its rows are. Exceeding it returns `GraphError::SizeLimit`.
+    pub max_materialized_bytes: u64,
     /// Maximum byte length for a single property value. Default: 1 MiB.
     pub max_property_value_bytes: usize,
     /// Maximum byte length for label and property key names. Default: 256.
@@ -100,6 +121,7 @@ impl Default for Config {
             synchronous: SyncMode::Normal,
             max_traversal_depth: 64,
             max_traversal_work: 10_000_000,
+            max_materialized_bytes: 1 << 30,
             max_property_value_bytes: 1024 * 1024,
             max_name_bytes: 256,
             max_result_rows: 100_000,
@@ -131,6 +153,9 @@ pub struct Database {
     /// Maximum total edge-visit budget for a single var-length traversal.
     /// Enforced inside `traverse_paths`. 0 = unlimited.
     pub max_traversal_work: u64,
+    /// Approximate per-query budget for materialized values, in bytes.
+    /// 0 = unlimited. Mirrors `Config::max_materialized_bytes`.
+    pub max_materialized_bytes: u64,
     /// Per-`Database` cache of parsed Cypher ASTs. Populated lazily on
     /// `execute*`/`query*` calls; bounded FIFO eviction. See
     /// `cypher::parse_cache` for design rationale.
@@ -152,8 +177,14 @@ impl Database {
     }
 
     /// Open a database with custom configuration.
+    ///
+    /// The special path `:memory:` opens a private in-memory database (same
+    /// as [`Database::open_memory`]) instead of a file with that name.
     pub fn open_with_config<P: AsRef<Path>>(path: P, config: Config) -> Result<Self> {
         let p = path.as_ref();
+        if p.as_os_str() == MEMORY_PATH {
+            return Self::init(Connection::open_in_memory()?, &config);
+        }
         // Atomically pre-create the database file with owner-only permissions
         // before SQLite opens it. Without this, SQLITE_OPEN_CREATE would create
         // the file with the process umask (often 0o644), leaving a TOCTOU
@@ -201,17 +232,27 @@ impl Database {
     }
 
     fn init(conn: Connection, config: &Config) -> Result<Self> {
+        // Untrusted-file hardening before the file's schema is used: no
+        // schema-defined SQL (triggers, views, virtual-table modules not
+        // marked innocuous) may call application functions, and defensive
+        // mode blocks writes that could corrupt the file (shadow tables,
+        // `writable_schema`).
+        conn.set_db_config(DbConfig::SQLITE_DBCONFIG_TRUSTED_SCHEMA, false)?;
+        conn.set_db_config(DbConfig::SQLITE_DBCONFIG_DEFENSIVE, true)?;
         conn.execute_batch(&format!(
-            "PRAGMA journal_mode=WAL;
-             PRAGMA busy_timeout={};
+            "PRAGMA busy_timeout={};
              PRAGMA synchronous={};
              PRAGMA foreign_keys=OFF;  -- intentional: graph edges are managed in application code, not via FK constraints
              PRAGMA cache_size={};
              PRAGMA mmap_size={};",
             config.busy_timeout_ms, config.synchronous, config.cache_size, config.mmap_size,
         ))?;
-        check_and_stamp_identity(&conn)?;
+        // Identity checks run before anything modifies the file (WAL switch,
+        // schema creation, stamping), so a foreign file is left untouched.
+        check_identity(&conn)?;
+        conn.execute_batch("PRAGMA journal_mode=WAL;")?;
         schema::init_schema(&conn)?;
+        migrate_and_stamp(&conn)?;
         Ok(Self {
             conn,
             tx_state: TxState::None,
@@ -220,6 +261,7 @@ impl Database {
             max_result_rows: config.max_result_rows,
             max_traversal_depth: config.max_traversal_depth,
             max_traversal_work: config.max_traversal_work,
+            max_materialized_bytes: config.max_materialized_bytes,
             parse_cache: crate::cypher::parse_cache::ParseCache::new(),
             plan_cache: crate::cypher::plan_cache::PlanCache::new(),
             schema_epoch: AtomicU64::new(0),
@@ -252,6 +294,7 @@ impl Database {
             self.max_result_rows,
             self.max_traversal_depth,
             self.max_traversal_work,
+            self.max_materialized_bytes,
             &self.parse_cache,
             &self.plan_cache,
             &self.schema_epoch,
@@ -276,6 +319,7 @@ impl Database {
             self.max_result_rows,
             self.max_traversal_depth,
             self.max_traversal_work,
+            self.max_materialized_bytes,
             &self.parse_cache,
             &self.plan_cache,
             &self.schema_epoch,
@@ -324,15 +368,45 @@ impl Database {
         cypher: &str,
         params: Option<&std::collections::HashMap<String, Value>>,
     ) -> Result<Vec<NamedRecord>> {
+        // Guarantee enough stack for deeply nested or very long queries even
+        // on a small thread stack (see `parser::stack_requirement`).
+        let need = crate::cypher::parser::stack_requirement(cypher);
+        stacker::maybe_grow(need, need, || {
+            self.execute_with_params_inner(cypher, params)
+        })
+    }
+
+    fn execute_with_params_inner(
+        &mut self,
+        cypher: &str,
+        params: Option<&std::collections::HashMap<String, Value>>,
+    ) -> Result<Vec<NamedRecord>> {
         if self.tx_state != TxState::None {
+            // SQLite can end a transaction on its own (disk full, I/O
+            // error). Running the statement anyway would silently
+            // auto-commit it outside the caller's transaction.
+            if self.conn.is_autocommit() {
+                self.tx_state = TxState::None;
+                return Err(GraphError::Transaction {
+                    message: "the active transaction was already rolled back by SQLite \
+                              (for example after a disk-full or I/O error)"
+                        .to_string(),
+                    hint: Some("begin a new transaction".to_string()),
+                });
+            }
             let ctx = ExecContext {
                 max_result_rows: self.max_result_rows,
                 max_traversal_depth: self.max_traversal_depth,
                 max_traversal_work: self.max_traversal_work,
+                max_materialized_bytes: self.max_materialized_bytes,
                 require_read_only: self.tx_state == TxState::Read,
+                max_property_value_bytes: self.max_property_value_bytes,
+                max_name_bytes: self.max_name_bytes,
                 ..Default::default()
             };
-            return execute_cypher(&self.conn, cypher, params, ctx, self.exec_caches());
+            let result = execute_cypher(&self.conn, cypher, params, ctx, self.exec_caches());
+            self.resync_tx_state();
+            return result;
         }
 
         // No active txn → auto-begin/auto-commit. Parse + plan once so we can
@@ -350,16 +424,28 @@ impl Database {
             max_result_rows: self.max_result_rows,
             max_traversal_depth: self.max_traversal_depth,
             max_traversal_work: self.max_traversal_work,
+            max_materialized_bytes: self.max_materialized_bytes,
+            max_property_value_bytes: self.max_property_value_bytes,
+            max_name_bytes: self.max_name_bytes,
             ..Default::default()
         };
-        let plan = if plan_cache::is_plan_cacheable(&stmt) {
-            let epoch = self.schema_epoch.load(Ordering::Acquire);
-            self.plan_cache.get_or_plan(cypher, epoch, || {
+        // Same per-query regex cache as `execute_cypher`, so `=~` compiles
+        // each pattern once per query instead of once per row.
+        let _regex_scope = eval::RegexCacheScope::enter(&ctx.regex_cache);
+        let cacheable = plan_cache::is_plan_cacheable(&stmt);
+        let plan_for = |cookie: i64| -> Result<crate::cypher::ir::LogicalOp> {
+            if cacheable {
+                let epoch = self.schema_epoch.load(Ordering::Acquire);
+                self.plan_cache
+                    .get_or_plan_with_schema(cypher, epoch, cookie, || {
+                        planner::plan_with_procedures(&self.conn, &stmt, &ctx.procedures, params)
+                    })
+            } else {
                 planner::plan_with_procedures(&self.conn, &stmt, &ctx.procedures, params)
-            })?
-        } else {
-            planner::plan_with_procedures(&self.conn, &stmt, &ctx.procedures, params)?
+            }
         };
+        let planned_cookie = plan_cache::schema_cookie(&self.conn)?;
+        let mut plan = plan_for(planned_cookie)?;
         if matches!(stmt, ast::Statement::Explain(_)) {
             return Ok(crate::cypher::cost::format_explain(&self.conn, &plan));
         }
@@ -376,10 +462,21 @@ impl Database {
             self.conn.execute_batch("BEGIN IMMEDIATE")?;
             self.tx_state = TxState::Write;
         }
-        let result = executor::execute_with_ctx(&self.conn, &plan, &ctx);
+        // Planning ran before BEGIN; if another connection changed the schema
+        // in between, re-plan against the schema this transaction sees.
+        let result = match plan_cache::schema_cookie(&self.conn) {
+            Ok(c) if c == planned_cookie => Ok(()),
+            Ok(c) => plan_for(c).map(|p| plan = p),
+            Err(e) => Err(e),
+        }
+        .and_then(|()| executor::execute_with_ctx(&self.conn, &plan, &ctx));
         match result {
             Ok(records) => {
-                self.conn.execute_batch("COMMIT")?;
+                if let Err(e) = self.conn.execute_batch("COMMIT") {
+                    let _ = self.conn.execute_batch("ROLLBACK");
+                    self.tx_state = TxState::None;
+                    return Err(e.into());
+                }
                 self.tx_state = TxState::None;
                 // Bump schema epoch after successful DDL so the plan cache is
                 // invalidated and subsequent queries pick up the new schema.
@@ -396,6 +493,12 @@ impl Database {
         }
     }
 
+    /// Whether a stateful transaction (`begin_write` / `begin_read`) is open
+    /// on this handle.
+    pub fn in_transaction(&self) -> bool {
+        self.tx_state != TxState::None
+    }
+
     /// Commit the currently-active transaction. Returns
     /// `GraphError::Transaction` when no txn is active.
     pub fn commit(&mut self) -> Result<()> {
@@ -405,8 +508,9 @@ impl Database {
                 hint: None,
             });
         }
-        self.conn.execute_batch("COMMIT")?;
-        self.tx_state = TxState::None;
+        let result = self.conn.execute_batch("COMMIT");
+        self.resync_tx_state();
+        result?;
         Ok(())
     }
 
@@ -419,9 +523,21 @@ impl Database {
                 hint: None,
             });
         }
-        self.conn.execute_batch("ROLLBACK")?;
-        self.tx_state = TxState::None;
+        let result = self.conn.execute_batch("ROLLBACK");
+        self.resync_tx_state();
+        result?;
         Ok(())
+    }
+
+    /// Clear `tx_state` when SQLite reports no open transaction. Called after
+    /// COMMIT / ROLLBACK / an in-transaction statement, whether or not they
+    /// succeeded: a failed COMMIT may leave the transaction open (state kept)
+    /// or rolled back (state cleared), and the connection is the source of
+    /// truth either way.
+    fn resync_tx_state(&mut self) {
+        if self.conn.is_autocommit() {
+            self.tx_state = TxState::None;
+        }
     }
 
     /// Create a secondary index on `(label, property)` inside the active
@@ -483,9 +599,10 @@ impl Database {
 
     /// Create a case-insensitive fulltext index on `(label, property)`.
     ///
-    /// Backed by FTS5's `trigram case_sensitive 0` tokenizer — plain
-    /// `CONTAINS` / `STARTS WITH` / `ENDS WITH` against this property
-    /// becomes case-insensitive and FTS-accelerated.
+    /// Backed by FTS5's `trigram case_sensitive 0` tokenizer. Accelerates the
+    /// case-insensitive idiom `toLower(n.prop) CONTAINS toLower($q)` (and
+    /// `STARTS WITH` / `ENDS WITH`); plain predicates keep Cypher's
+    /// case-sensitive semantics.
     ///
     /// Same transaction / error semantics as `create_fulltext_index`.
     pub fn create_fulltext_index_ci(&mut self, label: &str, property: &str) -> Result<()> {
@@ -544,23 +661,15 @@ impl Database {
     /// `VACUUM INTO` under the hood, which also defragments and compacts the
     /// output. The destination must not already exist.
     ///
+    /// The file is created atomically with owner-only permissions (`0o600`
+    /// on Unix) before SQLite writes into it, so the snapshot is never
+    /// readable by other users, even briefly.
+    ///
     /// Rejects when a transaction is active on this handle: `VACUUM INTO`
     /// requires no open transaction.
     pub fn snapshot_to<P: AsRef<Path>>(&mut self, path: P) -> Result<()> {
         self.ensure_no_active_tx("snapshot_to")?;
         let target = path.as_ref();
-        if target.exists() {
-            return Err(GraphError::Storage {
-                source: rusqlite::Error::SqliteFailure(
-                    rusqlite::ffi::Error::new(rusqlite::ffi::SQLITE_CANTOPEN),
-                    Some(format!(
-                        "snapshot target already exists: {}",
-                        target.display()
-                    )),
-                ),
-                hint: Some("VACUUM INTO requires the destination path to not exist; pick a fresh path or delete it first".to_string()),
-            });
-        }
         let target_str = target.to_str().ok_or_else(|| GraphError::Storage {
             source: rusqlite::Error::SqliteFailure(
                 rusqlite::ffi::Error::new(rusqlite::ffi::SQLITE_CANTOPEN),
@@ -568,11 +677,37 @@ impl Database {
             ),
             hint: None,
         })?;
-        self.conn.execute("VACUUM INTO ?", [target_str])?;
+        // `create_new` is O_CREAT|O_EXCL: it fails if the path exists (no
+        // exists()-then-create race) and applies the mode atomically.
+        // VACUUM INTO accepts an existing empty file as its target.
+        let mut options = std::fs::OpenOptions::new();
+        options.write(true).create_new(true);
         #[cfg(unix)]
         {
-            use std::os::unix::fs::PermissionsExt;
-            let _ = std::fs::set_permissions(target, std::fs::Permissions::from_mode(0o600));
+            use std::os::unix::fs::OpenOptionsExt;
+            options.mode(0o600);
+        }
+        if let Err(e) = options.open(target) {
+            let (msg, hint) = if e.kind() == std::io::ErrorKind::AlreadyExists {
+                (
+                    format!("snapshot target already exists: {}", target.display()),
+                    Some("VACUUM INTO requires the destination path to not exist; pick a fresh path or delete it first".to_string()),
+                )
+            } else {
+                (format!("failed to create snapshot target: {e}"), None)
+            };
+            return Err(GraphError::Storage {
+                source: rusqlite::Error::SqliteFailure(
+                    rusqlite::ffi::Error::new(rusqlite::ffi::SQLITE_CANTOPEN),
+                    Some(msg),
+                ),
+                hint,
+            });
+        }
+        if let Err(e) = self.conn.execute("VACUUM INTO ?", [target_str]) {
+            // Don't leave the empty placeholder behind on failure.
+            let _ = std::fs::remove_file(target);
+            return Err(e.into());
         }
         Ok(())
     }
@@ -615,53 +750,177 @@ impl Database {
     }
 }
 
-/// Verify the database's `application_id` (offset 68) and `user_version`
-/// (offset 60) belong to graphdblite. A zero application_id indicates a
-/// freshly-created file (or one created before this check existed) — we
-/// stamp it. A nonzero ID different from ours rejects the open with a
-/// clear error so users don't accidentally point graphdblite at a
-/// foreign SQLite file (Firefox cookies, GeoPackage, etc.). A
-/// `user_version` greater than the current schema version rejects the
-/// open: the file was written by a newer release whose layout this
-/// build can't safely interpret.
-fn check_and_stamp_identity(conn: &Connection) -> Result<()> {
+/// Verify, without modifying the file, that it is a graphdblite database
+/// (or an empty / pre-identity-check one) this build can open.
+///
+/// - A nonzero `application_id` (offset 68) other than ours: a foreign
+///   SQLite file (Firefox cookies, GeoPackage, ...), rejected.
+/// - `user_version` (offset 60) greater than ours: written by a newer
+///   release whose layout this build can't safely interpret, rejected.
+/// - `application_id == 0`: either a fresh file or one written before the
+///   identity check existed. Accepted only if every table in it is one
+///   graphdblite creates; a file holding other tables was opened by mistake
+///   and is rejected rather than silently stamped and given our tables.
+/// - Triggers on, or views named like, graphdblite tables: SQL that would run
+///   (or be read) during library operations, planted by whoever wrote the
+///   file. Rejected for every file.
+///
+/// All rejections are `GraphError::Storage` with `SQLITE_NOTADB`.
+fn check_identity(conn: &Connection) -> Result<()> {
     let app_id: i32 = conn.query_row("PRAGMA application_id", [], |r| r.get(0))?;
     if app_id != 0 && app_id != GRAPHDBLITE_APPLICATION_ID {
-        return Err(GraphError::Storage {
-            source: rusqlite::Error::SqliteFailure(
-                rusqlite::ffi::Error::new(rusqlite::ffi::SQLITE_NOTADB),
-                Some(format!(
-                    "file is not a graphdblite database (application_id={app_id:#010x}, expected {GRAPHDBLITE_APPLICATION_ID:#010x} 'GDBL')"
-                )),
+        return Err(not_a_graphdblite_db(
+            format!(
+                "file is not a graphdblite database (application_id={app_id:#010x}, expected {GRAPHDBLITE_APPLICATION_ID:#010x} 'GDBL')"
             ),
-            hint: Some(
-                "this file was created by a different application — point graphdblite at a fresh path or a previously-opened graphdblite database".to_string(),
-            ),
-        });
+            "this file was created by a different application; point graphdblite at a fresh path or a previously-opened graphdblite database",
+        ));
     }
 
     let user_version: i32 = conn.query_row("PRAGMA user_version", [], |r| r.get(0))?;
     if user_version > GRAPHDBLITE_SCHEMA_VERSION {
-        return Err(GraphError::Storage {
-            source: rusqlite::Error::SqliteFailure(
-                rusqlite::ffi::Error::new(rusqlite::ffi::SQLITE_NOTADB),
-                Some(format!(
-                    "database schema version {user_version} is newer than this build supports ({GRAPHDBLITE_SCHEMA_VERSION})"
-                )),
+        return Err(not_a_graphdblite_db(
+            format!(
+                "database schema version {user_version} is newer than this build supports ({GRAPHDBLITE_SCHEMA_VERSION})"
             ),
-            hint: Some(
-                "this file was written by a newer graphdblite release; upgrade the library to read it".to_string(),
-            ),
-        });
+            "this file was written by a newer graphdblite release; upgrade the library to read it",
+        ));
     }
 
-    // `PRAGMA application_id = N` and `PRAGMA user_version = N` only rewrite
-    // the header page if the value differs, so this is cheap on every open.
-    conn.execute_batch(&format!(
-        "PRAGMA application_id = {GRAPHDBLITE_APPLICATION_ID};
-         PRAGMA user_version = {GRAPHDBLITE_SCHEMA_VERSION};"
-    ))?;
+    let objects: Vec<(String, String, String)> = {
+        let mut stmt = conn.prepare("SELECT type, name, tbl_name FROM sqlite_master")?;
+        let rows = stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?;
+        rows.collect::<rusqlite::Result<_>>()?
+    };
+    for (kind, name, tbl_name) in &objects {
+        let ours = crate::storage::naming::is_graphdblite_table;
+        let planted = match kind.as_str() {
+            "trigger" => ours(tbl_name),
+            "view" => ours(name),
+            _ => false,
+        };
+        if planted {
+            return Err(not_a_graphdblite_db(
+                format!(
+                    "database contains a {kind} `{name}` on graphdblite table `{tbl_name}`; refusing to open a file with schema-defined SQL on graphdblite tables"
+                ),
+                "graphdblite never creates triggers or views; the file was modified by another tool or crafted. Drop the trigger/view with the sqlite3 CLI if it is trusted",
+            ));
+        }
+    }
+
+    if app_id == 0 {
+        check_core_table_shapes(conn, &objects)?;
+        let foreign = objects
+            .iter()
+            .find(|(kind, name, tbl_name)| match kind.as_str() {
+                "table" => !crate::storage::naming::is_graphdblite_table(name),
+                "index" => !crate::storage::naming::is_graphdblite_table(tbl_name),
+                _ => true,
+            });
+        if let Some((kind, name, _)) = foreign {
+            return Err(not_a_graphdblite_db(
+                format!(
+                    "file is not a graphdblite database (application_id=0 and it contains the non-graphdblite {kind} `{name}`)"
+                ),
+                "graphdblite only adopts empty files or files it created; point it at a fresh path",
+            ));
+        }
+    }
     Ok(())
+}
+
+/// For a file without our stamp, require every table named like a core
+/// table to have the columns `init_schema` creates. Matching names alone
+/// would let a foreign file (`CREATE TABLE nodes(id, title)`) pass the
+/// identity check, get switched to WAL, and only then fail schema setup.
+fn check_core_table_shapes(conn: &Connection, objects: &[(String, String, String)]) -> Result<()> {
+    use crate::storage::naming::CORE_TABLE_COLUMNS;
+    for (kind, name, _) in objects {
+        if kind != "table" {
+            continue;
+        }
+        let lower = name.to_ascii_lowercase();
+        let Some((_, expected)) = CORE_TABLE_COLUMNS.iter().find(|(t, _)| *t == lower) else {
+            continue;
+        };
+        let actual: Vec<(String, String, bool)> = {
+            let mut stmt = conn.prepare(&format!(
+                "SELECT name, type, pk FROM pragma_table_info('{}')",
+                name.replace('\'', "''")
+            ))?;
+            let rows = stmt.query_map([], |r| {
+                Ok((
+                    r.get::<_, String>(0)?,
+                    r.get::<_, String>(1)?.to_ascii_uppercase(),
+                    r.get::<_, i64>(2)? != 0,
+                ))
+            })?;
+            rows.collect::<rusqlite::Result<_>>()?
+        };
+        let matches = actual.len() == expected.len()
+            && actual
+                .iter()
+                .zip(expected.iter())
+                .all(|(a, e)| a.0.eq_ignore_ascii_case(e.0) && a.1 == e.1 && a.2 == e.2);
+        if !matches {
+            return Err(not_a_graphdblite_db(
+                format!(
+                    "file is not a graphdblite database (application_id=0 and table `{name}` does not have the columns graphdblite creates)"
+                ),
+                "graphdblite only adopts empty files or files it created; point it at a fresh path",
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// Bring the file up to the current schema version and stamp the identity
+/// header. Runs in one `BEGIN IMMEDIATE` transaction, re-reading
+/// `user_version` inside it so concurrent openers migrate exactly once. A
+/// file that is already current is not written at all.
+fn migrate_and_stamp(conn: &Connection) -> Result<()> {
+    let read_header = |conn: &Connection| -> Result<(i32, i32)> {
+        let app_id: i32 = conn.query_row("PRAGMA application_id", [], |r| r.get(0))?;
+        let version: i32 = conn.query_row("PRAGMA user_version", [], |r| r.get(0))?;
+        Ok((app_id, version))
+    };
+    let current = (GRAPHDBLITE_APPLICATION_ID, GRAPHDBLITE_SCHEMA_VERSION);
+    if read_header(conn)? == current {
+        return Ok(());
+    }
+    conn.execute_batch("BEGIN IMMEDIATE")?;
+    let result = (|| -> Result<()> {
+        let (_, version) = read_header(conn)?;
+        if version < 2 {
+            crate::storage::migrate::migrate_to_v2(conn)?;
+        }
+        conn.execute_batch(&format!(
+            "PRAGMA application_id = {GRAPHDBLITE_APPLICATION_ID};
+             PRAGMA user_version = {GRAPHDBLITE_SCHEMA_VERSION};"
+        ))?;
+        Ok(())
+    })();
+    match result {
+        Ok(()) => {
+            conn.execute_batch("COMMIT")?;
+            Ok(())
+        }
+        Err(e) => {
+            let _ = conn.execute_batch("ROLLBACK");
+            Err(e)
+        }
+    }
+}
+
+fn not_a_graphdblite_db(message: String, hint: &str) -> GraphError {
+    GraphError::Storage {
+        source: rusqlite::Error::SqliteFailure(
+            rusqlite::ffi::Error::new(rusqlite::ffi::SQLITE_NOTADB),
+            Some(message),
+        ),
+        hint: Some(hint.to_string()),
+    }
 }
 
 impl Drop for Database {
@@ -785,6 +1044,89 @@ mod stateful_tx_tests {
         // Subsequent queries still work.
         let rows = db.execute("RETURN 1 AS x").unwrap();
         assert_eq!(rows.len(), 1);
+    }
+
+    // F9: a COMMIT that fails because SQLite already ended the transaction
+    // must not leave `tx_state` claiming a transaction is open, or every
+    // later begin_* fails with "already active".
+    #[test]
+    fn failed_commit_resyncs_tx_state() {
+        let mut db = Database::open_memory().unwrap();
+        db.begin_write().unwrap();
+        db.conn.execute_batch("ROLLBACK").unwrap();
+        match db.commit().unwrap_err() {
+            GraphError::Storage { source, .. } => assert!(
+                source.to_string().contains("no transaction is active"),
+                "unexpected storage error: {source}"
+            ),
+            other => panic!("expected a storage error, got {other}"),
+        }
+        assert_eq!(db.tx_state, TxState::None);
+        db.begin_write().unwrap();
+        db.rollback().unwrap();
+    }
+
+    // F9: same for a failed ROLLBACK.
+    #[test]
+    fn failed_rollback_resyncs_tx_state() {
+        let mut db = Database::open_memory().unwrap();
+        db.begin_read().unwrap();
+        db.conn.execute_batch("ROLLBACK").unwrap();
+        match db.rollback().unwrap_err() {
+            GraphError::Storage { source, .. } => assert!(
+                source.to_string().contains("no transaction is active"),
+                "unexpected storage error: {source}"
+            ),
+            other => panic!("expected a storage error, got {other}"),
+        }
+        assert_eq!(db.tx_state, TxState::None);
+        db.begin_write().unwrap();
+        db.rollback().unwrap();
+    }
+
+    // A transaction SQLite ended on its own is reported instead of letting
+    // the next statement auto-commit outside it.
+    #[test]
+    fn statement_after_sqlite_ended_tx_is_rejected() {
+        let mut db = Database::open_memory().unwrap();
+        db.begin_write().unwrap();
+        db.conn.execute_batch("ROLLBACK").unwrap();
+        match db.execute("CREATE (:A)").unwrap_err() {
+            GraphError::Transaction { message, .. } => assert!(
+                message.contains("already rolled back by SQLite"),
+                "unexpected message: {message}"
+            ),
+            other => panic!("expected a transaction error, got {other}"),
+        }
+        assert_eq!(db.tx_state, TxState::None);
+        let rows = db.execute("MATCH (a:A) RETURN count(a) AS c").unwrap();
+        assert_eq!(rows[0].get("c"), Some(&Value::I64(0)));
+    }
+
+    // The resync keys off SQLite's autocommit flag; a normal COMMIT still
+    // clears the state.
+    #[test]
+    fn successful_commit_clears_tx_state() {
+        let mut db = Database::open_memory().unwrap();
+        db.begin_write().unwrap();
+        db.execute("CREATE (:A)").unwrap();
+        db.commit().unwrap();
+        assert_eq!(db.tx_state, TxState::None);
+        assert!(db.conn.is_autocommit());
+    }
+
+    #[test]
+    fn in_transaction_tracks_begin_and_end() {
+        let mut db = Database::open_memory().unwrap();
+        assert!(!db.in_transaction());
+        db.begin_read().unwrap();
+        assert!(db.in_transaction());
+        db.commit().unwrap();
+        assert!(!db.in_transaction());
+        db.begin_write().unwrap();
+        assert!(db.in_transaction());
+        db.rollback().unwrap();
+        assert!(!db.in_transaction());
     }
 
     #[test]
@@ -953,6 +1295,43 @@ mod identity_tests {
                 );
             }
             other => panic!("expected Storage error, got {other:?}"),
+        }
+    }
+}
+
+#[cfg(test)]
+mod hardening_tests {
+    use super::*;
+
+    #[test]
+    fn connection_is_opened_untrusted_and_defensive() {
+        let dir = tempfile::tempdir().unwrap();
+        for db in [
+            Database::open_memory().unwrap(),
+            Database::open(dir.path().join("h.db")).unwrap(),
+        ] {
+            let trusted: i64 = db
+                .conn
+                .query_row("PRAGMA trusted_schema", [], |r| r.get(0))
+                .unwrap();
+            assert_eq!(trusted, 0);
+            assert!(db
+                .conn
+                .db_config(DbConfig::SQLITE_DBCONFIG_DEFENSIVE)
+                .unwrap());
+            // Defensive mode: the schema cannot be made writable.
+            db.conn.execute_batch("PRAGMA writable_schema=ON").unwrap();
+            let err = db
+                .conn
+                .execute(
+                    "UPDATE sqlite_master SET sql = 'x' WHERE name = 'nodes'",
+                    [],
+                )
+                .unwrap_err();
+            assert!(
+                err.to_string().contains("may not be modified"),
+                "unexpected error: {err}"
+            );
         }
     }
 }

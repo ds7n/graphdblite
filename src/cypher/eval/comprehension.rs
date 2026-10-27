@@ -7,6 +7,20 @@ use crate::types::{GraphError, Value};
 
 use super::*;
 
+/// Materialize the outer scope for a comprehension or quantifier that binds
+/// `variable`, dropping any outer flat keys `variable.*`.
+///
+/// An outer node or relationship named like the local variable is stored as
+/// flat keys (`x.name`, `x.__id`, ...). Property access resolves those keys
+/// before the variable itself, so leaving them in place would make `x.name`
+/// read the outer entity instead of the per-item value.
+fn scope_without(record: &dyn RecordView, variable: &str) -> NamedRecord {
+    let mut base = view_to_named(record);
+    let prefix = format!("{variable}.");
+    base.fields.retain(|k, _| !k.starts_with(&prefix));
+    base
+}
+
 pub(in crate::cypher::eval) fn eval_list_comprehension(
     variable: &str,
     list_expr: &Expr,
@@ -18,7 +32,8 @@ pub(in crate::cypher::eval) fn eval_list_comprehension(
     let list_val = eval_expr(list_expr, record, ecx)?;
     let items = match list_val {
         Value::List(items) => items,
-        Value::Null => return Ok(Value::List(vec![])),
+        // Like every other list operation, a null list yields null.
+        Value::Null => return Ok(Value::Null),
         _ => {
             return Err(GraphError::semantic(
                 "list comprehension requires a list input".to_string(),
@@ -28,8 +43,9 @@ pub(in crate::cypher::eval) fn eval_list_comprehension(
 
     // Comprehension binds a fresh per-item variable on top of the outer
     // scope, so we need an owned mutable record. Materialize once.
-    let base = view_to_named(record);
+    let base = scope_without(record, variable);
     let mut results = Vec::new();
+    let mut budget = ListBudget::default();
     for item in items {
         let mut local = base.clone();
         local.set(variable.to_string(), item.clone());
@@ -44,6 +60,7 @@ pub(in crate::cypher::eval) fn eval_list_comprehension(
             Some(expr) => eval_expr(expr, &local, ecx)?,
             None => item,
         };
+        budget.add(&val)?;
         results.push(val);
     }
 
@@ -76,7 +93,7 @@ pub(in crate::cypher::eval) fn eval_quantifier(
     let mut false_count: usize = 0;
     let mut null_count: usize = 0;
 
-    let base = view_to_named(record);
+    let base = scope_without(record, variable);
     for item in &items {
         let mut local = base.clone();
         local.set(variable.to_string(), item.clone());
@@ -205,6 +222,7 @@ pub(in crate::cypher::eval) fn eval_pattern_comprehension(
 
     // For each matching row, evaluate the map expression.
     let mut results = Vec::new();
+    let mut budget = ListBudget::default();
     for row in &rows {
         // Merge the outer record with the inner row so the map expression
         // can reference both outer and inner variables.
@@ -214,6 +232,7 @@ pub(in crate::cypher::eval) fn eval_pattern_comprehension(
         }
 
         let val = eval_expr(map_expr, &merged, ecx)?;
+        budget.add(&val)?;
         results.push(val);
     }
 

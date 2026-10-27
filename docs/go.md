@@ -51,7 +51,8 @@ for i := range result.RowCount() {
 db, err := graphdblite.Open(path string) (*Database, error)
 ```
 
-Opens or creates a database file. Default busy timeout is 5000 ms.
+Opens or creates a database file. Default busy timeout is 5000 ms. The path
+`":memory:"` opens a private in-memory database (no file is created).
 
 ### OpenMemory
 
@@ -77,6 +78,30 @@ Opens a database with a custom write-lock wait timeout (milliseconds).
 | `db.Execute(cypher)` | Writes (`CREATE`, `SET`, `DELETE`, `MERGE`) | Read-write |
 
 Both return `(*Result, error)`. The caller must call `result.Free()` when done.
+
+### Parameters
+
+`QueryParams` / `ExecuteParams` (on `Database`, and `QueryParams` / `ExecuteParams`
+on transactions) take `$name` parameters as a `map[string]any`:
+
+```go
+res, err := db.QueryParams("MATCH (p:Person) WHERE p.age > $min RETURN p.name",
+    map[string]any{"min": 30})
+```
+
+| Go | Cypher |
+|----|--------|
+| `nil`, nil pointer / slice / map | null |
+| `bool` | boolean |
+| `int*`, `uint*` (up to `math.MaxInt64`) | integer |
+| `float32`, `float64` | float (`1.0` stays a float) |
+| `string` | string |
+| slice, array | list |
+| `map[string]T` | map |
+
+NaN, infinities, unsigned values above `math.MaxInt64` and other types (structs,
+maps with non-string keys, `time.Time`) are rejected with an error naming the
+parameter. Pass temporal values as ISO strings and convert in Cypher (`date($d)`).
 
 ### BeginRead / BeginWrite
 
@@ -132,16 +157,40 @@ with `ColumnName`. All results must be freed with `Free()`.
 ### Value type constants
 
 ```go
-graphdblite.TypeNull   // 0
-graphdblite.TypeBool   // 1
-graphdblite.TypeI64    // 2
-graphdblite.TypeF64    // 3
-graphdblite.TypeString // 4
-graphdblite.TypeList   // 5
-graphdblite.TypePath   // 6
+graphdblite.TypeNull          // 0
+graphdblite.TypeBool          // 1
+graphdblite.TypeI64           // 2
+graphdblite.TypeF64           // 3
+graphdblite.TypeString        // 4
+graphdblite.TypeList          // 5
+graphdblite.TypePath          // 6
+graphdblite.TypeMap           // 7
+graphdblite.TypeNode          // 8
+graphdblite.TypeRelationship  // 9
+graphdblite.TypeDate          // 10
+graphdblite.TypeLocalTime     // 11
+graphdblite.TypeTime          // 12
+graphdblite.TypeLocalDateTime // 13
+graphdblite.TypeDateTime      // 14
+graphdblite.TypeDuration      // 15
 ```
 
 Check for null values with `result.ValueType(row, col) == graphdblite.TypeNull`.
+
+### Structured values
+
+Lists, maps, nodes, relationships and paths are read through `JSON()`:
+
+| Value | JSON |
+|-------|------|
+| float | always has a fraction or exponent (`1.0`); NaN and infinities are `null` |
+| node | `{"__id": 1, "__labels": ["Person"], ...properties}` |
+| relationship | `{"__src": 1, "__dst": 2, "__type": "KNOWS", "__label": "KNOWS", "__edge_seq": 0, ...properties}` (`__label` is a deprecated alias of `__type`) |
+| path | `{"nodes": [node, ...], "relationships": [relationship, ...]}` |
+
+Property names starting with `__` are reserved for the metadata keys (writes are
+rejected). `ValueStr` strings are copied out of the result, so they stay valid
+after `Free`.
 
 ## Transactions
 
@@ -289,8 +338,19 @@ if err != nil {
 }
 ```
 
-Querying or executing on a closed database returns an error immediately without
-calling into the C library.
+Querying or executing on a closed database returns `graphdblite.ErrClosed`
+immediately without calling into the C library; any call on a committed or rolled
+back transaction returns `graphdblite.ErrTxFinished` (test with `errors.Is`).
+
+Inside a transaction, a statement that fails is rolled back on its own (its
+partial writes are undone) and the transaction stays open: the caller can
+continue or `Rollback`. A failed `Commit` keeps the transaction open, so
+`Rollback` still works.
+
+The binding is safe to use from many goroutines: each C call and its error
+message read run on one locked OS thread, and every method keeps its
+`Database` / `Result` alive for the duration of the C call, so the finalizer
+cannot close a handle mid-call.
 
 ## Build requirements
 

@@ -5,23 +5,32 @@
 
 /** An embedded graph database with Cypher query support. */
 export declare class Database {
-  /** Open a database at the given file path. */
+  /**
+   * Open a database at the given file path. The path `:memory:` opens a
+   * private in-memory database.
+   */
   constructor(path: string)
   /** Open a database with a custom busy timeout (milliseconds). */
   static openWithTimeout(path: string, busyTimeoutMs: number): Database
   /** Open an in-memory database (for testing). */
   static openMemory(): Database
-  /** Execute a read-only Cypher query. Returns an array of objects. */
-  query(cypher: string): Array<object>
-  /** Execute a write Cypher query (CREATE, DELETE, SET, MERGE). Returns an array of objects. */
-  execute(cypher: string): Array<object>
+  /**
+   * Execute a read-only Cypher query, with optional `$name` parameters.
+   * Returns an array of objects.
+   */
+  query(cypher: string, params?: Record<string, unknown>): Array<object>
+  /**
+   * Execute a write Cypher query (CREATE, DELETE, SET, MERGE), with
+   * optional `$name` parameters. Returns an array of objects.
+   */
+  execute(cypher: string, params?: Record<string, unknown>): Array<object>
   /**
    * Begin a read-write transaction. Pair with `commit()` or `rollback()`.
    * On Node 22+ the returned object is also `Symbol.dispose`-friendly via
    * the `using` syntax (rolls back on scope exit).
    */
   beginWrite(): WriteTransaction
-  /** Begin a read transaction. Pair with `commit()`. */
+  /** Begin a read transaction. Pair with `commit()` or `rollback()`. */
   beginRead(): ReadTransaction
   /**
    * Write a consistent single-file snapshot of this database to `path`.
@@ -31,15 +40,23 @@ export declare class Database {
    * transaction is active on this handle or when `path` already exists.
    */
   snapshotTo(path: string): void
-  /** Close the database connection. */
+  /** Close the database connection. An open transaction is rolled back. */
   close(): void
 }
-/** A read-write transaction. Created via `Database.beginWrite()`. */
+/**
+ * A read-write transaction. Created via `Database.beginWrite()`.
+ *
+ * A statement that fails is rolled back on its own; the transaction stays
+ * open.
+ */
 export declare class WriteTransaction {
-  /** Execute a Cypher query within this transaction. */
-  execute(cypher: string): Array<object>
+  /**
+   * Execute a Cypher query within this transaction, with optional
+   * `$name` parameters.
+   */
+  execute(cypher: string, params?: Record<string, unknown>): Array<object>
   /** Execute a Cypher query within this transaction (alias for `execute`). */
-  query(cypher: string): Array<object>
+  query(cypher: string, params?: Record<string, unknown>): Array<object>
   /** Create a secondary index on (label, property) for faster lookups. */
   createIndex(label: string, property: string): void
   /** Drop a secondary index on (label, property). */
@@ -51,9 +68,10 @@ export declare class WriteTransaction {
   createFulltextIndex(label: string, property: string): void
   /**
    * Create a case-insensitive fulltext index on (label, property).
-   * Uses SQLite FTS5 trigram tokenizer with case_sensitive=0, so
-   * CONTAINS / STARTS WITH / ENDS WITH against this property is
-   * case-insensitive.
+   * Uses SQLite FTS5 trigram tokenizer with case_sensitive=0. It
+   * accelerates the case-insensitive idiom
+   * `toLower(n.prop) CONTAINS toLower($q)` (and STARTS WITH / ENDS WITH);
+   * plain predicates keep Cypher's case-sensitive semantics.
    */
   createFulltextIndexCi(label: string, property: string): void
   /**
@@ -79,15 +97,26 @@ export declare class WriteTransaction {
   createCompositeIndex(label: string, properties: Array<string>): void
   /** Drop a composite (multi-property) secondary index on (label, properties). */
   dropCompositeIndex(label: string, properties: Array<string>): void
-  /** Commit the transaction. */
+  /**
+   * Commit the transaction. If the commit fails the transaction stays
+   * open, so it can still be rolled back.
+   */
   commit(): void
   /** Rollback the transaction. */
   rollback(): void
 }
 /** A read-only transaction. Created via `Database.beginRead()`. */
 export declare class ReadTransaction {
-  /** Execute a read-only Cypher query within this transaction. */
-  query(cypher: string): Array<object>
+  /**
+   * Execute a read-only Cypher query within this transaction, with
+   * optional `$name` parameters.
+   */
+  query(cypher: string, params?: Record<string, unknown>): Array<object>
   /** Commit (release) the read transaction. */
   commit(): void
+  /**
+   * Roll back (release) the read transaction. Same effect as `commit()`:
+   * a read transaction has nothing to undo.
+   */
+  rollback(): void
 }

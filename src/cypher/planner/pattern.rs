@@ -89,8 +89,10 @@ pub fn plan_patterns(conn: &Connection, patterns: &[Pattern]) -> crate::types::R
 
 /// Plan a shortestPath / allShortestPaths pattern.
 ///
-/// The pattern must be: (src_node)-[rel*..N]->(dst_node).
-/// Both endpoint nodes need scans; the shortest path operator runs BFS between them.
+/// The pattern must be: (src_node)-[rel*..N]->(dst_node), with a minimum
+/// length of 0 or 1. Both endpoints get scans (correlated against
+/// `existing_input` when present); the shortest path operator runs BFS
+/// between them.
 pub(in crate::cypher::planner) fn plan_shortest_path_pattern(
     conn: &Connection,
     pattern: &Pattern,
@@ -128,18 +130,12 @@ pub(in crate::cypher::planner) fn plan_shortest_path_pattern(
         }
     };
 
-    let src_alias = src_node
-        .variable
-        .clone()
-        .unwrap_or_else(|| "_sp_src".to_string());
-    let dst_alias = dst_node
-        .variable
-        .clone()
-        .unwrap_or_else(|| "_sp_dst".to_string());
-    let path_alias = pattern
-        .path_variable
-        .clone()
-        .unwrap_or_else(|| "_path".to_string());
+    // Unnamed endpoints / path get unique internal names so several
+    // shortestPath patterns in one query don't bind each other's variables.
+    let anon = || format!("_anon_{}", ANON_COUNTER.fetch_add(1, Ordering::Relaxed));
+    let src_alias = src_node.variable.clone().unwrap_or_else(anon);
+    let dst_alias = dst_node.variable.clone().unwrap_or_else(anon);
+    let path_alias = pattern.path_variable.clone().unwrap_or_else(anon);
 
     let direction = match rel.direction {
         RelDirection::Outgoing => Direction::Outgoing,
@@ -147,21 +143,32 @@ pub(in crate::cypher::planner) fn plan_shortest_path_pattern(
         RelDirection::Undirected => Direction::Both,
     };
 
-    let (_, max_hops) = rel.var_length.unwrap_or((1, u32::MAX));
+    // A plain `-[:R]->` (no `*`) is a single hop, as in Neo4j.
+    let (min_hops, max_hops) = rel.var_length.unwrap_or((1, 1));
+    if min_hops > 1 {
+        return Err(GraphError::semantic(format!(
+            "shortestPath does not support a minimal length different from 0 or 1 (got {min_hops})"
+        )));
+    }
 
-    // Build input: scan both endpoints and cross-product them.
-    let input = if let Some(existing) = existing_input {
-        // If we already have bound variables, use the existing pipeline.
-        // Plan additional scans only for unbound nodes.
-        existing
-    } else {
-        let src_scan = plan_node_scan(conn, src_node, &src_alias)?;
-        let dst_scan = plan_node_scan(conn, dst_node, &dst_alias)?;
-        LogicalOp::CrossProduct {
-            left: Box::new(src_scan),
-            right: Box::new(dst_scan),
-            same_match: false,
-        }
+    // Always scan both endpoints so their labels and inline properties
+    // apply. When earlier patterns already produced rows, correlate the
+    // scans against them: a bound endpoint resolves to its existing node
+    // and an unbound one is scanned per row.
+    let src_scan = plan_node_scan(conn, src_node, &src_alias)?;
+    let dst_scan = plan_node_scan(conn, dst_node, &dst_alias)?;
+    let endpoints = LogicalOp::CrossProduct {
+        left: Box::new(src_scan),
+        right: Box::new(dst_scan),
+        same_match: false,
+    };
+    let input = match existing_input {
+        Some(existing) => LogicalOp::CorrelatedJoin {
+            input: Box::new(existing),
+            right: Box::new(endpoints),
+            same_match: true,
+        },
+        None => endpoints,
     };
 
     Ok(LogicalOp::ShortestPath {
@@ -169,8 +176,9 @@ pub(in crate::cypher::planner) fn plan_shortest_path_pattern(
         src_alias,
         dst_alias,
         path_alias,
-        edge_type: rel.rel_types.first().cloned(),
+        edge_types: rel.rel_types.clone(),
         direction,
+        min_hops,
         max_hops,
         all_paths: pattern.shortest_path_mode == ShortestPathMode::All,
     })
@@ -266,13 +274,14 @@ pub(in crate::cypher::planner) fn plan_single_pattern(
 
                 // Always assign a synthetic alias for anonymous relationships so
                 // edge identity is tracked for relationship uniqueness within a
-                // MATCH pattern. Named paths use a path-specific prefix.
+                // MATCH pattern. Named paths use a path-specific prefix. The
+                // suffix comes from the global counter (not the element
+                // index) so two named paths never share an alias.
                 let effective_rel_alias = if pattern.path_variable.is_some() {
-                    Some(
-                        rel.variable
-                            .clone()
-                            .unwrap_or_else(|| format!("_path_rel_{i}")),
-                    )
+                    Some(rel.variable.clone().unwrap_or_else(|| {
+                        let n = ANON_COUNTER.fetch_add(1, Ordering::Relaxed);
+                        format!("_path_rel_{n}")
+                    }))
                 } else {
                     Some(rel.variable.clone().unwrap_or_else(|| {
                         let n = ANON_COUNTER.fetch_add(1, Ordering::Relaxed);
@@ -388,6 +397,28 @@ pub(in crate::cypher::planner) fn plan_single_pattern(
     Ok(result)
 }
 
+/// Wrap `op` in one `'<label>' IN alias.__labels` filter per label after the
+/// first. Scans and index lookups are keyed on the first label only.
+fn wrap_extra_label_filters(mut op: LogicalOp, node: &NodePattern, alias: &str) -> LogicalOp {
+    for extra_label in node.labels.iter().skip(1) {
+        let predicate = Expr::synthetic(ExprKind::BinaryOp {
+            left: Box::new(Expr::synthetic(ExprKind::Literal(LiteralValue::String(
+                extra_label.clone(),
+            )))),
+            op: BinOp::In,
+            right: Box::new(Expr::synthetic(ExprKind::Property(
+                alias.to_string(),
+                "__labels".to_string(),
+            ))),
+        });
+        op = LogicalOp::Filter {
+            input: Box::new(op),
+            predicate,
+        };
+    }
+    op
+}
+
 /// Plan the scan for a single node pattern, using an index lookup if available.
 pub(in crate::cypher::planner) fn plan_node_scan(
     conn: &Connection,
@@ -447,40 +478,28 @@ pub(in crate::cypher::planner) fn plan_node_scan(
                     Some(properties_to_filter(alias, &remaining))
                 };
 
-                return Ok(LogicalOp::IndexLookup {
+                let lookup = LogicalOp::IndexLookup {
                     label,
                     alias: alias.to_string(),
                     index_properties,
                     lookups,
                     remaining_filters,
-                });
+                };
+                // The index is keyed on the first label only; the node must
+                // still carry every other label in the pattern.
+                return Ok(wrap_extra_label_filters(lookup, node, alias));
             }
         }
     }
 
     // Fallback: full label scan + filter.
-    let mut scan = LogicalOp::Scan {
+    let scan = LogicalOp::Scan {
         label,
         alias: alias.to_string(),
     };
 
     // Add filters for additional labels (multi-label nodes).
-    for extra_label in node.labels.iter().skip(1) {
-        let predicate = Expr::synthetic(ExprKind::BinaryOp {
-            left: Box::new(Expr::synthetic(ExprKind::Literal(LiteralValue::String(
-                extra_label.clone(),
-            )))),
-            op: BinOp::In,
-            right: Box::new(Expr::synthetic(ExprKind::Property(
-                alias.to_string(),
-                "__labels".to_string(),
-            ))),
-        });
-        scan = LogicalOp::Filter {
-            input: Box::new(scan),
-            predicate,
-        };
-    }
+    let mut scan = wrap_extra_label_filters(scan, node, alias);
 
     if !node.properties.is_empty() {
         let predicate = properties_to_filter(alias, &node.properties);
@@ -617,14 +636,19 @@ pub(in crate::cypher::planner) fn plan_create_pattern_with_counter(
 }
 
 /// Among all candidate indexes for a label, find the one whose property list
-/// has the longest leftmost prefix entirely covered by equality predicates.
+/// is entirely covered by equality predicates, preferring the widest.
 ///
-/// Tie-breaking (when two indexes match the same prefix length):
+/// A composite index is only usable when *every* column is constrained: a
+/// node missing a trailing column has no entry in the index, so a
+/// leading-prefix scan would silently drop it (`WHERE n.x = 1` must still
+/// return a node with `x = 1` and no `z` under an index on `(x, z)`).
+///
+/// Tie-breaking (when two indexes cover the same number of columns):
 /// 1. Prefer smaller total `properties.len()` (less wasted key bytes).
 /// 2. Then lexicographic on `properties.join(",")` for determinism.
 ///
-/// Returns `(info, prefix_length)` or `None` if no index matches at least
-/// its leading column.
+/// Returns `(info, prefix_length)` (where `prefix_length` is always
+/// `info.properties.len()`) or `None` if no index is fully covered.
 pub(in crate::cypher::planner) fn pick_index_for_equality_preds<'a>(
     candidates: &'a [crate::storage::index::IndexInfo],
     equality_preds: &std::collections::HashMap<String, LookupKey>,
@@ -640,7 +664,7 @@ pub(in crate::cypher::planner) fn pick_index_for_equality_preds<'a>(
                 break;
             }
         }
-        if k == 0 {
+        if k == 0 || k < info.properties.len() {
             continue;
         }
         best = Some(match best {

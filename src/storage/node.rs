@@ -19,8 +19,7 @@ pub fn create_node(conn: &Connection, labels: &[String], properties: Properties)
         validate_name(key)?;
     }
     let id = next_node_id(conn)?;
-    let mut sorted_labels = labels.to_vec();
-    sorted_labels.sort();
+    let sorted_labels = normalize_labels(labels);
     let record = NodeRecord {
         labels: sorted_labels.clone(),
         properties,
@@ -36,6 +35,15 @@ pub fn create_node(conn: &Connection, labels: &[String], properties: Properties)
         stats::increment_label_count(conn, label)?;
     }
     Ok(id)
+}
+
+/// The label set as stored on a node: sorted, each label once. `CREATE
+/// (n:A:A)` must store `[A]`, otherwise the label counter drifts.
+pub fn normalize_labels(labels: &[String]) -> Vec<String> {
+    let mut sorted = labels.to_vec();
+    sorted.sort();
+    sorted.dedup();
+    sorted
 }
 
 /// Get a node by ID.
@@ -235,7 +243,11 @@ pub fn find_nodes_by_label(conn: &Connection, label: &str) -> Result<Vec<Node>> 
         )
     } else {
         (
-            "SELECT key, value FROM nodes WHERE label = ?1 OR ':' || label || ':' LIKE '%:' || ?1 || ':%' ORDER BY key".to_string(),
+            // `instr` is an exact, case-sensitive substring test. `LIKE` must
+            // not be used here: it is ASCII case-insensitive and treats `_`
+            // (legal in labels) as a single-character wildcard, so
+            // `:person` / `:A_B` would match `Person` / `AxB` nodes.
+            "SELECT key, value FROM nodes WHERE label = ?1 OR instr(':' || label || ':', ':' || ?1 || ':') > 0 ORDER BY key".to_string(),
             true,
         )
     };

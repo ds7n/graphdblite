@@ -18,6 +18,7 @@ mod tests {
             property: "body".into(),
             op: FullTextOp::Contains,
             term: Expr::synthetic(ExprKind::Literal(LiteralValue::String("foo".into()))),
+            case_insensitive: false,
             remaining_filters: None,
         };
         assert_eq!(op.op_name(), "FullTextLookup");
@@ -101,6 +102,11 @@ pub enum LogicalOp {
         property: String,
         op: FullTextOp,
         term: Expr,
+        /// True for the `toLower(alias.prop) <op> toLower(term)` idiom: the
+        /// match is evaluated on lower-cased strings. False for a plain
+        /// `alias.prop <op> term`, which keeps Cypher's case-sensitive
+        /// semantics even when the backing FTS index is case-insensitive.
+        case_insensitive: bool,
         /// Remaining conjunct predicates not covered by the FTS lookup.
         remaining_filters: Option<Expr>,
     },
@@ -311,8 +317,12 @@ pub enum LogicalOp {
         src_alias: String,
         dst_alias: String,
         path_alias: String,
-        edge_type: Option<String>,
+        /// Relationship types to follow; empty means every type.
+        edge_types: Vec<String>,
         direction: Direction,
+        /// 0 or 1 (the planner rejects anything larger). With 1, a pair
+        /// whose endpoints are the same node has no path.
+        min_hops: u32,
         max_hops: u32,
         all_paths: bool,
     },

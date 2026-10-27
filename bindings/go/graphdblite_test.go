@@ -226,9 +226,7 @@ func TestClosedDatabaseError(t *testing.T) {
 	db.Close()
 
 	_, err = db.Query("MATCH (n) RETURN n")
-	if err == nil {
-		t.Error("expected error querying closed database")
-	}
+	wantErr(t, err, "database is closed")
 }
 
 func TestCreateAndDropIndex(t *testing.T) {
@@ -246,10 +244,8 @@ func TestCreateAndDropIndex(t *testing.T) {
 		_ = tx.Rollback()
 		t.Fatalf("CreateIndex: %v", err)
 	}
-	if err := tx.CreateIndex("Person", "name"); err == nil {
-		_ = tx.Rollback()
-		t.Fatal("expected duplicate create_index to error")
-	}
+	wantErr(t, tx.CreateIndex("Person", "name"),
+		"graphdblite create_index: index already exists: :Person(name)")
 	if err := tx.DropIndex("Person", "name"); err != nil {
 		_ = tx.Rollback()
 		t.Fatalf("DropIndex: %v", err)
@@ -303,10 +299,8 @@ func TestCreateAndDropFulltextIndex(t *testing.T) {
 		_ = tx.Rollback()
 		t.Fatalf("DropFulltextIndex: %v", err)
 	}
-	if err := tx.DropFulltextIndex("Doc", "body"); err == nil {
-		_ = tx.Rollback()
-		t.Fatal("expected drop-of-missing to error")
-	}
+	wantErr(t, tx.DropFulltextIndex("Doc", "body"),
+		"graphdblite drop_fulltext_index: index not found: :Doc(body)")
 	if err := tx.Rollback(); err != nil {
 		t.Fatal(err)
 	}
@@ -337,8 +331,9 @@ func TestCreateFulltextIndexCI(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// Case-mismatched CONTAINS must hit the CI FTS rewrite path.
-	res, err = db.Query("MATCH (n:Doc) WHERE n.body CONTAINS 'hello' RETURN n.body")
+	// The toLower idiom must hit the CI FTS rewrite path (plain CONTAINS
+	// stays case-sensitive: an index never changes results).
+	res, err = db.Query("MATCH (n:Doc) WHERE toLower(n.body) CONTAINS toLower('hello') RETURN n.body")
 	if err != nil {
 		t.Fatalf("contains query: %v", err)
 	}
@@ -439,10 +434,8 @@ func TestCreateCompositeIndex(t *testing.T) {
 		t.Fatalf("CreateCompositeIndex: %v", err)
 	}
 	// Duplicate create should error.
-	if err := tx.CreateCompositeIndex("Person", []string{"tenant_id", "ext_id"}); err == nil {
-		_ = tx.Rollback()
-		t.Fatal("expected duplicate CreateCompositeIndex to error")
-	}
+	wantErr(t, tx.CreateCompositeIndex("Person", []string{"tenant_id", "ext_id"}),
+		"graphdblite create_composite_index: index already exists: :Person(tenant_id, ext_id)")
 	res, err := tx.Execute("CREATE (:Person {tenant_id: 1, ext_id: 'a'})")
 	if err != nil {
 		_ = tx.Rollback()
@@ -485,10 +478,8 @@ func TestDropCompositeIndex(t *testing.T) {
 		t.Fatalf("DropCompositeIndex: %v", err)
 	}
 	// Drop again should error (index no longer exists).
-	if err := tx.DropCompositeIndex("Person", []string{"a", "b"}); err == nil {
-		_ = tx.Rollback()
-		t.Fatal("expected second DropCompositeIndex to error")
-	}
+	wantErr(t, tx.DropCompositeIndex("Person", []string{"a", "b"}),
+		"graphdblite drop_composite_index: index not found: :Person(a, b)")
 	if err := tx.Rollback(); err != nil {
 		t.Fatal(err)
 	}

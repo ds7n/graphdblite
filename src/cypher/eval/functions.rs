@@ -33,13 +33,164 @@ pub(in crate::cypher::eval) fn invalid_argument_type(func_name: &str, value: &Va
     })
 }
 
-/// Format a float for toString() output. Uses decimal notation without
-/// trailing zeros, but always keeps at least one decimal digit (e.g. "3.0").
+/// Format a float for toString() output the way Neo4j (Java's
+/// `Double.toString`) does: plain decimal notation with at least one
+/// fractional digit for magnitudes in `[1e-3, 1e7)` (e.g. "3.0"), otherwise
+/// scientific notation with an upper-case `E` (e.g. "1.0E20", "1.5E-7").
+/// Non-finite values print as "NaN", "Infinity", "-Infinity".
 pub(in crate::cypher::eval) fn format_float(f: f64) -> String {
-    if f.fract() == 0.0 && f.is_finite() {
-        format!("{f:.1}")
+    if f.is_nan() {
+        return "NaN".to_string();
+    }
+    if f.is_infinite() {
+        return if f > 0.0 { "Infinity" } else { "-Infinity" }.to_string();
+    }
+    let mag = f.abs();
+    if mag == 0.0 || (1e-3..1e7).contains(&mag) {
+        // Rust's `Display` is the shortest round-trip decimal form.
+        let s = format!("{f}");
+        return if s.contains('.') { s } else { format!("{s}.0") };
+    }
+    // `{:e}` gives the shortest round-trip mantissa, e.g. "1e20", "1.5e-7".
+    let sci = format!("{f:e}");
+    let (mantissa, exp) = sci.split_once('e').unwrap_or((&sci, "0"));
+    if mantissa.contains('.') {
+        format!("{mantissa}E{exp}")
     } else {
-        format!("{f}")
+        format!("{mantissa}.0E{exp}")
+    }
+}
+
+/// Parse a string as a Cypher float. Rust's `f64::from_str` also accepts
+/// "inf", "infinity" and "nan" in any case; Cypher (Java) only knows the
+/// exact spellings "NaN" and "[+-]Infinity", so other non-finite results are
+/// treated as unparseable.
+fn parse_cypher_float(s: &str) -> Option<f64> {
+    let f = s.trim().parse::<f64>().ok()?;
+    if f.is_finite() {
+        return Some(f);
+    }
+    matches!(s.trim(), "NaN" | "Infinity" | "+Infinity" | "-Infinity").then_some(f)
+}
+
+/// Rounding modes accepted by `round(value, precision, mode)` (the names of
+/// Java's `RoundingMode`, which Neo4j uses).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(in crate::cypher::eval) enum RoundMode {
+    Up,
+    Down,
+    Ceiling,
+    Floor,
+    HalfUp,
+    HalfDown,
+    HalfEven,
+}
+
+impl RoundMode {
+    /// Parse a mode name (case-insensitive). `None` for unknown names.
+    fn parse(name: &str) -> Option<Self> {
+        match name.to_ascii_uppercase().as_str() {
+            "UP" => Some(Self::Up),
+            "DOWN" => Some(Self::Down),
+            "CEILING" => Some(Self::Ceiling),
+            "FLOOR" => Some(Self::Floor),
+            "HALF_UP" => Some(Self::HalfUp),
+            "HALF_DOWN" => Some(Self::HalfDown),
+            "HALF_EVEN" => Some(Self::HalfEven),
+            _ => None,
+        }
+    }
+}
+
+/// Round `value` to `precision` decimal places with `mode`, like Neo4j's
+/// `round(value, precision, mode)` (Java `BigDecimal.valueOf(value)
+/// .setScale(precision, mode)`).
+///
+/// Works on the shortest decimal representation of `value`, so
+/// `round(2.675, 2)` is 2.68 even though the binary double is 2.67499...
+/// A negative `precision` rounds to tens, hundreds, and so on.
+pub(in crate::cypher::eval) fn round_decimal(value: f64, precision: i64, mode: RoundMode) -> f64 {
+    if !value.is_finite() || value == 0.0 {
+        return value;
+    }
+    // Beyond +-400 places every finite double behaves the same (all digits
+    // kept, or all dropped), so clamping keeps the digit buffer small.
+    let precision = precision.clamp(-400, 400);
+    let negative = value < 0.0;
+    // `Display` never uses exponent notation for f64.
+    let text = format!("{}", value.abs());
+    let (int_part, frac_part) = text.split_once('.').unwrap_or((&text, ""));
+    let mut digits: Vec<u8> = int_part
+        .bytes()
+        .chain(frac_part.bytes())
+        .map(|b| b - b'0')
+        .collect();
+    let mut int_len = int_part.len() as i64;
+    // Number of leading digits to keep. Pad with leading zeros when the
+    // rounding position lies left of the most significant digit.
+    let mut keep = int_len + precision;
+    if keep < 0 {
+        let pad = (-keep) as usize;
+        digits.splice(0..0, std::iter::repeat_n(0, pad));
+        int_len += pad as i64;
+        keep = 0;
+    }
+    let keep = keep as usize;
+    if keep >= digits.len() {
+        return value;
+    }
+    let dropped = &digits[keep..];
+    let first = dropped[0];
+    let rest_nonzero = dropped[1..].iter().any(|&d| d != 0);
+    let any_dropped = first != 0 || rest_nonzero;
+    let last_kept_odd = keep > 0 && digits[keep - 1] % 2 == 1;
+    let round_away = match mode {
+        RoundMode::Up => any_dropped,
+        RoundMode::Down => false,
+        RoundMode::Ceiling => any_dropped && !negative,
+        RoundMode::Floor => any_dropped && negative,
+        RoundMode::HalfUp => first >= 5,
+        RoundMode::HalfDown => first > 5 || (first == 5 && rest_nonzero),
+        RoundMode::HalfEven => first > 5 || (first == 5 && (rest_nonzero || last_kept_odd)),
+    };
+    let mut kept: Vec<u8> = digits[..keep].to_vec();
+    if round_away {
+        // Decimal increment with carry; a carry out of the top digit adds a
+        // new leading 1 (e.g. 9.99 -> 10.0).
+        let mut i = kept.len();
+        loop {
+            if i == 0 {
+                kept.insert(0, 1);
+                int_len += 1;
+                break;
+            }
+            i -= 1;
+            if kept[i] == 9 {
+                kept[i] = 0;
+            } else {
+                kept[i] += 1;
+                break;
+            }
+        }
+    }
+    // Rebuild "<int>.<frac>" from the kept digits; dropped integer positions
+    // become zeros.
+    let int_len = int_len as usize;
+    let mut out = String::with_capacity(int_len + kept.len() + 2);
+    for i in 0..int_len {
+        out.push(char::from(b'0' + kept.get(i).copied().unwrap_or(0)));
+    }
+    if kept.len() > int_len {
+        out.push('.');
+        for d in &kept[int_len..] {
+            out.push(char::from(b'0' + d));
+        }
+    }
+    let magnitude: f64 = out.parse().unwrap_or(0.0);
+    if negative {
+        -magnitude
+    } else {
+        magnitude
     }
 }
 
@@ -124,7 +275,7 @@ pub(in crate::cypher::eval) fn eval_function_call(
                 .transpose()?;
             match arg {
                 Some(Value::Path(p)) => Ok(Value::I64(p.len() as i64)),
-                Some(Value::String(s)) => Ok(Value::I64(s.len() as i64)),
+                Some(Value::String(s)) => Ok(Value::I64(s.chars().count() as i64)),
                 Some(Value::List(items)) => Ok(Value::I64(items.len() as i64)),
                 Some(Value::Null) | None => Ok(Value::Null),
                 Some(other) => Err(invalid_argument_type("length()", &other)),
@@ -194,15 +345,18 @@ pub(in crate::cypher::eval) fn eval_function_call(
             match arg {
                 Value::Null => Ok(Value::Null),
                 Value::I64(_) => Ok(arg),
+                // NaN has no integer value; `as` would silently give 0.
+                Value::F64(f) if f.is_nan() => Ok(Value::Null),
                 Value::F64(f) => Ok(Value::I64(f as i64)),
                 Value::String(s) => {
                     // Try integer first, then float (truncated).
                     if let Ok(n) = s.parse::<i64>() {
                         Ok(Value::I64(n))
-                    } else if let Ok(f) = s.parse::<f64>() {
-                        Ok(Value::I64(f as i64))
                     } else {
-                        Ok(Value::Null)
+                        match parse_cypher_float(&s) {
+                            Some(f) if !f.is_nan() => Ok(Value::I64(f as i64)),
+                            _ => Ok(Value::Null),
+                        }
                     }
                 }
                 Value::Bool(b) => Ok(Value::I64(if b { 1 } else { 0 })),
@@ -215,7 +369,9 @@ pub(in crate::cypher::eval) fn eval_function_call(
                 Value::Null => Ok(Value::Null),
                 Value::F64(_) => Ok(arg),
                 Value::I64(n) => Ok(Value::F64(n as f64)),
-                Value::String(s) => Ok(s.parse::<f64>().map(Value::F64).unwrap_or(Value::Null)),
+                Value::String(s) => Ok(parse_cypher_float(&s)
+                    .map(Value::F64)
+                    .unwrap_or(Value::Null)),
                 other => Err(invalid_argument_type("toFloat()", &other)),
             }
         }
@@ -479,7 +635,7 @@ pub(in crate::cypher::eval) fn eval_function_call(
             let arg = eval_single_arg(args, record, ecx)?;
             match arg {
                 Value::List(items) => Ok(Value::I64(items.len() as i64)),
-                Value::String(s) => Ok(Value::I64(s.len() as i64)),
+                Value::String(s) => Ok(Value::I64(s.chars().count() as i64)),
                 _ => Ok(Value::Null),
             }
         }
@@ -534,12 +690,37 @@ pub(in crate::cypher::eval) fn eval_function_call(
         }
         "round" => {
             let arg = eval_single_arg(args, record, ecx)?;
-            match arg {
-                Value::I64(n) => Ok(Value::F64(n as f64)),
-                Value::F64(n) => Ok(Value::F64(n.round())),
-                Value::Null => Ok(Value::Null),
-                _ => Ok(Value::Null),
-            }
+            let value = match arg {
+                Value::I64(n) => n as f64,
+                Value::F64(n) => n,
+                _ => return Ok(Value::Null),
+            };
+            // round(value): nearest integer, ties away from zero.
+            let Some(precision_expr) = args.get(1) else {
+                return Ok(Value::F64(value.round()));
+            };
+            // round(value, precision [, mode]): HALF_UP unless a mode is given.
+            let precision = match eval_expr(precision_expr, record, ecx)? {
+                Value::I64(p) => p,
+                Value::Null => return Ok(Value::Null),
+                other => return Err(invalid_argument_type("round()", &other)),
+            };
+            let mode = match args.get(2).map(|a| eval_expr(a, record, ecx)).transpose()? {
+                None => RoundMode::HalfUp,
+                Some(Value::Null) => return Ok(Value::Null),
+                Some(Value::String(name)) => RoundMode::parse(&name).ok_or_else(|| {
+                    GraphError::invalid_argument_value(
+                        QueryPhase::Runtime,
+                        "round()",
+                        format!(
+                            "unknown rounding mode '{name}' (expected one of UP, DOWN, \
+                             CEILING, FLOOR, HALF_UP, HALF_DOWN, HALF_EVEN)"
+                        ),
+                    )
+                })?,
+                Some(other) => return Err(invalid_argument_type("round()", &other)),
+            };
+            Ok(Value::F64(round_decimal(value, precision, mode)))
         }
         "log" => {
             let arg = eval_single_arg(args, record, ecx)?;
@@ -592,6 +773,8 @@ pub(in crate::cypher::eval) fn eval_function_call(
                             let take = l.max(0) as usize;
                             chars[start..].iter().take(take).collect()
                         }
+                        // An explicit null length propagates like any null argument.
+                        Some(Value::Null) => return Ok(Value::Null),
                         _ => chars[start..].iter().collect(),
                     };
                     Ok(Value::String(out))
@@ -616,6 +799,11 @@ pub(in crate::cypher::eval) fn eval_function_call(
             let s = eval_single_arg(args, record, ecx)?;
             let delim = args.get(1).map(|a| eval_expr(a, record, ecx)).transpose()?;
             match (s, delim) {
+                // An empty delimiter splits into single characters (Rust's
+                // `split("")` would add empty strings at both ends).
+                (Value::String(s), Some(Value::String(d))) if d.is_empty() => Ok(Value::List(
+                    s.chars().map(|c| Value::String(c.to_string())).collect(),
+                )),
                 (Value::String(s), Some(Value::String(d))) => {
                     let parts: Vec<Value> =
                         s.split(&d).map(|p| Value::String(p.to_string())).collect();
@@ -727,7 +915,20 @@ pub(in crate::cypher::eval) fn eval_function_call(
         }
         "exists" => {
             let arg = eval_single_arg(args, record, ecx)?;
-            Ok(Value::Bool(arg != Value::Null))
+            // `exists(pattern)` is the pattern predicate's own boolean;
+            // `exists(n.prop)` asks whether the value is non-null.
+            let is_pattern = args.first().is_some_and(|a| {
+                matches!(
+                    a.kind,
+                    ExprKind::PatternPredicate(_)
+                        | ExprKind::Exists { .. }
+                        | ExprKind::ExistsSubquery(_)
+                )
+            });
+            match arg {
+                Value::Bool(b) if is_pattern => Ok(Value::Bool(b)),
+                other => Ok(Value::Bool(other != Value::Null)),
+            }
         }
         "reverse" => {
             let arg = eval_single_arg(args, record, ecx)?;
@@ -741,95 +942,11 @@ pub(in crate::cypher::eval) fn eval_function_call(
             }
         }
         "range" => {
-            // range(start, end [, step])
-            let start = eval_single_arg(args, record, ecx)?;
-            let end = args.get(1).map(|a| eval_expr(a, record, ecx)).transpose()?;
-            let step = args.get(2).map(|a| eval_expr(a, record, ecx)).transpose()?;
-            // Validate argument types.
-            for (label, val) in [("start", &start)]
-                .into_iter()
-                .chain(end.as_ref().map(|v| ("end", v)))
-                .chain(step.as_ref().map(|v| ("step", v)))
-            {
-                if !matches!(val, Value::I64(_) | Value::Null) {
-                    return Err(GraphError::Query(QueryError::ArgumentError {
-                        phase: QueryPhase::Runtime,
-                        message: format!(
-                            "InvalidArgumentType: range() {label} argument must be an integer, got {}",
-                            value_type_name(val)
-                        ),
-                        code: ErrorCode::Other,
-                        hint: None,
-                        span: None,
-                    }));
-                }
-            }
-            match (start, end) {
-                (Value::I64(s), Some(Value::I64(e))) => {
-                    let step = match step {
-                        Some(Value::I64(st)) => {
-                            if st == 0 {
-                                return Err(GraphError::Query(QueryError::ArgumentError {
-                                    phase: QueryPhase::Runtime,
-                                    message:
-                                        "NumberOutOfRange: step argument to range() cannot be zero"
-                                            .to_string(),
-                                    code: ErrorCode::Other,
-                                    hint: None,
-                                    span: None,
-                                }));
-                            }
-                            st
-                        }
-                        _ => 1,
-                    };
-                    // Pre-compute expected length in i128 to reject huge
-                    // allocations up front (security finding H2). Cap at a
-                    // generous 10M entries — a real query producing more is
-                    // almost certainly a mistake or an attack.
-                    const MAX_RANGE_LEN: i128 = 10_000_000;
-                    let len: i128 = if (step > 0 && s <= e) || (step < 0 && s >= e) {
-                        let span = (e as i128) - (s as i128);
-                        span / (step as i128) + 1
-                    } else {
-                        0
-                    };
-                    if len > MAX_RANGE_LEN {
-                        return Err(GraphError::Query(QueryError::ArgumentError {
-                            phase: QueryPhase::Runtime,
-                            message: format!(
-                                "NumberOutOfRange: range({s}, {e}, {step}) would produce \
-                                 {len} elements, exceeding the {MAX_RANGE_LEN}-element cap"
-                            ),
-                            code: ErrorCode::NumberOutOfRange,
-                            hint: None,
-                            span: None,
-                        }));
-                    }
-                    let mut result = Vec::with_capacity(len as usize);
-                    let mut i = s;
-                    if (step > 0 && s <= e) || (step < 0 && s >= e) {
-                        if step > 0 {
-                            while i <= e {
-                                result.push(Value::I64(i));
-                                match i.checked_add(step) {
-                                    Some(n) => i = n,
-                                    None => break,
-                                }
-                            }
-                        } else {
-                            while i >= e {
-                                result.push(Value::I64(i));
-                                match i.checked_add(step) {
-                                    Some(n) => i = n,
-                                    None => break,
-                                }
-                            }
-                        }
-                    }
-                    Ok(Value::List(result))
-                }
-                _ => Ok(Value::Null),
+            // range(start, end [, step]); the sequence is validated and
+            // size-checked before any element is built.
+            match range::range_spec(args, record, ecx)? {
+                Some(spec) => spec.into_list(),
+                None => Ok(Value::Null),
             }
         }
         "rand" => {
@@ -890,6 +1007,11 @@ pub(in crate::cypher::eval) fn eval_function_call(
                 |m| crate::temporal::CypherDateTime::from_map(m).map(Value::DateTime),
             )
         }
+        // `duration()` with no argument has no "current" value: an empty
+        // map gives a zero duration.
+        "duration" if args.is_empty() => {
+            crate::temporal::CypherDuration::from_map(&Default::default()).map(Value::Duration)
+        }
         "duration" => eval_temporal_constructor(
             args,
             record,
@@ -901,21 +1023,21 @@ pub(in crate::cypher::eval) fn eval_function_call(
             let secs = eval_single_arg(args, record, ecx)?;
             let nanos = args.get(1).map(|a| eval_expr(a, record, ecx)).transpose()?;
             match (secs, nanos) {
-                (Value::I64(s), Some(Value::I64(n))) => Ok(Value::DateTime(
-                    crate::temporal::CypherDateTime::from_epoch(s, n),
-                )),
-                (Value::I64(s), None) => Ok(Value::DateTime(
-                    crate::temporal::CypherDateTime::from_epoch(s, 0),
-                )),
+                (Value::I64(s), Some(Value::I64(n))) => {
+                    crate::temporal::CypherDateTime::from_epoch(s, n).map(Value::DateTime)
+                }
+                (Value::I64(s), None) => {
+                    crate::temporal::CypherDateTime::from_epoch(s, 0).map(Value::DateTime)
+                }
                 _ => Ok(Value::Null),
             }
         }
         "datetime.fromepochmillis" => {
             let millis = eval_single_arg(args, record, ecx)?;
             match millis {
-                Value::I64(ms) => Ok(Value::DateTime(
-                    crate::temporal::CypherDateTime::from_epoch_millis(ms),
-                )),
+                Value::I64(ms) => {
+                    crate::temporal::CypherDateTime::from_epoch_millis(ms).map(Value::DateTime)
+                }
                 _ => Ok(Value::Null),
             }
         }
@@ -1064,11 +1186,9 @@ pub(in crate::cypher::eval) fn eval_function_call(
                     use chrono_tz::Tz;
                     let tz: Tz = tz_s
                         .parse()
-                        .map_err(|_| GraphError::semantic(format!("unknown timezone: {tz_s}")))?;
+                        .map_err(|_| GraphError::semantic("unknown timezone"))?;
                     let aware = tz.from_local_datetime(&ndt).earliest().ok_or_else(|| {
-                        GraphError::semantic(format!(
-                            "ambiguous or invalid datetime in timezone: {tz_s}"
-                        ))
+                        GraphError::semantic("ambiguous or invalid datetime in timezone")
                     })?;
                     let off = chrono::Offset::fix(aware.offset());
                     (off, Some(tz_s.clone()))
@@ -1098,7 +1218,16 @@ pub(in crate::cypher::eval) fn eval_temporal_constructor(
     from_map: impl Fn(&std::collections::BTreeMap<String, Value>) -> crate::types::Result<Value>,
 ) -> crate::types::Result<Value> {
     if args.is_empty() {
-        return from_map(&std::collections::BTreeMap::new());
+        // `date()`, `datetime()`, ... with no argument: the statement's
+        // current instant (UTC), projected like `date(datetime(...))`.
+        let now = super::statement_now();
+        let utc = chrono::FixedOffset::east_opt(0).expect("zero offset is valid");
+        let mut m = std::collections::BTreeMap::new();
+        m.insert(
+            "datetime".to_string(),
+            Value::DateTime(crate::temporal::CypherDateTime(now, utc, None)),
+        );
+        return from_map(&m);
     }
     let arg = eval_single_arg(args, record, ecx)?;
     match arg {

@@ -39,7 +39,7 @@ test('snapshotTo rejects an existing target', () => {
     const db = gdb.Database.openMemory();
     const existing = join(dir, 'exists.db');
     writeFileSync(existing, '');
-    assert.throws(() => db.snapshotTo(existing));
+    assert.throws(() => db.snapshotTo(existing), { message: /^storage error: snapshot target already exists: / });
     db.close();
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
@@ -50,7 +50,9 @@ test('snapshotTo rejects while a transaction is active', () => {
     const db = new gdb.Database(join(dir, 'src.db'));
     const tx = db.beginWrite();
     try {
-      assert.throws(() => db.snapshotTo(join(dir, 'snap.db')));
+      assert.throws(() => db.snapshotTo(join(dir, 'snap.db')), {
+        message: /^transaction error: snapshot_to: a Write transaction is already active/,
+      });
     } finally { tx.rollback(); db.close(); }
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });

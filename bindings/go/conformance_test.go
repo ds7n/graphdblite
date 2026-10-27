@@ -6,6 +6,7 @@
 package graphdblite
 
 import (
+	"errors"
 	"path/filepath"
 	"testing"
 )
@@ -94,12 +95,12 @@ func TestBC_04_NestedBeginRejected(t *testing.T) {
 		t.Fatalf("BeginWrite: %v", err)
 	}
 
-	if _, err := db.BeginWrite(); err == nil {
-		t.Fatalf("nested BeginWrite: want error, got nil")
-	}
-	if _, err := db.BeginRead(); err == nil {
-		t.Fatalf("nested BeginRead while write tx open: want error, got nil")
-	}
+	_, err = db.BeginWrite()
+	wantErr(t, err, "graphdblite begin write: transaction error: begin_write: "+
+		"a Write transaction is already active; nested transactions are not supported")
+	_, err = db.BeginRead()
+	wantErr(t, err, "graphdblite begin read: transaction error: begin_read: "+
+		"a Write transaction is already active; nested transactions are not supported")
 
 	// First tx must still work.
 	res, err := tx.Execute("CREATE (n:Person {name: 'Alice'})")
@@ -128,8 +129,12 @@ func TestBC_05_WriteInReadTx(t *testing.T) {
 	}
 	defer tx.Commit()
 
-	if _, err := tx.Query("CREATE (n:Person {name: 'Alice'})"); err == nil {
-		t.Fatalf("write inside read tx: want error, got nil")
+	_, err = tx.Query("CREATE (n:Person {name: 'Alice'})")
+	wantErr(t, err, "graphdblite tx query: transaction error: "+
+		"write operations are not permitted inside a read transaction")
+	// The read transaction stays usable.
+	if got := personCount(t, tx); got != 0 {
+		t.Fatalf("count after rejected write = %d, want 0", got)
 	}
 }
 
@@ -147,9 +152,15 @@ func TestBC_06_CommitWithoutTx(t *testing.T) {
 	if err := tx.Commit(); err != nil {
 		t.Fatalf("first Commit: %v", err)
 	}
-	if err := tx.Commit(); err == nil {
-		t.Fatalf("double Commit: want error, got nil")
+	// The wrapper rejects a second Commit on the finished object...
+	if err := tx.Commit(); !errors.Is(err, ErrTxFinished) {
+		t.Fatalf("double Commit: err = %v, want ErrTxFinished", err)
 	}
+	// ...and the core rejects commit/rollback when no transaction is open:
+	// a transaction object that was never begun reaches the core.
+	stray := &WriteTransaction{db: db}
+	wantErr(t, stray.Commit(), "graphdblite commit: transaction error: no active transaction to commit")
+	wantErr(t, stray.Rollback(), "graphdblite rollback: transaction error: no active transaction to roll back")
 }
 
 // --------------------------------------------------------------------------
@@ -172,11 +183,17 @@ func TestBC_07_UseAfterCommit(t *testing.T) {
 		t.Fatalf("Commit: %v", err)
 	}
 
-	if _, err := tx.Execute("CREATE (n:Person {name: 'Bob'})"); err == nil {
-		t.Fatalf("Execute after commit: want error, got nil")
+	if _, err := tx.Execute("CREATE (n:Person {name: 'Bob'})"); !errors.Is(err, ErrTxFinished) {
+		t.Fatalf("Execute after commit: err = %v, want ErrTxFinished", err)
 	}
-	if err := tx.Rollback(); err == nil {
-		t.Fatalf("Rollback after commit: want error, got nil")
+	if err := tx.Rollback(); !errors.Is(err, ErrTxFinished) {
+		t.Fatalf("Rollback after commit: err = %v, want ErrTxFinished", err)
+	}
+	// The core itself has no transaction left to roll back.
+	stray := &WriteTransaction{db: db}
+	wantErr(t, stray.Rollback(), "graphdblite rollback: transaction error: no active transaction to roll back")
+	if got := personCount(t, db); got != 1 {
+		t.Fatalf("count = %d, want 1 (Bob must not have been written)", got)
 	}
 }
 
@@ -196,8 +213,11 @@ func TestBC_07_UseAfterRollback(t *testing.T) {
 	if err := tx.Rollback(); err != nil {
 		t.Fatalf("Rollback: %v", err)
 	}
-	if _, err := tx.Execute("CREATE (n:Person {name: 'Bob'})"); err == nil {
-		t.Fatalf("Execute after rollback: want error, got nil")
+	if _, err := tx.Execute("CREATE (n:Person {name: 'Bob'})"); !errors.Is(err, ErrTxFinished) {
+		t.Fatalf("Execute after rollback: err = %v, want ErrTxFinished", err)
+	}
+	if got := personCount(t, db); got != 0 {
+		t.Fatalf("count = %d, want 0", got)
 	}
 }
 

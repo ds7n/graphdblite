@@ -29,6 +29,27 @@ static int pass(const char *tag) {
     return 0;
 }
 
+/* Negative check: `rc` must be an error code AND graphdb_last_error() must
+ * contain `want`, so a test cannot pass on an unrelated failure.
+ * Returns 0 when both hold, else prints the mismatch and returns 1. */
+static int expect_error(const char *tag, int rc, const char *want, const char *what) {
+    if (rc == 0) {
+        fprintf(stderr, "[%s] FAIL: %s succeeded, expected error \"%s\"\n", tag, what, want);
+        return 1;
+    }
+    const char *err = graphdb_last_error();
+    if (!err || !strstr(err, want)) {
+        fprintf(stderr, "[%s] FAIL: %s: expected error containing \"%s\", got \"%s\"\n",
+                tag, what, want, err ? err : "(null)");
+        return 1;
+    }
+    return 0;
+}
+
+static const char *NESTED_ERR = "a Write transaction is already active; nested transactions are not supported";
+static const char *NESTED_READ_ERR = "begin_read: a Write transaction is already active";
+static const char *READ_ONLY_ERR = "write operations are not permitted inside a read transaction";
+
 /* Open a fresh DB at <tmpdir>/<name>. Caller must close. */
 static GraphDB *fresh_db(const char *tmpdir, const char *name) {
     char path[1024];
@@ -110,8 +131,8 @@ static int bc_04_nested_begin(const char *tmpdir) {
     int rc = 1;
     GraphResult *res = NULL;
     if (graphdb_tx_begin_write(db) != 0) { rc = fail(tag, "begin_write"); goto out; }
-    if (graphdb_tx_begin_write(db) == 0) { rc = fail(tag, "nested begin_write succeeded"); goto out; }
-    if (graphdb_tx_begin_read(db) == 0)  { rc = fail(tag, "nested begin_read succeeded");  goto out; }
+    if (expect_error(tag, graphdb_tx_begin_write(db), NESTED_ERR, "nested begin_write")) goto out;
+    if (expect_error(tag, graphdb_tx_begin_read(db), NESTED_READ_ERR, "nested begin_read")) goto out;
     /* First tx still usable */
     if (graphdb_tx_execute(db, "CREATE (n:Person {name: 'Alice'})", &res) != 0) {
         rc = fail(tag, "first tx Execute"); goto out;
@@ -136,10 +157,15 @@ static int bc_05_write_in_read_tx(const char *tmpdir) {
     int rc = 1;
     GraphResult *res = NULL;
     if (graphdb_tx_begin_read(db) != 0) { rc = fail(tag, "begin_read"); goto out; }
-    if (graphdb_tx_execute(db, "CREATE (n:Person {name: 'Alice'})", &res) == 0) {
-        rc = fail(tag, "write inside read tx was not rejected");
+    if (expect_error(tag, graphdb_tx_execute(db, "CREATE (n:Person {name: 'Alice'})", &res),
+                     READ_ONLY_ERR, "write inside read tx")) {
         goto out;
     }
+    /* The read transaction stays usable. */
+    if (graphdb_tx_execute(db, "MATCH (n) RETURN count(n) AS c", &res) != 0) {
+        rc = fail(tag, "read after rejected write"); goto out;
+    }
+    if (graphdb_result_value_i64(res, 0, 0) != 0) { rc = fail(tag, "unexpected count"); goto out; }
     rc = pass(tag);
 out:
     if (res) graphdb_result_free(res);
@@ -156,11 +182,11 @@ static int bc_06_commit_without_tx(const char *tmpdir) {
     GraphDB *db = fresh_db(tmpdir, "bc06.sqlite");
     if (!db) return fail(tag, "open");
     int rc = 1;
-    if (graphdb_tx_commit(db) == 0) { rc = fail(tag, "commit-with-no-tx succeeded"); goto out; }
-    if (graphdb_tx_rollback(db) == 0) { rc = fail(tag, "rollback-with-no-tx succeeded"); goto out; }
+    if (expect_error(tag, graphdb_tx_commit(db), "no active transaction to commit", "commit-with-no-tx")) goto out;
+    if (expect_error(tag, graphdb_tx_rollback(db), "no active transaction to roll back", "rollback-with-no-tx")) goto out;
     if (graphdb_tx_begin_write(db) != 0) { rc = fail(tag, "begin_write"); goto out; }
     if (graphdb_tx_commit(db) != 0) { rc = fail(tag, "commit"); goto out; }
-    if (graphdb_tx_commit(db) == 0) { rc = fail(tag, "double-commit succeeded"); goto out; }
+    if (expect_error(tag, graphdb_tx_commit(db), "no active transaction to commit", "double-commit")) goto out;
     rc = pass(tag);
 out:
     graphdb_close(db);
@@ -198,7 +224,7 @@ static int bc_07_use_after_commit(const char *tmpdir) {
         rc = fail(tag, "auto-tx execute after commit"); goto out;
     }
     if (res) { graphdb_result_free(res); res = NULL; }
-    if (graphdb_tx_rollback(db) == 0) { rc = fail(tag, "rollback after commit succeeded"); goto out; }
+    if (expect_error(tag, graphdb_tx_rollback(db), "no active transaction to roll back", "rollback after commit")) goto out;
     rc = pass(tag);
 out:
     if (res) graphdb_result_free(res);
@@ -349,10 +375,11 @@ static int bc_11_fulltext_ddl(const char *tmpdir) {
         graphdb_close(db);
         return fail("BC-11", "third tx_begin_write failed");
     }
-    if (graphdb_drop_fulltext_index(db, "Doc", "body") == 0) {
+    if (expect_error("BC-11", graphdb_drop_fulltext_index(db, "Doc", "body"),
+                     "fulltext index", "dropping missing fulltext index")) {
         graphdb_tx_rollback(db);
         graphdb_close(db);
-        return fail("BC-11", "expected error dropping missing index");
+        return 1;
     }
     graphdb_tx_rollback(db);
 
@@ -366,10 +393,11 @@ static int bc_11_fulltext_ddl(const char *tmpdir) {
         graphdb_close(db);
         return fail("BC-11", "create_index failed");
     }
-    if (graphdb_create_index(db, "Doc", "body") == 0) {
+    if (expect_error("BC-11", graphdb_create_index(db, "Doc", "body"),
+                     "index already exists: :Doc(body)", "duplicate create_index")) {
         graphdb_tx_rollback(db);
         graphdb_close(db);
-        return fail("BC-11", "expected error on duplicate create_index");
+        return 1;
     }
     if (graphdb_drop_index(db, "Doc", "body") != 0) {
         graphdb_tx_rollback(db);
@@ -403,11 +431,12 @@ static int bc_11_fulltext_ddl(const char *tmpdir) {
         return fail("BC-11", "ci commit failed");
     }
 
-    /* CI index must serve a case-mismatched CONTAINS query. Two Doc
-     * nodes exist by now: 'hello world' (created earlier) and
-     * 'Hello World' (just created); both match. */
+    /* CI index must serve the toLower CONTAINS idiom. Two Doc nodes exist
+     * by now: 'hello world' (created earlier) and 'Hello World' (just
+     * created); both match. (A plain CONTAINS stays case-sensitive: an
+     * index never changes results.) */
     if (graphdb_query(db,
-            "MATCH (n:Doc) WHERE n.body CONTAINS 'Hello' RETURN n.body",
+            "MATCH (n:Doc) WHERE toLower(n.body) CONTAINS toLower('Hello') RETURN n.body",
             &res) != 0) {
         graphdb_close(db);
         return fail("BC-11", "ci contains query failed");
@@ -644,10 +673,11 @@ static int bc_12_composite_index_ddl(const char *tmpdir) {
         graphdb_close(db);
         return fail(tag, "second tx_begin_write failed");
     }
-    if (graphdb_create_composite_index(db, "Person", props, 2) == 0) {
+    if (expect_error(tag, graphdb_create_composite_index(db, "Person", props, 2),
+                     "index already exists: :Person(", "duplicate composite index")) {
         graphdb_tx_rollback(db);
         graphdb_close(db);
-        return fail(tag, "expected error on duplicate composite index");
+        return 1;
     }
 
     /* Drop the composite index. */
@@ -666,14 +696,172 @@ static int bc_12_composite_index_ddl(const char *tmpdir) {
         graphdb_close(db);
         return fail(tag, "third tx_begin_write failed");
     }
-    if (graphdb_drop_composite_index(db, "Person", props, 2) == 0) {
+    if (expect_error(tag, graphdb_drop_composite_index(db, "Person", props, 2),
+                     "index not found: :Person(", "dropping missing composite index")) {
         graphdb_tx_rollback(db);
         graphdb_close(db);
-        return fail(tag, "expected error dropping missing composite index");
+        return 1;
     }
     graphdb_tx_rollback(db);
 
     graphdb_close(db);
+    return pass(tag);
+}
+
+/* ----------------------------------------------------------------------- */
+/* BC-13: a failed statement inside a transaction is rolled back alone      */
+/* ----------------------------------------------------------------------- */
+static int bc_13_statement_atomicity(const char *tmpdir) {
+    const char *tag = "BC-13";
+    GraphDB *db = fresh_db(tmpdir, "bc13.sqlite");
+    if (!db) return fail(tag, "open");
+    int rc = 1;
+    GraphResult *res = NULL;
+    if (graphdb_tx_begin_write(db) != 0) { rc = fail(tag, "begin_write"); goto out; }
+    if (graphdb_tx_execute(db, "CREATE (n:Person {name: 'Kept'})", &res) != 0) {
+        rc = fail(tag, "first statement"); goto out;
+    }
+    graphdb_result_free(res); res = NULL;
+    /* Writes a node for the first row, then fails on the second. */
+    if (expect_error(tag,
+                     graphdb_tx_execute(db,
+                         "UNWIND [1, 'a'] AS i CREATE (:Person {name: 'Lost'}) RETURN i - 1 AS x",
+                         &res),
+                     "TypeError(", "failing statement")) {
+        goto out;
+    }
+    if (graphdb_tx_execute(db, "CREATE (n:Person {name: 'After'})", &res) != 0) {
+        rc = fail(tag, "statement after the failed one"); goto out;
+    }
+    graphdb_result_free(res); res = NULL;
+    if (graphdb_tx_commit(db) != 0) { rc = fail(tag, "commit"); goto out; }
+    if (count_persons(db) != 2) { rc = fail(tag, "expected exactly Kept + After"); goto out; }
+    rc = pass(tag);
+out:
+    if (res) graphdb_result_free(res);
+    graphdb_close(db);
+    return rc;
+}
+
+/* ----------------------------------------------------------------------- */
+/* RES-01: value strings stay valid until their result is freed            */
+/* ----------------------------------------------------------------------- */
+static int res_01_value_str_lifetime(const char *tmpdir) {
+    const char *tag = "RES-01";
+    GraphDB *db = fresh_db(tmpdir, "res01.sqlite");
+    if (!db) return fail(tag, "open");
+    GraphResult *r1 = NULL, *r2 = NULL;
+    int rc = 1;
+    if (graphdb_query(db, "RETURN 'aaaa' AS x, 'bbbb' AS y", &r1) != 0) { rc = fail(tag, "q1"); goto out; }
+    if (graphdb_query(db, "RETURN 'cccc' AS x", &r2) != 0) { rc = fail(tag, "q2"); goto out; }
+    const char *a = graphdb_result_value_str(r1, 0, 0);
+    const char *b = graphdb_result_value_str(r1, 0, 1);
+    const char *c = graphdb_result_value_str(r2, 0, 0);
+    if (!a || !b || !c) { rc = fail(tag, "NULL value string"); goto out; }
+    if (strcmp(a, "aaaa") != 0 || strcmp(b, "bbbb") != 0 || strcmp(c, "cccc") != 0) {
+        rc = fail(tag, "earlier value_str pointer was invalidated"); goto out;
+    }
+    rc = pass(tag);
+out:
+    if (r1) graphdb_result_free(r1);
+    if (r2) graphdb_result_free(r2);
+    graphdb_close(db);
+    return rc;
+}
+
+/* ----------------------------------------------------------------------- */
+/* PAR-01: JSON parameters                                                 */
+/* ----------------------------------------------------------------------- */
+static int par_01_params(const char *tmpdir) {
+    const char *tag = "PAR-01";
+    GraphDB *db = fresh_db(tmpdir, "par01.sqlite");
+    if (!db) return fail(tag, "open");
+    GraphResult *res = NULL;
+    int rc = 1;
+    if (graphdb_execute_params(db, "CREATE (:Person {name: $n, tags: $t})",
+                               "{\"n\": \"Ann\", \"t\": [\"a\", \"b\"]}", &res) != 0) {
+        rc = fail(tag, "execute_params"); goto out;
+    }
+    graphdb_result_free(res); res = NULL;
+    if (graphdb_query_params(db, "MATCH (p:Person {name: $n}) RETURN size(p.tags) AS s",
+                             "{\"n\": \"Ann\"}", &res) != 0) {
+        rc = fail(tag, "query_params"); goto out;
+    }
+    if (graphdb_result_row_count(res) != 1 || graphdb_result_value_i64(res, 0, 0) != 2) {
+        rc = fail(tag, "unexpected params result"); goto out;
+    }
+    graphdb_result_free(res); res = NULL;
+    if (expect_error(tag, graphdb_query_params(db, "RETURN $x AS x", "[1]", &res),
+                     "invalid params JSON: expected an object", "non-object params")) {
+        goto out;
+    }
+    rc = pass(tag);
+out:
+    if (res) graphdb_result_free(res);
+    graphdb_close(db);
+    return rc;
+}
+
+/* ----------------------------------------------------------------------- */
+/* SP-01: shortestPath over untyped relationships (GitHub issue #2)          */
+/* ----------------------------------------------------------------------- */
+static int sp_01_untyped_shortest_path(const char *tmpdir) {
+    const char *tag = "SP-01";
+    GraphDB *db = fresh_db(tmpdir, "sp01.db");
+    if (!db) return fail(tag, "open failed");
+
+    GraphResult *res = NULL;
+    if (graphdb_execute(db,
+            "CREATE (a:P {name: 'A'})-[:KNOWS]->(b:P {name: 'B'})"
+            "-[:WORKS_WITH]->(c:P {name: 'C'}), (d:P {name: 'D'}), "
+            "(a)-[:LIKES]->(e:P {name: 'E'})", &res) != 0) {
+        graphdb_close(db);
+        return fail(tag, "create failed");
+    }
+    graphdb_result_free(res);
+
+    res = NULL;
+    if (graphdb_query(db,
+            "MATCH p = shortestPath((a)-[*]->(b)) "
+            "RETURN a.name AS src, b.name AS dst, length(p) AS len "
+            "ORDER BY src, dst", &res) != 0) {
+        graphdb_close(db);
+        return fail(tag, "shortestPath query failed");
+    }
+    static const char *want_src[] = {"A", "A", "A", "B"};
+    static const char *want_dst[] = {"B", "C", "E", "C"};
+    static const long long want_len[] = {1, 2, 1, 1};
+    if (graphdb_result_row_count(res) != 4) {
+        graphdb_result_free(res);
+        graphdb_close(db);
+        return fail(tag, "expected 4 rows");
+    }
+    for (int64_t i = 0; i < 4; i++) {
+        const char *src = graphdb_result_value_str(res, i, 0);
+        int src_ok = src && strcmp(src, want_src[i]) == 0;
+        const char *dst = graphdb_result_value_str(res, i, 1);
+        int dst_ok = dst && strcmp(dst, want_dst[i]) == 0;
+        long long len = graphdb_result_value_i64(res, i, 2);
+        if (!src_ok || !dst_ok || len != want_len[i]) {
+            graphdb_result_free(res);
+            graphdb_close(db);
+            return fail(tag, "unexpected row");
+        }
+    }
+    graphdb_result_free(res);
+
+    /* Unreachable pair: plain MATCH drops the row. */
+    res = NULL;
+    if (graphdb_query(db,
+            "MATCH (c:P {name: 'C'}), (a:P {name: 'A'}), "
+            "p = shortestPath((c)-[*]->(a)) RETURN p", &res) != 0) {
+        graphdb_close(db);
+        return fail(tag, "unreachable query failed");
+    }
+    int64_t rows = graphdb_result_row_count(res);
+    graphdb_result_free(res);
+    graphdb_close(db);
+    if (rows != 0) return fail(tag, "expected 0 rows for unreachable pair");
     return pass(tag);
 }
 
@@ -694,8 +882,12 @@ int main(int argc, char **argv) {
         bc_10_result_after_commit,
         bc_11_fulltext_ddl,
         bc_12_composite_index_ddl,
+        bc_13_statement_atomicity,
+        res_01_value_str_lifetime,
+        par_01_params,
         snap_basic,
         snap_rejects_existing,
+        sp_01_untyped_shortest_path,
     };
     size_t n = sizeof(scenarios) / sizeof(scenarios[0]);
     int failures = 0;

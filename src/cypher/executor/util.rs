@@ -3,10 +3,10 @@
 use rusqlite::Connection;
 
 use crate::cypher::ast::*;
-use crate::cypher::eval::{eval_predicate, expr_to_column_name};
+use crate::cypher::eval::expr_to_column_name;
 use crate::cypher::record::NamedRecord;
+use crate::node;
 use crate::types::*;
-use crate::{edge, node};
 
 use super::*;
 
@@ -115,22 +115,18 @@ pub(in crate::cypher) fn compare_values_for_sort(a: &Value, b: &Value) -> std::c
     }
 }
 
-/// Check whether any record produced by `plan` matches the given correlated
-/// bindings.  Short-circuits on the first hit instead of materializing the
-/// entire result set, which is the key optimisation for EXISTS subqueries.
-///
 /// Execute a plan as a correlated subquery, pushing the outer record's
 /// bindings down so inner scans and filters can see them. Returns true
-/// if at least one row is produced.
-///
-/// Strips the top-level projection/sort/limit layers since EXISTS only
-/// cares about row existence, not projected values.
+/// if at least one row is produced. Used by EXISTS subqueries and pattern
+/// predicates.
 pub fn exec_correlated_exists(
     conn: &Connection,
     plan: &LogicalOp,
     outer: &NamedRecord,
 ) -> Result<bool> {
-    let rows = exec_correlated(conn, plan, outer, &ExecContext::default())?;
+    let ctx = ExecContext::for_subquery();
+    validate_traversal_depth(plan, &ctx)?;
+    let rows = exec_correlated(conn, plan, outer, &ctx)?;
     Ok(!rows.is_empty())
 }
 
@@ -141,120 +137,52 @@ pub fn exec_correlated_subquery(
     plan: &LogicalOp,
     outer: &NamedRecord,
 ) -> Result<Vec<NamedRecord>> {
-    exec_correlated(conn, plan, outer, &ExecContext::default())
+    let ctx = ExecContext::for_subquery();
+    validate_traversal_depth(plan, &ctx)?;
+    let rows = exec_correlated(conn, plan, outer, &ctx)?;
+    check_row_limit(&rows, &ctx)?;
+    Ok(rows)
 }
 
-/// For leaf/pipeline operators we iterate one record at a time. For operators
-/// we don't special-case we fall back to `execute()` + linear scan.
-pub fn execute_first_match(
-    conn: &Connection,
-    plan: &LogicalOp,
-    correlated_bindings: &[(String, Value)],
-) -> Result<bool> {
-    match plan {
-        LogicalOp::Scan { label, alias } => {
-            let nodes = node::find_nodes_by_label(conn, label)?;
-            for n in nodes {
-                let rec = node_to_record(&n, alias);
-                if record_matches_bindings(&rec, correlated_bindings) {
-                    return Ok(true);
-                }
-            }
-            Ok(false)
-        }
+/// `outer` overlaid with `rec`: the row a correlated operator evaluates
+/// expressions against. Keys of `rec` win over keys of `outer`.
+pub(in crate::cypher::executor) fn merge_outer(
+    outer: &NamedRecord,
+    rec: &NamedRecord,
+) -> NamedRecord {
+    let mut merged = outer.clone();
+    for (k, v) in &rec.fields {
+        merged.set(k.clone(), v.clone());
+    }
+    merged
+}
 
-        LogicalOp::IndexLookup {
-            label,
-            alias,
-            index_properties,
-            lookups,
-            remaining_filters,
-        } => {
-            let node_ids = index_lookup_ids(conn, label, index_properties, lookups)?;
-            for id in node_ids {
-                let n = node::get_node(conn, id)?;
-                let rec = node_to_record(&n, alias);
-                if let Some(filter) = remaining_filters {
-                    if !eval_predicate(filter, &rec, crate::cypher::eval::EvalCx::new(conn))? {
-                        continue;
-                    }
-                }
-                if record_matches_bindings(&rec, correlated_bindings) {
-                    return Ok(true);
-                }
-            }
-            Ok(false)
-        }
+/// How the enclosing (correlated) scope constrains the alias of a
+/// node-producing leaf operator (Scan, IndexLookup, IdLookup, FullTextLookup).
+pub(in crate::cypher::executor) enum AliasBinding {
+    /// The alias is not bound outside: the operator runs unconstrained.
+    Free,
+    /// The alias is bound to null (e.g. an unmatched OPTIONAL MATCH): no match.
+    Null,
+    /// The alias is bound to this node: only it may match.
+    Node(NodeId),
+}
 
-        LogicalOp::Filter { input, predicate } => {
-            // For filter over a scannable input, iterate the input one record
-            // at a time, applying predicate + bindings check.
-            let records = exec(conn, input, &ExecContext::default())?;
-            for rec in records {
-                if eval_predicate(predicate, &rec, crate::cypher::eval::EvalCx::new(conn))?
-                    && record_matches_bindings(&rec, correlated_bindings)
-                {
-                    return Ok(true);
-                }
-            }
-            Ok(false)
+impl AliasBinding {
+    /// Classify `alias` in `outer`.
+    pub(in crate::cypher::executor) fn of(outer: &NamedRecord, alias: &str) -> Self {
+        match outer.get(alias) {
+            Some(Value::Null) => AliasBinding::Null,
+            Some(v) => value_to_node_id(v).map_or(AliasBinding::Free, AliasBinding::Node),
+            None => AliasBinding::Free,
         }
+    }
 
-        LogicalOp::Expand {
-            input,
-            src_alias,
-            dst_alias,
-            edge_types,
-            direction,
-            min_hops,
-            max_hops,
-            ..
-        } => {
-            let input_records = exec(conn, input, &ExecContext::default())?;
-            for rec in &input_records {
-                let src_id = match rec.get(src_alias).and_then(value_to_node_id) {
-                    Some(id) => id,
-                    _ => continue,
-                };
-                // Discover edge labels when edge_types is empty (match any type).
-                let _owned: Vec<String>;
-                let labels: Vec<&str> = if edge_types.is_empty() {
-                    let all = edge::get_all_edge_labels(conn, src_id, *direction)?;
-                    _owned = all.into_iter().map(|(l, _)| l).collect();
-                    _owned.iter().map(|s| s.as_str()).collect()
-                } else {
-                    edge_types.iter().map(|s| s.as_str()).collect()
-                };
-                let mut dst_ids = Vec::new();
-                for label in &labels {
-                    if *min_hops == 1 && *max_hops == 1 {
-                        dst_ids.extend(edge::get_neighbors(conn, src_id, label, *direction)?);
-                    } else {
-                        dst_ids.extend(edge::traverse(
-                            conn, src_id, label, *direction, *min_hops, *max_hops, None,
-                        )?);
-                    }
-                }
-                for dst_id in dst_ids {
-                    let mut new_rec = rec.clone();
-                    fetch_and_populate(conn, &mut new_rec, dst_id, dst_alias)?;
-                    if record_matches_bindings(&new_rec, correlated_bindings) {
-                        return Ok(true);
-                    }
-                }
-            }
-            Ok(false)
-        }
-
-        // Fallback: materialize and scan.
-        _ => {
-            let results = execute(conn, plan)?;
-            for rec in &results {
-                if record_matches_bindings(rec, correlated_bindings) {
-                    return Ok(true);
-                }
-            }
-            Ok(false)
+    /// The bound node, if any.
+    pub(in crate::cypher::executor) fn node(&self) -> Option<NodeId> {
+        match self {
+            AliasBinding::Node(id) => Some(*id),
+            _ => None,
         }
     }
 }
@@ -314,18 +242,31 @@ pub(crate) fn fetch_and_populate(
     Ok(n)
 }
 
-/// Check whether a record satisfies correlated bindings from an outer scope.
-///
-/// A binding matches if the record either doesn't contain the key (no
-/// constraint) or contains it with an equal value.
-pub(in crate::cypher::executor) fn record_matches_bindings(
-    rec: &NamedRecord,
-    bindings: &[(String, Value)],
-) -> bool {
-    bindings.iter().all(|(key, outer_val)| match rec.get(key) {
-        Some(inner_val) => inner_val == outer_val,
-        None => true,
-    })
+/// Write the flat relationship bindings for `e` under `alias`
+/// (`alias.__src`, `__dst`, `__type`, `__edge_seq` and `alias.<prop>`).
+/// The bare `alias` key is left to the caller.
+pub(crate) fn populate_edge_bindings(rec: &mut NamedRecord, e: &crate::types::Edge, alias: &str) {
+    bind_edge_fields(rec, alias, e.src, e.dst, &e.label, e.seq, &e.properties);
+}
+
+/// [`populate_edge_bindings`] from the parts of a stored edge, for callers
+/// that have not built an `Edge` value.
+pub(in crate::cypher::executor) fn bind_edge_fields(
+    rec: &mut NamedRecord,
+    alias: &str,
+    src: NodeId,
+    dst: NodeId,
+    label: &str,
+    seq: u64,
+    properties: &Properties,
+) {
+    rec.set(format!("{alias}.__src"), Value::I64(src.0 as i64));
+    rec.set(format!("{alias}.__dst"), Value::I64(dst.0 as i64));
+    rec.set(format!("{alias}.__type"), Value::String(label.to_string()));
+    rec.set(format!("{alias}.__edge_seq"), Value::I64(seq as i64));
+    for (k, v) in properties {
+        rec.set(format!("{alias}.{k}"), v.clone());
+    }
 }
 
 pub(in crate::cypher::executor) fn agg_fn_name(f: AggregateFunction) -> &'static str {
@@ -345,7 +286,7 @@ pub(in crate::cypher::executor) fn agg_fn_name(f: AggregateFunction) -> &'static
 
 /// Compute the column name for an aggregate expression, matching what
 /// `expr_to_column_name` produces for the original `FunctionCall` expression.
-pub(in crate::cypher::executor) fn agg_col_name(agg: &AggregateExpr) -> String {
+pub(crate) fn agg_col_name(agg: &AggregateExpr) -> String {
     agg.alias.clone().unwrap_or_else(|| {
         if let Some(ref text) = agg.original_call_text {
             return text.clone();

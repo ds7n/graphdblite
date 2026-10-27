@@ -17,14 +17,15 @@ pub const TABLE_EDGE_PROPS: &str = "edge_props";
 /// and (b) bounds the prepared-statement cache by the set of valid table names
 /// instead of by ad-hoc inputs.
 ///
-/// Composite index tables use `$` as a property separator
-/// (`node_idx$Label$prop1$prop2`), so `$` is explicitly allowed here in
-/// addition to the `[A-Za-z0-9_]` set accepted by `validate_name`.
+/// Index tables use `$` as a component separator and `^` to escape
+/// uppercase letters (`node_idx$^label$prop1$prop2`, see `storage::naming`),
+/// so both are explicitly allowed here in addition to the `[A-Za-z0-9_]` set
+/// accepted by `validate_name`.
 fn check_table(table: &str) -> Result<()> {
     if table.is_empty()
         || !table
             .bytes()
-            .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'$')
+            .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'$' || b == b'^')
     {
         return Err(crate::types::GraphError::InvalidName {
             name: table.to_string(),

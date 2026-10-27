@@ -151,8 +151,8 @@ pub(in crate::cypher::planner) fn function_arity(name: &str) -> Option<(usize, u
         "split" | "left" | "right" => (2, 2),
         // 3 arguments
         "replace" => (3, 3),
-        // 1..2 (round has optional precision)
-        "round" => (1, 2),
+        // 1..3 (round has optional precision and rounding mode)
+        "round" => (1, 3),
         // 2..3
         "substring" | "range" => (2, 3),
         // 0 arguments
@@ -385,7 +385,7 @@ pub(in crate::cypher::planner) fn properties_to_filter(
     variable: &str,
     properties: &std::collections::HashMap<String, Expr>,
 ) -> Expr {
-    let mut exprs: Vec<Expr> = properties
+    let exprs: Vec<Expr> = properties
         .iter()
         .map(|(key, value)| {
             Expr::synthetic(ExprKind::BinaryOp {
@@ -399,20 +399,29 @@ pub(in crate::cypher::planner) fn properties_to_filter(
         })
         .collect();
 
-    if exprs.len() == 1 {
-        return exprs.remove(0);
-    }
+    and_all(exprs).unwrap_or_else(|| Expr::synthetic(ExprKind::Literal(LiteralValue::Bool(true))))
+}
 
-    // Chain with AND.
-    let mut result = exprs.remove(0);
-    for expr in exprs {
-        result = Expr::synthetic(ExprKind::BinaryOp {
-            left: Box::new(result),
-            op: BinOp::And,
-            right: Box::new(expr),
-        });
+/// Combine conjuncts into one `AND` expression shaped as a balanced tree.
+///
+/// Evaluation still runs left to right and stops at the first `false`, as
+/// with a left-deep chain, but the tree is log2(n) deep instead of n deep.
+/// A pattern with thousands of inline properties (`(n {p0: 1, p1: 1, ...})`)
+/// therefore cannot build a predicate deep enough to overflow the recursive
+/// planner and evaluator walks. Returns `None` for no conjuncts.
+pub(in crate::cypher::planner) fn and_all(mut conjuncts: Vec<Expr>) -> Option<Expr> {
+    match conjuncts.len() {
+        0 => None,
+        1 => conjuncts.pop(),
+        n => {
+            let right = conjuncts.split_off(n.div_ceil(2));
+            Some(Expr::synthetic(ExprKind::BinaryOp {
+                left: Box::new(and_all(conjuncts)?),
+                op: BinOp::And,
+                right: Box::new(and_all(right)?),
+            }))
+        }
     }
-    result
 }
 
 /// Extract the alias from the last operator in the chain.
@@ -426,8 +435,45 @@ pub(in crate::cypher::planner) fn get_last_alias(op: &Option<LogicalOp>) -> Stri
     }
 }
 
+/// Sub-expressions of a subscript, property-access or CASE expression, which
+/// share the enclosing aggregation scope (`collect(x)[0]`, `collect(m)[1].a`,
+/// `CASE WHEN count(*) > 1 ...`). `None` for every other kind.
+///
+/// `is_aggregate_fn`, `collect_aggregate_calls`, `collect_non_aggregate_leaves`
+/// and `extract_nested_aggregates` all recurse through these the same way, so
+/// they agree on which expressions aggregate.
+fn scoped_children(expr: &Expr) -> Option<Vec<&Expr>> {
+    let children = match &expr.kind {
+        ExprKind::Index { expr, index } => vec![expr.as_ref(), index.as_ref()],
+        ExprKind::DotAccess { expr, .. } => vec![expr.as_ref()],
+        ExprKind::Slice { expr, start, end } => std::iter::once(expr.as_ref())
+            .chain(start.as_deref())
+            .chain(end.as_deref())
+            .collect(),
+        ExprKind::Case {
+            operand,
+            alternatives,
+            default,
+        } => operand
+            .as_deref()
+            .into_iter()
+            .chain(
+                alternatives
+                    .iter()
+                    .flat_map(|(when, then)| [when.as_ref(), then.as_ref()]),
+            )
+            .chain(default.as_deref())
+            .collect(),
+        _ => return None,
+    };
+    Some(children)
+}
+
 /// Returns true if the expression is an aggregate function call (count, sum, avg, etc.).
 pub(in crate::cypher::planner) fn is_aggregate_fn(expr: &Expr) -> bool {
+    if let Some(children) = scoped_children(expr) {
+        return children.into_iter().any(is_aggregate_fn);
+    }
     match &expr.kind {
         ExprKind::FunctionCall { name, args, .. } => {
             if matches!(
@@ -468,6 +514,12 @@ pub(in crate::cypher::planner) fn collect_aggregate_calls<'a>(
     expr: &'a Expr,
     out: &mut Vec<&'a Expr>,
 ) {
+    if let Some(children) = scoped_children(expr) {
+        for child in children {
+            collect_aggregate_calls(child, out);
+        }
+        return;
+    }
     match &expr.kind {
         ExprKind::FunctionCall { name, .. }
             if matches!(
@@ -636,6 +688,18 @@ pub(in crate::cypher::planner) fn collect_non_aggregate_leaves<'a>(
     expr: &'a Expr,
     leaves: &mut Vec<&'a Expr>,
 ) {
+    // Without an aggregate inside, a subscript / CASE is one leaf (it may be
+    // a group key as a whole, e.g. `l[0]`); with one, look inside it.
+    if let Some(children) = scoped_children(expr) {
+        if !is_aggregate_fn(expr) {
+            leaves.push(expr);
+            return;
+        }
+        for child in children {
+            collect_non_aggregate_leaves(child, leaves);
+        }
+        return;
+    }
     match &expr.kind {
         ExprKind::FunctionCall { name, .. } if parse_agg_name(name).is_some() => {
             // Aggregate function — skip entirely (its args are aggregated)
@@ -701,6 +765,12 @@ pub(in crate::cypher::planner) fn extract_nested_aggregates(
     expr: &Expr,
     aggregates: &mut Vec<AggregateExpr>,
 ) {
+    if let Some(children) = scoped_children(expr) {
+        for child in children {
+            extract_nested_aggregates(child, aggregates);
+        }
+        return;
+    }
     match &expr.kind {
         ExprKind::FunctionCall {
             name,
@@ -776,13 +846,7 @@ pub(in crate::cypher::planner) fn decompose_conjuncts(expr: &Expr) -> Vec<Expr> 
 
 /// Rebuild a conjunction from a list of conjuncts. Returns None if empty.
 pub(in crate::cypher::planner) fn rebuild_conjunction(conjuncts: Vec<Expr>) -> Option<Expr> {
-    conjuncts.into_iter().reduce(|acc, c| {
-        Expr::synthetic(ExprKind::BinaryOp {
-            left: Box::new(acc),
-            op: BinOp::And,
-            right: Box::new(c),
-        })
-    })
+    and_all(conjuncts)
 }
 
 /// Extract `(alias, property, lookup_key)` from an equality predicate of the

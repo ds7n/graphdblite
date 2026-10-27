@@ -11,6 +11,18 @@ use crate::types::{ErrorCode, GraphError, QueryPhase, Result};
 
 const DEFAULT_CAPACITY: usize = 32;
 
+#[cfg(test)]
+thread_local! {
+    /// Cache-miss compilations on this thread (tests only).
+    static COMPILES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+/// Number of cache-miss compilations so far on this thread (tests only).
+#[cfg(test)]
+pub(crate) fn compile_count() -> usize {
+    COMPILES.with(|c| c.get())
+}
+
 /// Bounded least-recently-used cache of compiled regexes.
 ///
 /// Stored as a `Vec` of `(pattern, Regex)` pairs because the working set
@@ -49,14 +61,21 @@ impl RegexCache {
             return Ok(&self.entries.last().unwrap().1);
         }
 
-        let anchored = format!("^(?:{pat})$");
-        let re = Regex::new(&anchored).map_err(|err| {
+        #[cfg(test)]
+        COMPILES.with(|c| c.set(c.get() + 1));
+        let invalid = |err: regex::Error| {
             GraphError::query(
                 QueryPhase::Runtime,
                 ErrorCode::InvalidArgumentValue,
                 format!("invalid regex pattern `{pat}`: {err}"),
             )
-        })?;
+        };
+        // Validate the user pattern on its own first: wrapping an unbalanced
+        // pattern like `a)|(b` in the anchoring group would balance it and
+        // change its meaning (`^(?:a)|(b)$`). Only cache misses pay this.
+        Regex::new(pat).map_err(invalid)?;
+        let anchored = format!("^(?:{pat})$");
+        let re = Regex::new(&anchored).map_err(invalid)?;
 
         if self.entries.len() >= self.capacity {
             self.entries.remove(0); // evict least-recently-used
@@ -133,6 +152,25 @@ mod tests {
             "must echo offending pattern: {msg}"
         );
         assert_eq!(c.len(), 0, "failed compile must not insert");
+    }
+
+    #[test]
+    fn auto_tx_execute_reuses_one_compiled_regex() {
+        // `Database::execute` without an open transaction must publish the
+        // per-query cache too; otherwise every row recompiled the pattern.
+        let mut db = crate::Database::open_memory().unwrap();
+        let before = compile_count();
+        let rows = db
+            .execute(
+                "UNWIND range(1, 50) AS i RETURN count(CASE WHEN 'ab' =~ 'a.' THEN 1 END) AS c",
+            )
+            .unwrap();
+        assert_eq!(rows[0].get("c"), Some(&crate::types::Value::I64(50)));
+        assert_eq!(
+            compile_count() - before,
+            1,
+            "pattern compiled once per query"
+        );
     }
 
     #[test]

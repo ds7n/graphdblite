@@ -7,18 +7,54 @@ graphdblite stamps every database file it creates with:
 | Field             | Value                                | Where                       |
 |-------------------|--------------------------------------|-----------------------------|
 | `application_id`  | `0x4744424C` (1,195,655,756, "GDBL") | byte 68 of the SQLite header |
-| `user_version`    | `1`                                  | byte 60 of the SQLite header |
+| `user_version`    | `2`                                  | byte 60 of the SQLite header |
 
 The constants live in `src/db.rs` as `GRAPHDBLITE_APPLICATION_ID` and
-`GRAPHDBLITE_SCHEMA_VERSION`. `Database::open` checks `application_id` on
-every open: a value of `0` means a fresh or pre-marker file (we stamp it),
-the matching value passes through, and any other nonzero value is rejected
-with a clear error so users don't accidentally point graphdblite at a
-foreign SQLite file (Firefox cookies, GeoPackage, etc.).
+`GRAPHDBLITE_SCHEMA_VERSION`. `Database::open` checks the file before it
+modifies anything (no WAL switch, no tables, no stamp until the checks
+pass):
 
-`user_version` provides forward-compat hardening — if a future build
-writes a newer schema layout, older builds will refuse to open the file
-rather than silently misinterpret it.
+| File | Result |
+|------|--------|
+| `application_id` = `0x4744424C` | opened |
+| `application_id` = `0`, empty or containing only graphdblite tables (a fresh file, or one written before the marker existed) | opened and stamped |
+| `application_id` = `0` with any other table, index, view or trigger | rejected (`SQLITE_NOTADB`), file left untouched |
+| `application_id` = `0` with a table named like a graphdblite core table (`nodes`, `adj_out`, `adj_in`, `edge_props`, `metadata`) that lacks graphdblite's columns, declared types or primary key | rejected (`SQLITE_NOTADB`), file left untouched (no WAL switch) |
+| any other nonzero `application_id` (Firefox cookies, GeoPackage, ...) | rejected (`SQLITE_NOTADB`) |
+| `user_version` greater than this build's `GRAPHDBLITE_SCHEMA_VERSION` | rejected (written by a newer release) |
+| a trigger on, or a view named like, a graphdblite table | rejected: graphdblite never creates them, so they were planted by another tool or a crafted file |
+
+Every connection is also opened with `trusted_schema` off and
+`SQLITE_DBCONFIG_DEFENSIVE` on, so SQL stored in the file cannot call
+application functions and the library cannot be made to write the schema
+or FTS5 shadow tables directly.
+
+`user_version` provides forward-compat hardening: if a future build writes
+a newer schema layout, older builds will refuse to open the file rather
+than silently misinterpret it.
+
+### Schema versions and migrations
+
+| `user_version` | Releases | Layout |
+|----------------|----------|--------|
+| `0` / `1` | 0.1.x | index tables `node_idx_<label>_<prop>`, `node_fts_<label>_<prop>`, `node_fts_multi_<label>_<n>` (and, in unreleased builds, raw-case `node_idx$<Label>$<prop>` / `node_fts$<Label>$<prop>`) |
+| `2` | current | `node_idx$<label>$<p1>$...`, `node_fts$<label>$<prop>$`, `node_fts_multi$<label>$<n>`, with each uppercase letter written as `^` + lowercase (`Person` becomes `^person`) |
+
+Version 2 fixes two naming problems: SQLite table names are
+case-insensitive, so indexes on `:Person(name)` and `:person(name)` used
+to collide, and the `_` separator was ambiguous for labels or properties
+containing `_`. `Database::open` migrates a version 0/1 file once, inside a
+write transaction (`src/storage/migrate.rs`):
+
+- raw-case `$` tables are renamed (FTS5 renames its shadow tables too);
+- `_`-named tables are dropped and rebuilt from node data under the new
+  name. When the `_` split is ambiguous (`node_idx_A_b_c` is `(A_b, c)` or
+  `(A, b_c)`), every reading whose label has nodes carrying the property
+  gets an index; if no reading has data the empty index is dropped and a
+  `tracing` warning names it (recreate it if still needed).
+
+Opening a version 2 file with a 0.1.x build fails with the "newer than this
+build supports" error.
 
 ## Why "GDBL"?
 
@@ -35,7 +71,7 @@ application_id from the SQLite header:
 
 ```
 $ file mygraph.db
-mygraph.db: SQLite 3.x database, application id 1195655756, user version 1, ...
+mygraph.db: SQLite 3.x database, application id 1195655756, user version 2, ...
 ```
 
 After upstream registration, the relevant line will read:

@@ -9,6 +9,11 @@ publish = false
 [lib]
 crate-type = ["cdylib"]
 
+[features]
+# Test-only: compiles the core's deliberate-panic hook so the test suite can
+# check panic containment. Never enable for release builds.
+test-hooks = ["graphdblite/test-hooks"]
+
 [dependencies]
 graphdblite = { path = "../.." }
 napi = { version = "2", features = ["napi6"] }

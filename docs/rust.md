@@ -137,14 +137,20 @@ Reachable via deref on `WriteTxGuard`. All `ReadTransaction` methods, plus:
 | `delete_node(id: NodeId) -> Result<()>` | Delete a node (must have no edges) |
 | `set_node_property(id: NodeId, key: &str, value: Value) -> Result<()>` | Set a property on a node |
 | `remove_node_property(id: NodeId, key: &str) -> Result<()>` | Remove a property from a node |
-| `create_edge(src: NodeId, dst: NodeId, label: &str, properties: Properties) -> Result<()>` | Create a directed edge |
-| `delete_edge(src: NodeId, dst: NodeId, label: &str) -> Result<()>` | Delete an edge |
+| `create_edge(src: NodeId, dst: NodeId, label: &str, properties: Properties) -> Result<u64>` | Create a directed edge; returns its sequence number (identifies it among parallel edges). Null-valued properties are dropped |
+| `delete_edge(src: NodeId, dst: NodeId, label: &str) -> Result<()>` | Delete every `(src, dst, label)` edge, including parallel ones |
+| `delete_edge_at(src: NodeId, dst: NodeId, label: &str, seq: u64) -> Result<()>` | Delete one edge by sequence number; `EdgeNotFound` if absent |
 | `create_index(label: &str, property: &str) -> Result<()>` | Create a secondary property index |
 | `drop_index(label: &str, property: &str) -> Result<()>` | Drop a secondary property index |
 | `create_fulltext_index(label: &str, property: &str) -> Result<()>` | Create a fulltext (FTS5 trigram) index |
 | `drop_fulltext_index(label: &str, property: &str) -> Result<()>` | Drop a fulltext index |
 | `commit(self) -> Result<()>` | Commit and release write lock |
 | `rollback(self) -> Result<()>` | Explicitly rollback |
+
+Property values passed to the typed API follow the same rules as Cypher
+writes: maps, nodes, relationships and paths (also inside lists) are
+rejected with a `TypeError` (`InvalidPropertyType`), and `Null` values are
+not stored. Duplicate labels in `create_node_with_labels` are stored once.
 
 ### Fulltext indexes
 
@@ -203,8 +209,13 @@ pub struct Edge {
     pub src: NodeId,
     pub dst: NodeId,
     pub label: String,
+    pub seq: u64,                   // parallel-edge sequence number
     pub properties: Properties,
 }
+
+// An edge's identity is (src, dst, label, seq): parallel edges between the
+// same nodes differ in `seq`, so they are distinct values even with equal
+// properties.
 
 pub struct PathValue {
     pub nodes: Vec<Node>,

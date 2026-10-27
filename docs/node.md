@@ -58,7 +58,8 @@ db.close();
 const db = new Database(path);
 ```
 
-- `path` — file path to the database (created if it doesn't exist)
+- `path`: file path to the database (created if it doesn't exist).
+  `':memory:'` opens a private in-memory database (no file is created).
 
 Uses a default busy timeout of 5000 ms when waiting for a write lock.
 
@@ -90,13 +91,54 @@ const results = db.query('MATCH (n:Person) RETURN n.name, n.age');
 db.execute("CREATE (n:Person {name: 'Carol', age: 28})");
 ```
 
+### Parameters
+
+Every `query` / `execute` (on `Database` and on transactions) takes an optional
+params object for `$name` parameters:
+
+```js
+db.query('MATCH (p:Person) WHERE p.age > $min RETURN p.name', { min: 30 });
+```
+
+| JS | Cypher |
+|----|--------|
+| `null`, `undefined` | null |
+| boolean | boolean |
+| integer-valued number within `Number.MAX_SAFE_INTEGER` | integer |
+| any other number | float |
+| `bigint` (signed 64-bit range) | integer |
+| string | string |
+| Array | list |
+| other object | map of its enumerable properties |
+
+A JS number cannot say "float" for an integral value: `1.0` is sent as the
+integer `1`. Use `toFloat($x)` in Cypher when the type matters. `Date`
+objects, functions and symbols are rejected; pass temporal values as ISO
+strings and convert in Cypher (`date($d)`).
+
+### Result values
+
+| Value | JS |
+|-------|----|
+| integer | `number`, or `bigint` outside +-(2^53 - 1) (`Number.MAX_SAFE_INTEGER`) so no precision is lost |
+| float | `number` |
+| node | `{ __id, __labels, ...properties }` |
+| relationship | `{ __src, __dst, __type, __label, __edge_seq, ...properties }` (`__label` is a deprecated alias of `__type`) |
+| path | `{ nodes: [node, ...], relationships: [relationship, ...] }` |
+| temporal | ISO 8601 string |
+
+Property names starting with `__` are reserved for the metadata keys (writes
+are rejected); for older data that has one, the metadata key wins.
+
 ### close()
 
 ```js
 db.close();
 ```
 
-Releases the database connection. Any further calls on the instance will throw.
+Releases the database connection. An open transaction is rolled back. Any
+further calls on the instance (or its transactions) will throw
+`database is closed`.
 
 ## Transactions
 
@@ -123,7 +165,10 @@ try {
 | `tx.commit()` | Commit and close the transaction |
 | `tx.rollback()` | Abort and close the transaction |
 
-After `commit()` or `rollback()` the transaction object is finished — further calls throw.
+After `commit()` or `rollback()` the transaction object is finished: further calls
+throw `transaction is finished`. A statement that fails inside the transaction is
+rolled back on its own (its partial writes are undone) and the transaction stays
+open: continue, or `rollback()`. A failed `commit()` keeps the transaction open.
 
 ### ReadTransaction
 
@@ -140,8 +185,12 @@ try {
 
 | Method | Description |
 |--------|-------------|
-| `tx.query(cypher)` | Run a read-only query within the transaction |
+| `tx.query(cypher, params?)` | Run a read-only query within the transaction |
 | `tx.commit()` | Release the read snapshot |
+| `tx.rollback()` | Release the read snapshot (same effect as `commit()`) |
+
+`withReadTx` and `Symbol.dispose` (`using tx = db.beginRead()`) release the
+snapshot through `rollback()` when the callback throws or the scope exits.
 
 ## Examples
 

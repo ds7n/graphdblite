@@ -75,15 +75,101 @@ pub(in crate::cypher::parser) fn unescape_string(raw: &str) -> crate::types::Res
     Ok(out)
 }
 
+/// Line/column lookup for one query text in O(log n) per position.
+///
+/// pest's `Position::line_col` rescans the input from its start (or from the
+/// line start, which for a one-line query is the same), so computing a span
+/// for every AST node made parsing quadratic: a 40k-element list literal took
+/// ~21 s. This index is built once per `parse` call.
+pub(in crate::cypher::parser) struct LineIndex {
+    /// Byte offset where each line starts.
+    line_starts: Vec<usize>,
+    /// `(byte offset, cumulative extra bytes)` for every multi-byte char, so
+    /// a byte distance converts to a char distance (columns count chars,
+    /// like pest).
+    multibyte: Vec<(usize, usize)>,
+}
+
+impl LineIndex {
+    pub(in crate::cypher::parser) fn new(input: &str) -> Self {
+        let mut line_starts = vec![0];
+        let mut multibyte = Vec::new();
+        let mut extra = 0;
+        for (i, c) in input.char_indices() {
+            if c == '\n' {
+                line_starts.push(i + 1);
+            }
+            if c.len_utf8() > 1 {
+                extra += c.len_utf8() - 1;
+                multibyte.push((i, extra));
+            }
+        }
+        Self {
+            line_starts,
+            multibyte,
+        }
+    }
+
+    /// Extra (non-first) bytes of multi-byte chars starting before `pos`.
+    fn extra_before(&self, pos: usize) -> usize {
+        match self.multibyte.partition_point(|&(o, _)| o < pos) {
+            0 => 0,
+            i => self.multibyte[i - 1].1,
+        }
+    }
+
+    /// 1-based (line, column in chars) of byte offset `pos`.
+    pub(in crate::cypher::parser) fn line_col(&self, pos: usize) -> (u32, u32) {
+        let line = self.line_starts.partition_point(|&s| s <= pos) - 1;
+        let start = self.line_starts[line];
+        let chars = (pos - start) - (self.extra_before(pos) - self.extra_before(start));
+        (line as u32 + 1, chars as u32 + 1)
+    }
+}
+
+thread_local! {
+    /// The `LineIndex` of the query being parsed on this thread, published
+    /// by [`LineIndexScope`] for `span_from_pair`.
+    static LINE_INDEX: std::cell::RefCell<Option<LineIndex>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// Publishes a [`LineIndex`] for the duration of one `parse` call and
+/// restores the previous one (if any) on drop.
+#[must_use = "the line index is only published while the guard is alive"]
+pub(in crate::cypher::parser) struct LineIndexScope {
+    prev: Option<LineIndex>,
+}
+
+impl LineIndexScope {
+    pub(in crate::cypher::parser) fn enter(input: &str) -> Self {
+        let prev = LINE_INDEX.with(|c| c.replace(Some(LineIndex::new(input))));
+        Self { prev }
+    }
+}
+
+impl Drop for LineIndexScope {
+    fn drop(&mut self) {
+        let prev = self.prev.take();
+        LINE_INDEX.with(|c| *c.borrow_mut() = prev);
+    }
+}
+
 /// Convert a pest pair span into our lightweight `Span`.
 pub(in crate::cypher::parser) fn span_from_pair(pair: &pest::iterators::Pair<Rule>) -> Span {
     let s = pair.as_span();
-    let (line, col) = s.start_pos().line_col();
+    let (line, col) = LINE_INDEX
+        .with(|c| c.borrow().as_ref().map(|idx| idx.line_col(s.start())))
+        .unwrap_or_else(|| {
+            // Outside `parse` (unit tests): fall back to pest's scan.
+            let (line, col) = s.start_pos().line_col();
+            (line as u32, col as u32)
+        });
     Span {
         start: s.start(),
         end: s.end(),
-        line: line as u32,
-        col: col as u32,
+        line,
+        col,
     }
 }
 
@@ -129,11 +215,78 @@ pub(in crate::cypher::parser) fn pest_span(e: &pest::error::Error<Rule>) -> Span
 /// Defends against memory/stack exhaustion from pathologically large inputs.
 pub const MAX_QUERY_BYTES: usize = 1 << 20; // 1 MiB
 
-/// Maximum nesting depth for parsed expressions (recursion guard for
-/// `parse_expr`, which descends through parens). 256 comfortably handles any
-/// human-written query while preventing thread-stack overflow on adversarial
-/// inputs like `(((((...)))))`.
+/// Maximum depth of a parsed expression tree. Enforced three ways: the
+/// `parse_expr` recursion guard (parens, nested calls), [`ChainDepth`] on
+/// flat operator chains (`1 + 1 + ...`, `NOT NOT ...`, `a.b.c...`), and a
+/// final whole-tree check on every top-level expression. 256 comfortably
+/// handles any human-written query while keeping the recursive planner and
+/// evaluator walks far from a thread-stack overflow.
 pub const MAX_EXPR_DEPTH: usize = 256;
+
+/// The `SizeLimit` error for an expression deeper than [`MAX_EXPR_DEPTH`].
+fn expr_depth_error(actual: usize) -> GraphError {
+    GraphError::SizeLimit {
+        what: "expression nesting depth".to_string(),
+        limit: MAX_EXPR_DEPTH,
+        actual,
+        hint: Some("simplify the query or split it into multiple statements".to_string()),
+    }
+}
+
+/// Reject `expr` if its tree is deeper than [`MAX_EXPR_DEPTH`].
+pub(in crate::cypher::parser) fn check_expr_depth(expr: &Expr) -> crate::types::Result<()> {
+    let depth = expr.depth_capped(MAX_EXPR_DEPTH + 1);
+    if depth > MAX_EXPR_DEPTH {
+        return Err(expr_depth_error(depth));
+    }
+    Ok(())
+}
+
+/// Running tree depth of a left-deep operator chain being folded by the
+/// parser. Each fold step checks the cap, so a 100k-term chain fails after
+/// [`MAX_EXPR_DEPTH`] steps instead of building a tree whose recursive
+/// walks (and even its `Drop`) would overflow the stack.
+pub(in crate::cypher::parser) struct ChainDepth(usize);
+
+impl ChainDepth {
+    /// Start a chain whose first operand is `first`.
+    pub(in crate::cypher::parser) fn start(first: &Expr) -> crate::types::Result<Self> {
+        let mut chain = ChainDepth(0);
+        chain.join(first)?;
+        Ok(chain)
+    }
+
+    /// Account for a node that combines the chain so far with `operand`
+    /// (binary operators, subscripts).
+    pub(in crate::cypher::parser) fn push(&mut self, operand: &Expr) -> crate::types::Result<()> {
+        self.0 += 1;
+        self.join(operand)
+    }
+
+    /// Account for a unary node wrapping the chain so far (`NOT`, `.key`).
+    pub(in crate::cypher::parser) fn wrap(&mut self) -> crate::types::Result<()> {
+        self.0 += 1;
+        self.check()
+    }
+
+    fn join(&mut self, operand: &Expr) -> crate::types::Result<()> {
+        // `push` already counted the new node, so the operand sits one level
+        // below it: depth = 1 + max(chain, operand).
+        let below = self.0.saturating_sub(1);
+        let operand_depth = operand.depth_capped(MAX_EXPR_DEPTH + 1);
+        if operand_depth > below {
+            self.0 += operand_depth - below;
+        }
+        self.check()
+    }
+
+    fn check(&self) -> crate::types::Result<()> {
+        if self.0 > MAX_EXPR_DEPTH {
+            return Err(expr_depth_error(self.0));
+        }
+        Ok(())
+    }
+}
 
 thread_local! {
     static EXPR_DEPTH: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
@@ -153,14 +306,15 @@ impl DepthGuard {
         });
         if depth > MAX_EXPR_DEPTH {
             EXPR_DEPTH.with(|c| c.set(c.get() - 1));
-            return Err(GraphError::SizeLimit {
-                what: "expression nesting depth".to_string(),
-                limit: MAX_EXPR_DEPTH,
-                actual: depth,
-                hint: Some("simplify the query or split it into multiple statements".to_string()),
-            });
+            return Err(expr_depth_error(depth));
         }
         Ok(DepthGuard)
+    }
+
+    /// True when this guard is the outermost one on the thread, i.e. the
+    /// expression being parsed is a top-level expression of the statement.
+    pub(in crate::cypher::parser) fn is_outermost(&self) -> bool {
+        EXPR_DEPTH.with(|c| c.get()) == 1
     }
 }
 
@@ -197,14 +351,18 @@ pub(in crate::cypher::parser) fn line_col_at(input: &str, byte_pos: usize) -> (u
 /// diagnostic instead of pest's generic "expected …" list (which can't tell us
 /// the token didn't close).
 ///
-/// Walks the input byte-by-byte, skips over `//` line comments, and treats
-/// `\X` inside a string as a two-byte escape. If a string opens and the input
-/// ends before the matching quote, returns a `SyntaxError` whose span points
-/// at the opening quote.
+/// Walks the input byte-by-byte, skips comments and backtick identifiers (via
+/// `skip_non_code`), and treats `\X` inside a string as a two-byte escape.
+/// If a string opens and the input ends before the matching quote, returns a
+/// `SyntaxError` whose span points at the opening quote.
 pub(in crate::cypher::parser) fn check_unclosed_string(input: &str) -> crate::types::Result<()> {
     let bytes = input.as_bytes();
     let mut i = 0;
     while i < bytes.len() {
+        if let Some(next) = skip_non_code(bytes, i) {
+            i = next;
+            continue;
+        }
         let b = bytes[i];
         match b {
             b'\'' | b'"' => {
@@ -242,23 +400,55 @@ pub(in crate::cypher::parser) fn check_unclosed_string(input: &str) -> crate::ty
                 }
                 i += 1;
             }
-            b'/' if i + 1 < bytes.len() && bytes[i + 1] == b'/' => {
-                while i < bytes.len() && bytes[i] != b'\n' {
-                    i += 1;
-                }
-            }
             _ => i += 1,
         }
     }
     Ok(())
 }
 
-pub(in crate::cypher::parser) fn check_bracket_depth(input: &str) -> crate::types::Result<()> {
+/// If a backtick-quoted identifier, a `//` line comment or a `/* */` block
+/// comment starts at `bytes[i]`, return the index just past it; otherwise
+/// `None`. Quotes and brackets inside these spans are not code, so the
+/// pre-scans must not count them. An unterminated span runs to the end of
+/// the input (the grammar then reports the syntax error). A doubled backtick
+/// (the escape for a literal backtick) is two adjacent spans.
+fn skip_non_code(bytes: &[u8], i: usize) -> Option<usize> {
+    match bytes[i] {
+        b'`' => {
+            let mut j = i + 1;
+            while j < bytes.len() && bytes[j] != b'`' {
+                j += 1;
+            }
+            Some((j + 1).min(bytes.len()))
+        }
+        b'/' if bytes.get(i + 1) == Some(&b'/') => {
+            let mut j = i + 2;
+            while j < bytes.len() && bytes[j] != b'\n' {
+                j += 1;
+            }
+            Some(j)
+        }
+        b'/' if bytes.get(i + 1) == Some(&b'*') => {
+            let mut j = i + 2;
+            while j + 1 < bytes.len() && !(bytes[j] == b'*' && bytes[j + 1] == b'/') {
+                j += 1;
+            }
+            Some((j + 2).min(bytes.len()))
+        }
+        _ => None,
+    }
+}
+
+pub(in crate::cypher::parser) fn check_bracket_depth(input: &str) -> crate::types::Result<usize> {
     let bytes = input.as_bytes();
     let mut i = 0;
     let mut depth: usize = 0;
     let mut max_depth: usize = 0;
     while i < bytes.len() {
+        if let Some(next) = skip_non_code(bytes, i) {
+            i = next;
+            continue;
+        }
         let b = bytes[i];
         match b {
             b'\'' | b'"' => {
@@ -272,11 +462,6 @@ pub(in crate::cypher::parser) fn check_bracket_depth(input: &str) -> crate::type
                     }
                 }
                 if i < bytes.len() {
-                    i += 1;
-                }
-            }
-            b'/' if i + 1 < bytes.len() && bytes[i + 1] == b'/' => {
-                while i < bytes.len() && bytes[i] != b'\n' {
                     i += 1;
                 }
             }
@@ -304,14 +489,86 @@ pub(in crate::cypher::parser) fn check_bracket_depth(input: &str) -> crate::type
             _ => i += 1,
         }
     }
-    Ok(())
+    Ok(max_depth)
+}
+
+/// Pre-scan for the two grammar constructs that nest without brackets and
+/// make pest recurse once per level: unary minus (`- - - 1`) and `CASE ...
+/// END` nested inside `THEN`/`ELSE`. Like [`check_bracket_depth`], this
+/// must run before pest, which would otherwise overflow the stack on a long
+/// run before any AST-level guard is reached. String literals and `//`
+/// comments are skipped.
+pub(in crate::cypher::parser) fn check_unbracketed_nesting(
+    input: &str,
+) -> crate::types::Result<usize> {
+    let bytes = input.as_bytes();
+    let mut i = 0;
+    // Consecutive `-` signs separated only by whitespace. A binary minus can
+    // start a run, so the nesting depth is at most the run length.
+    let mut minus_run: usize = 0;
+    let mut case_depth: usize = 0;
+    let mut max_nesting: usize = 0;
+    while i < bytes.len() {
+        let b = bytes[i];
+        match b {
+            b'\'' | b'"' => {
+                minus_run = 0;
+                let quote = b;
+                i += 1;
+                while i < bytes.len() && bytes[i] != quote {
+                    if bytes[i] == b'\\' && i + 1 < bytes.len() {
+                        i += 2;
+                    } else {
+                        i += 1;
+                    }
+                }
+                i += 1;
+            }
+            b'/' if i + 1 < bytes.len() && bytes[i + 1] == b'/' => {
+                while i < bytes.len() && bytes[i] != b'\n' {
+                    i += 1;
+                }
+            }
+            b'-' => {
+                minus_run += 1;
+                if minus_run > MAX_EXPR_DEPTH {
+                    return Err(expr_depth_error(minus_run));
+                }
+                max_nesting = max_nesting.max(minus_run);
+                i += 1;
+            }
+            b if b.is_ascii_whitespace() => i += 1,
+            b if b.is_ascii_alphabetic() || b == b'_' => {
+                minus_run = 0;
+                let start = i;
+                while i < bytes.len() && (bytes[i].is_ascii_alphanumeric() || bytes[i] == b'_') {
+                    i += 1;
+                }
+                let word = &input[start..i];
+                if word.eq_ignore_ascii_case("CASE") {
+                    case_depth += 1;
+                    if case_depth > MAX_EXPR_DEPTH {
+                        return Err(expr_depth_error(case_depth));
+                    }
+                    max_nesting = max_nesting.max(case_depth);
+                } else if word.eq_ignore_ascii_case("END") {
+                    case_depth = case_depth.saturating_sub(1);
+                }
+            }
+            _ => {
+                minus_run = 0;
+                i += 1;
+            }
+        }
+    }
+    Ok(max_nesting)
 }
 
 /// Parse a Cypher query string into a Statement AST.
 pub fn parse(input: &str) -> crate::types::Result<Statement> {
     if input.len() > MAX_QUERY_BYTES {
         return Err(GraphError::SizeLimit {
-            what: "Cypher query".to_string(),
+            what: "Cypher query size in bytes".to_string(),
             limit: MAX_QUERY_BYTES,
             actual: input.len(),
             hint: Some("split the query into smaller statements".to_string()),
@@ -319,8 +576,98 @@ pub fn parse(input: &str) -> crate::types::Result<Statement> {
     }
     check_unclosed_string(input)?;
     check_bracket_depth(input)?;
+    check_unbracketed_nesting(input)?;
+    // pest and the AST builder recurse about once per nesting level, with
+    // frames of several KiB each, and the parser cannot check the stack
+    // mid-recursion. Guarantee the stack up front instead, growing onto a
+    // heap segment when the calling thread's stack is too small (a 2 MiB
+    // spawned thread).
+    let need = stack_requirement(input);
+    stacker::maybe_grow(need, need, || parse_checked(input))
+}
+
+/// Unoptimized builds use several times more stack per recursion level
+/// (measured: ~120 KiB per nesting level for parse + evaluation in debug,
+/// ~15 KiB in release), so every reservation below is scaled up for them.
+const STACK_SCALE: usize = if cfg!(debug_assertions) { 8 } else { 1 };
+/// Stack reserved for a query with no nesting.
+const BASE_STACK: usize = 512 * 1024;
+/// Stack reserved per bracket / CASE / unary-minus nesting level. Measured
+/// worst case is ~15 KiB per level for parsing in a release build; debug
+/// frames and the later planning/evaluation walks are covered by the margin.
+const STACK_PER_LEVEL: usize = 48 * 1024;
+/// Stack reserved per byte of query text, up to [`STACK_TEXT_CAP`] bytes.
+/// Clause chains, pattern elements and SET items (each at least a few bytes
+/// of text) make the planner and executor recurse once per item.
+const STACK_PER_BYTE: usize = 1024;
+const STACK_TEXT_CAP: usize = 16 * 1024;
+
+/// Stack bytes the whole parse, plan and execute pipeline may need for
+/// `input`, derived from its nesting depth and length. Callers pass this to
+/// `stacker::maybe_grow` so no query overflows a small thread stack. Inputs
+/// the parser will reject for being too deep need nothing extra.
+pub(crate) fn stack_requirement(input: &str) -> usize {
+    let levels = match (check_bracket_depth(input), check_unbracketed_nesting(input)) {
+        (Ok(a), Ok(b)) => a + b,
+        _ => 0,
+    };
+    STACK_SCALE
+        * (BASE_STACK + levels * STACK_PER_LEVEL + input.len().min(STACK_TEXT_CAP) * STACK_PER_BYTE)
+}
+
+/// Maximum number of clauses, MATCH / MERGE pattern elements and SET items
+/// in one query. The planner and executor recurse once per such item (each
+/// clause wraps the plan so far, a pattern chain is a nest of expands, each
+/// SET item wraps the plan), so this bounds their stack use; real queries
+/// have tens. Lists of CREATE patterns and REMOVE items are processed
+/// iteratively and are not counted.
+pub const MAX_STATEMENT_ITEMS: usize = 1024;
+
+/// How many recursion levels the planner and executor spend on `pair`.
+fn statement_item_weight(pair: &pest::iterators::Pair<'_, Rule>) -> usize {
+    match pair.as_rule() {
+        // One level per node / relationship in the chain.
+        Rule::pattern => pair.clone().into_inner().count(),
+        Rule::match_part
+        | Rule::optional_match_clause
+        | Rule::with_clause
+        | Rule::unwind_clause
+        | Rule::multi_match_clause
+        | Rule::multi_create_clause
+        | Rule::multi_merge_clause
+        | Rule::multi_unwind_clause
+        | Rule::multi_call_clause
+        | Rule::multi_set_clause
+        | Rule::multi_remove_clause
+        | Rule::multi_delete_clause
+        | Rule::set_item => 1,
+        _ => 0,
+    }
+}
+
+/// Reject a parse tree with more than [`MAX_STATEMENT_ITEMS`] chained items.
+fn check_statement_items(pairs: &pest::iterators::Pairs<'_, Rule>) -> crate::types::Result<()> {
+    let items: usize = pairs
+        .clone()
+        .flatten()
+        .map(|p| statement_item_weight(&p))
+        .sum();
+    if items > MAX_STATEMENT_ITEMS {
+        return Err(GraphError::SizeLimit {
+            what: "clauses, pattern elements and SET items in one query".to_string(),
+            limit: MAX_STATEMENT_ITEMS,
+            actual: items,
+            hint: Some("split the query into multiple statements".to_string()),
+        });
+    }
+    Ok(())
+}
+
+/// The body of [`parse`], run once enough stack is guaranteed.
+fn parse_checked(input: &str) -> crate::types::Result<Statement> {
     // Reset depth counter in case a prior parse on this thread aborted mid-recursion.
     EXPR_DEPTH.with(|c| c.set(0));
+    let _line_index = LineIndexScope::enter(input);
     let pairs = CypherParser::parse(Rule::statement, input).map_err(|e| {
         let span = pest_span(&e);
         GraphError::Query(QueryError::SyntaxError {
@@ -332,6 +679,7 @@ pub fn parse(input: &str) -> crate::types::Result<Statement> {
         })
     })?;
 
+    check_statement_items(&pairs)?;
     let union_pair = pairs
         .into_iter()
         .next()

@@ -55,7 +55,28 @@ pub fn expr_to_column_name(expr: &Expr) -> String {
             LiteralValue::F64(n) => n.to_string(),
             LiteralValue::String(s) => format!("'{s}'"),
         },
-        ExprKind::Case { .. } => "CASE".to_string(),
+        ExprKind::Case {
+            operand,
+            alternatives,
+            default,
+        } => {
+            let mut out = String::from("CASE");
+            if let Some(o) = operand {
+                out.push_str(&format!(" {}", expr_to_column_name(o)));
+            }
+            for (when, then) in alternatives {
+                out.push_str(&format!(
+                    " WHEN {} THEN {}",
+                    expr_to_column_name(when),
+                    expr_to_column_name(then)
+                ));
+            }
+            if let Some(d) = default {
+                out.push_str(&format!(" ELSE {}", expr_to_column_name(d)));
+            }
+            out.push_str(" END");
+            out
+        }
         ExprKind::List(items) => {
             let inner: Vec<String> = items.iter().map(expr_to_column_name).collect();
             format!("[{}]", inner.join(", "))
@@ -121,7 +142,71 @@ pub fn expr_to_column_name(expr: &Expr) -> String {
         ExprKind::IsNull(inner) => format!("{} IS NULL", expr_to_column_name(inner)),
         ExprKind::IsNotNull(inner) => format!("{} IS NOT NULL", expr_to_column_name(inner)),
         ExprKind::Not(inner) => format!("NOT {}", expr_to_column_name(inner)),
-        ExprKind::PatternComprehension { .. } => "_expr".to_string(),
+        ExprKind::PatternComprehension {
+            path_variable,
+            pattern,
+            where_clause,
+            map_expr,
+        } => {
+            let mut out = String::from("[");
+            if let Some(p) = path_variable {
+                out.push_str(&format!("{p} = "));
+            }
+            out.push_str(&pattern_to_string(pattern));
+            if let Some(w) = where_clause {
+                out.push_str(&format!(" WHERE {}", expr_to_column_name(w)));
+            }
+            out.push_str(&format!(" | {}]", expr_to_column_name(map_expr)));
+            out
+        }
+        ExprKind::ListComprehension {
+            variable,
+            list_expr,
+            filter,
+            map_expr,
+        } => {
+            let mut out = format!("[{variable} IN {}", expr_to_column_name(list_expr));
+            if let Some(f) = filter {
+                out.push_str(&format!(" WHERE {}", expr_to_column_name(f)));
+            }
+            if let Some(m) = map_expr {
+                out.push_str(&format!(" | {}", expr_to_column_name(m)));
+            }
+            out.push(']');
+            out
+        }
+        ExprKind::Quantifier {
+            kind,
+            variable,
+            list_expr,
+            predicate,
+        } => {
+            let name = match kind {
+                QuantifierKind::None => "none",
+                QuantifierKind::Single => "single",
+                QuantifierKind::Any => "any",
+                QuantifierKind::All => "all",
+            };
+            format!(
+                "{name}({variable} IN {} WHERE {})",
+                expr_to_column_name(list_expr),
+                expr_to_column_name(predicate)
+            )
+        }
+        ExprKind::PatternPredicate(pattern) => pattern_to_string(pattern),
+        ExprKind::Exists {
+            patterns,
+            where_clause,
+        } => {
+            let pats: Vec<String> = patterns.iter().map(pattern_to_string).collect();
+            let mut out = format!("EXISTS {{ {}", pats.join(", "));
+            if let Some(w) = where_clause {
+                out.push_str(&format!(" WHERE {}", expr_to_column_name(w)));
+            }
+            out.push_str(" }");
+            out
+        }
+        ExprKind::ExistsSubquery(_) => "EXISTS { ... }".to_string(),
         ExprKind::Parameter(name) => format!("${name}"),
         ExprKind::HasLabel(var, labels) => {
             let label_str: Vec<String> = labels.iter().map(|l| format!(":{l}")).collect();
@@ -134,6 +219,65 @@ pub fn expr_to_column_name(expr: &Expr) -> String {
                 .collect();
             format!("{{{}}}", inner.join(", "))
         }
-        _ => "_expr".to_string(),
     }
+}
+
+/// Render a pattern as Cypher text, for column names of expressions that
+/// contain one (`[(a)-[:R]->(b) | b]`, `(a)-->(b)`).
+fn pattern_to_string(pattern: &Pattern) -> String {
+    let mut out = String::new();
+    if let Some(p) = &pattern.path_variable {
+        out.push_str(&format!("{p} = "));
+    }
+    for element in &pattern.elements {
+        match element {
+            PatternElement::Node(n) => {
+                out.push('(');
+                out.push_str(n.variable.as_deref().unwrap_or(""));
+                for label in &n.labels {
+                    out.push_str(&format!(":{label}"));
+                }
+                out.push_str(&property_map_to_string(&n.properties));
+                out.push(')');
+            }
+            PatternElement::Relationship(r) => {
+                let (left, right) = match r.direction {
+                    RelDirection::Outgoing => ("-", "->"),
+                    RelDirection::Incoming => ("<-", "-"),
+                    RelDirection::Undirected => ("-", "-"),
+                };
+                let mut detail = r.variable.clone().unwrap_or_default();
+                if !r.rel_types.is_empty() {
+                    detail.push_str(&format!(":{}", r.rel_types.join("|")));
+                }
+                match r.var_length {
+                    Some((lo, hi)) if lo == hi => detail.push_str(&format!("*{lo}")),
+                    Some((lo, hi)) => detail.push_str(&format!("*{lo}..{hi}")),
+                    None => {}
+                }
+                detail.push_str(&property_map_to_string(&r.properties));
+                if detail.is_empty() {
+                    out.push_str(&format!("{left}{right}"));
+                } else {
+                    out.push_str(&format!("{left}[{detail}]{right}"));
+                }
+            }
+        }
+    }
+    out
+}
+
+/// Render a pattern property map as ` {k: v, ...}` (empty string when empty).
+/// Keys are sorted: the AST keeps them in a hash map, so source order is lost.
+fn property_map_to_string(props: &std::collections::HashMap<String, Expr>) -> String {
+    if props.is_empty() {
+        return String::new();
+    }
+    let mut keys: Vec<&String> = props.keys().collect();
+    keys.sort();
+    let inner: Vec<String> = keys
+        .into_iter()
+        .map(|k| format!("{k}: {}", expr_to_column_name(&props[k])))
+        .collect();
+    format!(" {{{}}}", inner.join(", "))
 }

@@ -52,6 +52,8 @@ for row in results:
 
 ```python
 db = Database(path, busy_timeout_ms=5000)
+db = Database(pathlib.Path("my.db"))   # any os.PathLike works
+db = Database(":memory:")              # private in-memory database
 ```
 
 - `path` — file path to the database (created if it doesn't exist)
@@ -189,29 +191,81 @@ defragmented and compacted, suitable for atomic-swap deploys or
 backup snapshots. Raises if a transaction is active on the handle or
 if `path` already exists — pick a fresh path or delete it first.
 
+## Transactions
+
+```python
+with db.begin_write() as tx:          # commits on success, rolls back on exception
+    tx.execute("CREATE (:Person {name: $n})", {"n": "Eve"})
+    tx.execute("CREATE (:Person {name: $n})", {"n": "Frank"})
+
+with db.begin_read() as tx:           # snapshot; released on exit
+    rows = tx.query("MATCH (p:Person) RETURN count(p) AS c")
+```
+
+- A statement that fails inside a transaction is rolled back on its own (its
+  partial writes are undone); the transaction stays open, so you can catch the
+  error and continue, or roll back.
+- A transaction object that is dropped (garbage-collected) without
+  `commit()` / `rollback()` rolls back and releases the database.
+- `db.close()` with an open transaction rolls it back; the transaction object
+  then raises `RuntimeError("database is closed")`.
+- After `commit()` / `rollback()` the object raises
+  `RuntimeError("transaction is already finished")`. A failed `commit()`
+  leaves the transaction open.
+- `ReadTransaction` has `query`, `commit` and `rollback` (same effect for a
+  read). Transaction calls release the GIL while the query runs.
+
+## Result values
+
+| Value | Python |
+|-------|--------|
+| integer / float / string / boolean / null | `int` / `float` / `str` / `bool` / `None` |
+| list / map | `list` / `dict` |
+| node | `{"__id": 1, "__labels": ["Person"], ...properties}` |
+| relationship | `{"__src": 1, "__dst": 2, "__type": "KNOWS", "__label": "KNOWS", "__edge_seq": 0, ...properties}` (`__label` is a deprecated alias of `__type`) |
+| path | `{"nodes": [node, ...], "relationships": [relationship, ...]}` |
+| temporal | ISO 8601 `str` |
+
+Property names starting with `__` are reserved for the metadata keys (writes
+are rejected); for older data that has one, the metadata key wins.
+
 ## Error handling
 
-Both `query()` and `execute()` raise `RuntimeError` on failure (parse errors, constraint
-violations, etc.).
+| Exception | Raised for |
+|-----------|------------|
+| `GraphDBError` | base class of every graphdblite error (also a caught Rust panic: `internal panic: ...`) |
+| `ParseError` (alias `QueryError`) | base class of every Cypher query error |
+| `CypherSyntaxError` | syntax errors, undefined variables (`SyntaxError(...)`) |
+| `CypherSemanticError` | semantic errors (`SemanticError(...)`) |
+| `CypherTypeError` | runtime type errors, e.g. `1 - 'a'` (`TypeError(...)`) |
+| `CypherArgumentError` | bad arguments, missing parameters (`ArgumentError(...)`) |
+| `CypherArithmeticError` | overflow, out-of-range numbers |
+| `EntityNotFoundError`, `ConstraintViolationError`, `ProcedureError` | the matching openCypher kinds |
+| `TransactionError` | transaction state: nested begin, write in a read transaction, ... |
+| `StorageError` | SQLite / file errors |
+| `NodeNotFoundError` | a node id that does not exist |
+| `RuntimeError` | closed database, finished transaction |
+
+All Cypher error classes derive from `ParseError` (0.1.x raised `ParseError`
+for every query error), so `except graphdblite.ParseError` keeps working.
 
 ```python
 try:
-    db.query("MATCH (n:Invalid Syntax")
-except RuntimeError as e:
+    db.query("RETURN 1 - 'a' AS x")
+except graphdblite.CypherTypeError as e:
     print(f"Query failed: {e}")
 ```
+
+`graphdblite.__version__` is read from the installed package metadata.
 
 ### Fulltext indexes
 
 ```python
-db.begin_write()
 db.execute("CREATE (n:Doc {body: 'hello world'})")
-db.commit()
 
 # Create a fulltext index via WriteTransaction
-tx = db.write_tx()
-tx.create_fulltext_index("Doc", "body")
-tx.commit()
+with db.begin_write() as tx:
+    tx.create_fulltext_index("Doc", "body")
 
 # Queries are unchanged — the planner picks up the index automatically.
 rows = db.query("MATCH (n:Doc) WHERE n.body CONTAINS 'hello' RETURN n.body")

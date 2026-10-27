@@ -57,6 +57,14 @@ usable for subsequent read queries.
 Calling commit or rollback on a handle with no active transaction MUST
 return an error rather than silently no-op.
 
+Bindings with per-transaction objects (Python, Node) reject commit/rollback
+on a finished object themselves (it must never act on a newer transaction
+that happens to be open), so their tests assert that specific error; the
+Go suite additionally reaches the core's `no active transaction to commit`
+error through an unbegun transaction value, and C reaches it directly.
+Every negative test asserts the specific error (class and/or message),
+never just "some error".
+
 ### BC-07 — operations on a finished transaction return an error
 
 For bindings that expose a per-transaction object (Python, Node, Go),
@@ -136,7 +144,9 @@ Each binding additionally exposes a case-insensitive variant —
 `graphdb_create_fulltext_index_ci` (C/FFI). Behaviour mirrors the
 case-sensitive variant except the FTS5 tokenizer is built with
 `case_sensitive 0`, and the planner also rewrites the symmetric
-`toLower(prop) <op> toLower(rhs)` idiom against a CI index. The
+`toLower(prop) <op> toLower(rhs)` idiom against a CI index (results are
+always identical to an unindexed scan; plain predicates stay
+case-sensitive). The
 `db.indexes()` procedure reports `kind = "fulltext_ci"` for CI
 indexes.
 
@@ -164,6 +174,27 @@ row per covered property (all with `kind = "fulltext_word"`).
 
 ---
 
+## Statement atomicity
+
+### BC-13: a failed statement inside a transaction is rolled back alone
+
+When a statement fails inside an explicit transaction (for example a
+runtime type error after it already created nodes), the core rolls back
+to a savepoint taken before that statement: none of its writes remain,
+the writes of earlier statements are kept, and the transaction stays
+open. The scenario: begin a write transaction, run a succeeding `CREATE`,
+run `UNWIND [1, 'a'] AS i CREATE (...) RETURN i - 1 AS x` (fails with a
+`TypeError` after writing), run another `CREATE`, commit; exactly the two
+succeeding statements' writes MUST be visible.
+
+This is what lets a caller catch a statement error and continue (or
+commit the rest); BC-03 (an exception that escapes the transaction scope
+rolls everything back) still holds.
+
+(BC-12 is the composite-index DDL smoke test in the C harness.)
+
+---
+
 ## Coverage matrix
 
 | Scenario | Python | Go | C/FFI | Node |
@@ -179,6 +210,7 @@ row per covered property (all with `kind = "fulltext_word"`).
 | BC-09    | ✓      | ✓  | ✓     | ✓    |
 | BC-10    | —³     | ✓  | ✓     | —³   |
 | BC-11    | ✓      | ✓  | ✓     | ✓    |
+| BC-13    | ✓      | ✓  | ✓     | ✓    |
 
 BC-05 enforcement lives in `cypher::execute_cypher` (`src/cypher/mod.rs`):
 when `ExecContext::require_read_only` is set, the planner's output tree is
@@ -211,3 +243,11 @@ results are plain lists/arrays. Not applicable.
 
 Each runner prints `[BC-NN]` in test names so failures point at the
 checklist row directly.
+
+Panic containment (a Rust panic surfaces as the binding's error and the
+handle stays usable) is tested in Python and Node through a test-only hook
+in the core: build with the `test-hooks` feature
+(`maturin develop --release --features test-hooks`,
+`npm run build -- --features test-hooks`) and the query
+`CALL graphdblite.testPanic()` panics. Without the feature those tests are
+skipped. Never enable the feature in release builds.

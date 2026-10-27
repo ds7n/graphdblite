@@ -3,6 +3,16 @@
 graphdblite supports a practical subset of the Cypher query language. This reference
 covers all supported syntax with examples.
 
+Comments use `// line` or `/* block */` syntax and may appear anywhere
+whitespace may. Comment markers inside string literals or backtick-quoted
+identifiers are literal text.
+
+```cypher
+/* active users */
+MATCH (n:User) // only the label scan
+RETURN n.name AS `user's name`
+```
+
 ## Pattern matching
 
 ### Node patterns
@@ -33,7 +43,8 @@ MATCH (a:Person)-->(b) RETURN a.name, b.name
 -- Incoming direction
 MATCH (a:Person)<-[:KNOWS]-(b:Person) RETURN a.name, b.name
 
--- Undirected (matches either direction)
+-- Undirected (matches either direction; one row per relationship, so a
+-- pair connected both ways yields both relationships)
 MATCH (a:Person)-[:KNOWS]-(b:Person) RETURN a.name, b.name
 
 -- With relationship variable
@@ -48,7 +59,18 @@ MATCH (a:Person)-[:KNOWS*2]->(b:Person) RETURN a.name, b.name
 
 -- Between 1 and 3 hops
 MATCH (a:Person)-[:KNOWS*1..3]->(b:Person) RETURN a.name, b.name
+
+-- With a relationship property map, checked at every hop (Cypher
+-- equality: {w: 1.0} matches a stored 1)
+MATCH (a:Person)-[:KNOWS*1..3 {since: 2020}]->(b:Person) RETURN b.name
 ```
+
+Within one `MATCH` pattern a relationship is used at most once, across
+fixed and variable-length segments alike. Parallel relationships (several
+`a-[:R]->b` edges) are distinct relationships: each yields its own row, and
+as values they stay distinct (`count(DISTINCT r)`, `=`). `DELETE` and `SET`
+on a relationship held as a value (`WITH collect(r) AS rs ... DELETE rs[0]`)
+affect only that relationship.
 
 ### Multiple patterns
 
@@ -122,7 +144,9 @@ selectivity matters.
 **Null and type semantics:** Identical to `CONTAINS` / `STARTS WITH` /
 `ENDS WITH`. `NULL =~ x` and `x =~ NULL` return `NULL`. Non-string
 operands return `NULL`. An invalid regex pattern raises a runtime
-`InvalidArgumentValue` error.
+`InvalidArgumentValue` error; the pattern is validated on its own before
+anchoring, so an unbalanced pattern such as `a)|(b` is rejected rather
+than reinterpreted.
 
 ### NULL checks
 
@@ -140,6 +164,28 @@ MATCH (a:Person)
 WHERE EXISTS { (a)-[:KNOWS]->(b:Person) WHERE b.age > 30 }
 RETURN a.name
 ```
+
+The subquery sees the variables of the enclosing query, including in its
+`WHERE`, and keeps that correlation through `RETURN`, `ORDER BY`, `SKIP`,
+`LIMIT`, `DISTINCT` and `UNWIND`:
+
+```cypher
+MATCH (m:Movie)
+WHERE EXISTS { MATCH (r:Review) WHERE r.movie_id = m.id RETURN r LIMIT 1 }
+RETURN m.title
+```
+
+Branches can be combined with `UNION` / `UNION ALL`; the subquery is
+true when any branch produces a row:
+
+```cypher
+MATCH (p:Person)
+WHERE EXISTS { MATCH (p)-[:KNOWS]->() UNION MATCH (p)-[:FOLLOWS]->() }
+RETURN p.name
+```
+
+`exists((a)-[:KNOWS]->())` is the pattern's boolean (the same as the bare
+pattern predicate); `exists(n.prop)` tests that a property is not null.
 
 ## Projection
 
@@ -198,6 +244,26 @@ MATCH (a)-->(b)
 RETURN a.name, b.name
 ```
 
+`WITH ... WHERE` filters **after** the projection, `ORDER BY`, `SKIP` and
+`LIMIT` of that WITH, and tests the projected values (`WITH rand() AS r
+WHERE r < 0.5` keeps exactly the rows whose returned `r` is below 0.5):
+
+```cypher
+-- Top 3 by score, then keep those above 10 (may return fewer than 3 rows)
+MATCH (p:Player)
+WITH p ORDER BY p.score DESC LIMIT 3
+WHERE p.score > 10
+RETURN p.name
+```
+
+`ORDER BY` and `WHERE` of a plain WITH may still read variables it does not
+project (`WITH a.name AS name ORDER BY a.age WHERE a.age > 18`). After
+`DISTINCT` or an aggregation only projected names are in scope, though a
+projected expression may be repeated verbatim (`WITH DISTINCT a.name AS name
+WHERE a.name = 'B'`); anything else is an `UndefinedVariable` error. The
+same applies to a final `RETURN ... ORDER BY`: a variable an earlier WITH
+dropped is out of scope.
+
 ### UNWIND
 
 Expand a list into individual rows.
@@ -215,7 +281,22 @@ MATCH (n:Person)
 WITH collect(n.name) AS names
 UNWIND names AS name
 RETURN name
+
+-- Look up one node per list element (MATCH / OPTIONAL MATCH directly after UNWIND)
+UNWIND $ids AS id
+MATCH (n:Person {id: id})
+RETURN n.name
 ```
+
+`UNWIND` produces its rows one at a time (`UNWIND range(1, 5000000)` does
+not build the list first). When the rows are returned, the query stops with
+a `result set exceeded maximum of N rows` error as soon as row N+1 appears
+(`Config::max_result_rows`); when an aggregate consumes them
+(`UNWIND range(1, 5000000) AS x RETURN count(*)`) they are streamed and not
+counted. Operators that must hold rows (joins, `ORDER BY`, `DISTINCT`,
+`collect()`) and the lists a query builds share a per-query memory budget,
+`Config::max_materialized_bytes` (default 1 GiB, 0 = unlimited); exceeding it
+returns a size-limit error.
 
 ## Aggregations
 
@@ -231,6 +312,16 @@ by the non-aggregated columns.
 | `min(expr)` | Minimum value |
 | `max(expr)` | Maximum value |
 | `collect(expr)` | Collect non-NULL values into a list |
+| `percentileDisc(expr, p)` | The input value at percentile `p` (keeps its type) |
+| `percentileCont(expr, p)` | Interpolated percentile `p` (a Float) |
+
+Grouping keys, `DISTINCT`, `count(DISTINCT ...)` and `UNION` treat values
+that are equal under `=` as one value: `1` and `1.0` (also inside lists and
+maps) form a single group, represented by the first value seen. `sum()` of
+Integers raises `NumberOutOfRange` on overflow, like `+`; once a Float is
+summed the result is a Float. An aggregate may sit inside a larger
+expression, including subscripts and `CASE` (`RETURN collect(x)[0]`,
+`CASE WHEN count(*) > 1 THEN ... END`).
 
 ```cypher
 MATCH (a:Person)-[:KNOWS]->(b:Person)
@@ -245,7 +336,13 @@ RETURN avg(n.age) AS avg_age, min(n.age) AS youngest, max(n.age) AS oldest
 | Function | Description |
 |----------|-------------|
 | `length(x)` | Number of edges in a path, characters in a string, or items in a list |
+| `size(x)` | Number of characters in a string (not UTF-8 bytes) or items in a list |
 | `nodes(path)` | List of node IDs from a path |
+| `round(x)` | Nearest integer as a Float, ties away from zero |
+| `round(x, precision [, mode])` | Round to `precision` decimal places (negative: tens, hundreds, ...). `mode` is one of `UP`, `DOWN`, `CEILING`, `FLOOR`, `HALF_UP` (default), `HALF_DOWN`, `HALF_EVEN`; rounding uses the shortest decimal form, so `round(2.675, 2)` is `2.68` |
+| `split(s, delim)` | Split a string; an empty `delim` splits into characters |
+| `toString(x)` | Floats print like Neo4j: `2.5`, `1.0E20`, `1.5E-7`, `Infinity`, `NaN` |
+| `toInteger(x)` | Truncates Floats; `NaN` gives `null` |
 
 ```cypher
 MATCH p = shortestPath((a:Person)-[:KNOWS*]->(b:Person))
@@ -290,6 +387,44 @@ RETURN n.name,
   END AS category
 ```
 
+## Arithmetic
+
+`+ - * / % ^` follow openCypher. Integer overflow raises `NumberOutOfRange`.
+Integer division or modulo by zero (`1 / 0`, `1 % 0`) raises an
+`ArithmeticError` with code `DivisionByZero`. As soon as one operand is a
+Float the result follows IEEE 754: `1 / 0.0` is `Infinity`, `0 / 0.0` and
+`1.5 % 0` are `NaN`. Comparisons between an Integer and a Float are exact,
+so `9007199254740993 = 9007199254740992.0` is false.
+
+## Temporal values
+
+`date`, `localtime`, `time`, `localdatetime`, `datetime` and `duration`
+accept an ISO 8601 string or a map. Without an argument the five instant
+constructors return the current time in UTC; every call in one statement
+sees the same instant.
+
+- Map keys are checked: an unknown key (`date({yaer: 2024})`), a missing
+  year (`date({})`), or a component that does not fit (`localtime({hour:
+  4294967297})`) is an `InvalidArgumentValue` error.
+- `datetime({epochSeconds: s})` and `datetime({epochMillis: ms})` build an
+  instant from the Unix epoch, optionally with `nanosecond` and
+  `timezone`:
+
+```cypher
+RETURN datetime({epochSeconds: 1700000000, timezone: 'Europe/Stockholm'})
+-- 2023-11-14T23:13:20+01:00[Europe/Stockholm]
+```
+
+- Adding a duration to a datetime with a named zone shifts months and days
+  in local time and seconds as elapsed time, then re-resolves the offset,
+  so DST transitions are handled:
+  `datetime('2024-03-10T00:30[America/New_York]') + duration({hours: 3})`
+  is `2024-03-10T04:30-04:00[America/New_York]`.
+- Results outside the representable range (about +-262,000 years, or
+  duration components beyond 64 bits) raise `NumberOutOfRange`. Integer
+  duration map components are exact (`duration({seconds: 20000000,
+  nanoseconds: 1})` keeps the nanosecond). `-duration(...)` negates.
+
 ## Graph algorithms
 
 ### Path variables
@@ -313,6 +448,23 @@ MATCH (a:Person {name: 'Alice'}), (b:Person {name: 'Dave'})
 MATCH p = shortestPath((a)-[:KNOWS*]->(b))
 RETURN p, length(p) AS hops
 ```
+
+Semantics (match Neo4j's):
+
+- The relationship may be untyped (`-[*]->`, follows every type) or list
+  several types (`-[:KNOWS|WORKS_WITH*]->`). Without `*`, it is a single hop.
+- The minimum length must be 0 or 1; `*2..` and higher are rejected.
+- A pair with no path inside the hop bounds produces no row. Use
+  `OPTIONAL MATCH p = shortestPath(...)` to get a `null` path instead.
+- When both endpoints are the same node, the zero-length path matches
+  only with a minimum length of 0 (`*0..`); with `*` / `*1..` there is no
+  row (Neo4j raises an error here by default).
+- `allShortestPaths` returns one path per distinct set of relationships, so
+  parallel relationships between the same nodes yield separate paths.
+- With unbound endpoints, one search runs per node pair. All searches in a
+  query share the `Config::max_traversal_work` edge-visit budget (default
+  10,000,000); exceeding it returns a size-limit error. Bind or filter the
+  endpoints on large graphs.
 
 ### allShortestPaths
 
@@ -354,6 +506,15 @@ MATCH (n:Person {name: 'Alice'})
 SET n.age = 31, n.city = 'NYC'
 ```
 
+Setting a property to `null` removes it. Property values must be scalars or
+lists of scalars; maps are rejected. `SET n = value` replaces all properties
+and `SET n += value` merges into them, where `value` is a map, a node or a
+relationship (its properties are copied); anything else is a type error.
+Each row sees the writes of earlier rows (`UNWIND [1,2,3] AS i SET n.c =
+n.c + 1` adds 3). Setting a property on a node or relationship deleted
+earlier in the query is an error. `Config::max_property_value_bytes` and
+`Config::max_name_bytes` apply to Cypher writes as well as the typed API.
+
 ### DELETE
 
 ```cypher
@@ -365,6 +526,9 @@ DELETE n
 MATCH (n:Person {name: 'Alice'})
 DETACH DELETE n
 ```
+
+`DELETE`, `SET` and `REMOVE` need a node, relationship or path (or null, which
+is skipped). Any other value, such as `WITH n.k AS x DELETE x`, is a type error.
 
 ### MERGE
 
@@ -384,11 +548,35 @@ ON CREATE SET r += $props
 ON MATCH  SET r += $props
 ```
 
-Edge identity: `MERGE (a)-[:R]->(b)` finds an existing `(a)-[:R]->(b)`
-edge if any exists, otherwise creates one. `MERGE (a)-[:R {x: 1}]->(b)`
-is constrained by the inline properties — a parallel
-`(a)-[:R {x: 2}]->(b)` edge will not be matched, and a new one is
-created. Direction is significant.
+MERGE matches the **whole** pattern, with variables bound by earlier
+clauses held fixed, and binds every match (one output row each, ON MATCH
+applied to each). Only when nothing matches does it create the pattern: the
+relationship plus every node of the pattern that is not already bound, with
+the labels and properties written in the pattern. So, with an existing
+`(:A {id: 1})` that has no `:R`:
+
+```cypher
+-- Creates a new :A {id: 1}, a :B {id: 2} and the :R between them
+MERGE (a:A {id: 1})-[:R]->(b:B {id: 2})
+
+-- Reuses the bound a; creates c (even if an unconnected :C {id: 3} exists)
+MATCH (a:A {id: 1})
+MERGE (a)-[:R]->(c:C {id: 3})
+
+-- A repeated variable is one node: matches or creates a self-loop
+MERGE (a:A {id: 1})-[:R]->(a)
+```
+
+Property values compare with Cypher equality (`{x: 1.0}` matches a stored
+`1`). `MERGE (a)-[:R {x: 1}]->(b)` does not match a parallel
+`(a)-[:R {x: 2}]->(b)`. Direction is significant; an undirected
+`MERGE (a)-[:R]-(b)` matches either direction and creates `a->b`.
+
+ON CREATE / ON MATCH items may set any variable in scope, not only the
+merged one, and can read the merged node or relationship
+(`ON MATCH SET r.count = r.count + 1`). Relationship endpoints must be
+nodes: an endpoint bound to null or to a non-node value (such as an
+integer) is an error.
 
 ## Query planning
 
@@ -424,14 +612,16 @@ tx.create_composite_index("Person", &["tenant_id", "ext_id"])?;
 tx.commit()?;
 ```
 
-A composite index uses **leftmost-prefix** matching: the planner picks
-the index whose longest leading run of columns is covered by equality
-predicates, whether written inline (`MATCH (p:Person {tenant_id: 1,
-ext_id: 'a'})`) or in the `WHERE` clause (`WHERE p.tenant_id = 1 AND
-p.ext_id = 'a'`). Ties prefer the narrower index, then lexical order.
-Nodes missing any covered property are omitted from the index (no NULL
-placeholder), so a composite index does not serve a query that filters
-only on a non-leading column.
+A composite index is used only when **every** one of its columns is
+constrained by an equality predicate, whether written inline
+(`MATCH (p:Person {tenant_id: 1, ext_id: 'a'})`) or in the `WHERE`
+clause (`WHERE p.tenant_id = 1 AND p.ext_id = 'a'`). Among fully covered
+indexes the planner picks the widest; ties prefer lexical order. Nodes
+missing any covered property are omitted from the index (no NULL
+placeholder), so a query that constrains only a leading prefix
+(`WHERE p.tenant_id = 1`) cannot use the composite index: it would miss
+nodes without `ext_id`. Such a query uses a single-property index on
+`tenant_id` if one exists, otherwise a label scan.
 
 ## Full-text indexes
 
@@ -445,8 +635,19 @@ index and rewrites matching predicates to use it.
 **Semantics:**
 
 - **Case-sensitive.** Matches the openCypher spec exactly.
+- **Case-insensitive indexes** (`create_fulltext_index_ci`) also serve the
+  `toLower(n.prop) <op> toLower(<term>)` idiom. An index never changes
+  results: a plain `CONTAINS` / `STARTS WITH` / `ENDS WITH` served by a CI
+  index is still evaluated case-sensitively (FTS rows are candidates that
+  are re-checked with the exact predicate).
 - **String properties only.** Non-string values for an indexed
   property are silently skipped at index-write time.
+- **Rewritable terms.** The search term is evaluated once, before the
+  lookup, so a term that reads the scanned node itself
+  (`n.t CONTAINS n.u`) or a non-string literal (`n.t CONTAINS 123`) is
+  not rewritten; it runs as a label scan. A parameter or expression that
+  evaluates to a non-string matches no rows (the predicate is `null`),
+  with or without the index.
 - **Term-length floor.** Search terms shorter than 3 codepoints
   bypass the index and fall through to a label scan with per-row
   evaluation. Same result set, no perf win.
@@ -555,6 +756,13 @@ returns results ordered by descending relevance.
 | `label`    | node label to search |
 | `property` | a covered column name, or `'*'` to search all columns of the (single) FTS index on `label` |
 | `query`    | an FTS5 MATCH expression |
+
+A named `property` on a multi-property index restricts the search to that
+column. The restriction is applied outside the query text, so column
+filters or parentheses inside `query` (e.g. `x) OR title:(secret`) cannot
+reach other columns; such a query matches nothing or is rejected as a
+syntax error. Errors for invalid queries say what failed but never repeat
+the query text.
 
 Yields:
 

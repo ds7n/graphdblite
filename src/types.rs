@@ -108,6 +108,7 @@ fn hash_edge<H: Hasher>(e: &Edge, state: &mut H) {
     e.src.hash(state);
     e.dst.hash(state);
     e.label.hash(state);
+    e.seq.hash(state);
     hash_properties(&e.properties, state);
 }
 
@@ -287,12 +288,21 @@ pub struct Node {
 }
 
 /// An edge in the graph.
+///
+/// An edge's identity is `(src, dst, label, seq)`: several parallel edges may
+/// share the same `(src, dst, label)` and are told apart by `seq`, the
+/// per-triple sequence number assigned at creation. Equality and hashing
+/// include `seq`, so two parallel edges with identical properties are still
+/// distinct values.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[allow(missing_docs)]
 pub struct Edge {
     pub src: NodeId,
     pub dst: NodeId,
     pub label: String,
+    /// Parallel-edge sequence number within `(src, dst, label)`.
+    #[serde(default)]
+    pub seq: u64,
     pub properties: Properties,
 }
 
@@ -473,6 +483,8 @@ pub enum ErrorCode {
     DeleteConnectedNode,
     DeletedEntityAccess,
     DifferentColumnsInUnion,
+    /// Integer division or modulo by zero (`1 / 0`, `1 % 0`).
+    DivisionByZero,
     InvalidAggregation,
     InvalidArgumentPassingMode,
     InvalidArgumentType,
@@ -509,6 +521,7 @@ impl ErrorCode {
             ErrorCode::DeleteConnectedNode => "DeleteConnectedNode",
             ErrorCode::DeletedEntityAccess => "DeletedEntityAccess",
             ErrorCode::DifferentColumnsInUnion => "DifferentColumnsInUnion",
+            ErrorCode::DivisionByZero => "DivisionByZero",
             ErrorCode::InvalidAggregation => "InvalidAggregation",
             ErrorCode::InvalidArgumentPassingMode => "InvalidArgumentPassingMode",
             ErrorCode::InvalidArgumentType => "InvalidArgumentType",
@@ -822,6 +835,9 @@ pub enum GraphError {
         name: String,
         hint: Option<String>,
     },
+    /// A resource limit was exceeded. `what` names the measured quantity,
+    /// including its unit when it has one (e.g. "Cypher query size in
+    /// bytes", "expression nesting depth", "list size").
     SizeLimit {
         what: String,
         limit: usize,
@@ -912,10 +928,7 @@ impl fmt::Display for GraphError {
                 actual,
                 hint,
             } => {
-                write!(
-                    f,
-                    "{what} ({actual} bytes) exceeds maximum of {limit} bytes"
-                )?;
+                write!(f, "{what} ({actual}) exceeds maximum of {limit}")?;
                 fmt_hint(f, hint.as_deref())
             }
             GraphError::SchemaMismatch {
@@ -1086,6 +1099,17 @@ impl GraphError {
         })
     }
 
+    /// Integer division or modulo by zero.
+    pub fn division_by_zero(phase: QueryPhase, message: impl Into<String>) -> Self {
+        GraphError::Query(QueryError::ArithmeticError {
+            phase,
+            code: ErrorCode::DivisionByZero,
+            message: message.into(),
+            hint: None,
+            span: None,
+        })
+    }
+
     /// Lower-level builder for arbitrary query errors with a known code.
     pub fn query(phase: QueryPhase, code: ErrorCode, message: impl Into<String>) -> Self {
         let message = message.into();
@@ -1118,7 +1142,9 @@ impl GraphError {
             | ErrorCode::NonConstantExpression
             | ErrorCode::RequiresDirectedRelationship => mk(QueryError::semantic_with),
             ErrorCode::MissingParameter => mk(QueryError::argument_with),
-            ErrorCode::NumberOutOfRange => mk(QueryError::arithmetic_with),
+            ErrorCode::NumberOutOfRange | ErrorCode::DivisionByZero => {
+                mk(QueryError::arithmetic_with)
+            }
             ErrorCode::DeleteConnectedNode | ErrorCode::MergeReadOwnWrites => {
                 mk(QueryError::constraint_with)
             }
@@ -1276,8 +1302,10 @@ pub fn validate_name(name: &str) -> Result<()> {
 /// Validate name length against a configured maximum.
 pub fn validate_name_length(name: &str, max_bytes: usize) -> Result<()> {
     if name.len() > max_bytes {
+        // Report only the length: the name itself may carry user data and
+        // errors are commonly logged verbatim.
         return Err(GraphError::SizeLimit {
-            what: format!("name '{}...'", &name[..max_bytes.min(32)]),
+            what: "label or property name size in bytes".to_string(),
             limit: max_bytes,
             actual: name.len(),
             hint: None,
@@ -1328,7 +1356,69 @@ fn edge_byte_size(e: &Edge) -> usize {
             .sum::<usize>()
 }
 
-/// Validate that all property values are within size limits.
+/// Human-readable Cypher type name of a value (`"String"`, `"Map"`, ...).
+///
+/// Used in error messages instead of the value itself so errors never echo
+/// user data.
+pub fn value_type_name(v: &Value) -> &'static str {
+    match v {
+        Value::Bool(_) => "Boolean",
+        Value::I64(_) => "Integer",
+        Value::F64(_) => "Float",
+        Value::String(_) => "String",
+        Value::List(_) => "List",
+        Value::Map(_) => "Map",
+        Value::Null => "Null",
+        Value::Node(_) => "Node",
+        Value::Edge(_) => "Relationship",
+        Value::Path(_) => "Path",
+        Value::Date(_) => "Date",
+        Value::LocalTime(_) => "LocalTime",
+        Value::Time(_) => "Time",
+        Value::LocalDateTime(_) => "LocalDateTime",
+        Value::DateTime(_) => "DateTime",
+        Value::Duration(_) => "Duration",
+    }
+}
+
+/// Validate that a value is storable as a property: maps, nodes,
+/// relationships and paths are rejected, recursively inside lists. Shared by
+/// Cypher writes and the typed Rust API so both accept the same values.
+pub fn validate_property_value(val: &Value) -> Result<()> {
+    match val {
+        Value::Map(_) | Value::Node(_) | Value::Edge(_) | Value::Path(_) => {
+            return Err(GraphError::type_error(
+                QueryPhase::Runtime,
+                "maps, nodes, relationships, and paths cannot be stored as properties".to_string(),
+            )
+            .with_code(ErrorCode::InvalidPropertyType));
+        }
+        Value::List(items) => {
+            for item in items {
+                validate_property_value(item)?;
+            }
+        }
+        _ => {} // Scalars and Null are fine.
+    }
+    Ok(())
+}
+
+/// Reject property names in the `__` namespace. The engine binds entity
+/// metadata as `<var>.__id`, `<var>.__src`, `<var>.__type`, ... next to the
+/// user properties (`<var>.<key>`), so a property with such a name would
+/// overwrite the metadata and corrupt results (wrong ids, reversed paths).
+pub fn validate_property_key(key: &str) -> Result<()> {
+    if key.starts_with("__") {
+        return Err(GraphError::query(
+            QueryPhase::Runtime,
+            ErrorCode::InvalidArgumentValue,
+            "property names starting with `__` are reserved for graphdblite metadata",
+        ));
+    }
+    Ok(())
+}
+
+/// Validate that all property values are storable and within size limits.
 pub fn validate_properties(
     label: &str,
     properties: &Properties,
@@ -1338,10 +1428,12 @@ pub fn validate_properties(
     validate_name_length(label, max_name_bytes)?;
     for (key, val) in properties {
         validate_name_length(key, max_name_bytes)?;
+        validate_property_key(key)?;
+        validate_property_value(val)?;
         let size = value_byte_size(val);
         if size > max_value_bytes {
             return Err(GraphError::SizeLimit {
-                what: format!("property '{key}' value"),
+                what: format!("property '{key}' value size in bytes"),
                 limit: max_value_bytes,
                 actual: size,
                 hint: None,

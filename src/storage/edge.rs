@@ -66,13 +66,16 @@ pub(crate) fn label_from_edge_props_key(key: &[u8]) -> Option<&str> {
 }
 
 /// Create an edge from src to dst with the given label and properties.
+///
+/// Returns the new edge's sequence number, which identifies it among parallel
+/// edges with the same `(src, dst, label)`.
 pub fn create_edge(
     conn: &Connection,
     src: NodeId,
     dst: NodeId,
     label: &str,
     properties: Properties,
-) -> Result<()> {
+) -> Result<u64> {
     validate_name(label)?;
     for key in properties.keys() {
         validate_name(key)?;
@@ -80,7 +83,7 @@ pub fn create_edge(
     // Update outgoing adjacency list for src.
     let out_key = adj_key(src, label);
     let mut out_ids = match kv::get(conn, kv::TABLE_ADJ_OUT, &out_key)? {
-        Some(data) => decode_id_list(&data),
+        Some(data) => decode_id_list(&data)?,
         None => Vec::new(),
     };
     insert_into_sorted(&mut out_ids, dst.0);
@@ -89,7 +92,7 @@ pub fn create_edge(
     // Update incoming adjacency list for dst.
     let in_key = adj_key(dst, label);
     let mut in_ids = match kv::get(conn, kv::TABLE_ADJ_IN, &in_key)? {
-        Some(data) => decode_id_list(&data),
+        Some(data) => decode_id_list(&data)?,
         None => Vec::new(),
     };
     insert_into_sorted(&mut in_ids, src.0);
@@ -108,7 +111,7 @@ pub fn create_edge(
     kv::put(conn, kv::TABLE_EDGE_PROPS, &props_key, &data)?;
     crate::stats::increment_edge_type_count(conn, label)?;
 
-    Ok(())
+    Ok(next_seq)
 }
 
 /// Delete an edge from src to dst with the given label.
@@ -116,7 +119,7 @@ pub fn delete_edge(conn: &Connection, src: NodeId, dst: NodeId, label: &str) -> 
     // Update outgoing adjacency list.
     let out_key = adj_key(src, label);
     if let Some(data) = kv::get(conn, kv::TABLE_ADJ_OUT, &out_key)? {
-        let mut ids = decode_id_list(&data);
+        let mut ids = decode_id_list(&data)?;
         if remove_from_sorted(&mut ids, dst.0) {
             if ids.is_empty() {
                 kv::delete(conn, kv::TABLE_ADJ_OUT, &out_key)?;
@@ -129,7 +132,7 @@ pub fn delete_edge(conn: &Connection, src: NodeId, dst: NodeId, label: &str) -> 
     // Update incoming adjacency list.
     let in_key = adj_key(dst, label);
     if let Some(data) = kv::get(conn, kv::TABLE_ADJ_IN, &in_key)? {
-        let mut ids = decode_id_list(&data);
+        let mut ids = decode_id_list(&data)?;
         if remove_from_sorted(&mut ids, src.0) {
             if ids.is_empty() {
                 kv::delete(conn, kv::TABLE_ADJ_IN, &in_key)?;
@@ -179,7 +182,7 @@ pub fn delete_single_edge(
         // Last edge — remove from adjacency lists.
         let out_key = adj_key(src, label);
         if let Some(data) = kv::get(conn, kv::TABLE_ADJ_OUT, &out_key)? {
-            let mut ids = decode_id_list(&data);
+            let mut ids = decode_id_list(&data)?;
             if remove_from_sorted(&mut ids, dst.0) {
                 if ids.is_empty() {
                     kv::delete(conn, kv::TABLE_ADJ_OUT, &out_key)?;
@@ -190,7 +193,7 @@ pub fn delete_single_edge(
         }
         let in_key = adj_key(dst, label);
         if let Some(data) = kv::get(conn, kv::TABLE_ADJ_IN, &in_key)? {
-            let mut ids = decode_id_list(&data);
+            let mut ids = decode_id_list(&data)?;
             if remove_from_sorted(&mut ids, src.0) {
                 if ids.is_empty() {
                     kv::delete(conn, kv::TABLE_ADJ_IN, &in_key)?;
@@ -215,14 +218,14 @@ pub fn get_neighbors(
     if matches!(direction, Direction::Outgoing | Direction::Both) {
         let key = adj_key(id, label);
         if let Some(data) = kv::get(conn, kv::TABLE_ADJ_OUT, &key)? {
-            result.extend(decode_id_list(&data).into_iter().map(NodeId));
+            result.extend(decode_id_list(&data)?.into_iter().map(NodeId));
         }
     }
 
     if matches!(direction, Direction::Incoming | Direction::Both) {
         let key = adj_key(id, label);
         if let Some(data) = kv::get(conn, kv::TABLE_ADJ_IN, &key)? {
-            for raw_id in decode_id_list(&data) {
+            for raw_id in decode_id_list(&data)? {
                 let nid = NodeId(raw_id);
                 // Avoid duplicates in Both direction.
                 if direction == Direction::Both && result.contains(&nid) {
@@ -286,6 +289,37 @@ pub fn get_edge_properties_at(
     }
 }
 
+/// Whether the single edge `(src, dst, label, seq)` exists.
+pub fn edge_exists_at(
+    conn: &Connection,
+    src: NodeId,
+    dst: NodeId,
+    label: &str,
+    seq: u64,
+) -> Result<bool> {
+    let key = edge_props_key(src, dst, label, seq);
+    Ok(kv::get(conn, kv::TABLE_EDGE_PROPS, &key)?.is_some())
+}
+
+/// `EdgeNotFound` unless the single edge `(src, dst, label, seq)` exists.
+fn require_edge_at(
+    conn: &Connection,
+    src: NodeId,
+    dst: NodeId,
+    label: &str,
+    seq: u64,
+) -> Result<()> {
+    if edge_exists_at(conn, src, dst, label, seq)? {
+        return Ok(());
+    }
+    Err(GraphError::EdgeNotFound {
+        src,
+        label: label.to_string(),
+        dst,
+        hint: None,
+    })
+}
+
 /// Get all parallel edges between (src, dst, label), returning (seq, Properties) pairs.
 pub fn get_all_edge_props(
     conn: &Connection,
@@ -309,54 +343,10 @@ pub fn get_all_edge_props(
     Ok(result)
 }
 
-/// Set a single property on the first edge between (src, dst, label).
-///
-/// Use `set_edge_property_at` to target a specific parallel edge by sequence.
-pub fn set_edge_property(
-    conn: &Connection,
-    src: NodeId,
-    dst: NodeId,
-    label: &str,
-    key: &str,
-    value: crate::types::Value,
-) -> Result<()> {
-    // Find the first edge's sequence number.
-    let prefix = edge_props_prefix(src, dst, label);
-    let entries = kv::scan_prefix(conn, kv::TABLE_EDGE_PROPS, &prefix)?;
-    let seq = entries
-        .first()
-        .map(|(k, _)| edge_seq_from_key(k, prefix.len()))
-        .unwrap_or(0);
-    set_edge_property_at(conn, src, dst, label, seq, key, value)
-}
-
-/// Set a single property on a specific parallel edge identified by sequence number.
-pub fn set_edge_property_at(
-    conn: &Connection,
-    src: NodeId,
-    dst: NodeId,
-    label: &str,
-    seq: u64,
-    key: &str,
-    value: crate::types::Value,
-) -> Result<()> {
-    let mut props = get_edge_properties_at(conn, src, dst, label, seq)?;
-    if value == crate::types::Value::Null {
-        props.remove(key);
-    } else {
-        props.insert(key.to_string(), value);
-    }
-    let props_key = edge_props_key(src, dst, label, seq);
-    let data = rmp_serde::to_vec(&props).map_err(|e| GraphError::Serialization {
-        context: String::new(),
-        source: e.to_string(),
-        hint: None,
-    })?;
-    kv::put(conn, kv::TABLE_EDGE_PROPS, &props_key, &data)?;
-    Ok(())
-}
-
 /// Replace all properties on a specific parallel edge with the given map.
+///
+/// Errors with `EdgeNotFound` when the edge does not exist; no props row is
+/// created for it.
 pub fn set_all_edge_properties_at(
     conn: &Connection,
     src: NodeId,
@@ -365,6 +355,7 @@ pub fn set_all_edge_properties_at(
     seq: u64,
     properties: crate::types::Properties,
 ) -> Result<()> {
+    require_edge_at(conn, src, dst, label, seq)?;
     let props_key = edge_props_key(src, dst, label, seq);
     let data = rmp_serde::to_vec(&properties).map_err(|e| GraphError::Serialization {
         context: String::new(),
@@ -380,7 +371,7 @@ pub fn edge_exists(conn: &Connection, src: NodeId, dst: NodeId, label: &str) -> 
     let out_key = adj_key(src, label);
     match kv::get(conn, kv::TABLE_ADJ_OUT, &out_key)? {
         Some(data) => {
-            let ids = decode_id_list(&data);
+            let ids = decode_id_list(&data)?;
             Ok(ids.binary_search(&dst.0).is_ok())
         }
         None => Ok(false),
@@ -691,7 +682,11 @@ pub fn traverse_paths(
                     if !prop_filters.is_empty() {
                         let mut matches = true;
                         for (key, expected) in prop_filters {
-                            if props.get(key) != Some(expected) {
+                            // Cypher equality: `{w: 1.0}` matches a stored `1`.
+                            let matched = props
+                                .get(key)
+                                .is_some_and(|v| crate::cypher::eval::cypher_equals(v, expected));
+                            if !matched {
                                 matches = false;
                                 break;
                             }
@@ -753,52 +748,168 @@ pub fn traverse_paths(
     Ok(results)
 }
 
+/// A path found by [`shortest_path`] / [`all_shortest_paths`].
+///
+/// `labels[i]` is the relationship type of the hop from `nodes[i]` to
+/// `nodes[i + 1]`, so `labels.len() == nodes.len() - 1`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LabeledPath {
+    pub nodes: Vec<NodeId>,
+    pub labels: Vec<String>,
+}
+
+/// Edge-visit budget shared by every shortest-path search in one query.
+///
+/// Each neighbor examined costs one unit. A `limit` of 0 disables the cap.
+/// Exceeding it returns `GraphError::SizeLimit`, mirroring the fuel cap in
+/// [`traverse_paths`] (`Config::max_traversal_work`).
+#[derive(Debug)]
+pub struct WorkBudget {
+    limit: u64,
+    used: u64,
+}
+
+impl WorkBudget {
+    /// A budget of `limit` units of which `used` are already spent.
+    pub fn resume(limit: u64, used: u64) -> Self {
+        Self { limit, used }
+    }
+
+    /// Units spent so far.
+    pub fn used(&self) -> u64 {
+        self.used
+    }
+
+    fn spend(&mut self) -> Result<()> {
+        self.used += 1;
+        if self.limit != 0 && self.used > self.limit {
+            return Err(GraphError::SizeLimit {
+                what: "shortestPath traversal work".to_string(),
+                limit: self.limit as usize,
+                actual: self.used as usize,
+                hint: Some(
+                    "bind or filter the endpoints, lower the max hop count, or raise Config::max_traversal_work"
+                        .to_string(),
+                ),
+            });
+        }
+        Ok(())
+    }
+}
+
+/// Every stored edge that realizes the hop `a -> b` over `label` when
+/// traversed in `direction`, as `(src, dst, properties)` in storage
+/// orientation, ordered by sequence number. `Direction::Both` returns edges
+/// stored either way. Parallel edges each appear once, and so does a
+/// self-loop (`a == b`) under `Direction::Both`.
+pub fn hop_edges(
+    conn: &Connection,
+    a: NodeId,
+    b: NodeId,
+    label: &str,
+    direction: Direction,
+) -> Result<Vec<(NodeId, NodeId, u64, Properties)>> {
+    let mut out = Vec::new();
+    if matches!(direction, Direction::Outgoing | Direction::Both) {
+        for (seq, props) in get_all_edge_props(conn, a, b, label)? {
+            out.push((a, b, seq, props));
+        }
+    }
+    let reverse_is_new = direction == Direction::Incoming || a != b;
+    if matches!(direction, Direction::Incoming | Direction::Both) && reverse_is_new {
+        for (seq, props) in get_all_edge_props(conn, b, a, label)? {
+            out.push((b, a, seq, props));
+        }
+    }
+    Ok(out)
+}
+
+/// Neighbors of `id` over any of `labels`, each paired with the relationship
+/// type that reaches it. An empty `labels` slice means every type stored on
+/// `id` in `direction`.
+fn labeled_neighbors(
+    conn: &Connection,
+    id: NodeId,
+    labels: &[&str],
+    direction: Direction,
+) -> Result<Vec<(NodeId, String)>> {
+    let discovered: Vec<String> = if labels.is_empty() {
+        get_all_edge_labels(conn, id, direction)?
+            .into_iter()
+            .map(|(l, _)| l)
+            .collect()
+    } else {
+        labels.iter().map(|l| l.to_string()).collect()
+    };
+    let mut out = Vec::new();
+    for label in discovered {
+        for neighbor in get_neighbors(conn, id, &label, direction)? {
+            out.push((neighbor, label.clone()));
+        }
+    }
+    Ok(out)
+}
+
 /// Find the shortest path between two nodes using BFS.
 ///
-/// Returns the path as an ordered list of node IDs (including start and end),
-/// or `None` if no path exists within `max_hops`.
+/// Follows relationships of any type in `labels` (every type when empty).
+/// When `start == end` the only candidate is the zero-length path, which
+/// matches only if `min_hops == 0`. Returns `None` if no path exists within
+/// `max_hops`.
+#[allow(clippy::too_many_arguments)]
 pub fn shortest_path(
     conn: &Connection,
     start: NodeId,
     end: NodeId,
-    label: &str,
+    labels: &[&str],
     direction: Direction,
+    min_hops: u32,
     max_hops: u32,
-) -> Result<Option<Vec<NodeId>>> {
+    budget: &mut WorkBudget,
+) -> Result<Option<LabeledPath>> {
     use std::collections::{HashMap, VecDeque};
 
     if start == end {
-        return Ok(Some(vec![start]));
+        return Ok((min_hops == 0).then(|| LabeledPath {
+            nodes: vec![start],
+            labels: Vec::new(),
+        }));
     }
 
-    // BFS with parent tracking.
-    let mut parent: HashMap<u64, u64> = HashMap::new();
+    // BFS with parent tracking: parent[node] = (previous node, type used).
+    let mut parent: HashMap<u64, (u64, String)> = HashMap::new();
     let mut queue: VecDeque<(NodeId, u32)> = VecDeque::new();
     queue.push_back((start, 0));
-    parent.insert(start.0, start.0); // sentinel: start's parent is itself
+    parent.insert(start.0, (start.0, String::new())); // sentinel
 
     while let Some((current, depth)) = queue.pop_front() {
         if depth >= max_hops {
             continue;
         }
 
-        let neighbors = get_neighbors(conn, current, label, direction)?;
-        for neighbor in neighbors {
+        for (neighbor, label) in labeled_neighbors(conn, current, labels, direction)? {
+            budget.spend()?;
             if parent.contains_key(&neighbor.0) {
                 continue; // already visited
             }
-            parent.insert(neighbor.0, current.0);
+            parent.insert(neighbor.0, (current.0, label));
 
             if neighbor == end {
-                // Reconstruct path.
-                let mut path = vec![end];
+                let mut nodes = vec![end];
+                let mut hop_labels = Vec::new();
                 let mut cur = end.0;
                 while cur != start.0 {
-                    cur = parent[&cur];
-                    path.push(NodeId(cur));
+                    let (prev, label) = &parent[&cur];
+                    hop_labels.push(label.clone());
+                    cur = *prev;
+                    nodes.push(NodeId(cur));
                 }
-                path.reverse();
-                return Ok(Some(path));
+                nodes.reverse();
+                hop_labels.reverse();
+                return Ok(Some(LabeledPath {
+                    nodes,
+                    labels: hop_labels,
+                }));
             }
 
             queue.push_back((neighbor, depth + 1));
@@ -810,25 +921,33 @@ pub fn shortest_path(
 
 /// Find all shortest paths between two nodes using BFS.
 ///
-/// Returns all paths of minimum length as ordered lists of node IDs.
-/// Returns an empty vec if no path exists within `max_hops`.
+/// Same type and hop semantics as [`shortest_path`]. Paths that differ only
+/// in the relationship type of some hop are distinct results; parallel
+/// edges of the same type are expanded later via [`hop_edges`]. Returns an
+/// empty vec if no path exists within `max_hops`.
+#[allow(clippy::too_many_arguments)]
 pub fn all_shortest_paths(
     conn: &Connection,
     start: NodeId,
     end: NodeId,
-    label: &str,
+    labels: &[&str],
     direction: Direction,
+    min_hops: u32,
     max_hops: u32,
-) -> Result<Vec<Vec<NodeId>>> {
+    budget: &mut WorkBudget,
+) -> Result<Vec<LabeledPath>> {
     use std::collections::{HashMap, VecDeque};
 
     if start == end {
-        return Ok(vec![vec![start]]);
+        return Ok(shortest_path(
+            conn, start, end, labels, direction, min_hops, max_hops, budget,
+        )?
+        .into_iter()
+        .collect());
     }
 
-    // BFS tracking ALL parents per node (not just the first).
-    // parents[node] = set of nodes that reach it at the shortest distance.
-    let mut parents: HashMap<u64, Vec<u64>> = HashMap::new();
+    // BFS tracking ALL (parent, type) pairs per node at the shortest distance.
+    let mut parents: HashMap<u64, Vec<(u64, String)>> = HashMap::new();
     let mut depth_of: HashMap<u64, u32> = HashMap::new();
     let mut queue: VecDeque<(NodeId, u32)> = VecDeque::new();
 
@@ -849,25 +968,28 @@ pub fn all_shortest_paths(
             continue;
         }
 
-        let neighbors = get_neighbors(conn, current, label, direction)?;
         let next_depth = depth + 1;
-
-        for neighbor in neighbors {
+        for (neighbor, label) in labeled_neighbors(conn, current, labels, direction)? {
+            budget.spend()?;
             if let Some(&existing_depth) = depth_of.get(&neighbor.0) {
-                // Already visited at this or shorter depth — add parent if same depth.
+                // Already visited: record another parent if at the same depth.
                 if existing_depth == next_depth {
-                    parents.entry(neighbor.0).or_default().push(current.0);
+                    let entry = parents.entry(neighbor.0).or_default();
+                    let hop = (current.0, label);
+                    if !entry.contains(&hop) {
+                        entry.push(hop);
+                    }
                 }
                 continue;
             }
 
             // First visit.
             depth_of.insert(neighbor.0, next_depth);
-            parents.insert(neighbor.0, vec![current.0]);
+            parents.insert(neighbor.0, vec![(current.0, label)]);
 
             if neighbor == end {
                 found_depth = Some(next_depth);
-                // Don't stop yet — finish this BFS level to find all equal-length paths.
+                // Don't stop yet: finish this BFS level to find all equal-length paths.
             } else if found_depth.is_none() {
                 queue.push_back((neighbor, next_depth));
             }
@@ -880,20 +1002,25 @@ pub fn all_shortest_paths(
 
     // Reconstruct all paths from end back to start using parent pointers.
     let mut all_paths = Vec::new();
-    let mut stack: Vec<(u64, Vec<NodeId>)> = vec![(end.0, vec![end])];
+    let mut stack: Vec<(u64, Vec<NodeId>, Vec<String>)> = vec![(end.0, vec![end], Vec::new())];
 
-    while let Some((node, path)) = stack.pop() {
+    while let Some((node, mut nodes, mut hop_labels)) = stack.pop() {
         if node == start.0 {
-            let mut complete = path;
-            complete.reverse();
-            all_paths.push(complete);
+            nodes.reverse();
+            hop_labels.reverse();
+            all_paths.push(LabeledPath {
+                nodes,
+                labels: hop_labels,
+            });
             continue;
         }
         if let Some(pars) = parents.get(&node) {
-            for &p in pars {
-                let mut extended = path.clone();
-                extended.push(NodeId(p));
-                stack.push((p, extended));
+            for (p, label) in pars {
+                let mut next_nodes = nodes.clone();
+                next_nodes.push(NodeId(*p));
+                let mut next_labels = hop_labels.clone();
+                next_labels.push(label.clone());
+                stack.push((*p, next_nodes, next_labels));
             }
         }
     }
@@ -937,7 +1064,7 @@ pub fn get_all_edge_labels(
                     source: format!("invalid UTF-8 in edge label: {e}"),
                     hint: None,
                 })?;
-            let ids = decode_id_list(&data);
+            let ids = decode_id_list(&data)?;
             result.push((label, ids));
         }
     }

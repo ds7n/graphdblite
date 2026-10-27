@@ -15,9 +15,9 @@
 //! ## Caching is skipped when the plan would not be reusable
 //!
 //! [`is_plan_cacheable`] rejects:
-//! - SKIP / LIMIT containing `$param` — the planner evaluates these at plan
-//!   time via `eval_skip_limit`, so the cached `count: u64` would be wrong
-//!   for a different `$n` value.
+//! - SKIP / LIMIT that is not a plain literal (`$param`, `rand()`, ...):
+//!   the planner evaluates these at plan time via `eval_skip_limit`, so the
+//!   cached `count: u64` would be stale on the next execution.
 //! - CALL statements/clauses — `plan_call` reads the procedure registry at
 //!   plan time, and the registry is supplied per-execute via `ExecContext`.
 //!
@@ -38,6 +38,11 @@ const DEFAULT_CAPACITY: usize = 128;
 struct Key {
     cypher: String,
     epoch: u64,
+    /// SQLite's `PRAGMA schema_version` as seen by the planning connection.
+    /// The in-process `epoch` alone misses schema changes made by other
+    /// handles/processes and schema changes undone by a rollback (the epoch
+    /// was bumped by the DDL but the tables are gone again).
+    schema_cookie: i64,
 }
 
 pub(crate) struct PlanCache {
@@ -68,13 +73,30 @@ impl PlanCache {
     /// Resolve `cypher` at the given `epoch` to a planned [`LogicalOp`],
     /// reusing a cached plan when available. On a miss, calls `build` to
     /// produce the plan and inserts it. Errors from `build` are not cached.
+    #[cfg(test)]
     pub(crate) fn get_or_plan<F>(&self, cypher: &str, epoch: u64, build: F) -> Result<LogicalOp>
+    where
+        F: FnOnce() -> Result<LogicalOp>,
+    {
+        self.get_or_plan_with_schema(cypher, epoch, 0, build)
+    }
+
+    /// Like `get_or_plan`, additionally keyed on the connection's current
+    /// schema cookie (see [`schema_cookie`]).
+    pub(crate) fn get_or_plan_with_schema<F>(
+        &self,
+        cypher: &str,
+        epoch: u64,
+        schema_cookie: i64,
+        build: F,
+    ) -> Result<LogicalOp>
     where
         F: FnOnce() -> Result<LogicalOp>,
     {
         let key = Key {
             cypher: cypher.to_string(),
             epoch,
+            schema_cookie,
         };
 
         // Fast path: hit. Clone the cached plan under the lock; the planner
@@ -110,6 +132,15 @@ impl PlanCache {
     }
 }
 
+/// SQLite's schema cookie (`PRAGMA schema_version`) for `conn`. It changes on
+/// every committed schema change from any connection and is restored by a
+/// rollback, so it pins a cached plan to the exact schema it was planned
+/// against. Inside a transaction it reflects that transaction's view.
+pub(crate) fn schema_cookie(conn: &rusqlite::Connection) -> Result<i64> {
+    let mut stmt = conn.prepare_cached("PRAGMA schema_version")?;
+    Ok(stmt.query_row([], |r| r.get::<_, i64>(0))?)
+}
+
 impl Default for PlanCache {
     fn default() -> Self {
         Self::new()
@@ -122,9 +153,10 @@ impl Default for PlanCache {
 
 /// Whether `stmt`'s plan can be reused across executions.
 ///
-/// Returns false when the planner evaluates a value at plan time that depends
-/// on either the parameter map (SKIP/LIMIT containing `$param`) or the
-/// procedure registry (any CALL).
+/// Returns false when the planner evaluates a value at plan time that may
+/// differ between executions (any SKIP/LIMIT that is not a plain literal,
+/// e.g. `$param` or `rand()`) or that depends on the procedure registry
+/// (any CALL).
 pub(crate) fn is_plan_cacheable(stmt: &Statement) -> bool {
     match stmt {
         Statement::Call { .. } | Statement::CreateIndex { .. } | Statement::DropIndex { .. } => {
@@ -133,19 +165,19 @@ pub(crate) fn is_plan_cacheable(stmt: &Statement) -> bool {
         Statement::Explain(inner) => is_plan_cacheable(inner),
         Statement::Union { statements, .. } => statements.iter().all(is_plan_cacheable),
         Statement::Match(m) => {
-            !skip_limit_has_param(&m.skip, &m.limit)
+            !skip_limit_not_literal(&m.skip, &m.limit)
                 && !intermediates_block_caching(&m.intermediate_clauses)
         }
-        Statement::Create(c) => !skip_limit_has_param(&c.skip, &c.limit),
-        Statement::MatchCreate(mc) => !skip_limit_has_param(&mc.skip, &mc.limit),
-        Statement::MatchMerge(mm) => !skip_limit_has_param(&mm.skip, &mm.limit),
-        Statement::Delete(d) => !skip_limit_has_param(&d.skip, &d.limit),
+        Statement::Create(c) => !skip_limit_not_literal(&c.skip, &c.limit),
+        Statement::MatchCreate(mc) => !skip_limit_not_literal(&mc.skip, &mc.limit),
+        Statement::MatchMerge(mm) => !skip_limit_not_literal(&mm.skip, &mm.limit),
+        Statement::Delete(d) => !skip_limit_not_literal(&d.skip, &d.limit),
         Statement::Set(s) => {
-            !skip_limit_has_param(&s.skip, &s.limit)
+            !skip_limit_not_literal(&s.skip, &s.limit)
                 && !intermediates_block_caching(&s.intermediate_clauses)
         }
-        Statement::Remove(r) => !skip_limit_has_param(&r.skip, &r.limit),
-        Statement::Merge(m) => !skip_limit_has_param(&m.skip, &m.limit),
+        Statement::Remove(r) => !skip_limit_not_literal(&r.skip, &r.limit),
+        Statement::Merge(m) => !skip_limit_not_literal(&m.skip, &m.limit),
         Statement::Unwind(u) => match &u.body {
             UnwindBody::Return {
                 intermediate_clauses,
@@ -153,7 +185,7 @@ pub(crate) fn is_plan_cacheable(stmt: &Statement) -> bool {
                 limit,
                 ..
             } => {
-                !skip_limit_has_param(skip, limit)
+                !skip_limit_not_literal(skip, limit)
                     && !intermediates_block_caching(intermediate_clauses)
             }
             UnwindBody::Create {
@@ -162,13 +194,13 @@ pub(crate) fn is_plan_cacheable(stmt: &Statement) -> bool {
                 limit,
                 ..
             } => {
-                !skip_limit_has_param(skip, limit)
+                !skip_limit_not_literal(skip, limit)
                     && !intermediates_block_caching(intermediate_clauses)
             }
         },
-        Statement::Return(r) => !skip_limit_has_param(&r.skip, &r.limit),
+        Statement::Return(r) => !skip_limit_not_literal(&r.skip, &r.limit),
         Statement::MultiClause(mc) => {
-            !skip_limit_has_param(&mc.skip, &mc.limit)
+            !skip_limit_not_literal(&mc.skip, &mc.limit)
                 && mc.clauses.iter().all(|c| !clause_blocks_caching(c))
         }
     }
@@ -177,87 +209,29 @@ pub(crate) fn is_plan_cacheable(stmt: &Statement) -> bool {
 fn clause_blocks_caching(clause: &Clause) -> bool {
     match clause {
         Clause::Call { .. } => true,
-        Clause::With(w) => skip_limit_has_param(&w.skip, &w.limit),
+        Clause::With(w) => skip_limit_not_literal(&w.skip, &w.limit),
         _ => false,
     }
 }
 
 fn intermediates_block_caching(clauses: &[IntermediateClause]) -> bool {
     clauses.iter().any(|c| match c {
-        IntermediateClause::With(w) => skip_limit_has_param(&w.skip, &w.limit),
+        IntermediateClause::With(w) => skip_limit_not_literal(&w.skip, &w.limit),
         _ => false,
     })
 }
 
-fn skip_limit_has_param(skip: &Option<Expr>, limit: &Option<Expr>) -> bool {
-    expr_opt_has_param(skip) || expr_opt_has_param(limit)
+fn skip_limit_not_literal(skip: &Option<Expr>, limit: &Option<Expr>) -> bool {
+    expr_opt_not_literal(skip) || expr_opt_not_literal(limit)
 }
 
-fn expr_opt_has_param(e: &Option<Expr>) -> bool {
-    e.as_ref().is_some_and(expr_has_param)
-}
-
-fn expr_has_param(expr: &Expr) -> bool {
-    match &expr.kind {
-        ExprKind::Parameter(_) => true,
-        ExprKind::BinaryOp { left, right, .. } => expr_has_param(left) || expr_has_param(right),
-        ExprKind::Not(e) | ExprKind::IsNull(e) | ExprKind::IsNotNull(e) => expr_has_param(e),
-        ExprKind::FunctionCall { args, .. } => args.iter().any(expr_has_param),
-        ExprKind::Case {
-            operand,
-            alternatives,
-            default,
-        } => {
-            operand.as_deref().is_some_and(expr_has_param)
-                || alternatives
-                    .iter()
-                    .any(|(c, r)| expr_has_param(c) || expr_has_param(r))
-                || default.as_deref().is_some_and(expr_has_param)
-        }
-        ExprKind::List(items) => items.iter().any(expr_has_param),
-        ExprKind::ListComprehension {
-            list_expr,
-            filter,
-            map_expr,
-            ..
-        } => {
-            expr_has_param(list_expr)
-                || filter.as_deref().is_some_and(expr_has_param)
-                || map_expr.as_deref().is_some_and(expr_has_param)
-        }
-        ExprKind::PatternComprehension {
-            where_clause,
-            map_expr,
-            ..
-        } => where_clause.as_deref().is_some_and(expr_has_param) || expr_has_param(map_expr),
-        ExprKind::Quantifier {
-            list_expr,
-            predicate,
-            ..
-        } => expr_has_param(list_expr) || expr_has_param(predicate),
-        ExprKind::Exists { where_clause, .. } => {
-            where_clause.as_deref().is_some_and(expr_has_param)
-        }
-        ExprKind::ExistsSubquery(_) => false, // subqueries don't expose params to outer SKIP/LIMIT positions
-        ExprKind::MapLiteral(pairs) => pairs.iter().any(|(_, v)| expr_has_param(v)),
-        ExprKind::Index { expr: e, index } => expr_has_param(e) || expr_has_param(index),
-        ExprKind::DotAccess { expr: e, .. } => expr_has_param(e),
-        ExprKind::Slice {
-            expr: e,
-            start,
-            end,
-        } => {
-            expr_has_param(e)
-                || start.as_deref().is_some_and(expr_has_param)
-                || end.as_deref().is_some_and(expr_has_param)
-        }
-        ExprKind::Literal(_)
-        | ExprKind::Property(_, _)
-        | ExprKind::Variable(_)
-        | ExprKind::HasLabel(_, _)
-        | ExprKind::PatternPredicate(_)
-        | ExprKind::Star => false,
-    }
+/// True when SKIP/LIMIT is present and is anything other than a plain
+/// literal. The planner folds the count to a `u64` at plan time, so any
+/// expression whose value can change between executions (`$param`,
+/// `rand()`, `timestamp()`, ...) must not be frozen into a cached plan.
+fn expr_opt_not_literal(e: &Option<Expr>) -> bool {
+    e.as_ref()
+        .is_some_and(|e| !matches!(e.kind, ExprKind::Literal(_)))
 }
 
 #[cfg(test)]
@@ -329,6 +303,18 @@ mod tests {
         let stmt = parser::parse("MATCH (n) RETURN n SKIP $s LIMIT 10").unwrap();
         assert!(!is_plan_cacheable(&stmt));
         let stmt = parser::parse("MATCH (n) RETURN n LIMIT 10").unwrap();
+        assert!(is_plan_cacheable(&stmt));
+    }
+
+    #[test]
+    fn cacheability_skip_limit_non_literal_expression() {
+        let stmt = parser::parse("MATCH (n) RETURN n LIMIT toInteger(rand() * 10) + 1").unwrap();
+        assert!(!is_plan_cacheable(&stmt));
+        let stmt = parser::parse("MATCH (n) RETURN n SKIP 1 + 1").unwrap();
+        assert!(!is_plan_cacheable(&stmt));
+        let stmt = parser::parse("UNWIND [1] AS x WITH x SKIP toInteger(rand()) RETURN x").unwrap();
+        assert!(!is_plan_cacheable(&stmt));
+        let stmt = parser::parse("MATCH (n) RETURN n SKIP 0 LIMIT 0").unwrap();
         assert!(is_plan_cacheable(&stmt));
     }
 

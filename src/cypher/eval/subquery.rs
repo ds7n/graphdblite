@@ -12,7 +12,7 @@ pub(in crate::cypher::eval) fn eval_exists(
     ecx: EvalCx<'_>,
 ) -> crate::types::Result<Value> {
     let conn = ecx.conn;
-    use crate::cypher::executor::execute_first_match;
+    use crate::cypher::executor::exec_correlated_exists;
     use crate::cypher::ir::LogicalOp;
     use crate::cypher::planner::plan_patterns;
 
@@ -27,16 +27,11 @@ pub(in crate::cypher::eval) fn eval_exists(
         };
     }
 
-    // Extract correlated bindings from the outer record (bare alias keys, no dots).
-    let mut outer_bindings: Vec<(String, Value)> = Vec::new();
-    record.for_each_field(&mut |k, v| {
-        if !k.contains('.') {
-            outer_bindings.push((k.to_string(), v.clone()));
-        }
-    });
-
-    // Short-circuit: return true on the first matching row.
-    let found = execute_first_match(conn, &op, &outer_bindings)?;
+    // Run the pattern through the correlated executor: variables bound in
+    // the outer row pin the pattern's nodes/relationships, and the WHERE
+    // filter sees the outer row (so `n.k = m.k` can reference outer `m`).
+    let outer = view_to_named(record);
+    let found = exec_correlated_exists(conn, &op, &outer)?;
     Ok(Value::Bool(found))
 }
 
@@ -52,7 +47,14 @@ pub(in crate::cypher::eval) fn eval_exists_subquery(
     use crate::cypher::executor::exec_correlated_exists;
     use crate::cypher::planner::plan_subquery;
 
-    let base_plan = plan_subquery(conn, stmt)?;
+    // Variables of the enclosing scope are the outer row's bare keys.
+    let mut outer_vars = std::collections::HashSet::new();
+    record.for_each_field(&mut |k, _| {
+        if !k.contains('.') {
+            outer_vars.insert(k.to_string());
+        }
+    });
+    let base_plan = plan_subquery(conn, stmt, &outer_vars)?;
 
     // Execute the subquery as a correlated subquery, pushing the outer
     // record's bindings down so nested expressions can see them. The

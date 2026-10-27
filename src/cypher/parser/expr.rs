@@ -24,11 +24,13 @@ pub(in crate::cypher::parser) fn parse_xor_term(
     }
 
     let mut left = parse_bool_term(children.remove(0))?;
+    let mut depth = ChainDepth::start(&left)?;
     let mut i = 0;
     while i < children.len() {
         if children[i].as_rule() == Rule::xor_op {
             i += 1;
             let right = parse_bool_term(children.remove(i))?;
+            depth.push(&right)?;
             children.remove(i - 1);
             i -= 1;
             let span = combine_spans(left.span, right.span);
@@ -58,11 +60,13 @@ pub(in crate::cypher::parser) fn parse_bool_term(
     }
 
     let mut left = parse_bool_factor(children.remove(0))?;
+    let mut depth = ChainDepth::start(&left)?;
     let mut i = 0;
     while i < children.len() {
         if children[i].as_rule() == Rule::and_op {
             i += 1;
             let right = parse_bool_factor(children.remove(i))?;
+            depth.push(&right)?;
             children.remove(i - 1);
             i -= 1;
             let span = combine_spans(left.span, right.span);
@@ -98,7 +102,9 @@ pub(in crate::cypher::parser) fn parse_bool_factor(
     }
 
     let mut expr = parse_bool_primary(primary.unwrap())?;
+    let mut depth = ChainDepth::start(&expr)?;
     for _ in 0..not_count {
+        depth.wrap()?;
         expr = Expr::new(ExprKind::Not(Box::new(expr)), outer_span);
     }
     Ok(expr)
@@ -128,6 +134,11 @@ pub(in crate::cypher::parser) fn parse_cmp_or_value(
     if children.is_empty() {
         return Ok(first);
     }
+    // k comparisons fold into k - 1 ANDs over comparison nodes, so the tree
+    // is at least k + 1 deep: reject long chains before parsing every operand.
+    if children.len() >= MAX_EXPR_DEPTH {
+        return Err(expr_depth_error(children.len() + 1));
+    }
 
     // Parse comparison suffixes. For chained comparisons like `a < b < c`,
     // desugar into `a < b AND b < c`.
@@ -155,7 +166,9 @@ pub(in crate::cypher::parser) fn parse_cmp_or_value(
     } else {
         // Chain with AND: (a < b) AND (b < c) AND ...
         let mut result = comparisons.remove(0);
+        let mut depth = ChainDepth::start(&result)?;
         for cmp in comparisons {
+            depth.push(&cmp)?;
             let span = combine_spans(result.span, cmp.span);
             result = Expr::new(
                 ExprKind::BinaryOp {
@@ -332,11 +345,43 @@ pub(in crate::cypher::parser) fn parse_exists_subquery(
     ))
 }
 
-/// Parse EXISTS { MATCH ... [WITH ...] [RETURN ...] } full subquery.
+/// Parse EXISTS { MATCH ... [WITH ...] [RETURN ...] [UNION [ALL] ...] }
+/// full subquery.
 pub(in crate::cypher::parser) fn parse_exists_full_subquery(
     pair: pest::iterators::Pair<Rule>,
 ) -> crate::types::Result<Expr> {
     let outer_span = span_from_pair(&pair);
+    let mut statements = Vec::new();
+    let mut union_ops = Vec::new();
+    for inner in pair.into_inner() {
+        match inner.as_rule() {
+            Rule::exists_query => statements.push(parse_exists_query(inner)?),
+            Rule::union_op => union_ops.push(inner.as_str().to_ascii_uppercase().contains("ALL")),
+            _ => {}
+        }
+    }
+    let stmt = if statements.len() == 1 {
+        statements.remove(0)
+    } else {
+        // Same rule as a top-level UNION: no mixing UNION and UNION ALL.
+        let all = union_ops.first().copied().unwrap_or(false);
+        if union_ops.iter().any(|&a| a != all) {
+            return Err(GraphError::query(
+                QueryPhase::Parse,
+                ErrorCode::InvalidClauseComposition,
+                "InvalidClauseComposition: cannot mix UNION and UNION ALL",
+            ));
+        }
+        Statement::Union { statements, all }
+    };
+    Ok(Expr::new(
+        ExprKind::ExistsSubquery(Box::new(stmt)),
+        outer_span,
+    ))
+}
+
+/// Parse one `MATCH ... [RETURN ...]` branch of an EXISTS subquery.
+fn parse_exists_query(pair: pest::iterators::Pair<Rule>) -> crate::types::Result<Statement> {
     let mut patterns = Vec::new();
     let mut where_clause = None;
     let mut intermediate_clauses = Vec::new();
@@ -345,9 +390,14 @@ pub(in crate::cypher::parser) fn parse_exists_full_subquery(
     let mut skip = None;
     let mut limit = None;
     let mut first_match = true;
+    // UNWIND clauses that precede the first MATCH.
+    let mut leading_unwinds = Vec::new();
 
     for inner in pair.into_inner() {
         match inner.as_rule() {
+            Rule::unwind_clause if first_match => {
+                leading_unwinds.push(Clause::Unwind(parse_unwind_clause(inner)?));
+            }
             Rule::pattern_list => {
                 if first_match {
                     patterns = parse_pattern_list(inner)?;
@@ -418,7 +468,34 @@ pub(in crate::cypher::parser) fn parse_exists_full_subquery(
         }],
     });
 
-    let stmt = MatchStatement {
+    if !leading_unwinds.is_empty() {
+        // A MatchStatement starts with MATCH, so a leading UNWIND makes this
+        // a general clause sequence.
+        let mut clauses = leading_unwinds;
+        clauses.push(Clause::Match {
+            patterns,
+            optional_patterns: vec![],
+            where_clause,
+        });
+        clauses.extend(intermediate_clauses.into_iter().map(|c| match c {
+            IntermediateClause::With(w) => Clause::With(w),
+            IntermediateClause::Unwind(u) => Clause::Unwind(u),
+            IntermediateClause::Match(im) => Clause::Match {
+                patterns: im.patterns,
+                optional_patterns: im.optional_patterns,
+                where_clause: im.where_clause,
+            },
+        }));
+        return Ok(Statement::MultiClause(MultiClauseStatement {
+            clauses,
+            return_clause: Some(rc),
+            order_by,
+            skip,
+            limit,
+        }));
+    }
+
+    Ok(Statement::Match(MatchStatement {
         patterns,
         optional_patterns: vec![],
         where_clause,
@@ -427,11 +504,7 @@ pub(in crate::cypher::parser) fn parse_exists_full_subquery(
         order_by,
         skip,
         limit,
-    };
-    Ok(Expr::new(
-        ExprKind::ExistsSubquery(Box::new(Statement::Match(stmt))),
-        outer_span,
-    ))
+    }))
 }
 
 pub(in crate::cypher::parser) fn parse_comp_op(
@@ -468,8 +541,19 @@ pub(in crate::cypher::parser) fn parse_comp_op(
 pub(in crate::cypher::parser) fn parse_expr(
     pair: pest::iterators::Pair<Rule>,
 ) -> crate::types::Result<Expr> {
-    let _guard = DepthGuard::enter()?;
-    // expr = { xor_term ~ (or_op ~ xor_term)* }
+    let guard = DepthGuard::enter()?;
+    let expr = parse_or_chain(pair)?;
+    // The guards above bound each chain and each level of nesting; this
+    // bounds how they compose (e.g. a 200-term chain inside parentheses
+    // inside another 200-term chain), once per top-level expression.
+    if guard.is_outermost() {
+        check_expr_depth(&expr)?;
+    }
+    Ok(expr)
+}
+
+/// `expr = { xor_term ~ (or_op ~ xor_term)* }`, folded left-associatively.
+fn parse_or_chain(pair: pest::iterators::Pair<Rule>) -> crate::types::Result<Expr> {
     let mut children: Vec<pest::iterators::Pair<Rule>> = pair.into_inner().collect();
 
     if children.len() == 1 {
@@ -478,11 +562,13 @@ pub(in crate::cypher::parser) fn parse_expr(
 
     // Left-associative OR chain.
     let mut left = parse_xor_term(children.remove(0))?;
+    let mut depth = ChainDepth::start(&left)?;
     let mut i = 0;
     while i < children.len() {
         if children[i].as_rule() == Rule::or_op {
             i += 1;
             let right = parse_xor_term(children.remove(i))?;
+            depth.push(&right)?;
             children.remove(i - 1); // remove or_op
             i -= 1;
             let span = combine_spans(left.span, right.span);
@@ -532,6 +618,7 @@ pub(in crate::cypher::parser) fn parse_add_expr(
     // Build left-associative: mul_expr (add_op mul_expr)*
     let mut iter = children.into_iter();
     let mut left = parse_mul_expr(iter.next().unwrap())?;
+    let mut depth = ChainDepth::start(&left)?;
     while let Some(op_pair) = iter.next() {
         let op = match op_pair.as_str() {
             "+" => BinOp::Add,
@@ -544,6 +631,7 @@ pub(in crate::cypher::parser) fn parse_add_expr(
             }
         };
         let right = parse_mul_expr(iter.next().unwrap())?;
+        depth.push(&right)?;
         let span = combine_spans(left.span, right.span);
         left = Expr::new(
             ExprKind::BinaryOp {
@@ -566,6 +654,7 @@ pub(in crate::cypher::parser) fn parse_mul_expr(
     }
     let mut iter = children.into_iter();
     let mut left = parse_exp_expr(iter.next().unwrap())?;
+    let mut depth = ChainDepth::start(&left)?;
     while let Some(op_pair) = iter.next() {
         let op = match op_pair.as_str() {
             "*" => BinOp::Mul,
@@ -579,6 +668,7 @@ pub(in crate::cypher::parser) fn parse_mul_expr(
             }
         };
         let right = parse_exp_expr(iter.next().unwrap())?;
+        depth.push(&right)?;
         let span = combine_spans(left.span, right.span);
         left = Expr::new(
             ExprKind::BinaryOp {
@@ -602,9 +692,11 @@ pub(in crate::cypher::parser) fn parse_exp_expr(
     }
     let mut iter = children.into_iter();
     let mut left = parse_atom_expr(iter.next().unwrap())?;
+    let mut depth = ChainDepth::start(&left)?;
     while let Some(op_pair) = iter.next() {
         if op_pair.as_rule() == Rule::exp_op {
             let right = parse_atom_expr(iter.next().unwrap())?;
+            depth.push(&right)?;
             let span = combine_spans(left.span, right.span);
             left = Expr::new(
                 ExprKind::BinaryOp {
@@ -627,8 +719,12 @@ pub(in crate::cypher::parser) fn parse_atom_expr(
             let mut children = pair.into_inner();
             let primary = children.next().unwrap();
             let mut expr = parse_atom_expr(primary)?;
+            let mut depth = ChainDepth::start(&expr)?;
             // Apply postfix subscript/slice/dot operators.
             for sub in children {
+                // Index/slice operands nest below this chain too; the
+                // top-level check in `parse_expr` covers that composition.
+                depth.wrap()?;
                 if sub.as_rule() == Rule::subscript {
                     expr = parse_subscript(expr, sub)?;
                 } else if sub.as_rule() == Rule::dot_access {
@@ -717,6 +813,8 @@ pub(in crate::cypher::parser) fn parse_atom_expr(
         Rule::mul_expr => parse_mul_expr(pair),
         Rule::exp_expr => parse_exp_expr(pair),
         Rule::unary_minus_expr => {
+            // `- - - 1` recurses here once per minus sign.
+            let _guard = DepthGuard::enter()?;
             let span = span_from_pair(&pair);
             let inner = pair.into_inner().next().unwrap();
             let expr = parse_atom_expr(inner)?;

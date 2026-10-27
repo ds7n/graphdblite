@@ -11,6 +11,7 @@ crate-type = ["cdylib", "staticlib"]
 
 [dependencies]
 graphdblite = { path = "../.." }
+serde_json = "1"
 
 [build-dependencies]
 cbindgen = "0.27"

@@ -14,10 +14,18 @@ def test_fulltext_ci_index_matches_across_case(tmp_path):
         tx.create_fulltext_index_ci("Person", "name")
         tx.commit()
 
+    # Case-insensitive matching is expressed with the toLower idiom...
+    rows = db.query(
+        "MATCH (n:Person) WHERE toLower(n.name) CONTAINS toLower('alice') "
+        "RETURN n.name AS name"
+    )
+    assert [r["name"] for r in rows] == ["Alice Smith"]
+
+    # ...an index never changes results, so plain CONTAINS stays case-sensitive.
     rows = db.query(
         "MATCH (n:Person) WHERE n.name CONTAINS 'alice' RETURN n.name AS name"
     )
-    assert [r["name"] for r in rows] == ["Alice Smith"]
+    assert len(rows) == 0
 
     db.close()
 

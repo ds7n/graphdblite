@@ -18,6 +18,9 @@ function freshDb(name = 'db.sqlite') {
   return { db, path, cleanup: () => rmSync(dir, { recursive: true, force: true }) };
 }
 
+const NESTED = 'a Write transaction is already active; nested transactions are not supported';
+const FINISHED = { message: 'transaction is finished' };
+
 function personCount(qrunner) {
   const rows = qrunner.query('MATCH (n:Person) RETURN count(n) AS c');
   // count returns BigInt-safe int64; coerce.
@@ -68,8 +71,8 @@ test('BC-04 — nested begin returns an error; first tx still usable', () => {
   const { db, cleanup } = freshDb();
   try {
     const tx = db.beginWrite();
-    assert.throws(() => db.beginWrite());
-    assert.throws(() => db.beginRead());
+    assert.throws(() => db.beginWrite(), { message: new RegExp(`^transaction error: begin_write: ${NESTED}`) });
+    assert.throws(() => db.beginRead(), { message: new RegExp(`^transaction error: begin_read: ${NESTED}`) });
     tx.execute("CREATE (n:Person {name: 'Alice'})");
     tx.commit();
     assert.equal(personCount(db), 1);
@@ -81,7 +84,11 @@ test('BC-05 — write inside a read transaction returns an error', () => {
   try {
     const tx = db.beginRead();
     try {
-      assert.throws(() => tx.query("CREATE (n:Person {name: 'Alice'})"));
+      assert.throws(() => tx.query("CREATE (n:Person {name: 'Alice'})"), {
+        message: /^transaction error: write operations are not permitted inside a read transaction/,
+      });
+      // The read transaction stays usable.
+      assert.equal(personCount(tx), 0);
     } finally {
       tx.commit();
     }
@@ -95,7 +102,17 @@ test('BC-06 — double commit returns an error', () => {
     const tx = db.beginWrite();
     tx.execute("CREATE (n:Person {name: 'Alice'})");
     tx.commit();
-    assert.throws(() => tx.commit());
+    // The transaction object guards itself: a finished object can never
+    // commit or roll back whatever transaction is open now, so the core's
+    // "no active transaction" error is not reachable through this API.
+    assert.throws(() => tx.commit(), FINISHED);
+    assert.throws(() => tx.rollback(), FINISHED);
+    // A later transaction is unaffected by the stale object.
+    const tx2 = db.beginWrite();
+    assert.throws(() => tx.commit(), FINISHED);
+    tx2.execute("CREATE (n:Person {name: 'Bob'})");
+    tx2.commit();
+    assert.equal(personCount(db), 2);
   } finally { db.close(); cleanup(); }
 });
 
@@ -105,13 +122,14 @@ test('BC-07 — operations on a finished transaction return an error', () => {
     const txC = db.beginWrite();
     txC.execute("CREATE (n:Person {name: 'Alice'})");
     txC.commit();
-    assert.throws(() => txC.execute("CREATE (n:Person {name: 'Bob'})"));
-    assert.throws(() => txC.rollback());
+    assert.throws(() => txC.execute("CREATE (n:Person {name: 'Bob'})"), FINISHED);
+    assert.throws(() => txC.rollback(), FINISHED);
 
     const txR = db.beginWrite();
     txR.execute("CREATE (n:Person {name: 'Carol'})");
     txR.rollback();
-    assert.throws(() => txR.execute("CREATE (n:Person {name: 'Dan'})"));
+    assert.throws(() => txR.execute("CREATE (n:Person {name: 'Dan'})"), FINISHED);
+    assert.equal(personCount(db), 1);
   } finally { db.close(); cleanup(); }
 });
 
@@ -140,8 +158,7 @@ test('BC-09 — closing the DB with an open tx does not corrupt the file', () =>
     const db = new gdb.Database(path);
     const tx = db.beginWrite();
     tx.execute("CREATE (n:Person {name: 'Lost'})");
-    // Close without commit — Drop on the tx rolls back; close drops the
-    // RustDatabase, whose own Drop is a defensive backstop.
+    // Close without commit: close() rolls the open transaction back.
     db.close();
     // Reopen and verify
     const db2 = new gdb.Database(path);
@@ -153,4 +170,20 @@ test('BC-09 — closing the DB with an open tx does not corrupt the file', () =>
       assert.equal(personCount(db2), 1);
     } finally { db2.close(); }
   } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('BC-13: a failed statement inside a transaction is rolled back alone', () => {
+  const { db, cleanup } = freshDb();
+  try {
+    const tx = db.beginWrite();
+    tx.execute("CREATE (n:Person {name: 'Kept'})");
+    assert.throws(
+      () => tx.execute("UNWIND [1, 'a'] AS i CREATE (:Person {name: 'Lost'}) RETURN i - 1 AS x"),
+      { message: /^TypeError\(InvalidArgumentType\)/ },
+    );
+    tx.execute("CREATE (n:Person {name: 'After'})");
+    tx.commit();
+    const names = db.query('MATCH (p:Person) RETURN p.name AS n ORDER BY n').map(r => r.n);
+    assert.deepEqual(names, ['After', 'Kept']);
+  } finally { db.close(); cleanup(); }
 });

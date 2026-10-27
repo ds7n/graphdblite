@@ -28,20 +28,29 @@ pub(in crate::cypher::executor) fn exec_scan(
     Ok(records)
 }
 
+/// Run an `IdLookup`: the node whose id equals `value_expr` (evaluated
+/// against `record`, the correlated outer row). `bound` is the node the
+/// alias is already bound to in an enclosing scope, if any; a different id
+/// then matches nothing.
 pub(in crate::cypher::executor) fn exec_id_lookup(
     conn: &Connection,
     alias: &str,
     value_expr: &Expr,
     record: &NamedRecord,
+    bound: Option<NodeId>,
 ) -> Result<Vec<NamedRecord>> {
     let evaluated = eval_expr(value_expr, record, crate::cypher::eval::EvalCx::new(conn))?;
+    // `id(n) = 2.0` holds for node 2 (Cypher numeric equality). Anything that
+    // cannot equal a node id (negative, fractional, null, non-numeric) yields
+    // zero rows rather than an error, like an unmatched WHERE predicate.
     let id = match evaluated {
         Value::I64(n) if n >= 0 => NodeId(n as u64),
-        // Anything else (negative, null, non-integer, error) yields zero
-        // rows rather than an error — matches the semantics of an
-        // unmatched WHERE predicate.
+        Value::F64(f) if f >= 0.0 && f.fract() == 0.0 && f < i64::MAX as f64 => NodeId(f as u64),
         _ => return Ok(Vec::new()),
     };
+    if bound.is_some_and(|b| b != id) {
+        return Ok(Vec::new());
+    }
     match node::get_node(conn, id) {
         Ok(n) => Ok(vec![node_to_record(&n, alias)]),
         Err(GraphError::NodeNotFound { .. }) => Ok(Vec::new()),
@@ -49,6 +58,28 @@ pub(in crate::cypher::executor) fn exec_id_lookup(
     }
 }
 
+/// Whether a candidate row passes a leaf operator's residual filter.
+/// The predicate may reference variables of the enclosing (correlated)
+/// scope, so it is evaluated over `outer` merged with the candidate.
+fn residual_passes(
+    conn: &Connection,
+    filter: Option<&Expr>,
+    candidate: &NamedRecord,
+    outer: &NamedRecord,
+) -> Result<bool> {
+    let Some(filter) = filter else {
+        return Ok(true);
+    };
+    let cx = crate::cypher::eval::EvalCx::new(conn);
+    if outer.is_empty() {
+        return eval_predicate(filter, candidate, cx);
+    }
+    eval_predicate(filter, &merge_outer(outer, candidate), cx)
+}
+
+/// Run a `FullTextLookup`. `record` is the correlated outer row (empty at
+/// top level): the term and the residual filter are evaluated against it.
+/// `bound` restricts the result to the node the alias is already bound to.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn exec_fulltext_lookup(
     conn: &Connection,
@@ -56,27 +87,28 @@ pub(crate) fn exec_fulltext_lookup(
     alias: &str,
     property: &str,
     op: crate::cypher::ir::FullTextOp,
+    case_insensitive: bool,
     term_expr: &Expr,
     remaining_filters: Option<&Expr>,
     record: &NamedRecord,
+    bound: Option<NodeId>,
 ) -> Result<Vec<NamedRecord>> {
     let evaluated = eval_expr(term_expr, record, crate::cypher::eval::EvalCx::new(conn))?;
-    let term = match evaluated {
-        Value::String(s) => s,
-        Value::Null => return Ok(Vec::new()),
-        other => {
-            return Err(GraphError::type_error(
-                QueryPhase::Runtime,
-                format!(
-                    "fulltext predicate on '{}' requires a String term, got {}",
-                    property,
-                    fts_value_type_name(&other),
-                ),
-            ));
-        }
+    // A non-string term makes `CONTAINS` / `STARTS WITH` / `ENDS WITH` (and
+    // `toLower(<non-string>)`) null on every row, exactly as the label scan
+    // this lookup replaces would evaluate it: no rows, not an error.
+    let Value::String(term) = evaluated else {
+        return Ok(Vec::new());
     };
 
-    let candidates = crate::fts::fulltext_lookup(conn, label, property, &term)?;
+    // The FTS index only narrows candidates; `fts_predicate_matches` decides.
+    // A case-insensitive lookup with non-ASCII text could disagree with Rust's
+    // `to_lowercase` (FTS5 uses its own Unicode folding), so scan instead.
+    let candidates = if case_insensitive && !term.is_ascii() {
+        None
+    } else {
+        crate::fts::fulltext_lookup(conn, label, property, &term)?
+    };
     let scored_ids = match candidates {
         Some(rows) => rows,
         None => {
@@ -88,18 +120,28 @@ pub(crate) fn exec_fulltext_lookup(
                 alias,
                 property,
                 op,
+                case_insensitive,
                 &term,
                 remaining_filters,
+                record,
+                bound,
             );
         }
     };
 
     let mut records = Vec::new();
     for (id, rank) in scored_ids {
+        if bound.is_some_and(|b| b != id) {
+            continue;
+        }
         let n = node::get_node(conn, id)?;
-        // Anchored post-filter: CONTAINS needs no check (trigram is exact);
-        // STARTS WITH / ENDS WITH need a position check.
-        if !fts_anchor_matches(&n.properties, property, op, &term) {
+        // Re-check every candidate with the exact predicate: anchored ops need
+        // a position check, and a case-insensitive index returns candidates
+        // that a case-sensitive predicate must reject (and vice versa).
+        let Some(Value::String(s)) = n.properties.get(property) else {
+            continue;
+        };
+        if !fts_predicate_matches(s, op, case_insensitive, &term) {
             continue;
         }
         let mut rec = node_to_record(&n, alias);
@@ -108,99 +150,83 @@ pub(crate) fn exec_fulltext_lookup(
         // user-facing convention is higher = better, matching the
         // `fts.search` procedure path.
         rec.set(format!("{alias}.__fts_score"), Value::F64(-rank));
-        if let Some(filter) = remaining_filters {
-            if !eval_predicate(filter, &rec, crate::cypher::eval::EvalCx::new(conn))? {
-                continue;
-            }
+        if !residual_passes(conn, remaining_filters, &rec, record)? {
+            continue;
         }
         records.push(rec);
     }
     Ok(records)
 }
 
-/// Returns true if the node's property value satisfies the anchored string op.
-///
-/// For `Contains` always returns true — the trigram lookup guarantees the
-/// substring is present. For `StartsWith`/`EndsWith` we re-check position.
-fn fts_anchor_matches(
-    properties: &crate::types::Properties,
-    property: &str,
+/// Evaluate the string predicate a `FullTextLookup` stands for:
+/// `s <op> term` (case-sensitive), or `toLower(s) <op> toLower(term)`.
+fn fts_predicate_matches(
+    s: &str,
     op: crate::cypher::ir::FullTextOp,
+    case_insensitive: bool,
     term: &str,
 ) -> bool {
     use crate::cypher::ir::FullTextOp;
-    let Some(Value::String(s)) = properties.get(property) else {
-        return false;
+    let (s, term): (std::borrow::Cow<str>, std::borrow::Cow<str>) = if case_insensitive {
+        (s.to_lowercase().into(), term.to_lowercase().into())
+    } else {
+        (s.into(), term.into())
     };
     match op {
-        FullTextOp::Contains => true,
-        FullTextOp::StartsWith => s.starts_with(term),
-        FullTextOp::EndsWith => s.ends_with(term),
+        FullTextOp::Contains => s.contains(term.as_ref()),
+        FullTextOp::StartsWith => s.starts_with(term.as_ref()),
+        FullTextOp::EndsWith => s.ends_with(term.as_ref()),
     }
 }
 
 /// Fallback for when the term is below the trigram floor (<3 codepoints).
 /// Performs a full label scan with per-row string predicate evaluation.
+#[allow(clippy::too_many_arguments)]
 fn exec_fulltext_fallback(
     conn: &Connection,
     label: &str,
     alias: &str,
     property: &str,
     op: crate::cypher::ir::FullTextOp,
+    case_insensitive: bool,
     term: &str,
     remaining_filters: Option<&Expr>,
+    outer: &NamedRecord,
+    bound: Option<NodeId>,
 ) -> Result<Vec<NamedRecord>> {
-    use crate::cypher::ir::FullTextOp;
-    let nodes = node::find_nodes_by_label(conn, label)?;
+    let nodes = match bound {
+        Some(id) => match node::get_node(conn, id) {
+            Ok(n) if n.labels.iter().any(|l| l == label) => vec![n],
+            Ok(_) | Err(GraphError::NodeNotFound { .. }) => Vec::new(),
+            Err(e) => return Err(e),
+        },
+        None => node::find_nodes_by_label(conn, label)?,
+    };
     let mut records = Vec::new();
     for n in nodes {
         let Some(Value::String(s)) = n.properties.get(property) else {
             continue;
         };
-        let matches = match op {
-            FullTextOp::Contains => s.contains(term),
-            FullTextOp::StartsWith => s.starts_with(term),
-            FullTextOp::EndsWith => s.ends_with(term),
-        };
-        if !matches {
+        if !fts_predicate_matches(s, op, case_insensitive, term) {
             continue;
         }
         let mut rec = node_to_record(&n, alias);
         // Trigram-floor fallback rows still matched via an FTS-eligible op,
         // so emit a concrete 0.0 score rather than leaving `score(n)` NULL.
         rec.set(format!("{alias}.__fts_score"), Value::F64(0.0));
-        if let Some(filter) = remaining_filters {
-            if !eval_predicate(filter, &rec, crate::cypher::eval::EvalCx::new(conn))? {
-                continue;
-            }
+        if !residual_passes(conn, remaining_filters, &rec, outer)? {
+            continue;
         }
         records.push(rec);
     }
     Ok(records)
 }
 
-/// Returns a human-readable type name for a `Value` — used in FTS type-error messages.
-fn fts_value_type_name(v: &Value) -> &'static str {
-    match v {
-        Value::Null => "Null",
-        Value::Bool(_) => "Boolean",
-        Value::I64(_) => "Integer",
-        Value::F64(_) => "Float",
-        Value::String(_) => "String",
-        Value::List(_) => "List",
-        Value::Map(_) => "Map",
-        Value::Node(_) => "Node",
-        Value::Edge(_) => "Relationship",
-        Value::Path(_) => "Path",
-        Value::Date(_) => "Date",
-        Value::Time(_) => "Time",
-        Value::LocalTime(_) => "LocalTime",
-        Value::DateTime(_) => "DateTime",
-        Value::LocalDateTime(_) => "LocalDateTime",
-        Value::Duration(_) => "Duration",
-    }
-}
-
+/// Run an `IndexLookup`. `outer` is the correlated outer row (empty at top
+/// level), visible to the residual filter; `bound` restricts the result to
+/// the node the alias is already bound to. Equality follows Cypher
+/// semantics either way (see [`index_lookup_ids`]).
+#[allow(clippy::too_many_arguments)]
 pub(in crate::cypher::executor) fn exec_index_lookup(
     conn: &Connection,
     label: &str,
@@ -208,8 +234,13 @@ pub(in crate::cypher::executor) fn exec_index_lookup(
     index_properties: &[String],
     lookups: &[(String, LookupKey)],
     remaining_filters: Option<&Expr>,
+    outer: &NamedRecord,
+    bound: Option<NodeId>,
 ) -> Result<Vec<NamedRecord>> {
-    let node_ids = index_lookup_ids(conn, label, index_properties, lookups)?;
+    let mut node_ids = index_lookup_ids(conn, label, index_properties, lookups)?;
+    if let Some(b) = bound {
+        node_ids.retain(|id| *id == b);
+    }
     let mut records = Vec::new();
 
     for id in node_ids {
@@ -223,13 +254,9 @@ pub(in crate::cypher::executor) fn exec_index_lookup(
             continue;
         }
         let rec = node_to_record(&n, alias);
-
-        if let Some(filter) = remaining_filters {
-            if !eval_predicate(filter, &rec, crate::cypher::eval::EvalCx::new(conn))? {
-                continue;
-            }
+        if !residual_passes(conn, remaining_filters, &rec, outer)? {
+            continue;
         }
-
         records.push(rec);
     }
 
@@ -251,73 +278,357 @@ pub(crate) fn index_lookup_ids(
         .map(|(_, k)| crate::cypher::executor::resolve_lookup_key(k))
         .collect::<Result<_>>()?;
     let full_props_refs: Vec<&str> = index_properties.iter().map(String::as_str).collect();
-    index::composite_index_prefix_lookup(conn, label, &full_props_refs, &values)
-}
 
-#[allow(clippy::too_many_arguments)]
-pub(in crate::cypher::executor) fn exec_expand(
-    conn: &Connection,
-    input: &LogicalOp,
-    src_alias: &str,
-    dst_alias: &str,
-    rel_alias: Option<&str>,
-    edge_types: &[String],
-    direction: Direction,
-    min_hops: u32,
-    max_hops: u32,
-    var_length: bool,
-    var_length_prop_filters: &HashMap<String, Expr>,
-    result_cap: Option<usize>,
-    ctx: &ExecContext,
-) -> Result<Vec<NamedRecord>> {
-    let input_records = exec(conn, input, ctx)?;
-    let mut results = Vec::new();
-
-    let prop_filter_values: HashMap<String, Value> = var_length_prop_filters
-        .iter()
-        .filter_map(|(k, expr)| match &expr.kind {
-            ExprKind::Literal(lit) => Some((k.clone(), literal_to_value(lit))),
-            _ => None,
-        })
-        .collect();
-    for rec in &input_records {
-        if let Some(cap) = result_cap {
-            if results.len() >= cap {
-                break;
+    // Cypher equality semantics, which the index (keyed on exact msgpack bytes)
+    // does not provide on its own:
+    // - `x = null` (and anything containing null / NaN) is never true;
+    // - integers and floats compare numerically (`1 = 1.0`, `0.0 = -0.0`).
+    // Expand each value into every stored representation it is equal to and
+    // union the lookups. Pathologically large expansions fall back to a label
+    // scan with an explicit equality check.
+    let mut per_value: Vec<Vec<Value>> = Vec::with_capacity(values.len());
+    let mut combos: usize = 1;
+    for v in &values {
+        match index_equality_variants(v) {
+            EqVariants::Never => return Ok(Vec::new()),
+            EqVariants::TooMany => combos = usize::MAX,
+            EqVariants::Values(vs) => {
+                combos = combos.saturating_mul(vs.len());
+                per_value.push(vs);
             }
         }
+    }
+    if combos > MAX_INDEX_LOOKUP_VARIANTS {
+        let props: Vec<&str> = lookups.iter().map(|(p, _)| p.as_str()).collect();
+        return Ok(node::find_nodes_by_label(conn, label)?
+            .into_iter()
+            .filter(|n| {
+                props.iter().zip(&values).all(|(p, v)| {
+                    n.properties
+                        .get(*p)
+                        .is_some_and(|stored| crate::cypher::eval::cypher_equals(stored, v))
+                })
+            })
+            .map(|n| n.id)
+            .collect());
+    }
+    if combos == 1 {
+        let single: Vec<Value> = per_value.into_iter().map(|mut v| v.remove(0)).collect();
+        return index::composite_index_prefix_lookup(conn, label, &full_props_refs, &single);
+    }
+    let mut seen = std::collections::HashSet::new();
+    let mut out = Vec::new();
+    let mut combo: Vec<Value> = Vec::with_capacity(per_value.len());
+    fn walk(
+        conn: &Connection,
+        label: &str,
+        props: &[&str],
+        per_value: &[Vec<Value>],
+        combo: &mut Vec<Value>,
+        seen: &mut std::collections::HashSet<NodeId>,
+        out: &mut Vec<NodeId>,
+    ) -> Result<()> {
+        if combo.len() == per_value.len() {
+            for id in index::composite_index_prefix_lookup(conn, label, props, combo)? {
+                if seen.insert(id) {
+                    out.push(id);
+                }
+            }
+            return Ok(());
+        }
+        for v in &per_value[combo.len()] {
+            combo.push(v.clone());
+            walk(conn, label, props, per_value, combo, seen, out)?;
+            combo.pop();
+        }
+        Ok(())
+    }
+    walk(
+        conn,
+        label,
+        &full_props_refs,
+        &per_value,
+        &mut combo,
+        &mut seen,
+        &mut out,
+    )?;
+    Ok(out)
+}
+
+/// Upper bound on the number of exact-representation lookups a single index
+/// probe may expand into (see [`index_equality_variants`]).
+const MAX_INDEX_LOOKUP_VARIANTS: usize = 64;
+
+/// Result of [`index_equality_variants`].
+enum EqVariants {
+    /// Nothing is Cypher-equal to the value (null, NaN, or a list containing one).
+    Never,
+    /// Every exact stored representation that is Cypher-equal to the value.
+    Values(Vec<Value>),
+    /// Too many representations to enumerate; the caller should scan.
+    TooMany,
+}
+
+/// Every stored value that is Cypher-equal to `v` (e.g. `1` is equal to the
+/// stored `1` and `1.0`; a list expands element-wise).
+fn index_equality_variants(v: &Value) -> EqVariants {
+    const EXACT_F64_INT_LIMIT: i64 = 1 << 53;
+    match v {
+        Value::Null => EqVariants::Never,
+        Value::F64(f) if f.is_nan() => EqVariants::Never,
+        Value::I64(i) => {
+            let mut out = vec![Value::I64(*i)];
+            if i.unsigned_abs() <= EXACT_F64_INT_LIMIT as u64 {
+                out.push(Value::F64(*i as f64));
+                if *i == 0 {
+                    out.push(Value::F64(-0.0));
+                }
+            }
+            EqVariants::Values(out)
+        }
+        Value::F64(f) => {
+            let mut out = vec![Value::F64(*f)];
+            if *f == 0.0 {
+                out.push(Value::F64(if f.is_sign_negative() { 0.0 } else { -0.0 }));
+            }
+            if f.fract() == 0.0 && f.abs() <= EXACT_F64_INT_LIMIT as f64 {
+                out.push(Value::I64(*f as i64));
+            }
+            EqVariants::Values(out)
+        }
+        Value::List(items) => {
+            let mut acc: Vec<Vec<Value>> = vec![Vec::with_capacity(items.len())];
+            for item in items {
+                let vs = match index_equality_variants(item) {
+                    EqVariants::Values(vs) => vs,
+                    other => return other,
+                };
+                if acc.len().saturating_mul(vs.len()) > MAX_INDEX_LOOKUP_VARIANTS {
+                    return EqVariants::TooMany;
+                }
+                let mut next = Vec::with_capacity(acc.len() * vs.len());
+                for prefix in &acc {
+                    for alt in &vs {
+                        let mut p = prefix.clone();
+                        p.push(alt.clone());
+                        next.push(p);
+                    }
+                }
+                acc = next;
+            }
+            EqVariants::Values(acc.into_iter().map(Value::List).collect())
+        }
+        other => EqVariants::Values(vec![other.clone()]),
+    }
+}
+
+/// Run the materialized `Expand` operator (`plan` must be one).
+pub(in crate::cypher::executor) fn exec_expand(
+    conn: &Connection,
+    plan: &LogicalOp,
+    ctx: &ExecContext,
+) -> Result<Vec<NamedRecord>> {
+    let LogicalOp::Expand { input, .. } = plan else {
+        unreachable!("exec_expand called with {}", plan.op_name());
+    };
+    let input_records = exec(conn, input, ctx)?;
+    expand_all(conn, plan, &input_records, &NamedRecord::new(), ctx)
+}
+
+/// Expand every input record through the `Expand` operator `plan`. `outer`
+/// is the enclosing correlated row (empty at top level): it supplies
+/// variables for relationship property maps and pre-bound destination /
+/// relationship variables. Shared by the materialized and correlated
+/// executors so both apply identical semantics.
+pub(in crate::cypher::executor) fn expand_all(
+    conn: &Connection,
+    plan: &LogicalOp,
+    input_records: &[NamedRecord],
+    outer: &NamedRecord,
+    ctx: &ExecContext,
+) -> Result<Vec<NamedRecord>> {
+    let LogicalOp::Expand {
+        src_alias,
+        dst_alias,
+        rel_alias,
+        edge_types,
+        direction,
+        min_hops,
+        max_hops,
+        var_length,
+        var_length_prop_filters,
+        result_cap,
+        ..
+    } = plan
+    else {
+        unreachable!("expand_all called with {}", plan.op_name());
+    };
+    let result_cap = result_cap.map(|c| c as usize);
+    let mut results = Vec::new();
+
+    for rec in input_records {
+        if result_cap.is_some_and(|cap| results.len() >= cap) {
+            break;
+        }
+        // Relationship property constraints on a var-length pattern may be
+        // any expression (parameters, variables, arithmetic); evaluate them
+        // against the current row rather than keeping only literals.
+        let prop_filter_values = if var_length_prop_filters.is_empty() {
+            HashMap::new()
+        } else if outer.is_empty() {
+            eval_var_length_prop_filters(conn, var_length_prop_filters, rec)?
+        } else {
+            eval_var_length_prop_filters(conn, var_length_prop_filters, &merge_outer(outer, rec))?
+        };
         let per_call_cap = result_cap.map(|c| c.saturating_sub(results.len()));
         let expanded = expand_record(
             conn,
             rec,
+            outer,
             src_alias,
             dst_alias,
-            rel_alias,
+            rel_alias.as_deref(),
             edge_types,
-            direction,
-            min_hops,
-            max_hops,
-            var_length,
+            *direction,
+            *min_hops,
+            *max_hops,
+            *var_length,
             &prop_filter_values,
             per_call_cap,
             ctx.max_traversal_work,
         )?;
         results.extend(expanded);
+        // Stop as soon as the cap is passed, not after every input row.
+        check_row_limit(&results, ctx)?;
     }
 
     check_row_limit(&results, ctx)?;
     Ok(results)
 }
 
-/// Expand one input record into zero or more output records. Handles every
-/// shape `exec_expand` does — labeled or untyped, single-hop or var-length,
-/// any [`Direction`] including [`Direction::Both`] with parallel edges —
-/// so callers (the materialized `exec_expand`, the slot-path `ExpandIter`)
-/// share the same traversal semantics.
+/// Evaluate the relationship property map of a var-length pattern against
+/// `rec`. Every entry is kept: dropping non-literal entries would silently
+/// widen the match.
+pub(crate) fn eval_var_length_prop_filters(
+    conn: &Connection,
+    filters: &HashMap<String, Expr>,
+    rec: &NamedRecord,
+) -> Result<HashMap<String, Value>> {
+    let mut out = HashMap::with_capacity(filters.len());
+    for (k, expr) in filters {
+        let v = match &expr.kind {
+            ExprKind::Literal(lit) => literal_to_value(lit),
+            _ => eval_expr(expr, rec, crate::cypher::eval::EvalCx::new(conn))?,
+        };
+        out.insert(k.clone(), v);
+    }
+    Ok(out)
+}
+
+/// A relationship variable that an Expand finds already bound, either
+/// earlier in the current row or in the enclosing (correlated) scope.
+enum BoundRel {
+    /// Bound to null (e.g. an unmatched OPTIONAL MATCH): nothing matches.
+    Null,
+    /// A single relationship.
+    One(EdgeKey),
+    /// A list of relationships (var-length binding such as
+    /// `WITH [r1, r2] AS rs MATCH ()-[rs*]->()`).
+    List(Vec<Edge>),
+}
+
+/// Look up `alias` as an already-bound relationship in `rec`, then `outer`.
+fn bound_relationship(rec: &NamedRecord, outer: &NamedRecord, alias: &str) -> Option<BoundRel> {
+    for scope in [rec, outer] {
+        // Every relationship binding sets the bare alias; checking it first
+        // keeps the common unbound case allocation-free.
+        let Some(bare) = scope.get(alias) else {
+            continue;
+        };
+        if let Some(key) = flat_edge_key(scope, alias) {
+            return Some(BoundRel::One(key));
+        }
+        match bare {
+            Value::Null => return Some(BoundRel::Null),
+            Value::Edge(e) => return Some(BoundRel::One(edge_key(e))),
+            Value::List(items) if !items.is_empty() => {
+                let edges: Vec<Edge> = items
+                    .iter()
+                    .filter_map(|v| match v {
+                        Value::Edge(e) => Some(e.clone()),
+                        _ => None,
+                    })
+                    .collect();
+                if edges.len() == items.len() {
+                    return Some(BoundRel::List(edges));
+                }
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
+/// Follow a pre-bound relationship list from `src` in `direction`; returns
+/// the node the chain ends at, or `None` if the edges do not form a path
+/// starting at `src`.
+fn walk_bound_edges(src: NodeId, edges: &[Edge], direction: Direction) -> Option<NodeId> {
+    let mut current = src;
+    for e in edges {
+        current = match direction {
+            Direction::Outgoing if e.src == current => e.dst,
+            Direction::Incoming if e.dst == current => e.src,
+            Direction::Both if e.src == current => e.dst,
+            Direction::Both if e.dst == current => e.src,
+            _ => return None,
+        };
+    }
+    Some(current)
+}
+
+/// Load the relationships of a var-length traversal as `Value::Edge`s,
+/// each carrying its parallel-edge `seq`.
+fn steps_to_edges(conn: &Connection, steps: &[edge::PathStep]) -> Result<Vec<Value>> {
+    steps
+        .iter()
+        .map(|step| {
+            let properties = edge::get_edge_properties_at(
+                conn,
+                step.edge_src,
+                step.edge_dst,
+                &step.edge_label,
+                step.edge_seq,
+            )?;
+            Ok(Value::Edge(Edge {
+                src: step.edge_src,
+                dst: step.edge_dst,
+                label: step.edge_label.clone(),
+                seq: step.edge_seq,
+                properties,
+            }))
+        })
+        .collect()
+}
+
+/// Expand one input record into zero or more output records. This is the
+/// single implementation of Expand semantics, shared by the materialized
+/// executor, the correlated executor and the pull-based `ExpandIter`:
+///
+/// - labeled or untyped relationships, single-hop or var-length;
+/// - every stored edge is its own row: parallel edges each appear, and
+///   [`Direction::Both`] yields edges stored either way (a self-loop once);
+/// - relationship uniqueness against relationships already bound in `rec`
+///   (earlier segments of the same pattern), keyed on the directed
+///   `(src, dst, type, seq)` identity;
+/// - destination / relationship variables already bound in `rec` or in the
+///   enclosing correlated row `outer` constrain the expansion;
+/// - `result_cap` (LIMIT pushdown) counts only rows that survive every
+///   filter above.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn expand_record(
     conn: &Connection,
     rec: &NamedRecord,
+    outer: &NamedRecord,
     src_alias: &str,
     dst_alias: &str,
     rel_alias: Option<&str>,
@@ -331,180 +642,179 @@ pub(crate) fn expand_record(
     max_traversal_work: u64,
 ) -> Result<Vec<NamedRecord>> {
     let mut results = Vec::new();
-    let src_id = match rec.get(src_alias).and_then(value_to_node_id) {
-        Some(id) => id,
-        _ => return Ok(results),
+    let Some(src_id) = rec.get(src_alias).and_then(value_to_node_id) else {
+        return Ok(results);
     };
+    let capped = |results: &Vec<NamedRecord>| result_cap.is_some_and(|c| results.len() >= c);
 
-    // If no types specified, discover all edge types for this node.
-    // For var-length, pass empty labels so traverse_paths discovers
-    // types at each hop (different nodes may have different edge types).
-    let _owned_labels: Vec<String>;
-    let labels: Vec<&str> = if edge_types.is_empty() {
-        let all = edge::get_all_edge_labels(conn, src_id, direction)?;
-        _owned_labels = all.into_iter().map(|(l, _)| l).collect();
-        _owned_labels.iter().map(|s| s.as_str()).collect()
-    } else {
-        edge_types.iter().map(|s| s.as_str()).collect()
-    };
-    let var_length_labels: Vec<&str> = if edge_types.is_empty() {
-        vec![] // signal traverse_paths to discover per-hop
-    } else {
-        labels.clone()
-    };
-
-    // If the destination alias is already bound in the record (cyclic
-    // pattern like `(a)-[:R]->(b)-[:S]->(a)`), we must only keep
-    // expansions where the destination equals the bound node.
-    let bound_dst_id = rec.get(dst_alias).and_then(value_to_node_id);
+    // A destination already bound, by an earlier element of this pattern
+    // (cycle such as `(a)-[:R]->(b)-[:S]->(a)`) or by the enclosing scope,
+    // keeps only expansions that end there.
+    let bound_dst = rec
+        .get(dst_alias)
+        .and_then(value_to_node_id)
+        .or_else(|| outer.get(dst_alias).and_then(value_to_node_id));
+    let bound_rel = rel_alias.and_then(|ra| bound_relationship(rec, outer, ra));
+    if matches!(bound_rel, Some(BoundRel::Null)) {
+        return Ok(results);
+    }
+    // Relationships already used by this pattern may not be reused.
+    let prior = bound_edge_keys(rec, rel_alias);
 
     if var_length {
+        if let Some(BoundRel::List(edges)) = bound_rel {
+            let Some(dst_id) = walk_bound_edges(src_id, &edges, direction) else {
+                return Ok(results);
+            };
+            if bound_dst.is_some_and(|b| b != dst_id)
+                || edges.iter().any(|e| prior.contains(&edge_key(e)))
+            {
+                return Ok(results);
+            }
+            let mut new_rec = rec.clone();
+            fetch_and_populate(conn, &mut new_rec, dst_id, dst_alias)?;
+            if let Some(ra) = rel_alias {
+                new_rec.set(
+                    ra.to_string(),
+                    Value::List(edges.into_iter().map(Value::Edge).collect()),
+                );
+            }
+            results.push(new_rec);
+            return Ok(results);
+        }
+
+        // An empty type list tells traverse_paths to discover types per hop
+        // (different nodes may have different edge types).
+        let labels: Vec<&str> = edge_types.iter().map(String::as_str).collect();
+        // The cap may only be pushed into the traversal when no path is
+        // dropped afterwards; otherwise it would count rejected paths.
+        let post_filtered = bound_dst.is_some() || !prior.is_empty();
         let paths = edge::traverse_paths(
             conn,
             src_id,
-            &var_length_labels,
+            &labels,
             direction,
             min_hops,
             max_hops,
             var_length_prop_filters,
-            result_cap,
+            if post_filtered { None } else { result_cap },
             max_traversal_work,
         )?;
         for (dst_id, steps) in paths {
-            if let Some(required) = bound_dst_id {
-                if dst_id != required {
-                    continue;
-                }
+            if capped(&results) {
+                break;
+            }
+            if bound_dst.is_some_and(|b| b != dst_id) {
+                continue;
+            }
+            if steps.iter().any(|s| {
+                prior
+                    .iter()
+                    .any(|k| is_edge(k, s.edge_src, s.edge_dst, &s.edge_label, s.edge_seq))
+            }) {
+                continue;
             }
             let mut new_rec = rec.clone();
-            let _dst_node = fetch_and_populate(conn, &mut new_rec, dst_id, dst_alias)?;
-            if let Some(r_alias) = rel_alias {
-                let edge_list: Vec<Value> = steps
-                    .iter()
-                    .map(|step| {
-                        let props = edge::get_edge_properties_at(
-                            conn,
-                            step.edge_src,
-                            step.edge_dst,
-                            &step.edge_label,
-                            step.edge_seq,
-                        )
-                        .unwrap_or_default();
-                        Value::Edge(crate::types::Edge {
-                            src: step.edge_src,
-                            dst: step.edge_dst,
-                            label: step.edge_label.clone(),
-                            properties: props,
-                        })
-                    })
-                    .collect();
-                new_rec.set(r_alias.to_string(), Value::List(edge_list));
+            fetch_and_populate(conn, &mut new_rec, dst_id, dst_alias)?;
+            if let Some(ra) = rel_alias {
+                new_rec.set(ra.to_string(), Value::List(steps_to_edges(conn, &steps)?));
             }
             results.push(new_rec);
         }
-    } else {
-        for &label in &labels {
-            let neighbors = edge::get_neighbors(conn, src_id, label, direction)?;
-            for dst_id in neighbors {
-                if let Some(required) = bound_dst_id {
-                    if dst_id != required {
+        return Ok(results);
+    }
+
+    // Single hop. `emit` turns one stored edge (storage orientation) into an
+    // output row unless a bound destination or relationship uniqueness
+    // rules it out.
+    let mut dst_node: Option<Node> = None;
+    let mut emit = |s: NodeId,
+                    d: NodeId,
+                    label: &str,
+                    seq: u64,
+                    props: &Properties,
+                    results: &mut Vec<NamedRecord>|
+     -> Result<()> {
+        // The far end: for a self-loop both ends are `src`.
+        let dst_id = if s == src_id { d } else { s };
+        if bound_dst.is_some_and(|b| b != dst_id)
+            || prior.iter().any(|k| is_edge(k, s, d, label, seq))
+        {
+            return Ok(());
+        }
+        if dst_node.as_ref().is_none_or(|n| n.id != dst_id) {
+            dst_node = Some(node::get_node(conn, dst_id)?);
+        }
+        let mut new_rec = rec.clone();
+        if let Some(n) = &dst_node {
+            populate_node_bindings(&mut new_rec, n, dst_alias);
+        }
+        if let Some(ra) = rel_alias {
+            new_rec.set(ra.to_string(), Value::String(label.to_string()));
+            bind_edge_fields(&mut new_rec, ra, s, d, label, seq, props);
+        }
+        results.push(new_rec);
+        Ok(())
+    };
+
+    match bound_rel {
+        Some(BoundRel::One((s, d, t, seq))) => {
+            // Only the bound relationship can match: check type and that it
+            // touches `src` in the pattern's direction.
+            if !edge_types.is_empty() && !edge_types.contains(&t) {
+                return Ok(results);
+            }
+            let (s, d) = (NodeId(s), NodeId(d));
+            let touches = match direction {
+                Direction::Outgoing => s == src_id,
+                Direction::Incoming => d == src_id,
+                Direction::Both => s == src_id || d == src_id,
+            };
+            if touches {
+                let props = edge::get_edge_properties_at(conn, s, d, &t, seq)?;
+                emit(s, d, &t, seq, &props, &mut results)?;
+            }
+        }
+        Some(BoundRel::List(_)) | Some(BoundRel::Null) => {}
+        None => {
+            // No types given: follow every type stored on `src`.
+            let discovered: Vec<String> = if edge_types.is_empty() {
+                edge::get_all_edge_labels(conn, src_id, direction)?
+                    .into_iter()
+                    .map(|(l, _)| l)
+                    .collect()
+            } else {
+                Vec::new()
+            };
+            let labels: &[String] = if edge_types.is_empty() {
+                &discovered
+            } else {
+                edge_types
+            };
+            for label in labels {
+                for nbr in edge::get_neighbors(conn, src_id, label, direction)? {
+                    if bound_dst.is_some_and(|b| b != nbr) {
                         continue;
                     }
-                }
-
-                // Fast path when the pattern doesn't bind the relationship:
-                // emit one record per neighbor without scanning edge props
-                // or computing edge direction. Mirrors what
-                // `iter::ExpandIter`'s pre-`expand_record` path used to do.
-                if rel_alias.is_none() {
-                    let dst_node = node::get_node(conn, dst_id)?;
-                    let mut new_rec = rec.clone();
-                    populate_node_bindings(&mut new_rec, &dst_node, dst_alias);
-                    results.push(new_rec);
-                    continue;
-                }
-
-                let (edge_src, edge_dst) = match direction {
-                    Direction::Incoming => (dst_id, src_id),
-                    Direction::Outgoing => (src_id, dst_id),
-                    Direction::Both => {
-                        if edge::edge_exists(conn, src_id, dst_id, label).unwrap_or(false) {
-                            (src_id, dst_id)
-                        } else {
-                            (dst_id, src_id)
+                    for (s, d, seq, props) in edge::hop_edges(conn, src_id, nbr, label, direction)?
+                    {
+                        if capped(&results) {
+                            return Ok(results);
                         }
+                        emit(s, d, label, seq, &props, &mut results)?;
                     }
-                };
-
-                let all_edges = edge::get_all_edge_props(conn, edge_src, edge_dst, label)?;
-                let edge_list: Vec<(u64, Properties)> = if all_edges.is_empty() {
-                    vec![(0, Properties::new())]
-                } else {
-                    all_edges
-                };
-
-                let dst_node = node::get_node(conn, dst_id)?;
-
-                for (edge_seq, edge_props) in &edge_list {
-                    let mut new_rec = rec.clone();
-                    populate_node_bindings(&mut new_rec, &dst_node, dst_alias);
-
-                    if let Some(r_alias) = rel_alias {
-                        let (es, ed) = (edge_src.0 as i64, edge_dst.0 as i64);
-                        let edge_key = (es.min(ed), es.max(ed), label, *edge_seq);
-                        let mut duplicate = false;
-                        for (key, _val) in &new_rec.fields {
-                            if key.ends_with(".__src") && key != &format!("{r_alias}.__src") {
-                                let other_alias = &key[..key.len() - 6];
-                                let other_seq =
-                                    match new_rec.get(&format!("{other_alias}.__edge_seq")) {
-                                        Some(Value::I64(s)) => *s as u64,
-                                        _ => 0,
-                                    };
-                                if let (
-                                    Some(Value::I64(os)),
-                                    Some(Value::I64(od)),
-                                    Some(Value::String(ot)),
-                                ) = (
-                                    new_rec.get(key),
-                                    new_rec.get(&format!("{other_alias}.__dst")),
-                                    new_rec.get(&format!("{other_alias}.__type")),
-                                ) {
-                                    let other_key =
-                                        ((*os).min(*od), (*os).max(*od), ot.as_str(), other_seq);
-                                    if other_key == edge_key {
-                                        duplicate = true;
-                                        break;
-                                    }
-                                }
-                            }
-                        }
-                        if duplicate {
-                            continue;
-                        }
-
-                        new_rec.set(r_alias.to_string(), Value::String(label.to_string()));
-                        new_rec.set(format!("{r_alias}.__src"), Value::I64(edge_src.0 as i64));
-                        new_rec.set(format!("{r_alias}.__dst"), Value::I64(edge_dst.0 as i64));
-                        new_rec.set(
-                            format!("{r_alias}.__type"),
-                            Value::String(label.to_string()),
-                        );
-                        new_rec.set(
-                            format!("{r_alias}.__edge_seq"),
-                            Value::I64(*edge_seq as i64),
-                        );
-                        for (key, val) in edge_props {
-                            new_rec.set(format!("{r_alias}.{key}"), val.clone());
-                        }
-                    }
-                    results.push(new_rec);
                 }
             }
         }
     }
 
     Ok(results)
+}
+
+/// Whether `key` identifies the stored edge `(s, d, label, seq)`
+/// (allocation-free [`EdgeKey`] comparison).
+fn is_edge(key: &EdgeKey, s: NodeId, d: NodeId, label: &str, seq: u64) -> bool {
+    key.0 == s.0 && key.1 == d.0 && key.3 == seq && key.2 == label
 }
 
 pub(in crate::cypher::executor) fn exec_cross_product(
@@ -521,6 +831,7 @@ pub(in crate::cypher::executor) fn exec_cross_product(
     let mut results = Vec::new();
     for l in &left_records {
         let right_records = exec(conn, right, ctx)?;
+        let _transient = TransientRows::of(&right_records);
         for r in &right_records {
             let mut combined = l.clone();
             for (key, val) in &r.fields {
@@ -531,69 +842,78 @@ pub(in crate::cypher::executor) fn exec_cross_product(
             if same_match && has_duplicate_relationships(&combined) {
                 continue;
             }
-            results.push(combined);
-            if ctx.max_result_rows > 0 && results.len() > ctx.max_result_rows {
-                return Err(GraphError::constraint(format!(
-                    "cross product exceeded maximum of {} rows",
-                    ctx.max_result_rows
-                )));
-            }
+            push_capped(&mut results, combined, ctx)?;
         }
     }
     Ok(results)
 }
 
-/// Collect edge identities from flat relationship bindings in a record
-/// (`alias.__src`, `alias.__dst`, `alias.__type`). Returns a vec of
-/// `(min(src,dst), max(src,dst), type, seq)` tuples.
-pub(in crate::cypher::executor) fn collect_flat_edge_ids(
+/// Directed identity of a stored relationship: `(src, dst, type, seq)`.
+/// Relationship uniqueness compares these, so `a->b` and `b->a` are
+/// different relationships, as are two parallel `a->b` edges.
+pub(in crate::cypher::executor) type EdgeKey = (u64, u64, String, u64);
+
+/// The [`EdgeKey`] of a relationship value.
+pub(in crate::cypher::executor) fn edge_key(e: &Edge) -> EdgeKey {
+    (e.src.0, e.dst.0, e.label.clone(), e.seq)
+}
+
+/// The [`EdgeKey`] of a relationship bound flat under `alias` in `rec`
+/// (`alias.__src` / `__dst` / `__type` / `__edge_seq`), if any.
+fn flat_edge_key(rec: &NamedRecord, alias: &str) -> Option<EdgeKey> {
+    let (Some(Value::I64(s)), Some(Value::I64(d)), Some(Value::String(t))) = (
+        rec.get(&format!("{alias}.__src")),
+        rec.get(&format!("{alias}.__dst")),
+        rec.get(&format!("{alias}.__type")),
+    ) else {
+        return None;
+    };
+    let seq = match rec.get(&format!("{alias}.__edge_seq")) {
+        Some(Value::I64(s)) => *s as u64,
+        _ => 0,
+    };
+    Some((*s as u64, *d as u64, t.clone(), seq))
+}
+
+/// Keys of the relationships bound by single-hop pattern elements in `rec`
+/// (flat `alias.__src` bindings), in field order.
+fn flat_edge_keys(rec: &NamedRecord, skip: Option<&str>) -> Vec<EdgeKey> {
+    rec.fields
+        .keys()
+        .filter_map(|key| key.strip_suffix(".__src"))
+        .filter(|alias| Some(*alias) != skip)
+        .filter_map(|alias| flat_edge_key(rec, alias))
+        .collect()
+}
+
+/// Every relationship bound in `rec` other than `skip`: single-hop flat
+/// bindings plus the edges of var-length list bindings. Used to enforce
+/// relationship uniqueness across the segments of one pattern.
+pub(in crate::cypher::executor) fn bound_edge_keys(
     rec: &NamedRecord,
-) -> Vec<(i64, i64, String, u64)> {
-    let mut edges = Vec::new();
-    for (key, _) in &rec.fields {
-        if key.ends_with(".__src") {
-            let alias = &key[..key.len() - 6];
-            let seq = match rec.get(&format!("{alias}.__edge_seq")) {
-                Some(Value::I64(s)) => *s as u64,
-                _ => 0,
-            };
-            if let (Some(Value::I64(s)), Some(Value::I64(d)), Some(Value::String(t))) = (
-                rec.get(key),
-                rec.get(&format!("{alias}.__dst")),
-                rec.get(&format!("{alias}.__type")),
-            ) {
-                edges.push(((*s).min(*d), (*s).max(*d), t.clone(), seq));
-            }
+    skip: Option<&str>,
+) -> Vec<EdgeKey> {
+    let mut keys = flat_edge_keys(rec, skip);
+    for (name, val) in &rec.fields {
+        if Some(name.as_str()) == skip {
+            continue;
+        }
+        if let Value::List(items) = val {
+            keys.extend(items.iter().filter_map(|v| match v {
+                Value::Edge(e) => Some(edge_key(e)),
+                _ => None,
+            }));
         }
     }
-    edges
+    keys
 }
 
 /// Check if a record contains two relationship bindings that refer to the
-/// same underlying edge (same normalized src/dst/type/seq).
+/// same underlying edge (same directed src/dst/type/seq).
 pub(in crate::cypher::executor) fn has_duplicate_relationships(rec: &NamedRecord) -> bool {
-    let mut seen: Vec<(i64, i64, String, u64)> = Vec::new();
-    for (key, _) in &rec.fields {
-        if key.ends_with(".__src") {
-            let alias = &key[..key.len() - 6];
-            let seq = match rec.get(&format!("{alias}.__edge_seq")) {
-                Some(Value::I64(s)) => *s as u64,
-                _ => 0,
-            };
-            if let (Some(Value::I64(s)), Some(Value::I64(d)), Some(Value::String(t))) = (
-                rec.get(key),
-                rec.get(&format!("{alias}.__dst")),
-                rec.get(&format!("{alias}.__type")),
-            ) {
-                let edge_key = ((*s).min(*d), (*s).max(*d), t.clone(), seq);
-                if seen.contains(&edge_key) {
-                    return true;
-                }
-                seen.push(edge_key);
-            }
-        }
-    }
-    false
+    let keys = flat_edge_keys(rec, None);
+    let mut seen = std::collections::HashSet::with_capacity(keys.len());
+    keys.into_iter().any(|k| !seen.insert(k))
 }
 
 pub(in crate::cypher::executor) fn exec_filter(
@@ -643,6 +963,10 @@ pub(crate) fn build_compound_binding(rec: &dyn RecordView, var: &str) -> Option<
         let src = *src;
         let dst = *dst;
         let label = label.clone();
+        let seq = match rec.get(&format!("{var}.__edge_seq")) {
+            Some(Value::I64(s)) => *s as u64,
+            _ => 0,
+        };
         let mut properties = Properties::new();
         rec.for_each_field(&mut |key, val| {
             if let Some(prop) = key.strip_prefix(&prefix) {
@@ -655,6 +979,7 @@ pub(crate) fn build_compound_binding(rec: &dyn RecordView, var: &str) -> Option<
             src: NodeId(src as u64),
             dst: NodeId(dst as u64),
             label,
+            seq,
             properties,
         }));
     }
@@ -871,20 +1196,16 @@ pub(in crate::cypher::executor) fn exec_project(
                 }
             }
         }
+        // Charge each projected row as it is built, so a projection that
+        // creates large values (lists) fails at the row that crosses the
+        // budget instead of after every row exists.
+        charge_materialized(approx_named_bytes(&projected))?;
         results.push(projected);
     }
 
     Ok(results)
 }
 
-/// Returns true if a record field should be visible to the user.
-/// Filters out bare alias keys (no dot — raw node IDs) and internal `__` properties.
-pub(crate) fn is_user_visible_field(key: &str) -> bool {
-    match key.split_once('.') {
-        Some((_, prop)) => !prop.starts_with("__"),
-        None => false, // bare alias like "n" is the raw node ID — hide it
-    }
-}
 pub(in crate::cypher::executor) fn exec_unwind(
     conn: &Connection,
     input: &LogicalOp,
@@ -893,46 +1214,51 @@ pub(in crate::cypher::executor) fn exec_unwind(
     ctx: &ExecContext,
 ) -> Result<Vec<NamedRecord>> {
     let records = exec(conn, input, ctx)?;
+    unwind_records(conn, records, expr, alias, &NamedRecord::new(), ctx)
+}
+
+/// Apply `UNWIND expr AS alias` to `records`. `expr` is evaluated over the
+/// correlated `outer` row merged with each record (`outer` is empty at top
+/// level).
+pub(in crate::cypher::executor) fn unwind_records(
+    conn: &Connection,
+    records: Vec<NamedRecord>,
+    expr: &Expr,
+    alias: &str,
+    outer: &NamedRecord,
+    ctx: &ExecContext,
+) -> Result<Vec<NamedRecord>> {
     let mut results = Vec::new();
+    // Stop building rows as soon as they pass the row cap (read-only
+    // queries) or the materialization budget, not after the whole product
+    // of input rows and list items exists.
+    let row_cap = unwind_row_cap(ctx);
 
     for rec in &records {
-        let val = eval_expr(expr, rec, crate::cypher::eval::EvalCx::new(conn))?;
-        match val {
-            Value::List(items) => {
-                for item in items {
-                    let mut new_rec = rec.clone();
-                    // Expand nodes/edges into flat bindings for property access.
-                    match &item {
-                        Value::Node(n) => {
-                            let node_rec = node_to_record(n, alias);
-                            for (k, v) in &node_rec.fields {
-                                new_rec.set(k.clone(), v.clone());
-                            }
-                        }
-                        Value::Edge(e) => {
-                            new_rec.set(alias.to_string(), Value::Edge(e.clone()));
-                            new_rec.set(format!("{alias}.__src"), Value::I64(e.src.0 as i64));
-                            new_rec.set(format!("{alias}.__dst"), Value::I64(e.dst.0 as i64));
-                            new_rec.set(format!("{alias}.__type"), Value::String(e.label.clone()));
-                            for (k, v) in &e.properties {
-                                new_rec.set(format!("{alias}.{k}"), v.clone());
-                            }
-                        }
-                        _ => {
-                            new_rec.set(alias.to_string(), item);
-                        }
-                    }
-                    results.push(new_rec);
+        let cx = crate::cypher::eval::EvalCx::new(conn);
+        let items = if outer.is_empty() {
+            crate::cypher::eval::eval_unwind_items(expr, rec, cx)?
+        } else {
+            crate::cypher::eval::eval_unwind_items(expr, &merge_outer(outer, rec), cx)?
+        };
+        for item in items {
+            let mut new_rec = rec.clone();
+            // Expand nodes/edges into flat bindings for property access.
+            match &item {
+                Value::Node(n) => {
+                    populate_node_bindings(&mut new_rec, n, alias);
+                }
+                Value::Edge(e) => {
+                    new_rec.set(alias.to_string(), Value::Edge(e.clone()));
+                    populate_edge_bindings(&mut new_rec, e, alias);
+                }
+                _ => {
+                    new_rec.set(alias.to_string(), item);
                 }
             }
-            Value::Null => {
-                // UNWIND null produces no rows (like UNWIND []).
-            }
-            _ => {
-                return Err(GraphError::semantic(format!(
-                    "UNWIND requires a list, got: {val}"
-                )));
-            }
+            charge_materialized(approx_named_bytes(&new_rec))?;
+            results.push(new_rec);
+            row_count_within_cap(results.len(), row_cap)?;
         }
     }
 
@@ -966,9 +1292,11 @@ mod tests {
             "n",
             "body",
             FullTextOp::Contains,
+            false,
             &term_expr,
             None,
             &outer,
+            None,
         )
         .unwrap();
         assert_eq!(records.len(), 1);
@@ -994,9 +1322,19 @@ mod tests {
         crate::storage::fts::create_fulltext_index(&conn, "Doc", "body").unwrap();
 
         // Term length 2 is below the trigram floor → fallback path.
-        let records =
-            exec_fulltext_fallback(&conn, "Doc", "n", "body", FullTextOp::Contains, "ab", None)
-                .unwrap();
+        let records = exec_fulltext_fallback(
+            &conn,
+            "Doc",
+            "n",
+            "body",
+            FullTextOp::Contains,
+            false,
+            "ab",
+            None,
+            &NamedRecord::new(),
+            None,
+        )
+        .unwrap();
         assert_eq!(records.len(), 1);
         let score = records[0]
             .get("n.__fts_score")

@@ -286,7 +286,26 @@ jobs:
           curl -fsSL "https://ziglang.org/download/${ZIG_VERSION}/zig-x86_64-linux-${ZIG_VERSION}.tar.xz" \
             -o zig.tar.xz
           tar -xJf zig.tar.xz
-          echo "${{ runner.temp }}/zig-x86_64-linux-${ZIG_VERSION}" >> "$GITHUB_PATH"
+          ZIG_DIR="${{ runner.temp }}/zig-x86_64-linux-${ZIG_VERSION}"
+          # Newer rustc passes --fix-cortex-a53-843419 when linking
+          # aarch64-unknown-linux-musl; zig's linker rejects it ("unsupported
+          # linker arg"). A `zig` shim earlier on PATH drops that argument and
+          # runs the real zig (napi's linker wrapper calls `zig` from PATH).
+          mkdir -p zig-shim
+          printf '%s\n' \
+            '#!/usr/bin/env bash' \
+            'args=()' \
+            'for a in "$@"; do' \
+            '  case "$a" in' \
+            '    --fix-cortex-a53-843419|-Wl,--fix-cortex-a53-843419) ;;' \
+            '    *) args+=("$a") ;;' \
+            '  esac' \
+            'done' \
+            "exec \"$ZIG_DIR/zig\" \"\${args[@]}\"" > zig-shim/zig
+          chmod +x zig-shim/zig
+          echo "$ZIG_DIR" >> "$GITHUB_PATH"
+          # Added last so it takes precedence over the real zig.
+          echo "${{ runner.temp }}/zig-shim" >> "$GITHUB_PATH"
 
       - name: Build (zig cross)
         if: matrix.use_zig

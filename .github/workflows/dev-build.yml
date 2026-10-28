@@ -292,6 +292,8 @@ jobs:
           # linker arg"). A `zig` shim earlier on PATH drops that argument and
           # runs the real zig (napi's linker wrapper calls `zig` from PATH).
           mkdir -p zig-shim
+          # The single-quoted lines are the shim's own source; $ must stay literal.
+          # shellcheck disable=SC2016
           printf '%s\n' \
             '#!/usr/bin/env bash' \
             'args=()' \

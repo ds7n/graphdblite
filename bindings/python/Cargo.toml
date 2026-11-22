@@ -17,4 +17,4 @@ test-hooks = ["graphdblite/test-hooks"]
 
 [dependencies]
 graphdblite = { path = "../.." }
-pyo3 = { version = "0.28", features = ["extension-module", "abi3-py310", "generate-import-lib"] }
+pyo3 = { version = "0.30", features = ["extension-module", "abi3-py311", "generate-import-lib"] }

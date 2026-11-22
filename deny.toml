@@ -8,7 +8,10 @@ no-default-features = false
 [advisories]
 version = 2
 yanked = "deny"
-ignore = []
+ignore = [
+    # Test-only (cucumber -> humantime, TCK harness).
+    { id = "RUSTSEC-2026-0542", reason = "humantime unmaintained; TCK-only via cucumber" },
+]
 
 [licenses]
 version = 2
@@ -22,6 +25,12 @@ allow = [
     "Apache-2.0",
     "BSD-2-Clause",
     "Unicode-3.0",
+    # Apache-2.0 plus an extra permission (ar_archive_writer, via stacker).
+    "Apache-2.0 WITH LLVM-exception",
+    # Permissive, MIT-style, OSI approved (synthez*, via cucumber/TCK).
+    "BlueOak-1.0.0",
+    # Permissive, OSI approved (foldhash, via hashbrown; ships at runtime).
+    "Zlib",
 ]
 confidence-threshold = 0.93
 

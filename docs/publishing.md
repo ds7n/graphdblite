@@ -108,7 +108,7 @@ The workflow triggers on tag push (`v*`). It builds wheels for:
 - Linux glibc + musl (x86_64, aarch64) via `cibuildwheel`
 - macOS (x86_64, arm64)
 - Windows (x86_64)
-- abi3 wheels (Python 3.10+)
+- abi3 wheels (Python 3.11+)
 
 Then uploads via `pypa/gh-action-pypi-publish@release/v1`.
 
@@ -130,7 +130,7 @@ description = "Embedded graph database with Cypher support"
 license = "MIT"
 license-files = ["LICENSE"]
 authors = [{ name = "ds7n" }]
-requires-python = ">=3.10"
+requires-python = ">=3.11"
 classifiers = [
     "Development Status :: 3 - Alpha",
     "License :: OSI Approved :: MIT License",

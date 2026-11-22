@@ -16,8 +16,8 @@ test-hooks = ["graphdblite/test-hooks"]
 
 [dependencies]
 graphdblite = { path = "../.." }
-napi = { version = "2", features = ["napi6"] }
-napi-derive = "2"
+napi = { version = "3", features = ["napi6"] }
+napi-derive = "3"
 
 [build-dependencies]
 napi-build = "2"

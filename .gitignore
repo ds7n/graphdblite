@@ -37,3 +37,4 @@ plans/
 TODO.md
 CLAUDE.md
 docs/superpowers/
+!tests/fixtures/*.db

@@ -171,7 +171,7 @@ Each binding ships a **conformance suite** (`docs/BINDING_CONFORMANCE.md`, scena
 Designed for datasets in the **low millions of nodes** with moderate edge density. 10M nodes is achievable for indexed point-lookups; full label scans at that scale will be slow. 100M+ nodes would require rearchitecting the scan layer (streaming from SQLite instead of materializing), replacing linear-scan dedup with `HashSet`, and making adjacency lists appendable without full rewrite.
 
 ### TCK gaps (2 skiplisted scenarios)
-- Large durations requiring ±999999999 year dates (2 scenarios — chrono limitation, custom e2e tests cover the logic within chrono's range)
+- Large durations requiring ±999999999 year dates (2 scenarios; temporal values are limited to years -9999..=9999, and custom e2e tests cover the logic within that range)
 
 Regenerate blocker analysis: `uv run tests/tck/analyze_blockers.py`
 

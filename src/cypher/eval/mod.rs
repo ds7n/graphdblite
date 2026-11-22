@@ -41,15 +41,15 @@ thread_local! {
     // The statement clock: the instant `date()`, `datetime()`, ... return,
     // fixed once per outermost statement by `ParamScope::enter` so every
     // call within one query sees the same "now".
-    static STATEMENT_CLOCK: Cell<Option<chrono::NaiveDateTime>> = const { Cell::new(None) };
+    static STATEMENT_CLOCK: Cell<Option<jiff::Timestamp>> = const { Cell::new(None) };
 }
 
 /// The current statement's clock reading (UTC). Outside any statement
 /// (eval-level unit tests) this is the wall clock.
-pub(crate) fn statement_now() -> chrono::NaiveDateTime {
+pub(crate) fn statement_now() -> jiff::Timestamp {
     STATEMENT_CLOCK
         .with(|c| c.get())
-        .unwrap_or_else(|| chrono::Utc::now().naive_utc())
+        .unwrap_or_else(jiff::Timestamp::now)
 }
 
 /// RAII guard that publishes a `&RefCell<RegexCache>` to the thread-local
@@ -94,7 +94,7 @@ impl Drop for RegexCacheScope<'_> {
 /// [`statement_now`]); nested guards (subqueries) keep the outer reading.
 pub(crate) struct ParamScope<'a> {
     prev: *const HashMap<String, Value>,
-    prev_now: Option<chrono::NaiveDateTime>,
+    prev_now: Option<jiff::Timestamp>,
     _params: std::marker::PhantomData<&'a HashMap<String, Value>>,
 }
 
@@ -105,7 +105,7 @@ impl<'a> ParamScope<'a> {
         let prev_now = STATEMENT_CLOCK.with(|c| {
             let prev = c.get();
             if prev.is_none() {
-                c.set(Some(chrono::Utc::now().naive_utc()));
+                c.set(Some(jiff::Timestamp::now()));
             }
             prev
         });

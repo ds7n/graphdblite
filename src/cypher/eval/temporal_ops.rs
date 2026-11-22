@@ -4,17 +4,16 @@
 //! Duration / Number, and temporal property accessors (e.g., `d.year`).
 //!
 //! All arithmetic is checked: a result outside the representable range
-//! (i64 duration components, chrono's calendar range) is a
+//! (i64 duration components, the calendar years -9999..=9999) is a
 //! `NumberOutOfRange` error, never a panic or a silently wrong value.
 
 use crate::temporal::{
-    CypherDate, CypherDateTime, CypherDuration, CypherLocalDateTime, CypherLocalTime, CypherTime,
+    lookup_tz, tz_local_offsets, tz_offset_at_utc, tz_utc_to_local, CypherDate, CypherDateTime,
+    CypherDuration, CypherLocalDateTime, CypherLocalTime, CypherTime,
 };
-use crate::types::{ErrorCode, GraphError, QueryPhase, Value};
-use chrono::{
-    FixedOffset, LocalResult, Months, NaiveDate, NaiveDateTime, NaiveTime, Offset, TimeDelta,
-    TimeZone,
-};
+use crate::types::{GraphError, QueryPhase, Value};
+use jiff::tz::{AmbiguousOffset, TimeZone};
+use jiff::SignedDuration;
 
 /// Average seconds per month used for duration arithmetic (365.2425 * 86400 / 12).
 const AVG_SECONDS_PER_MONTH: i64 = 2_629_746;
@@ -25,25 +24,6 @@ const SECONDS_PER_DAY: i64 = 86_400;
 /// The `NumberOutOfRange` error for a temporal result that does not fit.
 fn out_of_range(what: impl std::fmt::Display) -> GraphError {
     GraphError::number_out_of_range(QueryPhase::Runtime, format!("{what} is out of range"))
-}
-
-/// `chrono::Months::new` requires its argument to fit in `i32`; values above
-/// `i32::MAX` make the underlying chrono ops panic. Validate up front so a
-/// malicious `duration({months: 9999999999999})` returns a structured error
-/// rather than aborting the host process. See security finding H4.
-fn months_abs_to_u32(months: i64) -> crate::types::Result<u32> {
-    let abs = months.unsigned_abs();
-    if abs > i32::MAX as u64 {
-        return Err(GraphError::query(
-            QueryPhase::Runtime,
-            ErrorCode::NumberOutOfRange,
-            format!(
-                "duration months component `{months}` is out of range \
-                 (must fit in i32 to apply to a date/datetime)"
-            ),
-        ));
-    }
-    Ok(abs as u32)
 }
 
 /// The seconds + nanoseconds part of a duration as total nanoseconds.
@@ -103,72 +83,82 @@ pub(super) fn negate_duration(d: &CypherDuration) -> crate::types::Result<Cypher
 
 /// Shift a calendar date by whole months (day clamped to the month's end)
 /// and then whole days.
-fn shift_date(date: NaiveDate, months: i64, days: i64) -> crate::types::Result<NaiveDate> {
+fn shift_date(date: CypherDate, months: i64, days: i64) -> crate::types::Result<CypherDate> {
     let mut out = date;
     if months != 0 {
-        let m = Months::new(months_abs_to_u32(months)?);
-        let shifted = if months > 0 {
-            out.checked_add_months(m)
-        } else {
-            out.checked_sub_months(m)
-        };
-        out = shifted.ok_or_else(|| out_of_range(format!("{date} shifted by {months} months")))?;
+        out = out.add_months(months)?;
     }
     if days != 0 {
-        out = TimeDelta::try_days(days)
-            .and_then(|delta| out.checked_add_signed(delta))
-            .ok_or_else(|| out_of_range(format!("{date} shifted by {days} days")))?;
+        out = out.add_days(days)?;
     }
     Ok(out)
 }
 
 /// Shift a date-time by an exact amount of seconds + nanoseconds.
 fn shift_exact(
-    ndt: NaiveDateTime,
+    ndt: CypherLocalDateTime,
     seconds: i64,
     nanos: i64,
-) -> crate::types::Result<NaiveDateTime> {
-    TimeDelta::try_seconds(seconds)
-        .and_then(|delta| delta.checked_add(&TimeDelta::nanoseconds(nanos)))
-        .and_then(|delta| ndt.checked_add_signed(delta))
-        .ok_or_else(|| out_of_range(format!("{ndt} shifted by {seconds}s {nanos}ns")))
+) -> crate::types::Result<CypherLocalDateTime> {
+    ndt.add_exact(seconds, nanos)
 }
 
 /// Add a duration's clock part to a time of day. Times wrap around midnight,
 /// so only the seconds modulo one day matter (which also keeps a huge
-/// `seconds` component from overflowing `TimeDelta`).
-fn shift_time_of_day(t: NaiveTime, dur: &CypherDuration) -> NaiveTime {
+/// `seconds` component from overflowing).
+fn shift_time_of_day(
+    t: CypherLocalTime,
+    dur: &CypherDuration,
+) -> crate::types::Result<CypherLocalTime> {
     let nanos = (dur.seconds % SECONDS_PER_DAY) * 1_000_000_000 + dur.nanos;
-    t.overflowing_add_signed(TimeDelta::nanoseconds(nanos)).0
+    let shifted = t.to_jiff()?.wrapping_add(SignedDuration::from_nanos(nanos));
+    Ok(CypherLocalTime::from_jiff(shifted))
 }
 
 /// Shift a local date-time by a duration: months and days are calendar
 /// arithmetic on the date, seconds and nanoseconds are exact.
-fn shift_local(ndt: NaiveDateTime, dur: &CypherDuration) -> crate::types::Result<NaiveDateTime> {
-    let date = shift_date(ndt.date(), dur.months, dur.days)?;
-    shift_exact(NaiveDateTime::new(date, ndt.time()), dur.seconds, dur.nanos)
+fn shift_local(
+    ndt: CypherLocalDateTime,
+    dur: &CypherDuration,
+) -> crate::types::Result<CypherLocalDateTime> {
+    let date = shift_date(ndt.date, dur.months, dur.days)?;
+    shift_exact(
+        CypherLocalDateTime {
+            date,
+            time: ndt.time,
+        },
+        dur.seconds,
+        dur.nanos,
+    )
 }
 
-/// The UTC instant of `local` in `tz`, with java.time `ZonedDateTime.ofLocal`
-/// semantics: in an overlap keep `preferred` if it is one of the two valid
-/// offsets (else the earlier one); in a gap, move later by the gap length
-/// (interpret `local` with the offset in force before the gap).
-fn local_to_utc(tz: &chrono_tz::Tz, local: NaiveDateTime, preferred: FixedOffset) -> NaiveDateTime {
-    let offset = match tz.offset_from_local_datetime(&local) {
-        LocalResult::Single(o) => o.fix(),
-        LocalResult::Ambiguous(earlier, later) => {
-            if later.fix() == preferred {
-                later.fix()
+/// The UTC instant (as a civil date-time) of `local` in `tz`, with java.time
+/// `ZonedDateTime.ofLocal` semantics: in an overlap keep `preferred` (seconds)
+/// if it is one of the two valid offsets (else the earlier one); in a gap,
+/// move later by the gap length (interpret `local` with the offset in force
+/// before the gap).
+fn local_to_utc(
+    tz: &TimeZone,
+    local: CypherLocalDateTime,
+    preferred: i32,
+) -> crate::types::Result<CypherLocalDateTime> {
+    let offset = match tz_local_offsets(tz, &local)? {
+        AmbiguousOffset::Unambiguous { offset } => offset.seconds(),
+        AmbiguousOffset::Fold { before, after } => {
+            if after.seconds() == preferred {
+                after.seconds()
             } else {
-                earlier.fix()
+                before.seconds()
             }
         }
-        // A gap: the offset in force a day earlier is the pre-transition one.
-        LocalResult::None => tz
-            .offset_from_utc_datetime(&(local - TimeDelta::days(1)))
-            .fix(),
+        // A gap: the offset in force a day earlier is the pre-transition one
+        // (the shifted local time is read as a UTC instant, as java.time does
+        // for its probe).
+        AmbiguousOffset::Gap { .. } => {
+            tz_offset_at_utc(tz, &local.add_exact(-SECONDS_PER_DAY, 0)?)?
+        }
     };
-    local - TimeDelta::seconds(offset.local_minus_utc() as i64)
+    local.add_exact(-i64::from(offset), 0)
 }
 
 /// Zoned date-time + duration with Neo4j (java.time) semantics: months and
@@ -176,30 +166,33 @@ fn local_to_utc(tz: &chrono_tz::Tz, local: NaiveDateTime, preferred: FixedOffset
 /// With a named zone the offset is re-resolved after each step, so crossing
 /// a DST transition yields the correct wall-clock time and offset.
 fn shift_zoned(dt: &CypherDateTime, dur: &CypherDuration) -> crate::types::Result<CypherDateTime> {
-    let date = shift_date(dt.0.date(), dur.months, dur.days)?;
-    let local = NaiveDateTime::new(date, dt.0.time());
-    let tz =
-        dt.2.as_deref()
-            .and_then(|n| n.parse::<chrono_tz::Tz>().ok());
-    let Some(tz) = tz else {
-        // Fixed offset: wall-clock and instant arithmetic coincide.
-        let ndt = shift_exact(local, dur.seconds, dur.nanos)?;
-        return Ok(CypherDateTime(ndt, dt.1, dt.2.clone()));
+    let date = shift_date(dt.local.date, dur.months, dur.days)?;
+    let local = CypherLocalDateTime {
+        date,
+        time: dt.local.time,
     };
-    let utc = if local == dt.0 {
+    let Some(tz) = dt.tz_name.as_deref().and_then(lookup_tz) else {
+        // Fixed offset: wall-clock and instant arithmetic coincide.
+        return Ok(CypherDateTime {
+            local: shift_exact(local, dur.seconds, dur.nanos)?,
+            offset_seconds: dt.offset_seconds,
+            tz_name: dt.tz_name.clone(),
+        });
+    };
+    let utc = if local == dt.local {
         // No calendar shift: keep the original offset (it disambiguates an
         // overlap the same way the input did).
-        local - TimeDelta::seconds(dt.1.local_minus_utc() as i64)
+        local.add_exact(-i64::from(dt.offset_seconds), 0)?
     } else {
-        local_to_utc(&tz, local, dt.1)
+        local_to_utc(&tz, local, dt.offset_seconds)?
     };
     let utc = shift_exact(utc, dur.seconds, dur.nanos)?;
-    let aware = tz.from_utc_datetime(&utc);
-    Ok(CypherDateTime(
-        aware.naive_local(),
-        aware.offset().fix(),
-        dt.2.clone(),
-    ))
+    let (local, offset_seconds) = tz_utc_to_local(&tz, &utc)?;
+    Ok(CypherDateTime {
+        local,
+        offset_seconds,
+        tz_name: dt.tz_name.clone(),
+    })
 }
 
 /// Temporal + Duration arithmetic. Returns Some if handled, None to fall through.
@@ -217,19 +210,24 @@ pub(super) fn eval_temporal_add(
             dur.days
                 .checked_add(dur.seconds / SECONDS_PER_DAY)
                 .ok_or_else(|| out_of_range("duration days"))
-                .and_then(|days| shift_date(d.0, dur.months, days))
-                .map(|date| Value::Date(CypherDate(date)))
+                .and_then(|days| shift_date(*d, dur.months, days))
+                .map(Value::Date)
         }
         (Value::LocalTime(t), Value::Duration(dur))
-        | (Value::Duration(dur), Value::LocalTime(t)) => Ok(Value::LocalTime(CypherLocalTime(
-            shift_time_of_day(t.0, dur),
-        ))),
+        | (Value::Duration(dur), Value::LocalTime(t)) => {
+            shift_time_of_day(*t, dur).map(Value::LocalTime)
+        }
         (Value::Time(t), Value::Duration(dur)) | (Value::Duration(dur), Value::Time(t)) => {
-            Ok(Value::Time(CypherTime(shift_time_of_day(t.0, dur), t.1)))
+            shift_time_of_day(t.time, dur).map(|time| {
+                Value::Time(CypherTime {
+                    time,
+                    offset_seconds: t.offset_seconds,
+                })
+            })
         }
         (Value::LocalDateTime(dt), Value::Duration(dur))
         | (Value::Duration(dur), Value::LocalDateTime(dt)) => {
-            shift_local(dt.0, dur).map(|ndt| Value::LocalDateTime(CypherLocalDateTime(ndt)))
+            shift_local(*dt, dur).map(Value::LocalDateTime)
         }
         (Value::DateTime(dt), Value::Duration(dur))
         | (Value::Duration(dur), Value::DateTime(dt)) => shift_zoned(dt, dur).map(Value::DateTime),
@@ -375,14 +373,16 @@ pub(super) fn total_nanos_to_duration(total: i128) -> crate::types::Result<Cyphe
 /// Extract a temporal component accessor (e.g., `d.year`, `t.hour`).
 /// Returns None if the value is not temporal or the property is not a known
 /// accessor, and a `NumberOutOfRange` error when a duration total (e.g.
-/// `d.nanoseconds` of a ~300-year duration) does not fit in an Integer.
+/// `d.nanoseconds` of a ~300-year duration) does not fit in an Integer, or
+/// when a calendar accessor (week, weekday, ordinal) is asked of a legacy
+/// stored date outside the supported years.
 pub(super) fn temporal_accessor(val: &Value, prop: &str) -> Option<crate::types::Result<Value>> {
     if let Value::Duration(d) = val {
         let per_second: i128 = match prop {
             "milliseconds" => 1_000,
             "microseconds" => 1_000_000,
             "nanoseconds" => 1_000_000_000,
-            _ => return temporal_component(val, prop).map(Ok),
+            _ => return duration_component(d, prop).map(|v| Ok(Value::I64(v))),
         };
         let total = d.seconds as i128 * per_second + d.nanos as i128 / (NANOS_PER_SEC / per_second);
         return Some(
@@ -391,125 +391,117 @@ pub(super) fn temporal_accessor(val: &Value, prop: &str) -> Option<crate::types:
                 .map_err(|_| out_of_range(format!("duration {prop}"))),
         );
     }
-    temporal_component(val, prop).map(Ok)
+    temporal_component(val, prop)
 }
 
-/// The non-failing accessors behind [`temporal_accessor`].
-fn temporal_component(val: &Value, prop: &str) -> Option<Value> {
-    use chrono::{Datelike, Timelike};
+/// A date accessor.
+fn date_component(d: CypherDate, prop: &str) -> Option<crate::types::Result<i64>> {
+    Some(match prop {
+        "year" => Ok(i64::from(d.year)),
+        "month" => Ok(i64::from(d.month)),
+        "day" => Ok(i64::from(d.day)),
+        "ordinalDay" => d.ordinal().map(i64::from),
+        "weekYear" => d.iso_week().map(|(year, _)| i64::from(year)),
+        "week" => d.iso_week().map(|(_, week)| i64::from(week)),
+        "dayOfWeek" | "weekDay" => d.weekday().map(i64::from),
+        "quarter" => Ok(i64::from(d.quarter())),
+        "dayOfQuarter" => (|| {
+            let quarter_start = CypherDate::new(d.year, (d.quarter() - 1) * 3 + 1, 1)?;
+            Ok(quarter_start.days_until(d)? + 1)
+        })(),
+        _ => return None,
+    })
+}
 
+/// A local-time accessor.
+fn time_component(t: &CypherLocalTime, prop: &str) -> Option<i64> {
+    let nanos = i64::from(t.nanosecond) % 1_000_000_000;
+    match prop {
+        "hour" => Some(i64::from(t.hour)),
+        "minute" => Some(i64::from(t.minute)),
+        "second" => Some(i64::from(t.second)),
+        "nanosecond" => Some(nanos),
+        "microsecond" => Some(nanos / 1_000),
+        "millisecond" => Some(nanos / 1_000_000),
+        _ => None,
+    }
+}
+
+/// The accessors behind [`temporal_accessor`] that are not duration totals.
+fn temporal_component(val: &Value, prop: &str) -> Option<crate::types::Result<Value>> {
     match val {
-        Value::Date(d) => match prop {
-            "year" => Some(Value::I64(d.0.year() as i64)),
-            "month" => Some(Value::I64(d.0.month() as i64)),
-            "day" => Some(Value::I64(d.0.day() as i64)),
-            "ordinalDay" => Some(Value::I64(d.0.ordinal() as i64)),
-            "weekYear" => Some(Value::I64(d.0.iso_week().year() as i64)),
-            "week" => Some(Value::I64(d.0.iso_week().week() as i64)),
-            "dayOfWeek" | "weekDay" => {
-                Some(Value::I64(d.0.weekday().num_days_from_monday() as i64 + 1))
-            }
-            "quarter" => Some(Value::I64(((d.0.month() - 1) / 3 + 1) as i64)),
-            "dayOfQuarter" => {
-                let q_start_month = ((d.0.month() - 1) / 3) * 3 + 1;
-                let q_start =
-                    chrono::NaiveDate::from_ymd_opt(d.0.year(), q_start_month, 1).unwrap();
-                Some(Value::I64((d.0 - q_start).num_days() + 1))
-            }
-            _ => None,
-        },
-        Value::LocalTime(lt) => {
-            let t = &lt.0;
-            match prop {
-                "hour" => Some(Value::I64(t.hour() as i64)),
-                "minute" => Some(Value::I64(t.minute() as i64)),
-                "second" => Some(Value::I64(t.second() as i64)),
-                "nanosecond" => Some(Value::I64(t.nanosecond() as i64 % 1_000_000_000)),
-                "microsecond" => Some(Value::I64((t.nanosecond() as i64 % 1_000_000_000) / 1_000)),
-                "millisecond" => Some(Value::I64(
-                    (t.nanosecond() as i64 % 1_000_000_000) / 1_000_000,
-                )),
-                _ => None,
-            }
-        }
+        Value::Date(d) => date_component(*d, prop).map(|r| r.map(Value::I64)),
+        Value::LocalTime(lt) => time_component(lt, prop).map(|v| Ok(Value::I64(v))),
         Value::Time(ct) => {
-            let t = &ct.0;
+            if let Some(v) = time_component(&ct.time, prop) {
+                return Some(Ok(Value::I64(v)));
+            }
+            let off = ct.offset_seconds;
             match prop {
-                "hour" => Some(Value::I64(t.hour() as i64)),
-                "minute" => Some(Value::I64(t.minute() as i64)),
-                "second" => Some(Value::I64(t.second() as i64)),
-                "nanosecond" => Some(Value::I64(t.nanosecond() as i64 % 1_000_000_000)),
-                "microsecond" => Some(Value::I64((t.nanosecond() as i64 % 1_000_000_000) / 1_000)),
-                "millisecond" => Some(Value::I64(
-                    (t.nanosecond() as i64 % 1_000_000_000) / 1_000_000,
-                )),
                 "offset" | "timezone" => {
-                    Some(Value::String(crate::temporal::fmt_offset_public(&ct.1)))
+                    Some(Ok(Value::String(crate::temporal::fmt_offset_public(off))))
                 }
-                "offsetMinutes" => Some(Value::I64(ct.1.local_minus_utc() as i64 / 60)),
-                "offsetSeconds" => Some(Value::I64(ct.1.local_minus_utc() as i64)),
+                "offsetMinutes" => Some(Ok(Value::I64(i64::from(off) / 60))),
+                "offsetSeconds" => Some(Ok(Value::I64(i64::from(off)))),
                 _ => None,
             }
         }
         Value::LocalDateTime(dt) => {
             // Try date accessors first, then time accessors.
-            let date_val = Value::Date(CypherDate(dt.0.date()));
-            if let Some(v) = temporal_component(&date_val, prop) {
-                return Some(v);
-            }
-            let time_val = Value::LocalTime(CypherLocalTime(dt.0.time()));
-            temporal_component(&time_val, prop)
+            date_component(dt.date, prop)
+                .map(|r| r.map(Value::I64))
+                .or_else(|| time_component(&dt.time, prop).map(|v| Ok(Value::I64(v))))
         }
         Value::DateTime(dt) => {
             // DateTime-specific accessors first.
             match prop {
                 "timezone" => {
                     // Return named tz if available, otherwise the offset string.
-                    return Some(Value::String(
-                        dt.2.clone()
-                            .unwrap_or_else(|| crate::temporal::fmt_offset_public(&dt.1)),
-                    ));
+                    return Some(Ok(Value::String(dt.tz_name.clone().unwrap_or_else(|| {
+                        crate::temporal::fmt_offset_public(dt.offset_seconds)
+                    }))));
                 }
-                "epochSeconds" => {
-                    let utc_ndt = dt.0 - chrono::Duration::seconds(dt.1.local_minus_utc() as i64);
-                    let epoch = utc_ndt.and_utc().timestamp();
-                    return Some(Value::I64(epoch));
-                }
-                "epochMillis" => {
-                    let utc_ndt = dt.0 - chrono::Duration::seconds(dt.1.local_minus_utc() as i64);
-                    let epoch = utc_ndt.and_utc().timestamp_millis();
-                    return Some(Value::I64(epoch));
-                }
+                "epochSeconds" => return Some(Ok(Value::I64(dt.epoch_seconds()))),
+                "epochMillis" => return Some(Ok(Value::I64(dt.epoch_millis()))),
                 _ => {}
             }
             // Try date accessors, then time accessors, then offset accessors.
-            let date_val = Value::Date(CypherDate(dt.0.date()));
-            if let Some(v) = temporal_component(&date_val, prop) {
-                return Some(v);
+            if let Some(r) = date_component(dt.local.date, prop) {
+                return Some(r.map(Value::I64));
             }
-            let time_val = Value::Time(CypherTime(dt.0.time(), dt.1));
-            temporal_component(&time_val, prop)
+            temporal_component(
+                &Value::Time(CypherTime {
+                    time: dt.local.time,
+                    offset_seconds: dt.offset_seconds,
+                }),
+                prop,
+            )
         }
-        Value::Duration(d) => match prop {
-            "years" => Some(Value::I64(d.months / 12)),
-            "quarters" => Some(Value::I64(d.months / 3)),
-            "months" => Some(Value::I64(d.months)),
-            "weeks" => Some(Value::I64(d.days / 7)),
-            "days" => Some(Value::I64(d.days)),
-            "hours" => Some(Value::I64(d.seconds / 3600)),
-            "minutes" => Some(Value::I64(d.seconds / 60)),
-            "seconds" => Some(Value::I64(d.seconds)),
-            "quartersOfYear" => Some(Value::I64((d.months % 12) / 3)),
-            "monthsOfQuarter" => Some(Value::I64(d.months % 3)),
-            "monthsOfYear" => Some(Value::I64(d.months % 12)),
-            "daysOfWeek" => Some(Value::I64(d.days % 7)),
-            "minutesOfHour" => Some(Value::I64((d.seconds / 60) % 60)),
-            "secondsOfMinute" => Some(Value::I64(d.seconds % 60)),
-            "millisecondsOfSecond" => Some(Value::I64(d.nanos / 1_000_000)),
-            "microsecondsOfSecond" => Some(Value::I64(d.nanos / 1_000)),
-            "nanosecondsOfSecond" => Some(Value::I64(d.nanos)),
-            _ => None,
-        },
+        Value::Duration(d) => duration_component(d, prop).map(|v| Ok(Value::I64(v))),
+        _ => None,
+    }
+}
+
+/// The non-failing duration accessors.
+fn duration_component(d: &CypherDuration, prop: &str) -> Option<i64> {
+    match prop {
+        "years" => Some(d.months / 12),
+        "quarters" => Some(d.months / 3),
+        "months" => Some(d.months),
+        "weeks" => Some(d.days / 7),
+        "days" => Some(d.days),
+        "hours" => Some(d.seconds / 3600),
+        "minutes" => Some(d.seconds / 60),
+        "seconds" => Some(d.seconds),
+        "quartersOfYear" => Some((d.months % 12) / 3),
+        "monthsOfQuarter" => Some(d.months % 3),
+        "monthsOfYear" => Some(d.months % 12),
+        "daysOfWeek" => Some(d.days % 7),
+        "minutesOfHour" => Some((d.seconds / 60) % 60),
+        "secondsOfMinute" => Some(d.seconds % 60),
+        "millisecondsOfSecond" => Some(d.nanos / 1_000_000),
+        "microsecondsOfSecond" => Some(d.nanos / 1_000),
+        "nanosecondsOfSecond" => Some(d.nanos),
         _ => None,
     }
 }

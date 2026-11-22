@@ -2194,9 +2194,9 @@ fn e2e_range_size_cap_rejects_huge_allocations() {
 
 #[test]
 fn e2e_duration_months_overflow_errors_not_panics() {
-    // Regression: chrono::Months::new requires the value to fit in i32, and
-    // panics otherwise. Adding a huge-month duration to a date used to abort
-    // the host process. Must now surface a NumberOutOfRange.
+    // Regression: month arithmetic once required the value to fit in i32 and
+    // panicked otherwise, so adding a huge-month duration to a date aborted
+    // the host process. Must surface a NumberOutOfRange.
     let mut db = Database::open_memory().unwrap();
     let tx = db.read_tx().unwrap();
     let err = tx
@@ -4591,7 +4591,7 @@ fn test_pattern_comprehension_nested_in_list_comprehension() {
 
 #[test]
 fn large_duration_between() {
-    // Analogous to TCK Temporal10[9] but within chrono's year range.
+    // Analogous to TCK Temporal10[9] but within the supported year range (-9999..=9999).
     let mut db = Database::open_memory().unwrap();
     let tx = db.read_tx().unwrap();
     let rows = tx
@@ -4646,8 +4646,8 @@ fn set_relationship_properties_merge() {
 
 #[test]
 fn large_duration_in_seconds() {
-    // Analogous to TCK Temporal10[10] but within chrono's year range
-    // (original uses ±999999999 years; chrono caps at ~±262,143).
+    // Analogous to TCK Temporal10[10] but within the supported year range
+    // (original uses ±999999999 years; dates are limited to -9999..=9999).
     let mut db = Database::open_memory().unwrap();
     let tx = db.read_tx().unwrap();
     let rows = tx

@@ -11,6 +11,7 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 WORKSPACE_TOML="$ROOT/Cargo.toml"
 NODE_PKG="$ROOT/bindings/node/package.json"
+NODE_LOADER="$ROOT/bindings/node/index.js"
 
 # Extract current version from workspace Cargo.toml
 get_workspace_version() {
@@ -57,6 +58,10 @@ set_version() {
 
     # Update package.json
     sed -i "s/\"version\": \"$old_ver\"/\"version\": \"$new_ver\"/" "$NODE_PKG"
+
+    # The napi-generated loader (committed, shipped as-is by the publish job)
+    # embeds the package version in its binding-version check.
+    sed -i "s/'$old_ver'/'$new_ver'/g; s/expected $old_ver but/expected $new_ver but/g" "$NODE_LOADER"
 
     echo "$old_ver -> $new_ver"
     verify

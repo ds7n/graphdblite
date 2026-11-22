@@ -54,12 +54,13 @@ fn main() {
             }),
     );
 
-    if writer.failed_steps() > 0 || writer.hook_errors() > 0 {
+    if writer.failed_steps() > 0 || writer.hook_errors() > 0 || writer.parsing_errors() > 0 {
         eprintln!(
-            "record_columns_golden: TCK failures present ({} failed steps, {} hook errors) — \
-             refusing to update golden. Fix TCK first.",
+            "record_columns_golden: TCK failures present ({} failed steps, {} hook errors, \
+             {} parsing errors); refusing to update golden. Fix TCK first.",
             writer.failed_steps(),
             writer.hook_errors(),
+            writer.parsing_errors(),
         );
         std::process::exit(1);
     }

@@ -1051,10 +1051,10 @@ pub(in crate::cypher::eval) fn eval_function_call(
                 return Ok(Value::Null);
             }
             let dur = match name {
-                "duration.between" => crate::temporal::duration_between(&lhs, &rhs),
-                "duration.inmonths" => crate::temporal::duration_in_months(&lhs, &rhs),
-                "duration.indays" => crate::temporal::duration_in_days(&lhs, &rhs),
-                "duration.inseconds" => crate::temporal::duration_in_seconds(&lhs, &rhs),
+                "duration.between" => crate::temporal::duration_between(&lhs, &rhs)?,
+                "duration.inmonths" => crate::temporal::duration_in_months(&lhs, &rhs)?,
+                "duration.indays" => crate::temporal::duration_in_days(&lhs, &rhs)?,
+                "duration.inseconds" => crate::temporal::duration_in_seconds(&lhs, &rhs)?,
                 _ => unreachable!(),
             };
             Ok(Value::Duration(dur))
@@ -1077,8 +1077,7 @@ pub(in crate::cypher::eval) fn eval_function_call(
             } else {
                 std::collections::BTreeMap::new()
             };
-            let d = crate::temporal::truncate_date(&unit, &val, &map)?;
-            Ok(Value::Date(crate::temporal::CypherDate(d)))
+            crate::temporal::truncate_date(&unit, &val, &map).map(Value::Date)
         }
         "localtime.truncate" => {
             if args.len() < 2 {
@@ -1097,8 +1096,7 @@ pub(in crate::cypher::eval) fn eval_function_call(
             } else {
                 std::collections::BTreeMap::new()
             };
-            let t = crate::temporal::truncate_time(&unit, &val, &map)?;
-            Ok(Value::LocalTime(crate::temporal::CypherLocalTime(t)))
+            crate::temporal::truncate_time(&unit, &val, &map).map(Value::LocalTime)
         }
         "time.truncate" => {
             if args.len() < 2 {
@@ -1118,16 +1116,17 @@ pub(in crate::cypher::eval) fn eval_function_call(
                 std::collections::BTreeMap::new()
             };
             // Determine offset: from map timezone override, or from source value, or UTC.
-            let offset = if let Some(Value::String(tz_s)) = map.get("timezone") {
-                let off_secs = crate::temporal::parse_offset_public(tz_s)?;
-                chrono::FixedOffset::east_opt(off_secs).unwrap()
+            let offset_seconds = if let Some(Value::String(tz_s)) = map.get("timezone") {
+                crate::temporal::parse_offset_public(tz_s)?
             } else {
                 // Inherit from source temporal.
-                let off_secs = crate::temporal::extract_offset_secs(&val);
-                chrono::FixedOffset::east_opt(off_secs).unwrap()
+                crate::temporal::extract_offset_secs(&val)
             };
-            let t = crate::temporal::truncate_time(&unit, &val, &map)?;
-            Ok(Value::Time(crate::temporal::CypherTime(t, offset)))
+            let time = crate::temporal::truncate_time(&unit, &val, &map)?;
+            Ok(Value::Time(crate::temporal::CypherTime {
+                time,
+                offset_seconds,
+            }))
         }
         "localdatetime.truncate" => {
             if args.len() < 2 {
@@ -1146,12 +1145,12 @@ pub(in crate::cypher::eval) fn eval_function_call(
             } else {
                 std::collections::BTreeMap::new()
             };
-            let d = crate::temporal::truncate_date(&unit, &val, &map)?;
-            let t = crate::temporal::truncate_time(&unit, &val, &map)?;
-            let ndt = d.and_time(t);
-            Ok(Value::LocalDateTime(crate::temporal::CypherLocalDateTime(
-                ndt,
-            )))
+            let date = crate::temporal::truncate_date(&unit, &val, &map)?;
+            let time = crate::temporal::truncate_time(&unit, &val, &map)?;
+            Ok(Value::LocalDateTime(crate::temporal::CypherLocalDateTime {
+                date,
+                time,
+            }))
         }
         "datetime.truncate" => {
             if args.len() < 2 {
@@ -1170,39 +1169,36 @@ pub(in crate::cypher::eval) fn eval_function_call(
             } else {
                 std::collections::BTreeMap::new()
             };
-            let d = crate::temporal::truncate_date(&unit, &val, &map)?;
-            let t = crate::temporal::truncate_time(&unit, &val, &map)?;
-            let ndt = d.and_time(t);
+            let date = crate::temporal::truncate_date(&unit, &val, &map)?;
+            let time = crate::temporal::truncate_time(&unit, &val, &map)?;
+            let ndt = crate::temporal::CypherLocalDateTime { date, time };
 
             // Determine offset and timezone name.
             let (offset, tz_name) = if let Some(Value::String(tz_s)) = map.get("timezone") {
                 // Check if it's an IANA name or an offset string.
                 if tz_s.starts_with('+') || tz_s.starts_with('-') || tz_s == "Z" {
-                    let off_secs = crate::temporal::parse_offset_public(tz_s)?;
-                    (chrono::FixedOffset::east_opt(off_secs).unwrap(), None)
+                    (crate::temporal::parse_offset_public(tz_s)?, None)
                 } else {
-                    // IANA timezone name — resolve at the truncated datetime.
-                    use chrono::TimeZone;
-                    use chrono_tz::Tz;
-                    let tz: Tz = tz_s
-                        .parse()
-                        .map_err(|_| GraphError::semantic("unknown timezone"))?;
-                    let aware = tz.from_local_datetime(&ndt).earliest().ok_or_else(|| {
+                    // IANA timezone name: resolve at the truncated datetime.
+                    let tz = crate::temporal::lookup_tz(tz_s)
+                        .ok_or_else(|| GraphError::semantic("unknown timezone"))?;
+                    let off = crate::temporal::earliest_offset(&tz, &ndt)?.ok_or_else(|| {
                         GraphError::semantic("ambiguous or invalid datetime in timezone")
                     })?;
-                    let off = chrono::Offset::fix(aware.offset());
                     (off, Some(tz_s.clone()))
                 }
             } else {
                 // Inherit offset from source temporal or default to UTC.
                 match &val {
-                    Value::DateTime(dt) => (dt.1, dt.2.clone()),
-                    _ => (chrono::FixedOffset::east_opt(0).unwrap(), None),
+                    Value::DateTime(dt) => (dt.offset_seconds, dt.tz_name.clone()),
+                    _ => (0, None),
                 }
             };
-            Ok(Value::DateTime(crate::temporal::CypherDateTime(
-                ndt, offset, tz_name,
-            )))
+            Ok(Value::DateTime(crate::temporal::CypherDateTime {
+                local: ndt,
+                offset_seconds: offset,
+                tz_name,
+            }))
         }
         // Aggregate functions are handled by the Aggregate operator.
         _ => Ok(Value::Null),
@@ -1220,13 +1216,9 @@ pub(in crate::cypher::eval) fn eval_temporal_constructor(
     if args.is_empty() {
         // `date()`, `datetime()`, ... with no argument: the statement's
         // current instant (UTC), projected like `date(datetime(...))`.
-        let now = super::statement_now();
-        let utc = chrono::FixedOffset::east_opt(0).expect("zero offset is valid");
+        let now = crate::temporal::CypherDateTime::from_utc_timestamp(super::statement_now());
         let mut m = std::collections::BTreeMap::new();
-        m.insert(
-            "datetime".to_string(),
-            Value::DateTime(crate::temporal::CypherDateTime(now, utc, None)),
-        );
+        m.insert("datetime".to_string(), Value::DateTime(now));
         return from_map(&m);
     }
     let arg = eval_single_arg(args, record, ecx)?;

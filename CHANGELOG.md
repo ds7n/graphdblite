@@ -7,6 +7,72 @@ ships.
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-11-22
+
+### Security
+
+- **Bundled SQLite upgraded to 3.54.1** (`rusqlite` 0.32 to 0.43,
+  `libsqlite3-sys` 0.40). Fixes CVE-2026-119375 / RUSTSEC-2026-0459:
+  SQLite before 3.54.0 could return uninitialized page-cache memory when
+  opening a database together with a crafted `-wal` file of a different
+  page size. Affects every binding (Rust, Python, Node, Go, C), since all
+  bundle SQLite. Only databases (and their `-wal`) written by a less
+  trusted party are an exposure.
+- **`pyo3` upgraded to 0.30** (Python binding). Includes the fixes for two
+  pyo3 0.28 soundness issues being published as RustSec advisories
+  (`PyCFunction::new_closure` missing `Sync` bound, out-of-bounds read in
+  `BoundTupleIterator`/`BoundListIterator::nth_back`). graphdblite does not
+  call either API.
+
+### Fixed
+
+- **Go binding builds with Go 1.26.11 and newer.** Recent Go releases
+  reject cgo static libraries that contain LLVM bitcode sections, which
+  every Rust static library carries, so `go build` failed with
+  `disallowed LTO section ".llvmbc"`. The bundled
+  `libgraphdblite_ffi.a` archives are now stripped of those sections at
+  build time (`scripts/strip-lto-sections.sh`); no code changes.
+
+### Changed
+
+- **Minimum runtime versions raised** to releases still supported
+  upstream: Node.js 22 (was 20), Python 3.11 (was 3.10; wheels are now
+  `abi3-py311`), Go 1.26 (was 1.23). Node 20, Python 3.10 and Go 1.23
+  are past end of life. CI now tests Node 22/24, Python 3.11/3.14 and
+  Go 1.26/1.27.
+- **Temporal values are limited to years -9999 to 9999** (was about
+  +-262,000). Constructing a date, local datetime or datetime outside that
+  range (for example `date('+10000-01-01')`) now fails with
+  `NumberOutOfRange` ("temporal year is out of range"). Values already
+  stored outside the range by older versions still read back and display
+  unchanged; using them in temporal arithmetic or conversion fails with the
+  same error.
+- **Leap-second nanoseconds are rejected for new values.** A time with
+  `nanosecond` of 1,000,000,000 or more (previously accepted via map
+  construction, e.g. `localtime({second: 59, nanosecond: 1500000000})`) now
+  fails. Stored values still read back.
+- **Temporal engine replaced: `chrono`/`chrono-tz` (unmaintained) to
+  `jiff`** with a bundled timezone database, so offsets are identical on
+  every platform. The on-disk format is unchanged (schema version 2), and
+  all other temporal results, including DST gap/overlap handling, are
+  unchanged. Timezone names are matched exactly (case-sensitive), as
+  before.
+- Removed two possible panics in `time.truncate` / `datetime.truncate`
+  offset handling; they are typed errors now.
+- **Node package is now about 50 kB instead of about 200 MB.** The
+  `graphdblite` npm package no longer bundles every platform binary;
+  npm installs only the matching `graphdblite-<platform>` package through
+  `optionalDependencies` (the standard napi-rs layout). Installs that skip
+  optional dependencies (`--omit=optional`, `--no-optional`) get no native
+  binary.
+- **Node binding** built with napi-rs 3 (`@napi-rs/cli` 3). JS API and
+  returned values are unchanged; the generated loader adds an exported
+  `__napiBindingTarget` and recognizes more platforms.
+- Dependencies: `cbindgen` 0.29 (generated
+  C header unchanged), lockfile refreshed.
+- CI: daily `cargo-deny` advisory scan and weekly Dependabot update PRs.
+  The TCK run now fails if any feature file fails to parse.
+
 ## [0.2.0] - 2026-10-27
 
 ### Changed

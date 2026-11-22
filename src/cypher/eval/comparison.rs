@@ -229,20 +229,14 @@ pub(super) fn compare_values(a: &Value, b: &Value) -> Option<std::cmp::Ordering>
         (Value::I64(a), Value::F64(b)) => cmp_int_float(*a, *b),
         (Value::F64(a), Value::I64(b)) => cmp_int_float(*b, *a).map(Ordering::reverse),
         (Value::String(a), Value::String(b)) => Some(a.cmp(b)),
-        (Value::Date(a), Value::Date(b)) => Some(a.0.cmp(&b.0)),
-        (Value::LocalTime(a), Value::LocalTime(b)) => Some(a.0.cmp(&b.0)),
+        (Value::Date(a), Value::Date(b)) => Some(a.cmp(b)),
+        (Value::LocalTime(a), Value::LocalTime(b)) => Some(a.cmp(b)),
         (Value::Time(a), Value::Time(b)) => {
             // Compare by converting to UTC.
-            let a_utc = a.0 - a.1;
-            let b_utc = b.0 - b.1;
-            Some(a_utc.cmp(&b_utc))
+            Some(a.utc_sort_key().cmp(&b.utc_sort_key()))
         }
-        (Value::LocalDateTime(a), Value::LocalDateTime(b)) => Some(a.0.cmp(&b.0)),
-        (Value::DateTime(a), Value::DateTime(b)) => {
-            let a_utc = a.0 - a.1;
-            let b_utc = b.0 - b.1;
-            Some(a_utc.cmp(&b_utc))
-        }
+        (Value::LocalDateTime(a), Value::LocalDateTime(b)) => Some(a.cmp(b)),
+        (Value::DateTime(a), Value::DateTime(b)) => Some(a.utc_sort_key().cmp(&b.utc_sort_key())),
         // List comparison: lexicographic ordering.
         (Value::List(a), Value::List(b)) => {
             for (ae, be) in a.iter().zip(b.iter()) {

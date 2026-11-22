@@ -30,7 +30,7 @@ jobs:
   lint-workflows:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - name: actionlint
         run: |
           bash <(curl -fsSL https://raw.githubusercontent.com/rhysd/actionlint/main/scripts/download-actionlint.bash)
@@ -43,7 +43,7 @@ jobs:
         os: [ubuntu-latest, macos-latest, windows-latest]
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy, rustfmt
@@ -88,7 +88,7 @@ jobs:
             ext: zip
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: ${{ matrix.target }}
@@ -162,10 +162,11 @@ jobs:
             target: x86_64-pc-windows-gnu
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: ${{ matrix.target }}
+          components: llvm-tools
 
       - name: Install cross
         if: matrix.cross
@@ -187,6 +188,19 @@ jobs:
       - name: Build (cross)
         if: matrix.cross
         run: cross build --release -p graphdblite-ffi --target ${{ matrix.target }}
+
+      # Go 1.26.11+ rejects static libraries carrying LLVM bitcode sections
+      # (Rust's std objects embed them). The release-go workflow ships these
+      # archives in the Go module, so strip them here. MSVC builds have no .a.
+      - name: Strip LTO sections from static library (Go cgo)
+        shell: bash
+        run: |
+          lib=target/${{ matrix.target }}/release/libgraphdblite_ffi.a
+          if [ -f "$lib" ]; then
+            scripts/strip-lto-sections.sh "$lib"
+          else
+            echo "no $lib (expected for MSVC)"
+          fi
 
       - name: Package (unix)
         if: runner.os != 'Windows'
@@ -256,13 +270,13 @@ jobs:
       run:
         working-directory: bindings/node
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: ${{ matrix.target }}
-      - uses: actions/setup-node@v6
+      - uses: actions/setup-node@v7
         with:
-          node-version: "20"
+          node-version: "22"
       - run: npm install
 
       - name: Build (native)
@@ -290,7 +304,8 @@ jobs:
           # Newer rustc passes --fix-cortex-a53-843419 when linking
           # aarch64-unknown-linux-musl; zig's linker rejects it ("unsupported
           # linker arg"). A `zig` shim earlier on PATH drops that argument and
-          # runs the real zig (napi's linker wrapper calls `zig` from PATH).
+          # runs the real zig (cargo-zigbuild, which `napi build -x` drives,
+          # calls `zig` from PATH).
           mkdir -p zig-shim
           # The single-quoted lines are the shim's own source; $ must stay literal.
           # shellcheck disable=SC2016
@@ -313,7 +328,9 @@ jobs:
         if: matrix.use_zig
         run: |
           zig version
-          npx napi build --platform --release --target ${{ matrix.target }} --zig
+          # napi-rs CLI v3: `--cross-compile` (-x) builds non-Windows targets
+          # with cargo-zigbuild (auto-installed) using the zig on PATH.
+          npx napi build --platform --release --target ${{ matrix.target }} --cross-compile
 
       - uses: actions/upload-artifact@v7
         with:
@@ -325,16 +342,17 @@ jobs:
   # 8 packages has a GitHub Actions trusted publisher for this repo and
   # workflow file (dev-build.yml) on npmjs.com. Requires npm >= 11.5.1 and
   # Node >= 22.14; provenance is attached automatically.
+  # On a manual run (workflow_dispatch) the packages are staged and their
+  # contents printed, but nothing is published: use it to check a release.
   publish-npm:
-    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
     needs: build-node
     runs-on: ubuntu-latest
     permissions:
       contents: read
       id-token: write
     steps:
-      - uses: actions/checkout@v6
-      - uses: actions/setup-node@v6
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
         with:
           node-version: "22"
           registry-url: "https://registry.npmjs.org"
@@ -354,14 +372,30 @@ jobs:
       - name: Stage per-platform npm packages
         working-directory: bindings/node
         run: |
-          # napi-rs v2 CLI: command is `create-npm-dir` (singular).
-          # Passing `-t .` makes it iterate the triples from package.json
-          # rather than expecting a single target.
-          npx napi create-npm-dir -t .
-          npx napi artifacts --dir artifacts
+          # napi-rs CLI v3: one npm/<platform>/ dir per `napi.targets` entry
+          # in package.json, then copy each downloaded .node into its dir.
+          npx napi create-npm-dirs
+          npx napi artifacts --output-dir artifacts
+          # Writes optionalDependencies (one per platform package, same
+          # version) into package.json so npm installs only the matching
+          # binary. Publishing stays in the steps below (OIDC).
+          npx napi pre-publish --npm-dir npm --tag-style npm --skip-optional-publish --no-gh-release
           echo "--- npm tree ---"
           ls -R npm
+      - name: Check package contents
+        working-directory: bindings/node
+        run: |
+          node -e "const p=require('./package.json'); const o=p.optionalDependencies||{}; console.log(o); if (Object.keys(o).length !== p.napi.targets.length || Object.values(o).some(v => v !== p.version)) process.exit(1)"
+          npm pack --dry-run 2>&1 | tee pack-main.txt
+          if grep -qE '\.node$' pack-main.txt; then
+            echo "main package must not contain .node binaries" >&2
+            exit 1
+          fi
+          for d in npm/*/; do
+            (cd "$d" && npm pack --dry-run 2>&1 | grep -E 'notice (name|version|[0-9.]+[kMG]?B )')
+          done
       - name: Publish per-platform packages
+        if: startsWith(github.ref, 'refs/tags/v')
         working-directory: bindings/node
         run: |
           for d in npm/*/; do
@@ -369,6 +403,7 @@ jobs:
             (cd "$d" && npm publish --access public)
           done
       - name: Publish main wrapper
+        if: startsWith(github.ref, 'refs/tags/v')
         working-directory: bindings/node
         run: npm publish --access public
 
@@ -400,9 +435,9 @@ jobs:
             manylinux: auto
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
 
-      - uses: astral-sh/setup-uv@v8.1.0
+      - uses: astral-sh/setup-uv@v10.4.0
         # PyO3/maturin-action drives cibuildwheel which brings its own
         # per-target Pythons, but a host Python is still needed for the
         # action's prelude. uv installs one via python-build-standalone.
@@ -423,9 +458,9 @@ jobs:
     needs: build-ffi
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
-      - uses: actions/setup-go@v6
+      - uses: actions/setup-go@v7
         with:
           go-version: "1.26"
           cache: false  # binding has no non-stdlib deps; no go.sum to key on
@@ -436,7 +471,7 @@ jobs:
     needs: [test, lint-workflows]
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
       - name: Build FFI and run C conformance suite
         run: make -C bindings/ffi conformance
@@ -445,9 +480,9 @@ jobs:
     needs: [test, lint-workflows]
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
-      - uses: astral-sh/setup-uv@v8.1.0
+      - uses: astral-sh/setup-uv@v10.4.0
         # uv handles Python install — no separate actions/setup-python step.
       - name: Build and install Python binding
         working-directory: bindings/python
@@ -466,11 +501,11 @@ jobs:
       run:
         working-directory: bindings/node
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
-      - uses: actions/setup-node@v6
+      - uses: actions/setup-node@v7
         with:
-          node-version: "20"
+          node-version: "22"
       - run: npm install
       - name: Build native addon
         run: npx napi build --platform --release
@@ -523,7 +558,7 @@ jobs:
     env:
       GH_TOKEN: ${{ github.token }}
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - uses: actions/download-artifact@v8
         with:
           name: release-bundle
@@ -556,7 +591,7 @@ jobs:
     env:
       GH_TOKEN: ${{ github.token }}
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - uses: actions/download-artifact@v8
         with:
           name: release-bundle

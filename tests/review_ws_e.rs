@@ -287,10 +287,16 @@ fn e2_date_plus_huge_duration_errors() {
 fn e2_date_arithmetic_at_calendar_boundary() {
     // Lowest representable date: one day above it is fine, two is not.
     assert_eq!(
-        tstr("date({year: -262143, month: 1, day: 2}) - duration({days: 1})"),
-        s("-262143-01-01")
+        tstr("date({year: -9999, month: 1, day: 2}) - duration({days: 1})"),
+        s("-9999-01-01")
     );
-    assert_out_of_range("date({year: -262143, month: 1, day: 2}) - duration({days: 2})");
+    assert_out_of_range("date({year: -9999, month: 1, day: 2}) - duration({days: 2})");
+    // Highest representable date, likewise.
+    assert_eq!(
+        tstr("date({year: 9999, month: 12, day: 30}) + duration({days: 1})"),
+        s("9999-12-31")
+    );
+    assert_out_of_range("date({year: 9999, month: 12, day: 30}) + duration({days: 2})");
     // Ordinary arithmetic unchanged.
     assert_eq!(
         tstr("date('2024-01-31') + duration({months: 1})"),

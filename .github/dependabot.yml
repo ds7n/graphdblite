@@ -1,0 +1,75 @@
+# Weekly dependency-update PRs, grouped to keep noise to roughly one PR per
+# ecosystem per week. Security updates (when enabled in repo settings) are
+# opened immediately and bypass the schedule and grouping.
+#
+# Not listed:
+#   - bindings/go: go.mod has no requirements (cgo + vendored static lib).
+version: 2
+updates:
+  # Root workspace: core crate + python/node/ffi binding crates share Cargo.lock.
+  - package-ecosystem: cargo
+    directory: "/"
+    schedule:
+      interval: weekly
+      day: monday
+    groups:
+      cargo-compatible:
+        update-types: [minor, patch]
+    ignore:
+      # cucumber >= 0.22 pulls gherkin 0.15+, which fails to parse three
+      # official TCK feature files (`<=` inside Examples placeholders).
+      # Revisit when gherkin fixes it; the TCK run fails on parse errors.
+      - dependency-name: cucumber
+        versions: [">= 0.22"]
+    commit-message:
+      prefix: "chore(deps)"
+
+  # Separate dev-only workspaces (nothing ships), each with its own
+  # Cargo.lock that otherwise drifts behind the root (it once kept a
+  # vulnerable rusqlite). Grouped into one PR per workspace.
+  - package-ecosystem: cargo
+    directories: ["/fuzz", "/benches-crate"]
+    schedule:
+      interval: weekly
+      day: monday
+    groups:
+      cargo-dev-workspaces:
+        patterns: ["*"]
+    ignore:
+      - dependency-name: cucumber
+        versions: [">= 0.22"]
+    commit-message:
+      prefix: "chore(deps)"
+
+  - package-ecosystem: uv
+    directory: "/bindings/python"
+    schedule:
+      interval: weekly
+      day: monday
+    groups:
+      python:
+        patterns: ["*"]
+    commit-message:
+      prefix: "chore(deps)"
+
+  - package-ecosystem: npm
+    directory: "/bindings/node"
+    schedule:
+      interval: weekly
+      day: monday
+    groups:
+      node:
+        patterns: ["*"]
+    commit-message:
+      prefix: "chore(deps)"
+
+  - package-ecosystem: github-actions
+    directory: "/"
+    schedule:
+      interval: weekly
+      day: monday
+    groups:
+      actions:
+        patterns: ["*"]
+    commit-message:
+      prefix: "ci(deps)"

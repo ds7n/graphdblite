@@ -147,7 +147,7 @@ fn check_tx_owner(handle: &GraphDB, d: &Database) -> Result<(), GraphError> {
 
 /// Run a fallible operation, converting any panic into a recoverable
 /// `GraphError` instead of letting it unwind across the `extern "C"` boundary
-/// (which is undefined behavior — in practice a process abort). Query/execute
+/// (which is undefined behavior; in practice a process abort). Query/execute
 /// paths run untrusted Cypher that can panic on malformed input, so every such
 /// path funnels through here to guarantee the C caller gets `-1` +
 /// `graphdb_last_error` rather than a crashed host process.
@@ -276,6 +276,15 @@ pub extern "C" fn graphdb_last_error() -> *const c_char {
 ///
 /// Returns 0 on success and writes the handle to `*out`.
 /// Returns non-zero on error; call `graphdb_last_error()` for details.
+///
+/// # Safety
+///
+/// - `path` must be NULL (reported as an error) or point to a valid
+///   NUL-terminated C string that stays readable for the call; invalid UTF-8
+///   is reported as an error.
+/// - `out` must be NULL (reported as an error) or point to writable storage
+///   for one pointer. On success it receives a handle the caller owns and
+///   must release with `graphdb_close`; on error `*out` is left untouched.
 #[no_mangle]
 pub unsafe extern "C" fn graphdb_open(path: *const c_char, out: *mut *mut GraphDB) -> i32 {
     catch_or(-1, || {
@@ -297,6 +306,15 @@ pub unsafe extern "C" fn graphdb_open(path: *const c_char, out: *mut *mut GraphD
 }
 
 /// Open a database with a custom busy timeout (milliseconds).
+///
+/// # Safety
+///
+/// - `path` must be NULL (reported as an error) or point to a valid
+///   NUL-terminated C string that stays readable for the call; invalid UTF-8
+///   is reported as an error.
+/// - `out` must be NULL (reported as an error) or point to writable storage
+///   for one pointer. On success it receives a handle the caller owns and
+///   must release with `graphdb_close`; on error `*out` is left untouched.
 #[no_mangle]
 pub unsafe extern "C" fn graphdb_open_with_timeout(
     path: *const c_char,
@@ -326,6 +344,12 @@ pub unsafe extern "C" fn graphdb_open_with_timeout(
 }
 
 /// Open an in-memory database.
+///
+/// # Safety
+///
+/// - `out` must be NULL (reported as an error) or point to writable storage
+///   for one pointer. On success it receives a handle the caller owns and
+///   must release with `graphdb_close`; on error `*out` is left untouched.
 #[no_mangle]
 pub unsafe extern "C" fn graphdb_open_memory(out: *mut *mut GraphDB) -> i32 {
     catch_or(-1, || {
@@ -345,6 +369,15 @@ pub unsafe extern "C" fn graphdb_open_memory(out: *mut *mut GraphDB) -> i32 {
 /// `-wal` / `-shm` sidecars), defragmented and compacted. Returns non-zero
 /// when a transaction is active on this handle or when `path` already exists;
 /// call `graphdb_last_error` for details.
+///
+/// # Safety
+///
+/// - `db` must be NULL (reported as an error) or a live handle from a
+///   `graphdb_open*` function that has not been passed to `graphdb_close`; it
+///   must not be closed while this call runs.
+/// - `path` must be NULL (reported as an error) or point to a valid
+///   NUL-terminated C string that stays readable for the call; invalid UTF-8
+///   is reported as an error.
 #[no_mangle]
 pub unsafe extern "C" fn graphdb_snapshot_to(db: *mut GraphDB, path: *const c_char) -> i32 {
     catch_or(-1, || {
@@ -369,6 +402,20 @@ pub unsafe extern "C" fn graphdb_snapshot_to(db: *mut GraphDB, path: *const c_ch
 /// If a write transaction is open on this handle, the index DDL runs
 /// inside it. Otherwise the call uses the stateful auto-tx path.
 /// Returns non-zero on error; call `graphdb_last_error` for details.
+///
+/// # Safety
+///
+/// - `db` must be NULL (reported as an error) or a live handle from a
+///   `graphdb_open*` function that has not been passed to `graphdb_close`; it
+///   must not be closed while this call runs.
+/// - `label` must be NULL (reported as an error) or point to a valid
+///   NUL-terminated C string that stays readable for the call; invalid UTF-8
+///   is reported as an error.
+/// - `property` must be NULL (reported as an error) or point to a valid
+///   NUL-terminated C string that stays readable for the call; invalid UTF-8
+///   is reported as an error.
+/// - The active transaction must belong to the calling thread unless it was
+///   begun with a `_shared` variant; otherwise the call fails with an error.
 #[no_mangle]
 pub unsafe extern "C" fn graphdb_create_index(
     db: *mut GraphDB,
@@ -381,6 +428,20 @@ pub unsafe extern "C" fn graphdb_create_index(
 }
 
 /// Drop a secondary index on `(label, property)`.
+///
+/// # Safety
+///
+/// - `db` must be NULL (reported as an error) or a live handle from a
+///   `graphdb_open*` function that has not been passed to `graphdb_close`; it
+///   must not be closed while this call runs.
+/// - `label` must be NULL (reported as an error) or point to a valid
+///   NUL-terminated C string that stays readable for the call; invalid UTF-8
+///   is reported as an error.
+/// - `property` must be NULL (reported as an error) or point to a valid
+///   NUL-terminated C string that stays readable for the call; invalid UTF-8
+///   is reported as an error.
+/// - The active transaction must belong to the calling thread unless it was
+///   begun with a `_shared` variant; otherwise the call fails with an error.
 #[no_mangle]
 pub unsafe extern "C" fn graphdb_drop_index(
     db: *mut GraphDB,
@@ -394,6 +455,20 @@ pub unsafe extern "C" fn graphdb_drop_index(
 
 /// Create a fulltext index on `(label, property)`. Accelerates
 /// `CONTAINS` / `STARTS WITH` / `ENDS WITH` via SQLite FTS5 trigram.
+///
+/// # Safety
+///
+/// - `db` must be NULL (reported as an error) or a live handle from a
+///   `graphdb_open*` function that has not been passed to `graphdb_close`; it
+///   must not be closed while this call runs.
+/// - `label` must be NULL (reported as an error) or point to a valid
+///   NUL-terminated C string that stays readable for the call; invalid UTF-8
+///   is reported as an error.
+/// - `property` must be NULL (reported as an error) or point to a valid
+///   NUL-terminated C string that stays readable for the call; invalid UTF-8
+///   is reported as an error.
+/// - The active transaction must belong to the calling thread unless it was
+///   begun with a `_shared` variant; otherwise the call fails with an error.
 #[no_mangle]
 pub unsafe extern "C" fn graphdb_create_fulltext_index(
     db: *mut GraphDB,
@@ -410,6 +485,20 @@ pub unsafe extern "C" fn graphdb_create_fulltext_index(
 /// Accelerates the case-insensitive idiom
 /// `toLower(n.prop) CONTAINS toLower($q)` (and `STARTS WITH` / `ENDS WITH`);
 /// plain predicates keep Cypher's case-sensitive semantics.
+///
+/// # Safety
+///
+/// - `db` must be NULL (reported as an error) or a live handle from a
+///   `graphdb_open*` function that has not been passed to `graphdb_close`; it
+///   must not be closed while this call runs.
+/// - `label` must be NULL (reported as an error) or point to a valid
+///   NUL-terminated C string that stays readable for the call; invalid UTF-8
+///   is reported as an error.
+/// - `property` must be NULL (reported as an error) or point to a valid
+///   NUL-terminated C string that stays readable for the call; invalid UTF-8
+///   is reported as an error.
+/// - The active transaction must belong to the calling thread unless it was
+///   begun with a `_shared` variant; otherwise the call fails with an error.
 #[no_mangle]
 pub unsafe extern "C" fn graphdb_create_fulltext_index_ci(
     db: *mut GraphDB,
@@ -426,8 +515,22 @@ pub unsafe extern "C" fn graphdb_create_fulltext_index_ci(
 /// Create a word-tokenized fulltext index on `(label, property)`.
 /// Backed by SQLite FTS5 with the `unicode61` tokenizer. Suitable for
 /// the `fts.search` procedure. Does not accelerate
-/// `CONTAINS` / `STARTS WITH` / `ENDS WITH` — use
+/// `CONTAINS` / `STARTS WITH` / `ENDS WITH`; use
 /// `graphdb_create_fulltext_index` for those.
+///
+/// # Safety
+///
+/// - `db` must be NULL (reported as an error) or a live handle from a
+///   `graphdb_open*` function that has not been passed to `graphdb_close`; it
+///   must not be closed while this call runs.
+/// - `label` must be NULL (reported as an error) or point to a valid
+///   NUL-terminated C string that stays readable for the call; invalid UTF-8
+///   is reported as an error.
+/// - `property` must be NULL (reported as an error) or point to a valid
+///   NUL-terminated C string that stays readable for the call; invalid UTF-8
+///   is reported as an error.
+/// - The active transaction must belong to the calling thread unless it was
+///   begun with a `_shared` variant; otherwise the call fails with an error.
 #[no_mangle]
 pub unsafe extern "C" fn graphdb_create_fulltext_index_word(
     db: *mut GraphDB,
@@ -449,6 +552,21 @@ pub unsafe extern "C" fn graphdb_create_fulltext_index_word(
 ///
 /// `properties` must point to an array of `properties_count` non-null,
 /// null-terminated UTF-8 strings. `properties_count` must be > 0.
+///
+/// # Safety
+///
+/// - `db` must be NULL (reported as an error) or a live handle from a
+///   `graphdb_open*` function that has not been passed to `graphdb_close`; it
+///   must not be closed while this call runs.
+/// - `label` must be NULL (reported as an error) or point to a valid
+///   NUL-terminated C string that stays readable for the call; invalid UTF-8
+///   is reported as an error.
+/// - `properties` must be NULL (reported as an error) or point to an array of
+///   ``properties_count`` pointers, each NULL (reported as an error) or a
+///   valid NUL-terminated C string; reading past the end of the array is
+///   undefined behavior.
+/// - The active transaction must belong to the calling thread unless it was
+///   begun with a `_shared` variant; otherwise the call fails with an error.
 #[no_mangle]
 pub unsafe extern "C" fn graphdb_create_fulltext_index_word_multi(
     db: *mut GraphDB,
@@ -494,6 +612,20 @@ pub unsafe extern "C" fn graphdb_create_fulltext_index_word_multi(
 }
 
 /// Drop a fulltext index on `(label, property)`.
+///
+/// # Safety
+///
+/// - `db` must be NULL (reported as an error) or a live handle from a
+///   `graphdb_open*` function that has not been passed to `graphdb_close`; it
+///   must not be closed while this call runs.
+/// - `label` must be NULL (reported as an error) or point to a valid
+///   NUL-terminated C string that stays readable for the call; invalid UTF-8
+///   is reported as an error.
+/// - `property` must be NULL (reported as an error) or point to a valid
+///   NUL-terminated C string that stays readable for the call; invalid UTF-8
+///   is reported as an error.
+/// - The active transaction must belong to the calling thread unless it was
+///   begun with a `_shared` variant; otherwise the call fails with an error.
 #[no_mangle]
 pub unsafe extern "C" fn graphdb_drop_fulltext_index(
     db: *mut GraphDB,
@@ -510,6 +642,21 @@ pub unsafe extern "C" fn graphdb_drop_fulltext_index(
 /// `properties` must point to an array of `count` non-null, null-terminated
 /// UTF-8 strings listing the property names in column order. `count` must be
 /// ≥ 2. Returns non-zero on error; call `graphdb_last_error` for details.
+///
+/// # Safety
+///
+/// - `db` must be NULL (reported as an error) or a live handle from a
+///   `graphdb_open*` function that has not been passed to `graphdb_close`; it
+///   must not be closed while this call runs.
+/// - `label` must be NULL (reported as an error) or point to a valid
+///   NUL-terminated C string that stays readable for the call; invalid UTF-8
+///   is reported as an error.
+/// - `properties` must be NULL (reported as an error) or point to an array of
+///   ``count`` pointers, each NULL (reported as an error) or a valid
+///   NUL-terminated C string; reading past the end of the array is undefined
+///   behavior. `count` of 0 is reported as an error.
+/// - The active transaction must belong to the calling thread unless it was
+///   begun with a `_shared` variant; otherwise the call fails with an error.
 #[no_mangle]
 pub unsafe extern "C" fn graphdb_create_composite_index(
     db: *mut GraphDB,
@@ -528,6 +675,21 @@ pub unsafe extern "C" fn graphdb_create_composite_index(
 ///
 /// `properties` must point to an array of `count` non-null, null-terminated
 /// UTF-8 strings listing the property names in the same order used at creation.
+///
+/// # Safety
+///
+/// - `db` must be NULL (reported as an error) or a live handle from a
+///   `graphdb_open*` function that has not been passed to `graphdb_close`; it
+///   must not be closed while this call runs.
+/// - `label` must be NULL (reported as an error) or point to a valid
+///   NUL-terminated C string that stays readable for the call; invalid UTF-8
+///   is reported as an error.
+/// - `properties` must be NULL (reported as an error) or point to an array of
+///   ``count`` pointers, each NULL (reported as an error) or a valid
+///   NUL-terminated C string; reading past the end of the array is undefined
+///   behavior. `count` of 0 is reported as an error.
+/// - The active transaction must belong to the calling thread unless it was
+///   begun with a `_shared` variant; otherwise the call fails with an error.
 #[no_mangle]
 pub unsafe extern "C" fn graphdb_drop_composite_index(
     db: *mut GraphDB,
@@ -619,6 +781,14 @@ fn ddl_call(
 /// Close a database and free its resources.
 ///
 /// After this call, the pointer is invalid. Passing NULL is a no-op.
+///
+/// # Safety
+///
+/// - `db` may be NULL (no-op) or a handle from a `graphdb_open*` function not
+///   yet closed.
+/// - The handle is freed: it must not be used again, and no other thread may
+///   be using it during or after this call.
+/// - Results already returned stay valid; they do not borrow from the handle.
 #[no_mangle]
 pub unsafe extern "C" fn graphdb_close(db: *mut GraphDB) {
     catch_or((), || {
@@ -710,6 +880,19 @@ unsafe fn run_query(
 ///
 /// On success, writes a `GraphResult` handle to `*out`. The caller must free it
 /// with `graphdb_result_free`.
+///
+/// # Safety
+///
+/// - `db` must be NULL (reported as an error) or a live handle from a
+///   `graphdb_open*` function that has not been passed to `graphdb_close`; it
+///   must not be closed while this call runs.
+/// - `cypher` must be NULL (reported as an error) or point to a valid
+///   NUL-terminated C string that stays readable for the call; invalid UTF-8
+///   is reported as an error.
+/// - `out` must be NULL (reported as an error) or point to writable storage
+///   for one pointer. On success it receives a result handle the caller owns
+///   and must release with `graphdb_result_free`; on error `*out` is left
+///   untouched.
 #[no_mangle]
 pub unsafe extern "C" fn graphdb_query(
     db: *mut GraphDB,
@@ -733,6 +916,22 @@ pub unsafe extern "C" fn graphdb_query(
 ///
 /// On success, writes a `GraphResult` handle to `*out`. The caller must free it
 /// with `graphdb_result_free`.
+///
+/// # Safety
+///
+/// - `db` must be NULL (reported as an error) or a live handle from a
+///   `graphdb_open*` function that has not been passed to `graphdb_close`; it
+///   must not be closed while this call runs.
+/// - `cypher` must be NULL (reported as an error) or point to a valid
+///   NUL-terminated C string that stays readable for the call; invalid UTF-8
+///   is reported as an error.
+/// - `params_json` may be NULL (no parameters); otherwise it must be a valid
+///   NUL-terminated C string, and invalid UTF-8 or JSON is reported as an
+///   error.
+/// - `out` must be NULL (reported as an error) or point to writable storage
+///   for one pointer. On success it receives a result handle the caller owns
+///   and must release with `graphdb_result_free`; on error `*out` is left
+///   untouched.
 #[no_mangle]
 pub unsafe extern "C" fn graphdb_query_params(
     db: *mut GraphDB,
@@ -749,6 +948,19 @@ pub unsafe extern "C" fn graphdb_query_params(
 ///
 /// On success, writes a `GraphResult` handle to `*out`. The caller must free it
 /// with `graphdb_result_free`.
+///
+/// # Safety
+///
+/// - `db` must be NULL (reported as an error) or a live handle from a
+///   `graphdb_open*` function that has not been passed to `graphdb_close`; it
+///   must not be closed while this call runs.
+/// - `cypher` must be NULL (reported as an error) or point to a valid
+///   NUL-terminated C string that stays readable for the call; invalid UTF-8
+///   is reported as an error.
+/// - `out` must be NULL (reported as an error) or point to writable storage
+///   for one pointer. On success it receives a result handle the caller owns
+///   and must release with `graphdb_result_free`; on error `*out` is left
+///   untouched.
 #[no_mangle]
 pub unsafe extern "C" fn graphdb_execute(
     db: *mut GraphDB,
@@ -762,6 +974,22 @@ pub unsafe extern "C" fn graphdb_execute(
 
 /// Execute a write Cypher query with parameters. `params_json` is a JSON
 /// object or NULL; see `graphdb_query_params` for the type mapping.
+///
+/// # Safety
+///
+/// - `db` must be NULL (reported as an error) or a live handle from a
+///   `graphdb_open*` function that has not been passed to `graphdb_close`; it
+///   must not be closed while this call runs.
+/// - `cypher` must be NULL (reported as an error) or point to a valid
+///   NUL-terminated C string that stays readable for the call; invalid UTF-8
+///   is reported as an error.
+/// - `params_json` may be NULL (no parameters); otherwise it must be a valid
+///   NUL-terminated C string, and invalid UTF-8 or JSON is reported as an
+///   error.
+/// - `out` must be NULL (reported as an error) or point to writable storage
+///   for one pointer. On success it receives a result handle the caller owns
+///   and must release with `graphdb_result_free`; on error `*out` is left
+///   untouched.
 #[no_mangle]
 pub unsafe extern "C" fn graphdb_execute_params(
     db: *mut GraphDB,
@@ -804,6 +1032,13 @@ unsafe fn begin_tx(db: *mut GraphDB, write: bool, owner: Option<TxOwner>) -> i32
 /// The transaction belongs to the calling thread: transaction calls
 /// (`graphdb_tx_execute*`, commit, rollback, index DDL) from other threads
 /// fail until it ends.
+///
+/// # Safety
+///
+/// - `db` must be NULL (reported as an error) or a live handle from a
+///   `graphdb_open*` function that has not been passed to `graphdb_close`; it
+///   must not be closed while this call runs.
+/// - The new transaction is owned by the calling thread.
 #[no_mangle]
 pub unsafe extern "C" fn graphdb_tx_begin_write(db: *mut GraphDB) -> i32 {
     catch_or(-1, || unsafe { begin_tx(db, true, None) })
@@ -811,6 +1046,13 @@ pub unsafe extern "C" fn graphdb_tx_begin_write(db: *mut GraphDB) -> i32 {
 
 /// Begin a read transaction. Owned by the calling thread, like
 /// `graphdb_tx_begin_write`.
+///
+/// # Safety
+///
+/// - `db` must be NULL (reported as an error) or a live handle from a
+///   `graphdb_open*` function that has not been passed to `graphdb_close`; it
+///   must not be closed while this call runs.
+/// - The new transaction is owned by the calling thread.
 #[no_mangle]
 pub unsafe extern "C" fn graphdb_tx_begin_read(db: *mut GraphDB) -> i32 {
     catch_or(-1, || unsafe { begin_tx(db, false, None) })
@@ -820,6 +1062,14 @@ pub unsafe extern "C" fn graphdb_tx_begin_read(db: *mut GraphDB) -> i32 {
 /// bindings whose own transaction objects decide who may use them (Go,
 /// where goroutines move between OS threads). The caller is responsible
 /// for not interleaving unrelated work into the transaction.
+///
+/// # Safety
+///
+/// - `db` must be NULL (reported as an error) or a live handle from a
+///   `graphdb_open*` function that has not been passed to `graphdb_close`; it
+///   must not be closed while this call runs.
+/// - The new transaction may be used from any thread; the caller must
+///   serialize use of it.
 #[no_mangle]
 pub unsafe extern "C" fn graphdb_tx_begin_write_shared(db: *mut GraphDB) -> i32 {
     catch_or(-1, || unsafe { begin_tx(db, true, Some(TxOwner::Any)) })
@@ -827,6 +1077,14 @@ pub unsafe extern "C" fn graphdb_tx_begin_write_shared(db: *mut GraphDB) -> i32 
 
 /// Begin a read transaction that any thread may use. See
 /// `graphdb_tx_begin_write_shared`.
+///
+/// # Safety
+///
+/// - `db` must be NULL (reported as an error) or a live handle from a
+///   `graphdb_open*` function that has not been passed to `graphdb_close`; it
+///   must not be closed while this call runs.
+/// - The new transaction may be used from any thread; the caller must
+///   serialize use of it.
 #[no_mangle]
 pub unsafe extern "C" fn graphdb_tx_begin_read_shared(db: *mut GraphDB) -> i32 {
     catch_or(-1, || unsafe { begin_tx(db, false, Some(TxOwner::Any)) })
@@ -837,6 +1095,21 @@ pub unsafe extern "C" fn graphdb_tx_begin_read_shared(db: *mut GraphDB) -> i32 {
 /// A failed statement is rolled back on its own; the transaction stays
 /// open and usable. With no transaction open, the statement runs in its
 /// own auto-committed transaction.
+///
+/// # Safety
+///
+/// - `db` must be NULL (reported as an error) or a live handle from a
+///   `graphdb_open*` function that has not been passed to `graphdb_close`; it
+///   must not be closed while this call runs.
+/// - `cypher` must be NULL (reported as an error) or point to a valid
+///   NUL-terminated C string that stays readable for the call; invalid UTF-8
+///   is reported as an error.
+/// - `out` must be NULL (reported as an error) or point to writable storage
+///   for one pointer. On success it receives a result handle the caller owns
+///   and must release with `graphdb_result_free`; on error `*out` is left
+///   untouched.
+/// - The active transaction must belong to the calling thread unless it was
+///   begun with a `_shared` variant; otherwise the call fails with an error.
 #[no_mangle]
 pub unsafe extern "C" fn graphdb_tx_execute(
     db: *mut GraphDB,
@@ -851,6 +1124,24 @@ pub unsafe extern "C" fn graphdb_tx_execute(
 /// Execute a Cypher query with parameters within the current transaction.
 /// `params_json` is a JSON object or NULL; see `graphdb_query_params` for
 /// the type mapping.
+///
+/// # Safety
+///
+/// - `db` must be NULL (reported as an error) or a live handle from a
+///   `graphdb_open*` function that has not been passed to `graphdb_close`; it
+///   must not be closed while this call runs.
+/// - `cypher` must be NULL (reported as an error) or point to a valid
+///   NUL-terminated C string that stays readable for the call; invalid UTF-8
+///   is reported as an error.
+/// - `params_json` may be NULL (no parameters); otherwise it must be a valid
+///   NUL-terminated C string, and invalid UTF-8 or JSON is reported as an
+///   error.
+/// - `out` must be NULL (reported as an error) or point to writable storage
+///   for one pointer. On success it receives a result handle the caller owns
+///   and must release with `graphdb_result_free`; on error `*out` is left
+///   untouched.
+/// - The active transaction must belong to the calling thread unless it was
+///   begun with a `_shared` variant; otherwise the call fails with an error.
 #[no_mangle]
 pub unsafe extern "C" fn graphdb_tx_execute_params(
     db: *mut GraphDB,
@@ -865,6 +1156,21 @@ pub unsafe extern "C" fn graphdb_tx_execute_params(
 
 /// Deprecated alias for `graphdb_tx_execute`. Will be removed in a future
 /// release. Kept temporarily for the Go binding's transition.
+///
+/// # Safety
+///
+/// - `db` must be NULL (reported as an error) or a live handle from a
+///   `graphdb_open*` function that has not been passed to `graphdb_close`; it
+///   must not be closed while this call runs.
+/// - `cypher` must be NULL (reported as an error) or point to a valid
+///   NUL-terminated C string that stays readable for the call; invalid UTF-8
+///   is reported as an error.
+/// - `out` must be NULL (reported as an error) or point to writable storage
+///   for one pointer. On success it receives a result handle the caller owns
+///   and must release with `graphdb_result_free`; on error `*out` is left
+///   untouched.
+/// - The active transaction must belong to the calling thread unless it was
+///   begun with a `_shared` variant; otherwise the call fails with an error.
 #[no_mangle]
 pub unsafe extern "C" fn graphdb_tx_query(
     db: *mut GraphDB,
@@ -875,6 +1181,16 @@ pub unsafe extern "C" fn graphdb_tx_query(
 }
 
 /// Commit the current transaction.
+///
+/// # Safety
+///
+/// - `db` must be NULL (reported as an error) or a live handle from a
+///   `graphdb_open*` function that has not been passed to `graphdb_close`; it
+///   must not be closed while this call runs.
+/// - The active transaction must belong to the calling thread unless it was
+///   begun with a `_shared` variant; otherwise the call fails with an error.
+/// - After a successful commit the transaction handle is gone; a later
+///   `graphdb_tx_execute*` runs in its own auto-committed transaction.
 #[no_mangle]
 pub unsafe extern "C" fn graphdb_tx_commit(db: *mut GraphDB) -> i32 {
     catch_or(-1, || {
@@ -889,6 +1205,16 @@ pub unsafe extern "C" fn graphdb_tx_commit(db: *mut GraphDB) -> i32 {
 }
 
 /// Rollback the current transaction.
+///
+/// # Safety
+///
+/// - `db` must be NULL (reported as an error) or a live handle from a
+///   `graphdb_open*` function that has not been passed to `graphdb_close`; it
+///   must not be closed while this call runs.
+/// - The active transaction must belong to the calling thread unless it was
+///   begun with a `_shared` variant; otherwise the call fails with an error.
+/// - After rollback the transaction is gone; a later `graphdb_tx_execute*`
+///   runs in its own auto-committed transaction.
 #[no_mangle]
 pub unsafe extern "C" fn graphdb_tx_rollback(db: *mut GraphDB) -> i32 {
     catch_or(-1, || {
@@ -907,6 +1233,11 @@ pub unsafe extern "C" fn graphdb_tx_rollback(db: *mut GraphDB) -> i32 {
 // ---------------------------------------------------------------------------
 
 /// Get the number of rows in a query result.
+///
+/// # Safety
+///
+/// - `result` may be NULL (returns 0) or a live handle from a query/execute
+///   function that has not been passed to `graphdb_result_free`.
 #[no_mangle]
 pub unsafe extern "C" fn graphdb_result_row_count(result: *const GraphResult) -> i64 {
     catch_or(0, || {
@@ -918,6 +1249,11 @@ pub unsafe extern "C" fn graphdb_result_row_count(result: *const GraphResult) ->
 }
 
 /// Get the number of columns in a query result.
+///
+/// # Safety
+///
+/// - `result` may be NULL (returns 0) or a live handle from a query/execute
+///   function that has not been passed to `graphdb_result_free`.
 #[no_mangle]
 pub unsafe extern "C" fn graphdb_result_column_count(result: *const GraphResult) -> i64 {
     catch_or(0, || {
@@ -932,6 +1268,16 @@ pub unsafe extern "C" fn graphdb_result_column_count(result: *const GraphResult)
 /// Get a column name by index. Returns NULL if out of bounds.
 ///
 /// The returned pointer is valid until `graphdb_result_free` is called.
+///
+/// # Safety
+///
+/// - `result` may be NULL (returns NULL) or a live handle from a
+///   query/execute function that has not been passed to
+///   `graphdb_result_free`.
+/// - The returned string is owned by the result and valid until
+///   `graphdb_result_free`; the caller must not free or modify it.
+/// - This call may build a cache inside the result, so no other call may use
+///   the same result concurrently.
 #[no_mangle]
 pub unsafe extern "C" fn graphdb_result_column_name(
     result: *mut GraphResult,
@@ -966,6 +1312,14 @@ pub unsafe extern "C" fn graphdb_result_column_name(
 /// for the same cell again returns the same pointer). Floats keep a
 /// fractional part (`1.0`); paths render as
 /// `{nodes: [...], relationships: [...]}`.
+///
+/// # Safety
+///
+/// - `result` may be NULL (returns NULL) or a live handle from a
+///   query/execute function that has not been passed to
+///   `graphdb_result_free`.
+/// - The returned string is owned by the result and valid until
+///   `graphdb_result_free`; the caller must not free or modify it.
 #[no_mangle]
 pub unsafe extern "C" fn graphdb_result_value_str(
     result: *const GraphResult,
@@ -1019,6 +1373,11 @@ pub unsafe extern "C" fn graphdb_result_value_str(
 /// 7 = map, 8 = node, 9 = relationship, 10 = date, 11 = local time,
 /// 12 = time, 13 = local datetime, 14 = datetime, 15 = duration.
 /// Out-of-range cells report 0 (null).
+///
+/// # Safety
+///
+/// - `result` may be NULL (returns 0) or a live handle from a query/execute
+///   function that has not been passed to `graphdb_result_free`.
 #[no_mangle]
 pub unsafe extern "C" fn graphdb_result_value_type(
     result: *const GraphResult,
@@ -1056,6 +1415,11 @@ pub unsafe extern "C" fn graphdb_result_value_type(
 }
 
 /// Get an integer value. Returns 0 if the value is not an integer.
+///
+/// # Safety
+///
+/// - `result` may be NULL (returns 0) or a live handle from a query/execute
+///   function that has not been passed to `graphdb_result_free`.
 #[no_mangle]
 pub unsafe extern "C" fn graphdb_result_value_i64(
     result: *const GraphResult,
@@ -1079,6 +1443,11 @@ pub unsafe extern "C" fn graphdb_result_value_i64(
 }
 
 /// Get a float value. Returns 0.0 if the value is not a float.
+///
+/// # Safety
+///
+/// - `result` may be NULL (returns 0.0) or a live handle from a query/execute
+///   function that has not been passed to `graphdb_result_free`.
 #[no_mangle]
 pub unsafe extern "C" fn graphdb_result_value_f64(
     result: *const GraphResult,
@@ -1102,6 +1471,11 @@ pub unsafe extern "C" fn graphdb_result_value_f64(
 }
 
 /// Get a boolean value. Returns 0 (false) if the value is not a boolean.
+///
+/// # Safety
+///
+/// - `result` may be NULL (returns 0) or a live handle from a query/execute
+///   function that has not been passed to `graphdb_result_free`.
 #[no_mangle]
 pub unsafe extern "C" fn graphdb_result_value_bool(
     result: *const GraphResult,
@@ -1127,6 +1501,16 @@ pub unsafe extern "C" fn graphdb_result_value_bool(
 /// Get the full result as a JSON string.
 ///
 /// The returned pointer is valid until `graphdb_result_free` is called.
+///
+/// # Safety
+///
+/// - `result` may be NULL (returns NULL) or a live handle from a
+///   query/execute function that has not been passed to
+///   `graphdb_result_free`.
+/// - The returned string is owned by the result and valid until
+///   `graphdb_result_free`; the caller must not free or modify it.
+/// - This call may build a cache inside the result, so no other call may use
+///   the same result concurrently.
 #[no_mangle]
 pub unsafe extern "C" fn graphdb_result_json(result: *mut GraphResult) -> *const c_char {
     catch_or(ptr::null(), || {
@@ -1147,6 +1531,12 @@ pub unsafe extern "C" fn graphdb_result_json(result: *mut GraphResult) -> *const
 /// Free a query result.
 ///
 /// After this call, the pointer is invalid. Passing NULL is a no-op.
+///
+/// # Safety
+///
+/// - `result` may be NULL (no-op) or a live result handle not yet freed.
+/// - The handle and every string returned from it are freed: none may be used
+///   afterwards, and no other thread may be using the result.
 #[no_mangle]
 pub unsafe extern "C" fn graphdb_result_free(result: *mut GraphResult) {
     catch_or((), || {

@@ -64,9 +64,16 @@ fn run() {
         eprintln!("TCK: {skip_count} scenarios skipped via skiplist");
     }
 
-    // Exit non-zero on step failures but not on parsing errors (which the
-    // skiplist cannot prevent — they happen before scenario filtering).
-    if writer.failed_steps() > 0 || writer.hook_errors() > 0 {
+    // Parsing errors also fail the run: an unparseable feature file drops
+    // all of its scenarios silently (seen with gherkin 0.15/0.16 on the
+    // official TCK files), which would hide lost coverage.
+    if writer.parsing_errors() > 0 {
+        eprintln!(
+            "TCK: {} feature file(s) failed to parse; their scenarios did not run",
+            writer.parsing_errors()
+        );
+    }
+    if writer.failed_steps() > 0 || writer.hook_errors() > 0 || writer.parsing_errors() > 0 {
         std::process::exit(1);
     }
 }

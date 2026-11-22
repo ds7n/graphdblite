@@ -4,7 +4,7 @@
 //! Node.js bindings for graphdblite via napi-rs.
 
 use napi::bindgen_prelude::*;
-use napi::{JsBigInt, JsBoolean, JsNumber, JsString, NapiRaw, NapiValue, ValueType};
+use napi::ValueType;
 use napi_derive::napi;
 use std::collections::{BTreeMap, HashMap};
 use std::sync::{Arc, Mutex};
@@ -61,21 +61,19 @@ fn to_napi_err(e: GraphError) -> napi::Error {
     napi::Error::from_reason(e.to_string())
 }
 
-/// Convert an Array to JsUnknown via raw napi pointer.
-fn array_to_unknown(env: &Env, arr: &napi::JsObject) -> Result<napi::JsUnknown> {
-    unsafe { napi::JsUnknown::from_raw(env.raw(), arr.raw()) }
-}
-
 /// Largest integer a JS number holds exactly (`Number.MAX_SAFE_INTEGER`).
 const MAX_SAFE_INTEGER: i64 = (1 << 53) - 1;
 
 /// An integer as a JS number when it is exactly representable, else as a
 /// BigInt (so no precision is lost).
-fn int_to_napi(env: &Env, n: i64) -> Result<napi::JsUnknown> {
+///
+/// # Safety
+/// `env` must be the live environment of the current call.
+unsafe fn int_to_napi(env: sys::napi_env, n: i64) -> Result<sys::napi_value> {
     if (-MAX_SAFE_INTEGER..=MAX_SAFE_INTEGER).contains(&n) {
-        env.create_int64(n).map(|v| v.into_unknown())
+        i64::to_napi_value(env, n)
     } else {
-        env.create_bigint_from_i64(n)?.into_unknown()
+        i64n::to_napi_value(env, i64n(n))
     }
 }
 
@@ -87,98 +85,117 @@ const NODE_META_KEYS: [&str; 2] = ["__id", "__labels"];
 /// of `__type`, kept for 0.1.x callers.
 const EDGE_META_KEYS: [&str; 5] = ["__src", "__dst", "__type", "__label", "__edge_seq"];
 
-fn set_props(
-    env: &Env,
-    obj: &mut napi::JsObject,
-    props: &graphdblite::Properties,
-    meta: &[&str],
-) -> Result<()> {
+/// A borrowed Cypher value, converted to JS on return.
+///
+/// null, boolean, integer (number or BigInt, see [`int_to_napi`]), float,
+/// string, list -> Array, map -> object, node / relationship -> object with
+/// `__`-prefixed metadata, path -> `{nodes, relationships}`, temporal ->
+/// ISO string.
+struct JsOut<'a>(&'a Value);
+
+/// A JS integer (number or BigInt) built from an `i64`.
+struct JsInt(i64);
+
+impl ToNapiValue for JsInt {
+    unsafe fn to_napi_value(env: sys::napi_env, val: Self) -> Result<sys::napi_value> {
+        int_to_napi(env, val.0)
+    }
+}
+
+/// Set every property not shadowed by a metadata key.
+fn set_props(obj: &mut Object<'_>, props: &graphdblite::Properties, meta: &[&str]) -> Result<()> {
     for (k, v) in props {
         if meta.contains(&k.as_str()) {
             continue;
         }
-        obj.set(k.as_str(), value_to_napi(env, v)?)?;
+        obj.set(k.as_str(), JsOut(v))?;
     }
     Ok(())
 }
 
-fn node_to_napi(env: &Env, n: &graphdblite::Node) -> Result<napi::JsObject> {
-    let mut obj = env.create_object()?;
-    obj.set("__id", int_to_napi(env, n.id.0 as i64)?)?;
-    let mut labels_arr = env.create_array_with_length(n.labels.len())?;
-    for (i, label) in n.labels.iter().enumerate() {
-        labels_arr.set_element(i as u32, env.create_string(label)?)?;
-    }
-    obj.set("__labels", labels_arr)?;
-    set_props(env, &mut obj, &n.properties, &NODE_META_KEYS)?;
-    Ok(obj)
-}
+/// A node as a JS object.
+struct JsNode<'a>(&'a graphdblite::Node);
 
-fn edge_to_napi(env: &Env, e: &graphdblite::Edge) -> Result<napi::JsObject> {
-    let mut obj = env.create_object()?;
-    obj.set("__src", int_to_napi(env, e.src.0 as i64)?)?;
-    obj.set("__dst", int_to_napi(env, e.dst.0 as i64)?)?;
-    obj.set("__type", env.create_string(&e.label)?)?;
-    obj.set("__label", env.create_string(&e.label)?)?;
-    obj.set("__edge_seq", int_to_napi(env, e.seq as i64)?)?;
-    set_props(env, &mut obj, &e.properties, &EDGE_META_KEYS)?;
-    Ok(obj)
-}
-
-fn value_to_napi(env: &Env, val: &Value) -> Result<napi::JsUnknown> {
-    match val {
-        Value::Null => env.get_null().map(|v| v.into_unknown()),
-        Value::Bool(b) => env.get_boolean(*b).map(|v| v.into_unknown()),
-        Value::I64(n) => int_to_napi(env, *n),
-        Value::F64(n) => env.create_double(*n).map(|v| v.into_unknown()),
-        Value::String(s) => env.create_string(s).map(|v| v.into_unknown()),
-        Value::List(items) => {
-            let mut arr = env.create_array_with_length(items.len())?;
-            for (i, item) in items.iter().enumerate() {
-                arr.set_element(i as u32, value_to_napi(env, item)?)?;
-            }
-            array_to_unknown(env, &arr)
-        }
-        Value::Path(p) => {
-            let mut nodes = env.create_array_with_length(p.nodes.len())?;
-            for (i, n) in p.nodes.iter().enumerate() {
-                nodes.set_element(i as u32, node_to_napi(env, n)?)?;
-            }
-            let mut rels = env.create_array_with_length(p.edges.len())?;
-            for (i, e) in p.edges.iter().enumerate() {
-                rels.set_element(i as u32, edge_to_napi(env, e)?)?;
-            }
-            let mut obj = env.create_object()?;
-            obj.set("nodes", nodes)?;
-            obj.set("relationships", rels)?;
-            Ok(obj.into_unknown())
-        }
-        Value::Node(n) => Ok(node_to_napi(env, n)?.into_unknown()),
-        Value::Edge(e) => Ok(edge_to_napi(env, e)?.into_unknown()),
-        Value::Map(map) => {
-            let mut obj = env.create_object()?;
-            for (k, v) in map {
-                obj.set(k.as_str(), value_to_napi(env, v)?)?;
-            }
-            Ok(obj.into_unknown())
-        }
-        // Temporal types: exposed as ISO strings.
-        other => env
-            .create_string(&format!("{other}"))
-            .map(|v| v.into_unknown()),
+impl ToNapiValue for JsNode<'_> {
+    unsafe fn to_napi_value(env: sys::napi_env, val: Self) -> Result<sys::napi_value> {
+        let n = val.0;
+        let mut obj = Object::new(&Env::from_raw(env))?;
+        obj.set("__id", JsInt(n.id.0 as i64))?;
+        obj.set(
+            "__labels",
+            n.labels.iter().map(String::as_str).collect::<Vec<_>>(),
+        )?;
+        set_props(&mut obj, &n.properties, &NODE_META_KEYS)?;
+        Object::to_napi_value(env, obj)
     }
 }
 
-fn records_to_napi(env: &Env, records: &[Record]) -> Result<Vec<napi::JsObject>> {
-    let mut result = Vec::with_capacity(records.len());
-    for rec in records {
-        let mut obj = env.create_object()?;
-        for (key, val) in rec.iter() {
-            obj.set(key.as_str(), value_to_napi(env, val)?)?;
-        }
-        result.push(obj);
+/// A relationship as a JS object.
+struct JsEdge<'a>(&'a graphdblite::Edge);
+
+impl ToNapiValue for JsEdge<'_> {
+    unsafe fn to_napi_value(env: sys::napi_env, val: Self) -> Result<sys::napi_value> {
+        let e = val.0;
+        let mut obj = Object::new(&Env::from_raw(env))?;
+        obj.set("__src", JsInt(e.src.0 as i64))?;
+        obj.set("__dst", JsInt(e.dst.0 as i64))?;
+        obj.set("__type", e.label.as_str())?;
+        obj.set("__label", e.label.as_str())?;
+        obj.set("__edge_seq", JsInt(e.seq as i64))?;
+        set_props(&mut obj, &e.properties, &EDGE_META_KEYS)?;
+        Object::to_napi_value(env, obj)
     }
-    Ok(result)
+}
+
+impl ToNapiValue for JsOut<'_> {
+    unsafe fn to_napi_value(env: sys::napi_env, val: Self) -> Result<sys::napi_value> {
+        match val.0 {
+            Value::Null => Null::to_napi_value(env, Null),
+            Value::Bool(b) => bool::to_napi_value(env, *b),
+            Value::I64(n) => int_to_napi(env, *n),
+            Value::F64(n) => f64::to_napi_value(env, *n),
+            Value::String(s) => <&str>::to_napi_value(env, s.as_str()),
+            Value::List(items) => Vec::to_napi_value(env, items.iter().map(JsOut).collect()),
+            Value::Path(p) => {
+                let mut obj = Object::new(&Env::from_raw(env))?;
+                obj.set("nodes", p.nodes.iter().map(JsNode).collect::<Vec<_>>())?;
+                obj.set(
+                    "relationships",
+                    p.edges.iter().map(JsEdge).collect::<Vec<_>>(),
+                )?;
+                Object::to_napi_value(env, obj)
+            }
+            Value::Node(n) => JsNode::to_napi_value(env, JsNode(n)),
+            Value::Edge(e) => JsEdge::to_napi_value(env, JsEdge(e)),
+            Value::Map(map) => {
+                let mut obj = Object::new(&Env::from_raw(env))?;
+                for (k, v) in map {
+                    obj.set(k.as_str(), JsOut(v))?;
+                }
+                Object::to_napi_value(env, obj)
+            }
+            // Temporal types: exposed as ISO strings.
+            other => String::to_napi_value(env, other.to_string()),
+        }
+    }
+}
+
+/// Query result rows, converted to an array of plain JS objects on return.
+pub struct JsRecords(Vec<Record>);
+
+impl ToNapiValue for JsRecords {
+    unsafe fn to_napi_value(env: sys::napi_env, val: Self) -> Result<sys::napi_value> {
+        let jenv = Env::from_raw(env);
+        let mut rows = Vec::with_capacity(val.0.len());
+        for rec in &val.0 {
+            let mut obj = Object::new(&jenv)?;
+            for (key, v) in rec.iter() {
+                obj.set(key.as_str(), JsOut(v))?;
+            }
+            rows.push(obj);
+        }
+        Vec::to_napi_value(env, rows)
+    }
 }
 
 /// A query-parameter error, naming the parameter.
@@ -193,7 +210,7 @@ fn param_err(name: &str, what: &str) -> napi::Error {
 /// float), bigint (must fit a signed 64-bit integer), string, Array ->
 /// list, other objects -> map of their enumerable properties. Functions,
 /// symbols and Date objects are rejected.
-fn napi_to_value(name: &str, val: napi::JsUnknown) -> Result<Value> {
+fn napi_to_value(name: &str, val: Unknown<'_>) -> Result<Value> {
     napi_to_value_at(name, val, 0)
 }
 
@@ -203,7 +220,7 @@ fn napi_to_value(name: &str, val: napi::JsUnknown) -> Result<Value> {
 const MAX_VALUE_DEPTH: usize = 128;
 
 /// [`napi_to_value`] with the current array/object nesting depth.
-fn napi_to_value_at(name: &str, val: napi::JsUnknown, depth: usize) -> Result<Value> {
+fn napi_to_value_at(name: &str, val: Unknown<'_>, depth: usize) -> Result<Value> {
     if depth > MAX_VALUE_DEPTH {
         return Err(param_err(
             name,
@@ -212,13 +229,9 @@ fn napi_to_value_at(name: &str, val: napi::JsUnknown, depth: usize) -> Result<Va
     }
     Ok(match val.get_type()? {
         ValueType::Null | ValueType::Undefined => Value::Null,
-        ValueType::Boolean => {
-            let b: JsBoolean = val.try_into()?;
-            Value::Bool(b.get_value()?)
-        }
+        ValueType::Boolean => Value::Bool(bool::from_unknown(val)?),
         ValueType::Number => {
-            let n: JsNumber = val.try_into()?;
-            let f = n.get_double()?;
+            let f = f64::from_unknown(val)?;
             if f.fract() == 0.0 && f.abs() <= MAX_SAFE_INTEGER as f64 {
                 Value::I64(f as i64)
             } else {
@@ -226,32 +239,29 @@ fn napi_to_value_at(name: &str, val: napi::JsUnknown, depth: usize) -> Result<Va
             }
         }
         ValueType::BigInt => {
-            let b: JsBigInt = unsafe { val.cast() };
-            let (n, lossless) = b.get_i64()?;
+            let (n, lossless) = BigInt::from_unknown(val)?.get_i64();
             if !lossless {
                 return Err(param_err(name, "BigInt outside the signed 64-bit range"));
             }
             Value::I64(n)
         }
-        ValueType::String => {
-            let s: JsString = val.try_into()?;
-            Value::String(s.into_utf8()?.into_owned()?)
-        }
+        ValueType::String => Value::String(String::from_unknown(val)?),
         ValueType::Object => {
-            let obj: napi::JsObject = val.try_into()?;
-            if obj.is_date()? {
+            if val.is_date()? {
                 return Err(param_err(
                     name,
                     "Date is not supported; pass an ISO string and convert in Cypher",
                 ));
             }
-            if obj.is_array()? {
+            let is_array = val.is_array()?;
+            let obj = Object::from_unknown(val)?;
+            if is_array {
                 let len = obj.get_array_length()?;
                 let mut items = Vec::with_capacity(len as usize);
                 for i in 0..len {
                     items.push(napi_to_value_at(
                         name,
-                        obj.get_element::<napi::JsUnknown>(i)?,
+                        obj.get_element::<Unknown>(i)?,
                         depth + 1,
                     )?);
                 }
@@ -261,9 +271,8 @@ fn napi_to_value_at(name: &str, val: napi::JsUnknown, depth: usize) -> Result<Va
                 let len = keys.get_array_length()?;
                 let mut map = BTreeMap::new();
                 for i in 0..len {
-                    let key: JsString = keys.get_element(i)?;
-                    let key = key.into_utf8()?.into_owned()?;
-                    let v = obj.get_named_property::<napi::JsUnknown>(&key)?;
+                    let key: String = keys.get_element(i)?;
+                    let v = obj.get_named_property::<Unknown>(&key)?;
                     map.insert(key, napi_to_value_at(name, v, depth + 1)?);
                 }
                 Value::Map(map)
@@ -276,7 +285,7 @@ fn napi_to_value_at(name: &str, val: napi::JsUnknown, depth: usize) -> Result<Va
 }
 
 /// Convert an optional JS params object to named Cypher values.
-fn params_to_map(params: Option<napi::JsObject>) -> Result<Option<HashMap<String, Value>>> {
+fn params_to_map(params: Option<Object<'_>>) -> Result<Option<HashMap<String, Value>>> {
     let Some(obj) = params else {
         return Ok(None);
     };
@@ -284,9 +293,8 @@ fn params_to_map(params: Option<napi::JsObject>) -> Result<Option<HashMap<String
     let len = keys.get_array_length()?;
     let mut map = HashMap::with_capacity(len as usize);
     for i in 0..len {
-        let key: JsString = keys.get_element(i)?;
-        let key = key.into_utf8()?.into_owned()?;
-        let v = obj.get_named_property::<napi::JsUnknown>(&key)?;
+        let key: String = keys.get_element(i)?;
+        let v = obj.get_named_property::<Unknown>(&key)?;
         let value = napi_to_value(&key, v)?;
         map.insert(key, value);
     }
@@ -363,14 +371,10 @@ impl Database {
     /// Returns an array of objects.
     #[napi(
         catch_unwind,
-        ts_args_type = "cypher: string, params?: Record<string, unknown>"
+        ts_args_type = "cypher: string, params?: Record<string, unknown>",
+        ts_return_type = "Array<object>"
     )]
-    pub fn query(
-        &self,
-        env: Env,
-        cypher: String,
-        params: Option<napi::JsObject>,
-    ) -> Result<Vec<napi::JsObject>> {
+    pub fn query(&self, cypher: String, params: Option<Object<'_>>) -> Result<JsRecords> {
         let params = params_to_map(params)?;
         let mut guard = lock_db(&self.inner);
         let db = guard.db.as_mut().ok_or_else(closed_err)?;
@@ -379,21 +383,17 @@ impl Database {
             .query_with_params(&cypher, params.as_ref())
             .map_err(to_napi_err)?;
         tx.commit().map_err(to_napi_err)?;
-        records_to_napi(&env, &records)
+        Ok(JsRecords(records))
     }
 
     /// Execute a write Cypher query (CREATE, DELETE, SET, MERGE), with
     /// optional `$name` parameters. Returns an array of objects.
     #[napi(
         catch_unwind,
-        ts_args_type = "cypher: string, params?: Record<string, unknown>"
+        ts_args_type = "cypher: string, params?: Record<string, unknown>",
+        ts_return_type = "Array<object>"
     )]
-    pub fn execute(
-        &self,
-        env: Env,
-        cypher: String,
-        params: Option<napi::JsObject>,
-    ) -> Result<Vec<napi::JsObject>> {
+    pub fn execute(&self, cypher: String, params: Option<Object<'_>>) -> Result<JsRecords> {
         let params = params_to_map(params)?;
         let mut guard = lock_db(&self.inner);
         let db = guard.db.as_mut().ok_or_else(closed_err)?;
@@ -402,7 +402,7 @@ impl Database {
             .query_with_params(&cypher, params.as_ref())
             .map_err(to_napi_err)?;
         tx.commit().map_err(to_napi_err)?;
-        records_to_napi(&env, &records)
+        Ok(JsRecords(records))
     }
 
     /// Begin a read-write transaction. Pair with `commit()` or `rollback()`.
@@ -489,15 +489,10 @@ impl TxCore {
         result
     }
 
-    fn execute(
-        &mut self,
-        env: Env,
-        cypher: String,
-        params: Option<napi::JsObject>,
-    ) -> Result<Vec<napi::JsObject>> {
+    fn execute(&mut self, cypher: String, params: Option<Object<'_>>) -> Result<JsRecords> {
         let params = params_to_map(params)?;
         let records = self.run(|db| db.execute_with_params(&cypher, params.as_ref()))?;
-        records_to_napi(&env, &records)
+        Ok(JsRecords(records))
     }
 }
 
@@ -534,29 +529,21 @@ impl WriteTransaction {
     /// `$name` parameters.
     #[napi(
         catch_unwind,
-        ts_args_type = "cypher: string, params?: Record<string, unknown>"
+        ts_args_type = "cypher: string, params?: Record<string, unknown>",
+        ts_return_type = "Array<object>"
     )]
-    pub fn execute(
-        &mut self,
-        env: Env,
-        cypher: String,
-        params: Option<napi::JsObject>,
-    ) -> Result<Vec<napi::JsObject>> {
-        self.core.execute(env, cypher, params)
+    pub fn execute(&mut self, cypher: String, params: Option<Object<'_>>) -> Result<JsRecords> {
+        self.core.execute(cypher, params)
     }
 
     /// Execute a Cypher query within this transaction (alias for `execute`).
     #[napi(
         catch_unwind,
-        ts_args_type = "cypher: string, params?: Record<string, unknown>"
+        ts_args_type = "cypher: string, params?: Record<string, unknown>",
+        ts_return_type = "Array<object>"
     )]
-    pub fn query(
-        &mut self,
-        env: Env,
-        cypher: String,
-        params: Option<napi::JsObject>,
-    ) -> Result<Vec<napi::JsObject>> {
-        self.core.execute(env, cypher, params)
+    pub fn query(&mut self, cypher: String, params: Option<Object<'_>>) -> Result<JsRecords> {
+        self.core.execute(cypher, params)
     }
 
     /// Create a secondary index on (label, property) for faster lookups.
@@ -665,15 +652,11 @@ impl ReadTransaction {
     /// optional `$name` parameters.
     #[napi(
         catch_unwind,
-        ts_args_type = "cypher: string, params?: Record<string, unknown>"
+        ts_args_type = "cypher: string, params?: Record<string, unknown>",
+        ts_return_type = "Array<object>"
     )]
-    pub fn query(
-        &mut self,
-        env: Env,
-        cypher: String,
-        params: Option<napi::JsObject>,
-    ) -> Result<Vec<napi::JsObject>> {
-        self.core.execute(env, cypher, params)
+    pub fn query(&mut self, cypher: String, params: Option<Object<'_>>) -> Result<JsRecords> {
+        self.core.execute(cypher, params)
     }
 
     /// Commit (release) the read transaction.

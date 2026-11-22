@@ -40,6 +40,8 @@ build:
 	cp $(REPO_ROOT)/target/release/libgraphdblite_ffi.a $(PLATFORM_DIR)/ 2>/dev/null || \
 	cp $(REPO_ROOT)/target/release/libgraphdblite_ffi.so $(PLATFORM_DIR)/ 2>/dev/null || \
 	cp $(REPO_ROOT)/target/release/libgraphdblite_ffi.dylib $(PLATFORM_DIR)/ 2>/dev/null || true
+	# Go 1.26.11+ rejects LLVM bitcode sections in cgo inputs.
+	if [ -f $(PLATFORM_DIR)/libgraphdblite_ffi.a ]; then $(REPO_ROOT)/scripts/strip-lto-sections.sh $(PLATFORM_DIR)/libgraphdblite_ffi.a; fi
 
 test: build
 	CGO_LDFLAGS="-L$(PLATFORM_DIR) -lgraphdblite_ffi -lm -ldl -lpthread" go test -v ./...

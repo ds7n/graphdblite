@@ -68,9 +68,9 @@ jobs:
             manylinux: auto
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
 
-      - uses: astral-sh/setup-uv@v8.1.0
+      - uses: astral-sh/setup-uv@v10.4.0
         # PyO3/maturin-action drives cibuildwheel (brings its own per-target
         # Pythons), but a host Python is needed for the action prelude.
 
@@ -89,7 +89,7 @@ jobs:
   build-sdist:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
 
       - name: Build sdist
         uses: PyO3/maturin-action@v1

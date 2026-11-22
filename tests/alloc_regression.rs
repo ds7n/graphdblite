@@ -32,10 +32,13 @@ static ALLOC: dhat::Alloc = dhat::Alloc;
 
 const TOLERANCE: f64 = 0.05;
 
+/// A named query workload and the function that runs it, returning its allocation count.
+type QueryCase = (&'static str, fn() -> u64);
+
 fn main() {
     let _profiler = dhat::Profiler::builder().testing().build();
 
-    let queries: Vec<(&str, fn() -> u64)> = vec![
+    let queries: Vec<QueryCase> = vec![
         ("indexed_lookup", run_indexed_lookup),
         ("traversal_one_hop", run_traversal_one_hop),
         ("aggregate_group_by", run_aggregate_group_by),

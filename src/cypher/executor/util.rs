@@ -89,19 +89,11 @@ pub(in crate::cypher) fn compare_values_for_sort(a: &Value, b: &Value) -> std::c
             a.len().cmp(&b.len())
         }
         // Temporal types.
-        (Value::Date(a), Value::Date(b)) => a.0.cmp(&b.0),
-        (Value::LocalTime(a), Value::LocalTime(b)) => a.0.cmp(&b.0),
-        (Value::Time(a), Value::Time(b)) => {
-            let a_utc = a.0 - a.1;
-            let b_utc = b.0 - b.1;
-            a_utc.cmp(&b_utc)
-        }
-        (Value::LocalDateTime(a), Value::LocalDateTime(b)) => a.0.cmp(&b.0),
-        (Value::DateTime(a), Value::DateTime(b)) => {
-            let a_utc = a.0 - a.1;
-            let b_utc = b.0 - b.1;
-            a_utc.cmp(&b_utc)
-        }
+        (Value::Date(a), Value::Date(b)) => a.cmp(b),
+        (Value::LocalTime(a), Value::LocalTime(b)) => a.cmp(b),
+        (Value::Time(a), Value::Time(b)) => a.utc_sort_key().cmp(&b.utc_sort_key()),
+        (Value::LocalDateTime(a), Value::LocalDateTime(b)) => a.cmp(b),
+        (Value::DateTime(a), Value::DateTime(b)) => a.utc_sort_key().cmp(&b.utc_sort_key()),
         (Value::Duration(a), Value::Duration(b)) => {
             // Duration ordering: months first, then days, then seconds, then nanos.
             a.months

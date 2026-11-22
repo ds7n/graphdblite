@@ -3,7 +3,7 @@ members = [".", "bindings/python", "bindings/ffi", "bindings/node"]
 resolver = "2"
 
 [workspace.package]
-version = "0.2.0"
+version = "0.3.0"
 edition = "2021"
 license = "MIT"
 rust-version = "1.90"
@@ -37,7 +37,7 @@ exclude = [
 crate-type = ["lib"]
 
 [dependencies]
-rusqlite = { version = "0.32", features = ["bundled"] }
+rusqlite = { version = "0.43", features = ["bundled"] }
 rmp-serde = "1"
 serde = { version = "1", features = ["derive"] }
 indexmap = "2"
@@ -45,8 +45,9 @@ stacker = "0.1"
 pest = "2"
 pest_derive = "2"
 regex = "1"
-chrono = { version = "0.4.44", features = ["serde"] }
-chrono-tz = "0.10.4"
+# Calendar engine for src/temporal.rs. Bundled tzdb so offsets are identical on
+# every platform (no system tz database; "now" is always UTC).
+jiff = { version = "1", default-features = false, features = ["std", "tzdb-bundle-always", "perf-inline"] }
 tracing = "0.1"
 # Optional, only pulled in by the `tck-support` feature.
 cucumber = { version = "0.21", optional = true }
@@ -73,7 +74,7 @@ test-hooks = []
 
 [dev-dependencies]
 tempfile = "3"
-pollster = "0.3"
+pollster = "1"
 dhat = "0.3"
 
 [[bin]]

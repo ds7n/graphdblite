@@ -1,6 +1,6 @@
 {
   "name": "graphdblite",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "Embedded graph database with Cypher support",
   "author": "ds7n",
   "keywords": ["graph", "database", "cypher", "embedded", "sqlite"],
@@ -14,27 +14,32 @@
   },
   "main": "wrapper.js",
   "types": "wrapper.d.ts",
+  "files": [
+    "index.js",
+    "index.d.ts",
+    "wrapper.js",
+    "wrapper.d.ts",
+    "README.md",
+    "LICENSE"
+  ],
   "napi": {
-    "name": "graphdblite",
-    "triples": {
-      "defaults": false,
-      "additional": [
-        "x86_64-unknown-linux-gnu",
-        "aarch64-unknown-linux-gnu",
-        "x86_64-unknown-linux-musl",
-        "aarch64-unknown-linux-musl",
-        "x86_64-apple-darwin",
-        "aarch64-apple-darwin",
-        "x86_64-pc-windows-msvc"
-      ]
-    }
+    "binaryName": "graphdblite",
+    "targets": [
+      "x86_64-unknown-linux-gnu",
+      "aarch64-unknown-linux-gnu",
+      "x86_64-unknown-linux-musl",
+      "aarch64-unknown-linux-musl",
+      "x86_64-apple-darwin",
+      "aarch64-apple-darwin",
+      "x86_64-pc-windows-msvc"
+    ]
   },
   "license": "MIT",
   "engines": {
-    "node": ">=20"
+    "node": ">=22"
   },
   "devDependencies": {
-    "@napi-rs/cli": "^2.18.0"
+    "@napi-rs/cli": "^3.10.12"
   },
   "scripts": {
     "build": "napi build --platform --release",

@@ -1,0 +1,95 @@
+[wire]
+node 0000000000000001 9291a15481a17681a44461746593cd07c00a0b
+node 0000000000000002 9291a15481a17681a44461746593010101
+node 0000000000000003 9291a15481a17681a44461746593cd270f0c1f
+node 0000000000000004 9291a15481a17681a44461746593d0d4030f
+node 0000000000000005 9291a15481a17681a94c6f63616c54696d65940c1f0ece267f499b
+node 0000000000000006 9291a15481a17681a94c6f63616c54696d659400000000
+node 0000000000000007 9291a15481a17681a454696d65950c1f0ece267f4920cd0e10
+node 0000000000000008 9291a15481a17681a454696d6595173b3bce3b9ac9ffd2ffff7a68
+node 0000000000000009 9291a15481a17681a454696d65950000000000
+node 000000000000000a 9291a15481a17681ad4c6f63616c4461746554696d6597cd07df0715152820ce0876bf80
+node 000000000000000b 9291a15481a17681a84461746554696d6598cd07df0715152820ce0876bf80cd0e10
+node 000000000000000c 9291a15481a17681a84461746554696d6598cd07b10c1f173b3b00d1af24
+node 000000000000000d 9291a15481a17681a84461746554696d6599cd07df0715152820ce0876bf80cd1c20b04575726f70652f53746f636b686f6c6d
+node 000000000000000e 9291a15481a17681a84461746554696d6599cd07df011515282000d1b9b0b0416d65726963612f4e65775f596f726b
+node 000000000000000f 9291a15481a17681a84475726174696f6e940e03cd3972ce2f072f40
+node 0000000000000010 9291a15481a17681a84475726174696f6e9400fdff00
+index 81a444617465930101010000000000000002 
+index 81a44461746593cd07c00a0b0000000000000001 
+index 81a44461746593cd270f0c1f0000000000000003 
+index 81a44461746593d0d4030f0000000000000004 
+index 81a454696d659500000000000000000000000009 
+index 81a454696d65950c1f0ece267f4920cd0e100000000000000007 
+index 81a454696d6595173b3bce3b9ac9ffd2ffff7a680000000000000008 
+index 81a84461746554696d6598cd07b10c1f173b3b00d1af24000000000000000c 
+index 81a84461746554696d6598cd07df0715152820ce0876bf80cd0e10000000000000000b 
+index 81a84461746554696d6599cd07df011515282000d1b9b0b0416d65726963612f4e65775f596f726b000000000000000e 
+index 81a84461746554696d6599cd07df0715152820ce0876bf80cd1c20b04575726f70652f53746f636b686f6c6d000000000000000d 
+index 81a84475726174696f6e9400fdff000000000000000010 
+index 81a84475726174696f6e940e03cd3972ce2f072f40000000000000000f 
+index 81a94c6f63616c54696d6594000000000000000000000006 
+index 81a94c6f63616c54696d65940c1f0ece267f499b0000000000000005 
+index 81ad4c6f63616c4461746554696d6597cd07df0715152820ce0876bf80000000000000000a 
+
+[readback]
+date_basic = 1984-10-11
+date_year1 = 0001-01-01
+date_year9999 = 9999-12-31
+date_negative = -044-03-15
+localtime_basic = 12:31:14.645876123
+localtime_midnight = 00:00
+time_pos_offset = 12:31:14.645876+01:00
+time_neg_offset = 23:59:59.999999999-09:30
+time_utc = 00:00Z
+localdatetime_basic = 2015-07-21T21:40:32.142
+datetime_offset = 2015-07-21T21:40:32.142+01:00
+datetime_neg_offset = 1969-12-31T23:59:59-05:45
+datetime_tzname = 2015-07-21T21:40:32.142+02:00[Europe/Stockholm]
+datetime_tzname_winter = 2015-01-21T21:40:32-05:00[America/New_York]
+duration_full = P1Y2M3DT4H5M6.789S
+duration_negative = P-3DT-1S
+date_year20000 = 20000-06-01
+localtime_leapnanos = 23:59:59.15
+localdatetime_year20000 = 20000-01-02T03:00
+
+[semantics]
+jan31_plus_1m = 2023-02-28
+jan31_plus_1m_leap = 2024-02-29
+feb29_plus_1y = 2025-02-28
+mar31_minus_1m = 2024-02-29
+isoweek_53 = 2021-01-03
+isoweek_jan1 = 53
+isoweekyear_jan1 = 2020
+isoweek_dec31 = 1
+weekday_comp = 7
+ordinal = 2024-12-31
+ordinal_comp = 366
+quarter_comp = 3
+week_date_map = 2024-01-01
+trunc_week = 2024-01-01
+trunc_quarter = 2024-07-01
+trunc_dt_tz = 2024-03-31T00:00+02:00[Europe/Stockholm]
+trunc_dt_tz_gap = ERROR SemanticError(Other) at semantic analysis: ambiguous or invalid datetime in timezone
+tz_gap_parse = ERROR ArgumentError(InvalidArgumentValue) at runtime: temporal: ambiguous or invalid datetime in timezone
+tz_gap_map = ERROR ArgumentError(InvalidArgumentValue) at runtime: temporal: ambiguous or invalid datetime in timezone
+tz_overlap_parse = 2024-10-27T02:30+02:00[Europe/Stockholm]
+tz_overlap_map = 2024-10-27T02:30+02:00[Europe/Stockholm]
+zoned_plus_into_gap = 2024-03-31T03:30+02:00[Europe/Stockholm]
+zoned_plus_into_overlap = 2024-10-27T02:30+02:00[Europe/Stockholm]
+zoned_plus_hours_across_gap = 2024-03-31T03:30+02:00[Europe/Stockholm]
+between_local_zoned_gap = PT2H
+inseconds_local_zoned = PT4H
+indays_across_dst = P1D
+inmonths_month_end = P1M
+between_large = P9998Y11M30D
+fromepoch = 2023-11-14T22:13:20.000000123Z
+fromepochmillis = 1969-12-31T23:59:59.999Z
+epoch_components = [1704067200, 1704067200500]
+tz_components = ["Europe/Stockholm", 7200]
+dt_to_tz = 2024-07-01T17:30+05:30[Asia/Kolkata]
+time_from_dt = 12:00-04:00
+year_10000 = ERROR ArithmeticError(NumberOutOfRange) at runtime: temporal year is out of range (supported years: -9999 to 9999)
+year_minus_10000 = ERROR ArithmeticError(NumberOutOfRange) at runtime: temporal year is out of range (supported years: -9999 to 9999)
+leap_second_60 = ERROR ArgumentError(InvalidArgumentValue) at runtime: temporal: invalid time
+bad_tz = ERROR ArgumentError(InvalidArgumentValue) at runtime: temporal: unknown timezone

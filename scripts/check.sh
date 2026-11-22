@@ -29,21 +29,16 @@ cargo check --workspace --all-targets --all-features
 echo "  cargo test --workspace"
 cargo test --workspace
 
-# Security audit
-if command -v cargo-audit &>/dev/null; then
-  echo "  cargo audit"
-  cargo audit
-else
-  echo "  [skip] cargo-audit not found — install with: cargo install cargo-audit"
+# Advisory / supply-chain / license gates (deny.toml). Required, not
+# optional: a missing tool must not let a known vulnerability through.
+# cargo-deny reads the same RustSec database as cargo-audit, so it is the
+# single advisory gate (mirrors .github/workflows/audit.yml).
+if ! command -v cargo-deny &>/dev/null; then
+  echo "  [FAIL] cargo-deny not found; install with: cargo install cargo-deny --locked" >&2
+  exit 1
 fi
-
-# Supply-chain / license / advisory gates (deny.toml)
-if command -v cargo-deny &>/dev/null; then
-  echo "  cargo deny check"
-  cargo deny check
-else
-  echo "  [skip] cargo-deny not found — install with: cargo install cargo-deny --locked"
-fi
+echo "  cargo deny --all-features check"
+cargo deny --all-features check
 
 # Lint GitHub Actions workflows (integrates shellcheck automatically)
 if command -v actionlint &>/dev/null; then

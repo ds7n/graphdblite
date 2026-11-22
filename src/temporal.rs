@@ -1,21 +1,46 @@
-//! openCypher temporal types backed by chrono primitives.
+//! openCypher temporal types over plain owned fields, with jiff as the calendar engine.
 //!
 //! Provides `CypherDate`, `CypherLocalTime`, `CypherTime`, `CypherLocalDateTime`,
 //! `CypherDateTime`, and `CypherDuration` with ISO 8601 parsing, display, and
 //! MessagePack-compatible serde via integer fields.
+//!
+//! Design: our types own the data, jiff is the calculator. Each value is a
+//! plain struct of integers (so it can be stored, displayed and decoded for any
+//! year the old chrono-based builds accepted), and calendar math (weekdays, ISO
+//! weeks, ordinals, month and day arithmetic, time zone resolution) goes
+//! through `to_jiff()` conversions. A value outside jiff's range (years
+//! -9999..=9999) can still be decoded and displayed but errors with
+//! `NumberOutOfRange` when used in arithmetic or conversion.
+//!
+//! Storage invariant: the `Serialize` impls emit exactly the positional fields
+//! and integer types of the original on-disk format (schema version 2). Do not
+//! reorder, add or retype fields without a migration.
 
 use std::collections::BTreeMap;
 use std::fmt;
 use std::hash::{Hash, Hasher};
 
-use chrono::{
-    Datelike, FixedOffset, NaiveDate, NaiveDateTime, NaiveTime, Offset, TimeZone, Timelike,
-};
+use jiff::civil;
+use jiff::tz::{AmbiguousOffset, Offset, TimeZone};
+use jiff::{SignedDuration, Span, Timestamp};
 use serde::de::{self, MapAccess, SeqAccess, Visitor};
 use serde::ser::SerializeStruct;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
 use crate::types::{GraphError, QueryPhase, Result, Value};
+
+/// Lowest year a newly constructed temporal value may have.
+pub(crate) const MIN_YEAR: i32 = -9999;
+/// Highest year a newly constructed temporal value may have.
+pub(crate) const MAX_YEAR: i32 = 9999;
+
+/// Largest absolute year the previous (chrono) builds could store. Decoding
+/// keeps accepting this whole range so old database files stay readable.
+const LEGACY_MAX_YEAR: i32 = 262_142;
+const LEGACY_MIN_YEAR: i32 = -262_143;
+
+const NANOS_PER_SEC: i64 = 1_000_000_000;
+const SECS_PER_DAY: i64 = 86_400;
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -43,6 +68,23 @@ fn parse_error(message: impl fmt::Display) -> GraphError {
 /// The `NumberOutOfRange` error for a temporal value that does not fit.
 fn out_of_range(what: impl fmt::Display) -> GraphError {
     GraphError::number_out_of_range(QueryPhase::Runtime, format!("{what} is out of range"))
+}
+
+/// The `NumberOutOfRange` error for a year outside the supported range.
+fn year_out_of_range() -> GraphError {
+    GraphError::number_out_of_range(
+        QueryPhase::Runtime,
+        format!("temporal year is out of range (supported years: {MIN_YEAR} to {MAX_YEAR})"),
+    )
+}
+
+/// Reject a year outside `MIN_YEAR..=MAX_YEAR` (new values only).
+fn check_year(year: i32) -> Result<()> {
+    if (MIN_YEAR..=MAX_YEAR).contains(&year) {
+        Ok(())
+    } else {
+        Err(year_out_of_range())
+    }
 }
 
 /// Read an integer map component and narrow it to `T`. A value that does not
@@ -108,11 +150,25 @@ fn ensure_ascii(s: &str, what: &str) -> Result<()> {
     )))
 }
 
-/// Parse a timezone offset string into a `FixedOffset`.
-fn parse_offset(s: &str) -> Result<FixedOffset> {
+/// Whether `secs` is a usable UTC offset (strictly inside one day).
+fn offset_in_range(secs: i32) -> bool {
+    secs.abs() < 86_400
+}
+
+/// Validate an offset in seconds, with the parser's error message.
+fn checked_offset(secs: i32) -> Result<i32> {
+    if offset_in_range(secs) {
+        Ok(secs)
+    } else {
+        Err(parse_error("offset out of range"))
+    }
+}
+
+/// Parse a timezone offset string into seconds east of UTC.
+fn parse_offset(s: &str) -> Result<i32> {
     ensure_ascii(s, "offset")?;
     if s == "Z" || s == "z" {
-        return Ok(FixedOffset::east_opt(0).unwrap());
+        return Ok(0);
     }
     let sign: i32 = if s.starts_with('+') {
         1
@@ -148,7 +204,7 @@ fn parse_offset(s: &str) -> Result<FixedOffset> {
             .map_err(|e| parse_error(e.to_string()))?;
         (hh, mm)
     } else if body.len() == 8 && body.as_bytes()[2] == b':' && body.as_bytes()[5] == b':' {
-        // +HH:MM:SS — historical offsets with seconds precision
+        // +HH:MM:SS: historical offsets with seconds precision
         let hh = body[..2]
             .parse::<i32>()
             .map_err(|e| parse_error(e.to_string()))?;
@@ -158,13 +214,11 @@ fn parse_offset(s: &str) -> Result<FixedOffset> {
         let ss = body[6..8]
             .parse::<i32>()
             .map_err(|e| parse_error(e.to_string()))?;
-        let total = sign * (hh * 3600 + mm * 60 + ss);
-        return FixedOffset::east_opt(total).ok_or_else(|| parse_error("offset out of range"));
+        return checked_offset(sign * (hh * 3600 + mm * 60 + ss));
     } else {
         return Err(parse_error("invalid offset"));
     };
-    let secs = sign * (h * 3600 + m * 60);
-    FixedOffset::east_opt(secs).ok_or_else(|| parse_error("offset out of range"))
+    checked_offset(sign * (h * 3600 + m * 60))
 }
 
 /// Split a time string from its trailing timezone offset.
@@ -188,9 +242,10 @@ fn split_time_offset(s: &str) -> (&str, Option<&str>) {
     (s, None)
 }
 
-/// Parse a time string (without offset) into `NaiveTime`.
-fn parse_time_str(s: &str) -> Result<NaiveTime> {
+/// Parse a time string (without offset) into a `CypherLocalTime`.
+fn parse_time_str(s: &str) -> Result<CypherLocalTime> {
     ensure_ascii(s, "time")?;
+    let invalid = "invalid time";
     if s.contains(':') {
         // Colon-separated: HH:MM, HH:MM:SS, HH:MM:SS.nnn
         let parts: Vec<&str> = s.splitn(3, ':').collect();
@@ -203,7 +258,7 @@ fn parse_time_str(s: &str) -> Result<NaiveTime> {
             .parse()
             .map_err(|e: std::num::ParseIntError| parse_error(e.to_string()))?;
         if parts.len() < 3 {
-            return NaiveTime::from_hms_opt(h, m, 0).ok_or_else(|| parse_error("invalid time"));
+            return CypherLocalTime::new_with(h, m, 0, 0, invalid);
         }
         let sec_part = parts[2];
         if let Some(dot_pos) = sec_part.find('.') {
@@ -212,12 +267,12 @@ fn parse_time_str(s: &str) -> Result<NaiveTime> {
                 .map_err(|e: std::num::ParseIntError| parse_error(e.to_string()))?;
             let frac = &sec_part[dot_pos + 1..];
             let nano = parse_frac_nanos(frac)?;
-            NaiveTime::from_hms_nano_opt(h, m, sec, nano).ok_or_else(|| parse_error("invalid time"))
+            CypherLocalTime::new_with(h, m, sec, nano, invalid)
         } else {
             let sec: u32 = sec_part
                 .parse()
                 .map_err(|e: std::num::ParseIntError| parse_error(e.to_string()))?;
-            NaiveTime::from_hms_opt(h, m, sec).ok_or_else(|| parse_error("invalid time"))
+            CypherLocalTime::new_with(h, m, sec, 0, invalid)
         }
     } else {
         // Compact: HH, HHMM, HHMMSS, HHMMSS.nnn
@@ -262,7 +317,7 @@ fn parse_time_str(s: &str) -> Result<NaiveTime> {
         } else {
             0
         };
-        NaiveTime::from_hms_nano_opt(h, m, sec, nano).ok_or_else(|| parse_error("invalid time"))
+        CypherLocalTime::new_with(h, m, sec, nano, invalid)
     }
 }
 
@@ -287,14 +342,15 @@ fn parse_frac_nanos(frac: &str) -> Result<u32> {
         .map_err(|e| parse_error(e.to_string()))
 }
 
-/// Parse a date string into `NaiveDate`.
-fn parse_date_str(s: &str) -> Result<NaiveDate> {
+/// Parse a date string into a `CypherDate`.
+fn parse_date_str(s: &str) -> Result<CypherDate> {
     ensure_ascii(s, "date")?;
     // Week date: YYYY-Www-D or YYYYWwwD or YYYY-Www or YYYYWww
     if s.contains('W') {
         return parse_week_date(s);
     }
 
+    let invalid = "invalid date";
     if s.contains('-') {
         let parts: Vec<&str> = s.split('-').collect();
         match parts.len() {
@@ -308,7 +364,7 @@ fn parse_date_str(s: &str) -> Result<NaiveDate> {
                 let d: u32 = parts[2]
                     .parse()
                     .map_err(|e: std::num::ParseIntError| parse_error(e.to_string()))?;
-                NaiveDate::from_ymd_opt(y, m, d).ok_or_else(|| parse_error("invalid date"))
+                CypherDate::new_with(y, m, d, invalid)
             }
             2 => {
                 let y: i32 = parts[0]
@@ -319,14 +375,13 @@ fn parse_date_str(s: &str) -> Result<NaiveDate> {
                     .map_err(|e: std::num::ParseIntError| parse_error(e.to_string()))?;
                 if parts[1].len() == 3 {
                     // Ordinal: YYYY-DDD
-                    NaiveDate::from_yo_opt(y, part2)
-                        .ok_or_else(|| parse_error("invalid ordinal date"))
+                    CypherDate::from_ordinal(y, part2, "invalid ordinal date")
                 } else {
                     // YYYY-MM (day defaults to 1)
-                    NaiveDate::from_ymd_opt(y, part2, 1).ok_or_else(|| parse_error("invalid date"))
+                    CypherDate::new_with(y, part2, 1, invalid)
                 }
             }
-            _ => Err(parse_error("invalid date")),
+            _ => Err(parse_error(invalid)),
         }
     } else {
         // Compact forms: YYYYMMDD, YYYYMM, YYYY, YYYYDDD
@@ -335,31 +390,38 @@ fn parse_date_str(s: &str) -> Result<NaiveDate> {
                 let y: i32 = parse_num(&s[..4])?;
                 let m: u32 = parse_num(&s[4..6])?;
                 let d: u32 = parse_num(&s[6..])?;
-                NaiveDate::from_ymd_opt(y, m, d).ok_or_else(|| parse_error("invalid date"))
+                CypherDate::new_with(y, m, d, invalid)
             }
             7 => {
                 // YYYYDDD
                 let y: i32 = parse_num(&s[..4])?;
                 let d: u32 = parse_num(&s[4..])?;
-                NaiveDate::from_yo_opt(y, d).ok_or_else(|| parse_error("invalid ordinal date"))
+                CypherDate::from_ordinal(y, d, "invalid ordinal date")
             }
             6 => {
                 // YYYYMM
                 let y: i32 = parse_num(&s[..4])?;
                 let m: u32 = parse_num(&s[4..])?;
-                NaiveDate::from_ymd_opt(y, m, 1).ok_or_else(|| parse_error("invalid date"))
+                CypherDate::new_with(y, m, 1, invalid)
             }
             4 => {
                 let y: i32 = parse_num(s)?;
-                NaiveDate::from_ymd_opt(y, 1, 1).ok_or_else(|| parse_error("invalid date"))
+                CypherDate::new_with(y, 1, 1, invalid)
             }
-            _ => Err(parse_error("invalid date")),
+            _ => Err(parse_error(invalid)),
         }
     }
 }
 
+/// Map an ISO weekday number (Monday = 1) to a jiff weekday.
+fn weekday_from_number(dow: u32) -> Option<civil::Weekday> {
+    i8::try_from(dow)
+        .ok()
+        .and_then(|d| civil::Weekday::from_monday_one_offset(d).ok())
+}
+
 /// Parse ISO week date forms.
-fn parse_week_date(s: &str) -> Result<NaiveDate> {
+fn parse_week_date(s: &str) -> Result<CypherDate> {
     ensure_ascii(s, "week date")?;
     // Strip hyphens for uniform handling, but track original for error messages.
     let compact = s.replace('-', "");
@@ -387,25 +449,16 @@ fn parse_week_date(s: &str) -> Result<NaiveDate> {
     } else {
         return Err(parse_error("invalid week date"));
     };
-    let weekday = match day {
-        1 => chrono::Weekday::Mon,
-        2 => chrono::Weekday::Tue,
-        3 => chrono::Weekday::Wed,
-        4 => chrono::Weekday::Thu,
-        5 => chrono::Weekday::Fri,
-        6 => chrono::Weekday::Sat,
-        7 => chrono::Weekday::Sun,
-        _ => return Err(parse_error("invalid day of week")),
-    };
-    NaiveDate::from_isoywd_opt(year, week, weekday).ok_or_else(|| parse_error("invalid week date"))
+    let weekday = weekday_from_number(day).ok_or_else(|| parse_error("invalid day of week"))?;
+    CypherDate::from_iso_week(year, week, weekday, "invalid week date")
 }
 
-/// Format a `NaiveTime` using the TCK local-time rules:
+/// Format a time using the TCK local-time rules:
 /// Always HH:MM, add :SS if seconds nonzero, add .nnnnnnnnn (trailing zeros trimmed) if sub-second nonzero.
-fn fmt_local_time(t: &NaiveTime, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-    write!(f, "{:02}:{:02}", t.hour(), t.minute())?;
-    let sec = t.second();
-    let nano = t.nanosecond();
+fn fmt_local_time(t: &CypherLocalTime, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+    write!(f, "{:02}:{:02}", t.hour, t.minute)?;
+    let sec = t.second;
+    let nano = t.nanosecond;
     if sec != 0 || nano != 0 {
         write!(f, ":{:02}", sec)?;
         if nano != 0 {
@@ -417,10 +470,8 @@ fn fmt_local_time(t: &NaiveTime, f: &mut fmt::Formatter<'_>) -> fmt::Result {
     Ok(())
 }
 
-/// Format a `FixedOffset` for display. UTC (+00:00) renders as `Z`.
-/// Format offset as string (public helper for accessor use).
-pub fn fmt_offset_public(off: &FixedOffset) -> String {
-    let secs = off.local_minus_utc();
+/// Format an offset in seconds for display. UTC (+00:00) renders as `Z`.
+pub fn fmt_offset_public(secs: i32) -> String {
     if secs == 0 {
         "Z".to_string()
     } else {
@@ -437,83 +488,66 @@ pub fn fmt_offset_public(off: &FixedOffset) -> String {
     }
 }
 
-fn fmt_offset(off: &FixedOffset, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-    let secs = off.local_minus_utc();
-    if secs == 0 {
-        write!(f, "Z")
-    } else {
-        let sign = if secs < 0 { '-' } else { '+' };
-        let abs = secs.unsigned_abs();
-        let h = abs / 3600;
-        let m = (abs % 3600) / 60;
-        let s = abs % 60;
-        if s != 0 {
-            write!(f, "{sign}{h:02}:{m:02}:{s:02}")
-        } else {
-            write!(f, "{sign}{h:02}:{m:02}")
-        }
-    }
+fn fmt_offset(secs: i32, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+    f.write_str(&fmt_offset_public(secs))
 }
 
 /// Extract the source offset from a base temporal value in the map (if any).
 /// Returns `Some(offset)` when the base `time` or `datetime` key carries a timezone.
-fn base_source_offset(map: &BTreeMap<String, Value>) -> Option<FixedOffset> {
+fn base_source_offset(map: &BTreeMap<String, Value>) -> Option<i32> {
     match map.get("time").or_else(|| map.get("datetime")) {
-        Some(Value::Time(t)) => Some(t.1),
-        Some(Value::DateTime(dt)) => Some(dt.1),
+        Some(Value::Time(t)) => Some(t.offset_seconds),
+        Some(Value::DateTime(dt)) => Some(dt.offset_seconds),
         _ => None,
     }
 }
 
-/// Re-resolve the source offset at a new NaiveDateTime when the base temporal
+/// Re-resolve the source offset at a new local date-time when the base temporal
 /// has a named timezone. This accounts for DST changes when the date differs
 /// from the original temporal.
-fn base_source_offset_at(
-    map: &BTreeMap<String, Value>,
-    ndt: &NaiveDateTime,
-) -> Option<FixedOffset> {
+fn base_source_offset_at(map: &BTreeMap<String, Value>, ndt: &CypherLocalDateTime) -> Option<i32> {
     match map.get("time").or_else(|| map.get("datetime")) {
-        Some(Value::Time(t)) => Some(t.1),
+        Some(Value::Time(t)) => Some(t.offset_seconds),
         Some(Value::DateTime(dt)) => {
-            if let Some(ref tz_name) = dt.2 {
+            if let Some(ref tz_name) = dt.tz_name {
                 // Re-resolve at the new date/time for DST awareness.
                 if let Ok((off, _)) = resolve_tz_name_at(tz_name, ndt) {
                     Some(off)
                 } else {
-                    Some(dt.1)
+                    Some(dt.offset_seconds)
                 }
             } else {
-                Some(dt.1)
+                Some(dt.offset_seconds)
             }
         }
         _ => None,
     }
 }
 
-/// Build a `NaiveTime` from map keys (hour, minute, second, nanosecond, millisecond, microsecond).
+/// Build a time from map keys (hour, minute, second, nanosecond, millisecond, microsecond).
 /// If a `time` key is present (LocalTime, Time, LocalDateTime, or DateTime), its components
 /// are used as defaults for any unspecified fields.
-fn time_from_map(map: &BTreeMap<String, Value>) -> Result<NaiveTime> {
+fn time_from_map(map: &BTreeMap<String, Value>) -> Result<CypherLocalTime> {
     let base_time = match map.get("time").or_else(|| map.get("datetime")) {
-        Some(Value::LocalTime(t)) => Some(t.0),
-        Some(Value::Time(t)) => Some(t.0),
-        Some(Value::LocalDateTime(dt)) => Some(dt.0.time()),
-        Some(Value::DateTime(dt)) => Some(dt.0.time()),
+        Some(Value::LocalTime(t)) => Some(*t),
+        Some(Value::Time(t)) => Some(t.time),
+        Some(Value::LocalDateTime(dt)) => Some(dt.time),
+        Some(Value::DateTime(dt)) => Some(dt.local.time),
         _ => None,
     };
 
-    let invalid = || parse_error("invalid time components".to_string());
+    let invalid = "invalid time components";
     let h = get_int::<u32>(map, "hour")?
-        .or_else(|| base_time.map(|t| t.hour()))
+        .or_else(|| base_time.map(|t| u32::from(t.hour)))
         .unwrap_or(0);
     let m = get_int::<u32>(map, "minute")?
-        .or_else(|| base_time.map(|t| t.minute()))
+        .or_else(|| base_time.map(|t| u32::from(t.minute)))
         .unwrap_or(0);
     let s = get_int::<u32>(map, "second")?
-        .or_else(|| base_time.map(|t| t.second()))
+        .or_else(|| base_time.map(|t| u32::from(t.second)))
         .unwrap_or(0);
     let nano = get_i64(map, "nanosecond")
-        .or_else(|| base_time.map(|t| (t.nanosecond() % 1_000_000_000) as i64))
+        .or_else(|| base_time.map(|t| i64::from(t.nanosecond) % NANOS_PER_SEC))
         .unwrap_or(0);
     // Sub-second parts add up; anything past one second is invalid.
     let nano = get_i64(map, "millisecond")
@@ -527,62 +561,51 @@ fn time_from_map(map: &BTreeMap<String, Value>) -> Result<NaiveTime> {
                 .and_then(|us| us.checked_add(n))
         })
         .and_then(|n| u32::try_from(n).ok())
-        .ok_or_else(invalid)?;
-    NaiveTime::from_hms_nano_opt(h, m, s, nano).ok_or_else(invalid)
+        .ok_or_else(|| parse_error(invalid))?;
+    CypherLocalTime::new_with(h, m, s, nano, invalid)
 }
 
-/// Build a `NaiveDate` from map keys (year, month, day, week, dayOfWeek, ordinalDay, quarter, dayOfQuarter).
+/// Build a date from map keys (year, month, day, week, dayOfWeek, ordinalDay, quarter, dayOfQuarter).
 /// If a `date` key is present (Date, LocalDateTime, or DateTime), its components are used as
 /// defaults for any unspecified fields.
-fn date_from_map(map: &BTreeMap<String, Value>) -> Result<NaiveDate> {
+fn date_from_map(map: &BTreeMap<String, Value>) -> Result<CypherDate> {
     // Check for a base `date` or `datetime` temporal value to project from.
     let base_date = match map.get("date").or_else(|| map.get("datetime")) {
-        Some(Value::Date(d)) => Some(d.0),
-        Some(Value::LocalDateTime(dt)) => Some(dt.0.date()),
-        Some(Value::DateTime(dt)) => Some(dt.0.date()),
+        Some(Value::Date(d)) => Some(*d),
+        Some(Value::LocalDateTime(dt)) => Some(dt.date),
+        Some(Value::DateTime(dt)) => Some(dt.local.date),
         _ => None,
     };
 
     // The year comes from the map or the base date; there is no default.
     let year = |iso_week_year: bool| -> Result<i32> {
-        match get_int::<i32>(map, "year")? {
-            Some(y) => Ok(y),
-            None => base_date
-                .map(|d| {
-                    if iso_week_year {
-                        d.iso_week().year()
-                    } else {
-                        d.year()
-                    }
-                })
-                .ok_or_else(|| invalid_map("year must be specified")),
+        if let Some(y) = get_int::<i32>(map, "year")? {
+            return Ok(y);
+        }
+        let base = base_date.ok_or_else(|| invalid_map("year must be specified"))?;
+        if iso_week_year {
+            base.iso_week().map(|(y, _)| y)
+        } else {
+            Ok(base.year)
         }
     };
 
     if let Some(week) = get_int::<u32>(map, "week")? {
         // For ISO week dates, the year should be the ISO week year, not the calendar year.
         let year = year(true)?;
-        let dow = get_int::<u32>(map, "dayOfWeek")?.unwrap_or(
-            base_date
-                .map(|d| d.weekday().num_days_from_monday() + 1)
-                .unwrap_or(1),
-        );
-        let weekday = match dow {
-            1 => chrono::Weekday::Mon,
-            2 => chrono::Weekday::Tue,
-            3 => chrono::Weekday::Wed,
-            4 => chrono::Weekday::Thu,
-            5 => chrono::Weekday::Fri,
-            6 => chrono::Weekday::Sat,
-            7 => chrono::Weekday::Sun,
-            _ => return Err(parse_error(format!("invalid dayOfWeek: {dow}"))),
+        let dow = match get_int::<u32>(map, "dayOfWeek")? {
+            Some(dow) => dow,
+            None => match base_date {
+                Some(d) => d.weekday()?,
+                None => 1,
+            },
         };
-        NaiveDate::from_isoywd_opt(year, week, weekday)
-            .ok_or_else(|| parse_error("invalid week date components".to_string()))
+        let weekday = weekday_from_number(dow)
+            .ok_or_else(|| parse_error(format!("invalid dayOfWeek: {dow}")))?;
+        CypherDate::from_iso_week(year, week, weekday, "invalid week date components")
     } else if let Some(ord) = get_int::<u32>(map, "ordinalDay")? {
         let year = year(false)?;
-        NaiveDate::from_yo_opt(year, ord)
-            .ok_or_else(|| parse_error("invalid ordinal date components".to_string()))
+        CypherDate::from_ordinal(year, ord, "invalid ordinal date components")
     } else if let Some(quarter) = get_i64(map, "quarter") {
         if !(1..=4).contains(&quarter) {
             return Err(invalid_map(format!("quarter {quarter} is out of range")));
@@ -591,35 +614,30 @@ fn date_from_map(map: &BTreeMap<String, Value>) -> Result<NaiveDate> {
         let quarter_start_month = ((quarter - 1) * 3 + 1) as u32;
         if let Some(doq) = get_i64(map, "dayOfQuarter") {
             // Explicit dayOfQuarter: count from first day of the quarter.
-            let start = NaiveDate::from_ymd_opt(year, quarter_start_month, 1)
-                .ok_or_else(|| parse_error("invalid quarter".to_string()))?;
+            let start = CypherDate::new_with(year, quarter_start_month, 1, "invalid quarter")?;
             doq.checked_sub(1)
-                .and_then(chrono::TimeDelta::try_days)
-                .and_then(|delta| start.checked_add_signed(delta))
-                .ok_or_else(|| parse_error("dayOfQuarter out of range".to_string()))
+                .and_then(|delta| start.add_days(delta).ok())
+                .ok_or_else(|| parse_error("dayOfQuarter out of range"))
         } else if let Some(bd) = base_date {
             // No explicit dayOfQuarter but base date present: preserve month-offset
             // within the quarter and day-of-month from the base date.
-            let base_month_in_quarter = (bd.month() - 1) % 3; // 0, 1, or 2
+            let base_month_in_quarter = (u32::from(bd.month) - 1) % 3; // 0, 1, or 2
             let month = quarter_start_month + base_month_in_quarter;
-            let day = get_int::<u32>(map, "day")?.unwrap_or(bd.day());
-            NaiveDate::from_ymd_opt(year, month, day)
-                .ok_or_else(|| parse_error("invalid quarter date".to_string()))
+            let day = get_int::<u32>(map, "day")?.unwrap_or(u32::from(bd.day));
+            CypherDate::new_with(year, month, day, "invalid quarter date")
         } else {
             // No base date, no dayOfQuarter: first day of the quarter.
-            NaiveDate::from_ymd_opt(year, quarter_start_month, 1)
-                .ok_or_else(|| parse_error("invalid quarter".to_string()))
+            CypherDate::new_with(year, quarter_start_month, 1, "invalid quarter")
         }
     } else {
         let year = year(false)?;
         let month = get_int::<u32>(map, "month")?
-            .or_else(|| base_date.map(|d| d.month()))
+            .or_else(|| base_date.map(|d| u32::from(d.month)))
             .unwrap_or(1);
         let day = get_int::<u32>(map, "day")?
-            .or_else(|| base_date.map(|d| d.day()))
+            .or_else(|| base_date.map(|d| u32::from(d.day)))
             .unwrap_or(1);
-        NaiveDate::from_ymd_opt(year, month, day)
-            .ok_or_else(|| parse_error("invalid date components".to_string()))
+        CypherDate::new_with(year, month, day, "invalid date components")
     }
 }
 
@@ -630,95 +648,170 @@ fn is_offset_literal(s: &str) -> bool {
 }
 
 /// Extract an offset from the `timezone` map key.
-/// Returns `(FixedOffset, Option<tz_name>)`.
-fn offset_from_map(map: &BTreeMap<String, Value>) -> Result<(FixedOffset, Option<String>)> {
+/// Returns `(offset_seconds, Option<tz_name>)`.
+fn offset_from_map(map: &BTreeMap<String, Value>) -> Result<(i32, Option<String>)> {
     match map.get("timezone") {
         Some(Value::String(s)) => {
-            if s.starts_with('+') || s.starts_with('-') || s == "Z" || s == "z" {
+            if is_offset_literal(s) {
                 Ok((parse_offset(s)?, None))
             } else {
-                // IANA timezone name — resolve at "now" (no NaiveDateTime context).
+                // IANA timezone name: resolve at "now" (no date-time context).
                 resolve_tz_name_now(s)
             }
         }
         _ => {
-            // No explicit timezone — try to inherit from a `time` or `datetime` base temporal.
+            // No explicit timezone: try to inherit from a `time` or `datetime` base temporal.
             // If the base temporal has no offset (e.g. LocalTime, LocalDateTime), default to UTC.
             match map.get("time").or_else(|| map.get("datetime")) {
-                Some(Value::Time(t)) => Ok((t.1, None)),
-                Some(Value::DateTime(dt)) => Ok((dt.1, dt.2.clone())),
-                Some(Value::LocalTime(_) | Value::LocalDateTime(_)) => {
-                    Ok((FixedOffset::east_opt(0).unwrap(), None))
-                }
-                _ => {
-                    // Default to UTC when no timezone source is available.
-                    // This covers `time({hour: 12})` and `datetime({date: d})`.
-                    Ok((FixedOffset::east_opt(0).unwrap(), None))
-                }
+                Some(Value::Time(t)) => Ok((t.offset_seconds, None)),
+                Some(Value::DateTime(dt)) => Ok((dt.offset_seconds, dt.tz_name.clone())),
+                // Default to UTC when no timezone source is available.
+                // This covers `time({hour: 12})` and `datetime({date: d})`.
+                _ => Ok((0, None)),
             }
         }
     }
 }
 
+// ---------------------------------------------------------------------------
+// Time zones
+// ---------------------------------------------------------------------------
+
+/// Look up an IANA zone by its exact name. Lookup is case-sensitive (jiff
+/// alone would also accept `europe/stockholm`; the old chrono-tz build did
+/// not, and the stored name must stay canonical).
+pub(crate) fn lookup_tz(name: &str) -> Option<TimeZone> {
+    let tz = TimeZone::get(name).ok()?;
+    (tz.iana_name() == Some(name)).then_some(tz)
+}
+
+/// The zone for `name`, or the "unknown timezone" parse error.
+fn require_tz(name: &str) -> Result<TimeZone> {
+    lookup_tz(name).ok_or_else(|| parse_error("unknown timezone"))
+}
+
+/// The offsets in force for a local date-time in `tz`: one offset, or two
+/// when the local time falls in a DST gap or overlap.
+pub(crate) fn tz_local_offsets(
+    tz: &TimeZone,
+    local: &CypherLocalDateTime,
+) -> Result<AmbiguousOffset> {
+    Ok(tz.to_ambiguous_timestamp(local.to_jiff()?).offset())
+}
+
+/// The offset (seconds) of `local` in `tz`, taking the earlier instant in an
+/// overlap (the pre-transition offset). `None` when `local` falls in a gap.
+pub(crate) fn earliest_offset(tz: &TimeZone, local: &CypherLocalDateTime) -> Result<Option<i32>> {
+    Ok(match tz_local_offsets(tz, local)? {
+        AmbiguousOffset::Unambiguous { offset } => Some(offset.seconds()),
+        AmbiguousOffset::Fold { before, .. } => Some(before.seconds()),
+        AmbiguousOffset::Gap { .. } => None,
+    })
+}
+
+/// The timestamp of a civil date-time read as UTC.
+fn utc_timestamp(utc: &CypherLocalDateTime) -> Result<Timestamp> {
+    Offset::UTC
+        .to_timestamp(utc.to_jiff()?)
+        .map_err(|_| out_of_range("date-time"))
+}
+
+/// The offset (seconds) in force in `tz` at the UTC instant `utc`.
+pub(crate) fn tz_offset_at_utc(tz: &TimeZone, utc: &CypherLocalDateTime) -> Result<i32> {
+    Ok(tz.to_offset(utc_timestamp(utc)?).seconds())
+}
+
+/// Convert the UTC instant `utc` to local wall-clock time in `tz`.
+/// Returns the local date-time and its offset in seconds.
+pub(crate) fn tz_utc_to_local(
+    tz: &TimeZone,
+    utc: &CypherLocalDateTime,
+) -> Result<(CypherLocalDateTime, i32)> {
+    let ts = utc_timestamp(utc)?;
+    let offset = tz.to_offset(ts);
+    Ok((
+        CypherLocalDateTime::from_jiff(offset.to_datetime(ts)),
+        offset.seconds(),
+    ))
+}
+
 /// Resolve an IANA timezone name to offset using the current time.
 /// Used when no specific datetime context is available (e.g. CypherTime).
-fn resolve_tz_name_now(name: &str) -> Result<(FixedOffset, Option<String>)> {
-    let tz: chrono_tz::Tz = name.parse().map_err(|_| parse_error("unknown timezone"))?;
-    let now = chrono::Utc::now().with_timezone(&tz);
-    let off = now.offset().fix();
+fn resolve_tz_name_now(name: &str) -> Result<(i32, Option<String>)> {
+    let tz = require_tz(name)?;
+    let off = tz.to_offset(Timestamp::now()).seconds();
     Ok((off, Some(name.to_string())))
 }
 
-/// Resolve an IANA timezone name to offset at a specific NaiveDateTime.
-/// Uses the earliest valid local time (handles DST transitions).
-fn resolve_tz_name_at(name: &str, dt: &NaiveDateTime) -> Result<(FixedOffset, Option<String>)> {
-    let tz: chrono_tz::Tz = name.parse().map_err(|_| parse_error("unknown timezone"))?;
-    let aware = tz
-        .from_local_datetime(dt)
-        .earliest()
+/// Resolve an IANA timezone name to offset at a specific local date-time.
+/// Uses the earliest valid local time (handles DST transitions); a time in a
+/// DST gap is an error.
+fn resolve_tz_name_at(name: &str, dt: &CypherLocalDateTime) -> Result<(i32, Option<String>)> {
+    let tz = require_tz(name)?;
+    let off = earliest_offset(&tz, dt)?
         .ok_or_else(|| parse_error("ambiguous or invalid datetime in timezone"))?;
-    let off = aware.offset().fix();
     Ok((off, Some(name.to_string())))
+}
+
+// ---------------------------------------------------------------------------
+// Calendar helpers independent of jiff's range
+// ---------------------------------------------------------------------------
+
+/// Whether `year` is a leap year in the proleptic Gregorian calendar.
+fn is_leap_year(year: i32) -> bool {
+    (year % 4 == 0 && year % 100 != 0) || year % 400 == 0
+}
+
+/// Days in a month of the proleptic Gregorian calendar, for any year.
+fn days_in_month_any_year(year: i32, month: u32) -> u32 {
+    match month {
+        1 | 3 | 5 | 7 | 8 | 10 | 12 => 31,
+        4 | 6 | 9 | 11 => 30,
+        _ if is_leap_year(year) => 29,
+        _ => 28,
+    }
+}
+
+/// Days since 1970-01-01 of a proleptic Gregorian date (Hinnant's civil
+/// algorithm). Total over every `i32` year, so ordering keys and epoch
+/// seconds never depend on jiff's narrower range and never fail.
+fn days_from_civil(year: i32, month: u32, day: u32) -> i64 {
+    let y = i64::from(year) - i64::from(month <= 2);
+    let era = y.div_euclid(400);
+    let yoe = y.rem_euclid(400);
+    let mp = (i64::from(month) + 9) % 12;
+    let doy = (153 * mp + 2) / 5 + i64::from(day) - 1;
+    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    era * 146_097 + doe - 719_468
 }
 
 // ===========================================================================
 // CypherDate
 // ===========================================================================
 
-/// openCypher `Date` — a calendar date without time or timezone.
-#[derive(Debug, Clone)]
-pub struct CypherDate(pub NaiveDate);
-
-impl PartialEq for CypherDate {
-    fn eq(&self, other: &Self) -> bool {
-        self.0 == other.0
-    }
-}
-impl Eq for CypherDate {}
-impl Hash for CypherDate {
-    fn hash<H: Hasher>(&self, state: &mut H) {
-        self.0.hash(state);
-    }
+/// openCypher `Date`: a calendar date without time or timezone.
+///
+/// New values have years in `-9999..=9999`; a legacy stored value may lie
+/// outside that range (see the module docs).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct CypherDate {
+    pub year: i32,
+    pub month: u8,
+    pub day: u8,
 }
 
 impl fmt::Display for CypherDate {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(
-            f,
-            "{:04}-{:02}-{:02}",
-            self.0.year(),
-            self.0.month(),
-            self.0.day()
-        )
+        write!(f, "{:04}-{:02}-{:02}", self.year, self.month, self.day)
     }
 }
 
 impl Serialize for CypherDate {
     fn serialize<S: Serializer>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error> {
         let mut s = serializer.serialize_struct("CypherDate", 3)?;
-        s.serialize_field("year", &self.0.year())?;
-        s.serialize_field("month", &self.0.month())?;
-        s.serialize_field("day", &self.0.day())?;
+        s.serialize_field("year", &self.year)?;
+        s.serialize_field("month", &u32::from(self.month))?;
+        s.serialize_field("day", &u32::from(self.day))?;
         s.end()
     }
 }
@@ -752,9 +845,8 @@ impl<'de> Deserialize<'de> for CypherDate {
                 let day: u32 = seq
                     .next_element()?
                     .ok_or_else(|| de::Error::invalid_length(2, &self))?;
-                let date = NaiveDate::from_ymd_opt(year, month, day)
-                    .ok_or_else(|| de::Error::custom("invalid date"))?;
-                Ok(CypherDate(date))
+                CypherDate::decoded(year, month, day)
+                    .ok_or_else(|| de::Error::custom("invalid date"))
             }
             fn visit_map<A: MapAccess<'de>>(
                 self,
@@ -771,9 +863,8 @@ impl<'de> Deserialize<'de> for CypherDate {
                 let year: i32 = year.ok_or_else(|| de::Error::missing_field("year"))?;
                 let month: u32 = month.ok_or_else(|| de::Error::missing_field("month"))?;
                 let day: u32 = day.ok_or_else(|| de::Error::missing_field("day"))?;
-                let date = NaiveDate::from_ymd_opt(year, month, day)
-                    .ok_or_else(|| de::Error::custom("invalid date"))?;
-                Ok(CypherDate(date))
+                CypherDate::decoded(year, month, day)
+                    .ok_or_else(|| de::Error::custom("invalid date"))
             }
         }
         deserializer.deserialize_any(CypherDateVisitor)
@@ -781,16 +872,141 @@ impl<'de> Deserialize<'de> for CypherDate {
 }
 
 impl CypherDate {
+    /// Build a date, rejecting a year outside `-9999..=9999` (`NumberOutOfRange`)
+    /// and an impossible month/day (`InvalidArgumentValue`).
+    pub fn new(year: i32, month: u32, day: u32) -> Result<Self> {
+        Self::new_with(year, month, day, "invalid date")
+    }
+
+    /// [`Self::new`] with a caller-chosen message for a bad month/day.
+    fn new_with(year: i32, month: u32, day: u32, invalid: &str) -> Result<Self> {
+        check_year(year)?;
+        let (Ok(month), Ok(day)) = (i8::try_from(month), i8::try_from(day)) else {
+            return Err(parse_error(invalid));
+        };
+        civil::Date::new(year as i16, month, day)
+            .map(Self::from_jiff)
+            .map_err(|_| parse_error(invalid))
+    }
+
+    /// The date `ordinal` days into `year` (1 = January 1st).
+    fn from_ordinal(year: i32, ordinal: u32, invalid: &str) -> Result<Self> {
+        check_year(year)?;
+        let ordinal = i16::try_from(ordinal).map_err(|_| parse_error(invalid))?;
+        civil::Date::new(year as i16, 1, 1)
+            .and_then(|jan1| jan1.with().day_of_year(ordinal).build())
+            .map(Self::from_jiff)
+            .map_err(|_| parse_error(invalid))
+    }
+
+    /// The date of ISO week `week`, `weekday` of ISO week-year `year`.
+    fn from_iso_week(year: i32, week: u32, weekday: civil::Weekday, invalid: &str) -> Result<Self> {
+        check_year(year)?;
+        let week = i8::try_from(week).map_err(|_| parse_error(invalid))?;
+        civil::ISOWeekDate::new(year as i16, week, weekday)
+            .map(|iso| Self::from_jiff(iso.date()))
+            .map_err(|_| parse_error(invalid))
+    }
+
+    /// Decode stored fields. Accepts exactly what the old chrono-based build
+    /// accepted (years -262143..=262142), so legacy files stay readable.
+    fn decoded(year: i32, month: u32, day: u32) -> Option<Self> {
+        let valid = (LEGACY_MIN_YEAR..=LEGACY_MAX_YEAR).contains(&year)
+            && (1..=12).contains(&month)
+            && (1..=days_in_month_any_year(year, month)).contains(&day);
+        valid.then_some(Self {
+            year,
+            month: month as u8,
+            day: day as u8,
+        })
+    }
+
+    pub(crate) fn from_jiff(d: civil::Date) -> Self {
+        Self {
+            year: i32::from(d.year()),
+            month: d.month() as u8,
+            day: d.day() as u8,
+        }
+    }
+
+    /// The jiff date, or `NumberOutOfRange` for a legacy value outside
+    /// jiff's years -9999..=9999.
+    pub(crate) fn to_jiff(self) -> Result<civil::Date> {
+        let year = i16::try_from(self.year).map_err(|_| out_of_range("date"))?;
+        civil::Date::new(year, self.month as i8, self.day as i8).map_err(|_| out_of_range("date"))
+    }
+
+    /// Day of the year, 1-based.
+    pub(crate) fn ordinal(self) -> Result<u32> {
+        Ok(self.to_jiff()?.day_of_year() as u32)
+    }
+
+    /// `(ISO week-year, ISO week)`.
+    pub(crate) fn iso_week(self) -> Result<(i32, u32)> {
+        let w = self.to_jiff()?.iso_week_date();
+        Ok((i32::from(w.year()), w.week() as u32))
+    }
+
+    /// ISO day of week, Monday = 1.
+    pub(crate) fn weekday(self) -> Result<u32> {
+        Ok(self.to_jiff()?.weekday().to_monday_one_offset() as u32)
+    }
+
+    /// Calendar quarter, 1 to 4.
+    pub(crate) fn quarter(self) -> u32 {
+        (u32::from(self.month) - 1) / 3 + 1
+    }
+
+    /// Days since 1970-01-01 (never fails, any year).
+    pub(crate) fn epoch_days(self) -> i64 {
+        days_from_civil(self.year, u32::from(self.month), u32::from(self.day))
+    }
+
+    /// Add whole months, clamping the day to the target month's last day.
+    pub(crate) fn add_months(self, months: i64) -> Result<Self> {
+        self.to_jiff()?;
+        let too_far = || out_of_range("date after adding months");
+        let total = (i64::from(self.year) * 12 + i64::from(self.month) - 1)
+            .checked_add(months)
+            .ok_or_else(too_far)?;
+        let year = i32::try_from(total.div_euclid(12)).map_err(|_| too_far())?;
+        if !(MIN_YEAR..=MAX_YEAR).contains(&year) {
+            return Err(too_far());
+        }
+        let month = total.rem_euclid(12) as i8 + 1;
+        let first = civil::Date::new(year as i16, month, 1).map_err(|_| too_far())?;
+        Ok(Self {
+            year,
+            month: month as u8,
+            day: self.day.min(first.days_in_month() as u8),
+        })
+    }
+
+    /// Add whole days (negative to subtract).
+    pub(crate) fn add_days(self, days: i64) -> Result<Self> {
+        let too_far = || out_of_range("date after adding days");
+        let span = Span::new().try_days(days).map_err(|_| too_far())?;
+        self.to_jiff()?
+            .checked_add(span)
+            .map(Self::from_jiff)
+            .map_err(|_| too_far())
+    }
+
+    /// Whole days from `self` to `other` (negative when `other` is earlier).
+    pub(crate) fn days_until(self, other: Self) -> Result<i64> {
+        Ok(self.to_jiff()?.duration_until(other.to_jiff()?).as_secs() / SECS_PER_DAY)
+    }
+
     /// Parse a date from an ISO 8601 string.
     pub fn from_iso_string(s: &str) -> Result<Self> {
         ensure_ascii(s, "date")?;
-        parse_date_str(s).map(CypherDate)
+        parse_date_str(s)
     }
 
     /// Build a date from a property map.
     pub fn from_map(map: &BTreeMap<String, Value>) -> Result<Self> {
         check_keys(map, "date()", &[DATE_KEYS, &["date", "datetime"]])?;
-        date_from_map(map).map(CypherDate)
+        date_from_map(map)
     }
 }
 
@@ -798,35 +1014,32 @@ impl CypherDate {
 // CypherLocalTime
 // ===========================================================================
 
-/// openCypher `LocalTime` — a time without timezone.
-#[derive(Debug, Clone)]
-pub struct CypherLocalTime(pub NaiveTime);
-
-impl PartialEq for CypherLocalTime {
-    fn eq(&self, other: &Self) -> bool {
-        self.0 == other.0
-    }
-}
-impl Eq for CypherLocalTime {}
-impl Hash for CypherLocalTime {
-    fn hash<H: Hasher>(&self, state: &mut H) {
-        self.0.hash(state);
-    }
+/// openCypher `LocalTime`: a time without timezone.
+///
+/// New values have `nanosecond < 1_000_000_000`; a legacy stored leap-second
+/// value (`second == 59` with a larger nanosecond) decodes and displays as
+/// stored but errors in arithmetic.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct CypherLocalTime {
+    pub hour: u8,
+    pub minute: u8,
+    pub second: u8,
+    pub nanosecond: u32,
 }
 
 impl fmt::Display for CypherLocalTime {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        fmt_local_time(&self.0, f)
+        fmt_local_time(self, f)
     }
 }
 
 impl Serialize for CypherLocalTime {
     fn serialize<S: Serializer>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error> {
         let mut s = serializer.serialize_struct("CypherLocalTime", 4)?;
-        s.serialize_field("hour", &self.0.hour())?;
-        s.serialize_field("minute", &self.0.minute())?;
-        s.serialize_field("second", &self.0.second())?;
-        s.serialize_field("nanosecond", &self.0.nanosecond())?;
+        s.serialize_field("hour", &u32::from(self.hour))?;
+        s.serialize_field("minute", &u32::from(self.minute))?;
+        s.serialize_field("second", &u32::from(self.second))?;
+        s.serialize_field("nanosecond", &self.nanosecond)?;
         s.end()
     }
 }
@@ -864,9 +1077,8 @@ impl<'de> Deserialize<'de> for CypherLocalTime {
                 let n: u32 = seq
                     .next_element()?
                     .ok_or_else(|| de::Error::invalid_length(3, &self))?;
-                let t = NaiveTime::from_hms_nano_opt(h, m, s, n)
-                    .ok_or_else(|| de::Error::custom("invalid time"))?;
-                Ok(CypherLocalTime(t))
+                CypherLocalTime::decoded(h, m, s, n)
+                    .ok_or_else(|| de::Error::custom("invalid time"))
             }
             fn visit_map<A: MapAccess<'de>>(
                 self,
@@ -885,9 +1097,8 @@ impl<'de> Deserialize<'de> for CypherLocalTime {
                 let m: u32 = minute.ok_or_else(|| de::Error::missing_field("minute"))?;
                 let s: u32 = second.ok_or_else(|| de::Error::missing_field("second"))?;
                 let n: u32 = nano.ok_or_else(|| de::Error::missing_field("nanosecond"))?;
-                let t = NaiveTime::from_hms_nano_opt(h, m, s, n)
-                    .ok_or_else(|| de::Error::custom("invalid time"))?;
-                Ok(CypherLocalTime(t))
+                CypherLocalTime::decoded(h, m, s, n)
+                    .ok_or_else(|| de::Error::custom("invalid time"))
             }
         }
         deserializer.deserialize_any(V)
@@ -895,16 +1106,104 @@ impl<'de> Deserialize<'de> for CypherLocalTime {
 }
 
 impl CypherLocalTime {
+    /// Midnight, 00:00:00.
+    pub(crate) const MIDNIGHT: Self = Self {
+        hour: 0,
+        minute: 0,
+        second: 0,
+        nanosecond: 0,
+    };
+
+    /// Build a time. Hour 0..24, minute and second 0..60, nanosecond
+    /// 0..=999_999_999 (leap seconds are rejected); otherwise
+    /// `InvalidArgumentValue`.
+    pub fn new(hour: u32, minute: u32, second: u32, nanosecond: u32) -> Result<Self> {
+        Self::new_with(hour, minute, second, nanosecond, "invalid time")
+    }
+
+    /// [`Self::new`] with a caller-chosen error message.
+    fn new_with(
+        hour: u32,
+        minute: u32,
+        second: u32,
+        nanosecond: u32,
+        invalid: &str,
+    ) -> Result<Self> {
+        if hour >= 24 || minute >= 60 || second >= 60 || nanosecond >= 1_000_000_000 {
+            return Err(parse_error(invalid));
+        }
+        Ok(Self {
+            hour: hour as u8,
+            minute: minute as u8,
+            second: second as u8,
+            nanosecond,
+        })
+    }
+
+    /// Decode stored fields. Accepts exactly what the old chrono-based build
+    /// accepted, including a leap-second nanosecond (`>= 1e9` with second 59).
+    fn decoded(hour: u32, minute: u32, second: u32, nanosecond: u32) -> Option<Self> {
+        let valid = hour < 24
+            && minute < 60
+            && second < 60
+            && (nanosecond < 1_000_000_000 || (nanosecond < 2_000_000_000 && second == 59));
+        valid.then_some(Self {
+            hour: hour as u8,
+            minute: minute as u8,
+            second: second as u8,
+            nanosecond,
+        })
+    }
+
+    pub(crate) fn from_jiff(t: civil::Time) -> Self {
+        Self {
+            hour: t.hour() as u8,
+            minute: t.minute() as u8,
+            second: t.second() as u8,
+            nanosecond: t.subsec_nanosecond() as u32,
+        }
+    }
+
+    /// The jiff time, or `NumberOutOfRange` for a legacy leap-second value.
+    pub(crate) fn to_jiff(self) -> Result<civil::Time> {
+        let nanos = i32::try_from(self.nanosecond)
+            .ok()
+            .filter(|n| *n < 1_000_000_000)
+            .ok_or_else(|| out_of_range("time"))?;
+        civil::Time::new(self.hour as i8, self.minute as i8, self.second as i8, nanos)
+            .map_err(|_| out_of_range("time"))
+    }
+
+    /// Whole seconds since midnight.
+    pub(crate) fn secs_of_day(self) -> u32 {
+        u32::from(self.hour) * 3600 + u32::from(self.minute) * 60 + u32::from(self.second)
+    }
+
+    /// Nanoseconds since midnight.
+    pub(crate) fn nanos_of_day(self) -> i64 {
+        i64::from(self.secs_of_day()) * NANOS_PER_SEC + i64::from(self.nanosecond)
+    }
+
+    /// The time `secs` seconds (`< 86400`) after midnight plus `nanosecond`.
+    fn from_secs_of_day(secs: u32, nanosecond: u32) -> Self {
+        Self {
+            hour: (secs / 3600) as u8,
+            minute: (secs % 3600 / 60) as u8,
+            second: (secs % 60) as u8,
+            nanosecond,
+        }
+    }
+
     /// Parse a local time from an ISO 8601 string.
     pub fn from_iso_string(s: &str) -> Result<Self> {
         ensure_ascii(s, "local time")?;
-        parse_time_str(s).map(CypherLocalTime)
+        parse_time_str(s)
     }
 
     /// Build a local time from a property map.
     pub fn from_map(map: &BTreeMap<String, Value>) -> Result<Self> {
         check_keys(map, "localtime()", &[TIME_KEYS, &["time", "datetime"]])?;
-        time_from_map(map).map(CypherLocalTime)
+        time_from_map(map)
     }
 }
 
@@ -912,38 +1211,28 @@ impl CypherLocalTime {
 // CypherTime
 // ===========================================================================
 
-/// openCypher `Time` — a time with timezone offset.
-#[derive(Debug, Clone)]
-pub struct CypherTime(pub NaiveTime, pub FixedOffset);
-
-impl PartialEq for CypherTime {
-    fn eq(&self, other: &Self) -> bool {
-        self.0 == other.0 && self.1 == other.1
-    }
-}
-impl Eq for CypherTime {}
-impl Hash for CypherTime {
-    fn hash<H: Hasher>(&self, state: &mut H) {
-        self.0.hash(state);
-        self.1.local_minus_utc().hash(state);
-    }
+/// openCypher `Time`: a time with timezone offset (seconds east of UTC).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct CypherTime {
+    pub time: CypherLocalTime,
+    pub offset_seconds: i32,
 }
 
 impl fmt::Display for CypherTime {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        fmt_local_time(&self.0, f)?;
-        fmt_offset(&self.1, f)
+        fmt_local_time(&self.time, f)?;
+        fmt_offset(self.offset_seconds, f)
     }
 }
 
 impl Serialize for CypherTime {
     fn serialize<S: Serializer>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error> {
         let mut s = serializer.serialize_struct("CypherTime", 5)?;
-        s.serialize_field("hour", &self.0.hour())?;
-        s.serialize_field("minute", &self.0.minute())?;
-        s.serialize_field("second", &self.0.second())?;
-        s.serialize_field("nanosecond", &self.0.nanosecond())?;
-        s.serialize_field("offset_seconds", &self.1.local_minus_utc())?;
+        s.serialize_field("hour", &u32::from(self.time.hour))?;
+        s.serialize_field("minute", &u32::from(self.time.minute))?;
+        s.serialize_field("second", &u32::from(self.time.second))?;
+        s.serialize_field("nanosecond", &self.time.nanosecond)?;
+        s.serialize_field("offset_seconds", &self.offset_seconds)?;
         s.end()
     }
 }
@@ -986,11 +1275,7 @@ impl<'de> Deserialize<'de> for CypherTime {
                 let o: i32 = seq
                     .next_element()?
                     .ok_or_else(|| de::Error::invalid_length(4, &self))?;
-                let t = NaiveTime::from_hms_nano_opt(h, m, s, n)
-                    .ok_or_else(|| de::Error::custom("invalid time"))?;
-                let offset =
-                    FixedOffset::east_opt(o).ok_or_else(|| de::Error::custom("invalid offset"))?;
-                Ok(CypherTime(t, offset))
+                decode_time(h, m, s, n, o)
             }
             fn visit_map<A: MapAccess<'de>>(
                 self,
@@ -1012,29 +1297,53 @@ impl<'de> Deserialize<'de> for CypherTime {
                 let s: u32 = second.ok_or_else(|| de::Error::missing_field("second"))?;
                 let n: u32 = nano.ok_or_else(|| de::Error::missing_field("nanosecond"))?;
                 let o: i32 = off.ok_or_else(|| de::Error::missing_field("offset_seconds"))?;
-                let t = NaiveTime::from_hms_nano_opt(h, m, s, n)
-                    .ok_or_else(|| de::Error::custom("invalid time"))?;
-                let offset =
-                    FixedOffset::east_opt(o).ok_or_else(|| de::Error::custom("invalid offset"))?;
-                Ok(CypherTime(t, offset))
+                decode_time(h, m, s, n, o)
             }
+        }
+
+        fn decode_time<E: de::Error>(
+            h: u32,
+            m: u32,
+            s: u32,
+            n: u32,
+            o: i32,
+        ) -> std::result::Result<CypherTime, E> {
+            let time =
+                CypherLocalTime::decoded(h, m, s, n).ok_or_else(|| E::custom("invalid time"))?;
+            if !offset_in_range(o) {
+                return Err(E::custom("invalid offset"));
+            }
+            Ok(CypherTime {
+                time,
+                offset_seconds: o,
+            })
         }
         deserializer.deserialize_any(V)
     }
 }
 
 impl CypherTime {
+    /// A `(time of day in UTC, nanosecond)` key. Times of day wrap at
+    /// midnight, so this orders by wall-clock UTC time, as comparison always has.
+    pub(crate) fn utc_sort_key(self) -> (i64, u32) {
+        let secs = i64::from(self.time.secs_of_day()) - i64::from(self.offset_seconds);
+        (secs.rem_euclid(SECS_PER_DAY), self.time.nanosecond)
+    }
+
     /// Parse a time with offset from an ISO 8601 string.
     /// When no offset is present, defaults to UTC (+00:00).
     pub fn from_iso_string(s: &str) -> Result<Self> {
         ensure_ascii(s, "time")?;
         let (time_part, off_part) = split_time_offset(s);
-        let t = parse_time_str(time_part)?;
-        let off = match off_part {
+        let time = parse_time_str(time_part)?;
+        let offset_seconds = match off_part {
             Some(o) => parse_offset(o)?,
-            None => FixedOffset::east_opt(0).unwrap(),
+            None => 0,
         };
-        Ok(CypherTime(t, off))
+        Ok(Self {
+            time,
+            offset_seconds,
+        })
     }
 
     /// Build from a property map.
@@ -1048,27 +1357,20 @@ impl CypherTime {
         let (off, _tz_name) = offset_from_map(map)?;
         // If the base temporal had a different offset and an explicit timezone was
         // given, convert the local time from source offset to target offset.
-        let t = if map.contains_key("timezone") {
-            if let Some(src_off) = base_source_offset(map) {
-                if src_off != off {
-                    let delta = off.local_minus_utc() - src_off.local_minus_utc();
-                    let secs = t.num_seconds_from_midnight() as i64 + delta as i64;
-                    let secs = secs.rem_euclid(86400) as u32;
-                    NaiveTime::from_num_seconds_from_midnight_opt(
-                        secs,
-                        t.nanosecond() % 1_000_000_000,
-                    )
-                    .unwrap_or(t)
-                } else {
-                    t
-                }
-            } else {
-                t
+        let time = match base_source_offset(map) {
+            Some(src_off) if map.contains_key("timezone") && src_off != off => {
+                let secs = i64::from(t.secs_of_day()) + i64::from(off) - i64::from(src_off);
+                CypherLocalTime::from_secs_of_day(
+                    secs.rem_euclid(SECS_PER_DAY) as u32,
+                    t.nanosecond % 1_000_000_000,
+                )
             }
-        } else {
-            t
+            _ => t,
         };
-        Ok(CypherTime(t, off))
+        Ok(Self {
+            time,
+            offset_seconds: off,
+        })
     }
 }
 
@@ -1076,42 +1378,32 @@ impl CypherTime {
 // CypherLocalDateTime
 // ===========================================================================
 
-/// openCypher `LocalDateTime` — a date-time without timezone.
-#[derive(Debug, Clone)]
-pub struct CypherLocalDateTime(pub NaiveDateTime);
-
-impl PartialEq for CypherLocalDateTime {
-    fn eq(&self, other: &Self) -> bool {
-        self.0 == other.0
-    }
-}
-impl Eq for CypherLocalDateTime {}
-impl Hash for CypherLocalDateTime {
-    fn hash<H: Hasher>(&self, state: &mut H) {
-        self.0.hash(state);
-    }
+/// openCypher `LocalDateTime`: a date-time without timezone.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct CypherLocalDateTime {
+    pub date: CypherDate,
+    pub time: CypherLocalTime,
 }
 
 impl fmt::Display for CypherLocalDateTime {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let d = self.0.date();
-        write!(f, "{:04}-{:02}-{:02}T", d.year(), d.month(), d.day())?;
-        fmt_local_time(&self.0.time(), f)
+        let d = self.date;
+        write!(f, "{:04}-{:02}-{:02}T", d.year, d.month, d.day)?;
+        fmt_local_time(&self.time, f)
     }
 }
 
 impl Serialize for CypherLocalDateTime {
     fn serialize<S: Serializer>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error> {
-        let d = self.0.date();
-        let t = self.0.time();
+        let (d, t) = (self.date, self.time);
         let mut s = serializer.serialize_struct("CypherLocalDateTime", 7)?;
-        s.serialize_field("year", &d.year())?;
-        s.serialize_field("month", &d.month())?;
-        s.serialize_field("day", &d.day())?;
-        s.serialize_field("hour", &t.hour())?;
-        s.serialize_field("minute", &t.minute())?;
-        s.serialize_field("second", &t.second())?;
-        s.serialize_field("nanosecond", &t.nanosecond())?;
+        s.serialize_field("year", &d.year)?;
+        s.serialize_field("month", &u32::from(d.month))?;
+        s.serialize_field("day", &u32::from(d.day))?;
+        s.serialize_field("hour", &u32::from(t.hour))?;
+        s.serialize_field("minute", &u32::from(t.minute))?;
+        s.serialize_field("second", &u32::from(t.second))?;
+        s.serialize_field("nanosecond", &t.nanosecond)?;
         s.end()
     }
 }
@@ -1161,11 +1453,7 @@ impl<'de> Deserialize<'de> for CypherLocalDateTime {
                 let n: u32 = seq
                     .next_element()?
                     .ok_or_else(|| de::Error::invalid_length(6, &self))?;
-                let date = NaiveDate::from_ymd_opt(year, month, day)
-                    .ok_or_else(|| de::Error::custom("invalid date"))?;
-                let time = NaiveTime::from_hms_nano_opt(h, m, s, n)
-                    .ok_or_else(|| de::Error::custom("invalid time"))?;
-                Ok(CypherLocalDateTime(NaiveDateTime::new(date, time)))
+                decode_local(year, month, day, h, m, s, n)
             }
             fn visit_map<A: MapAccess<'de>>(
                 self,
@@ -1191,18 +1479,56 @@ impl<'de> Deserialize<'de> for CypherLocalDateTime {
                 let mi: u32 = minute.ok_or_else(|| de::Error::missing_field("minute"))?;
                 let s: u32 = second.ok_or_else(|| de::Error::missing_field("second"))?;
                 let n: u32 = nano.ok_or_else(|| de::Error::missing_field("nanosecond"))?;
-                let d = NaiveDate::from_ymd_opt(y, mo, dy)
-                    .ok_or_else(|| de::Error::custom("invalid date"))?;
-                let t = NaiveTime::from_hms_nano_opt(h, mi, s, n)
-                    .ok_or_else(|| de::Error::custom("invalid time"))?;
-                Ok(CypherLocalDateTime(NaiveDateTime::new(d, t)))
+                decode_local(y, mo, dy, h, mi, s, n)
             }
         }
         deserializer.deserialize_any(V)
     }
 }
 
+/// Decode stored local date-time fields (legacy-tolerant, see
+/// [`CypherDate::decoded`] and [`CypherLocalTime::decoded`]).
+fn decode_local<E: de::Error>(
+    year: i32,
+    month: u32,
+    day: u32,
+    h: u32,
+    m: u32,
+    s: u32,
+    n: u32,
+) -> std::result::Result<CypherLocalDateTime, E> {
+    let date = CypherDate::decoded(year, month, day).ok_or_else(|| E::custom("invalid date"))?;
+    let time = CypherLocalTime::decoded(h, m, s, n).ok_or_else(|| E::custom("invalid time"))?;
+    Ok(CypherLocalDateTime { date, time })
+}
+
 impl CypherLocalDateTime {
+    pub(crate) fn from_jiff(dt: civil::DateTime) -> Self {
+        Self {
+            date: CypherDate::from_jiff(dt.date()),
+            time: CypherLocalTime::from_jiff(dt.time()),
+        }
+    }
+
+    /// The jiff date-time, or `NumberOutOfRange` for a legacy value jiff
+    /// cannot represent.
+    pub(crate) fn to_jiff(self) -> Result<civil::DateTime> {
+        Ok(self.date.to_jiff()?.to_datetime(self.time.to_jiff()?))
+    }
+
+    /// Shift by an exact amount of seconds plus nanoseconds (both may be
+    /// negative). Out of range is `NumberOutOfRange`.
+    pub(crate) fn add_exact(self, seconds: i64, nanos: i64) -> Result<Self> {
+        let too_far = || out_of_range("date-time after adding a duration");
+        let delta = SignedDuration::from_secs(seconds)
+            .checked_add(SignedDuration::from_nanos(nanos))
+            .ok_or_else(too_far)?;
+        self.to_jiff()?
+            .checked_add(delta)
+            .map(Self::from_jiff)
+            .map_err(|_| too_far())
+    }
+
     /// Parse from ISO 8601, e.g. `1984-10-11T12:31:14`.
     pub fn from_iso_string(s: &str) -> Result<Self> {
         ensure_ascii(s, "local datetime")?;
@@ -1212,7 +1538,7 @@ impl CypherLocalDateTime {
             .ok_or_else(|| parse_error("expected 'T' separator"))?;
         let date = parse_date_str(&s[..t_pos])?;
         let time = parse_time_str(&s[t_pos + 1..])?;
-        Ok(CypherLocalDateTime(NaiveDateTime::new(date, time)))
+        Ok(Self { date, time })
     }
 
     /// Build from a property map.
@@ -1222,9 +1548,9 @@ impl CypherLocalDateTime {
             "localdatetime()",
             &[DATE_KEYS, TIME_KEYS, &["date", "time", "datetime"]],
         )?;
-        let d = date_from_map(map)?;
-        let t = time_from_map(map)?;
-        Ok(CypherLocalDateTime(NaiveDateTime::new(d, t)))
+        let date = date_from_map(map)?;
+        let time = time_from_map(map)?;
+        Ok(Self { date, time })
     }
 }
 
@@ -1232,31 +1558,21 @@ impl CypherLocalDateTime {
 // CypherDateTime
 // ===========================================================================
 
-/// openCypher `DateTime` — a date-time with timezone offset and optional IANA timezone name.
-#[derive(Debug, Clone)]
-pub struct CypherDateTime(pub NaiveDateTime, pub FixedOffset, pub Option<String>);
-
-impl PartialEq for CypherDateTime {
-    fn eq(&self, other: &Self) -> bool {
-        self.0 == other.0 && self.1 == other.1 && self.2 == other.2
-    }
-}
-impl Eq for CypherDateTime {}
-impl Hash for CypherDateTime {
-    fn hash<H: Hasher>(&self, state: &mut H) {
-        self.0.hash(state);
-        self.1.local_minus_utc().hash(state);
-        self.2.hash(state);
-    }
+/// openCypher `DateTime`: a date-time with timezone offset and optional IANA
+/// timezone name. Equality compares the local date-time, the offset and the
+/// zone name.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct CypherDateTime {
+    pub local: CypherLocalDateTime,
+    pub offset_seconds: i32,
+    pub tz_name: Option<String>,
 }
 
 impl fmt::Display for CypherDateTime {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let d = self.0.date();
-        write!(f, "{:04}-{:02}-{:02}T", d.year(), d.month(), d.day())?;
-        fmt_local_time(&self.0.time(), f)?;
-        fmt_offset(&self.1, f)?;
-        if let Some(ref tz) = self.2 {
+        write!(f, "{}", self.local)?;
+        fmt_offset(self.offset_seconds, f)?;
+        if let Some(ref tz) = self.tz_name {
             write!(f, "[{tz}]")?;
         }
         Ok(())
@@ -1265,19 +1581,18 @@ impl fmt::Display for CypherDateTime {
 
 impl Serialize for CypherDateTime {
     fn serialize<S: Serializer>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error> {
-        let d = self.0.date();
-        let t = self.0.time();
-        let field_count = if self.2.is_some() { 9 } else { 8 };
+        let (d, t) = (self.local.date, self.local.time);
+        let field_count = if self.tz_name.is_some() { 9 } else { 8 };
         let mut s = serializer.serialize_struct("CypherDateTime", field_count)?;
-        s.serialize_field("year", &d.year())?;
-        s.serialize_field("month", &d.month())?;
-        s.serialize_field("day", &d.day())?;
-        s.serialize_field("hour", &t.hour())?;
-        s.serialize_field("minute", &t.minute())?;
-        s.serialize_field("second", &t.second())?;
-        s.serialize_field("nanosecond", &t.nanosecond())?;
-        s.serialize_field("offset_seconds", &self.1.local_minus_utc())?;
-        if let Some(ref tz) = self.2 {
+        s.serialize_field("year", &d.year)?;
+        s.serialize_field("month", &u32::from(d.month))?;
+        s.serialize_field("day", &u32::from(d.day))?;
+        s.serialize_field("hour", &u32::from(t.hour))?;
+        s.serialize_field("minute", &u32::from(t.minute))?;
+        s.serialize_field("second", &u32::from(t.second))?;
+        s.serialize_field("nanosecond", &t.nanosecond)?;
+        s.serialize_field("offset_seconds", &self.offset_seconds)?;
+        if let Some(ref tz) = self.tz_name {
             s.serialize_field("tz_name", tz)?;
         }
         s.end()
@@ -1337,14 +1652,7 @@ impl<'de> Deserialize<'de> for CypherDateTime {
                     .next_element()?
                     .ok_or_else(|| de::Error::invalid_length(7, &self))?;
                 let tz_name: Option<String> = seq.next_element().ok().flatten();
-                let date = NaiveDate::from_ymd_opt(year, month, day)
-                    .ok_or_else(|| de::Error::custom("invalid date"))?;
-                let time = NaiveTime::from_hms_nano_opt(h, m, s, n)
-                    .ok_or_else(|| de::Error::custom("invalid time"))?;
-                let offset =
-                    FixedOffset::east_opt(o).ok_or_else(|| de::Error::custom("invalid offset"))?;
-                let dt = NaiveDateTime::new(date, time);
-                Ok(CypherDateTime(dt, offset, tz_name))
+                decode_zoned(year, month, day, h, m, s, n, o, tz_name)
             }
             fn visit_map<A: MapAccess<'de>>(
                 self,
@@ -1375,20 +1683,63 @@ impl<'de> Deserialize<'de> for CypherDateTime {
                 let s: u32 = second.ok_or_else(|| de::Error::missing_field("second"))?;
                 let n: u32 = nano.ok_or_else(|| de::Error::missing_field("nanosecond"))?;
                 let o: i32 = off.ok_or_else(|| de::Error::missing_field("offset_seconds"))?;
-                let d = NaiveDate::from_ymd_opt(y, mo, dy)
-                    .ok_or_else(|| de::Error::custom("invalid date"))?;
-                let t = NaiveTime::from_hms_nano_opt(h, mi, s, n)
-                    .ok_or_else(|| de::Error::custom("invalid time"))?;
-                let offset =
-                    FixedOffset::east_opt(o).ok_or_else(|| de::Error::custom("invalid offset"))?;
-                Ok(CypherDateTime(NaiveDateTime::new(d, t), offset, tz_name))
+                decode_zoned(y, mo, dy, h, mi, s, n, o, tz_name)
             }
         }
         deserializer.deserialize_any(V)
     }
 }
 
+/// Decode stored zoned date-time fields (legacy-tolerant).
+#[allow(clippy::too_many_arguments)]
+fn decode_zoned<E: de::Error>(
+    year: i32,
+    month: u32,
+    day: u32,
+    h: u32,
+    m: u32,
+    s: u32,
+    n: u32,
+    offset_seconds: i32,
+    tz_name: Option<String>,
+) -> std::result::Result<CypherDateTime, E> {
+    let local = decode_local(year, month, day, h, m, s, n)?;
+    if !offset_in_range(offset_seconds) {
+        return Err(E::custom("invalid offset"));
+    }
+    Ok(CypherDateTime {
+        local,
+        offset_seconds,
+        tz_name,
+    })
+}
+
 impl CypherDateTime {
+    /// Seconds since the Unix epoch of this instant (never fails, any year).
+    pub(crate) fn epoch_seconds(&self) -> i64 {
+        self.local.date.epoch_days() * SECS_PER_DAY + i64::from(self.local.time.secs_of_day())
+            - i64::from(self.offset_seconds)
+    }
+
+    /// Milliseconds since the Unix epoch of this instant.
+    pub(crate) fn epoch_millis(&self) -> i64 {
+        self.epoch_seconds() * 1000 + i64::from(self.local.time.nanosecond / 1_000_000)
+    }
+
+    /// `(epoch seconds, nanosecond)`: orders by instant, as comparison always has.
+    pub(crate) fn utc_sort_key(&self) -> (i64, u32) {
+        (self.epoch_seconds(), self.local.time.nanosecond)
+    }
+
+    /// A UTC date-time at the given instant.
+    pub(crate) fn from_utc_timestamp(ts: Timestamp) -> Self {
+        Self {
+            local: CypherLocalDateTime::from_jiff(Offset::UTC.to_datetime(ts)),
+            offset_seconds: 0,
+            tz_name: None,
+        }
+    }
+
     /// Parse from ISO 8601 with timezone, e.g. `1984-10-11T12:31:14Z` or
     /// `2015-07-21T21:40:32.142+02:00[Europe/Stockholm]`.
     pub fn from_iso_string(s: &str) -> Result<Self> {
@@ -1412,19 +1763,22 @@ impl CypherDateTime {
 
         let (time_part, off_part) = split_time_offset(time_off_part);
         let time = parse_time_str(time_part)?;
+        let local = CypherLocalDateTime { date, time };
 
-        let off = if let Some(off_str) = off_part {
+        let offset_seconds = if let Some(off_str) = off_part {
             parse_offset(off_str)?
         } else if let Some(ref tz) = tz_name {
-            // No explicit offset but tz name present — resolve from tz at this datetime.
-            let ndt = NaiveDateTime::new(date, time);
-            let (resolved, _) = resolve_tz_name_at(tz, &ndt)?;
-            resolved
+            // No explicit offset but tz name present: resolve from tz at this datetime.
+            resolve_tz_name_at(tz, &local)?.0
         } else {
             return Err(parse_error("CypherDateTime requires an offset or timezone"));
         };
 
-        Ok(CypherDateTime(NaiveDateTime::new(date, time), off, tz_name))
+        Ok(Self {
+            local,
+            offset_seconds,
+            tz_name,
+        })
     }
 
     /// Build from a property map.
@@ -1441,35 +1795,28 @@ impl CypherDateTime {
                 &["date", "time", "datetime", "timezone"],
             ],
         )?;
-        let d = date_from_map(map)?;
-        let t = time_from_map(map)?;
-        let ndt = NaiveDateTime::new(d, t);
+        let date = date_from_map(map)?;
+        let time = time_from_map(map)?;
+        let ndt = CypherLocalDateTime { date, time };
         match map.get("timezone") {
             Some(Value::String(s)) => {
-                let target_off = if s.starts_with('+') || s.starts_with('-') || s == "Z" || s == "z"
-                {
-                    parse_offset(s)?
-                } else {
-                    // Will be resolved below after possible conversion.
-                    FixedOffset::east_opt(0).unwrap()
-                };
-                let is_named = !(s.starts_with('+') || s.starts_with('-') || s == "Z" || s == "z");
+                let is_named = !is_offset_literal(s);
+                let target_off = if is_named { 0 } else { parse_offset(s)? };
                 // Convert local time when the base temporal has a different offset.
                 // Use base_source_offset_at to re-resolve named timezones at the new date.
                 let ndt = if let Some(src_off) = base_source_offset_at(map, &ndt) {
                     if is_named {
                         // Convert via UTC intermediary, then resolve target named tz.
-                        let utc_ndt =
-                            ndt - chrono::Duration::seconds(src_off.local_minus_utc() as i64);
-                        let tz: chrono_tz::Tz =
-                            s.parse().map_err(|_| parse_error("unknown timezone"))?;
-                        let aware = tz.from_utc_datetime(&utc_ndt);
-                        let off = aware.offset().fix();
-                        let converted = aware.naive_local();
-                        return Ok(CypherDateTime(converted, off, Some(s.to_string())));
+                        let utc = ndt.add_exact(-i64::from(src_off), 0)?;
+                        let tz = require_tz(s)?;
+                        let (converted, off) = tz_utc_to_local(&tz, &utc)?;
+                        return Ok(Self {
+                            local: converted,
+                            offset_seconds: off,
+                            tz_name: Some(s.to_string()),
+                        });
                     } else if src_off != target_off {
-                        let delta = target_off.local_minus_utc() - src_off.local_minus_utc();
-                        ndt + chrono::Duration::seconds(delta as i64)
+                        ndt.add_exact(i64::from(target_off) - i64::from(src_off), 0)?
                     } else {
                         ndt
                     }
@@ -1478,30 +1825,52 @@ impl CypherDateTime {
                 };
                 if is_named {
                     let (off, tz_name) = resolve_tz_name_at(s, &ndt)?;
-                    Ok(CypherDateTime(ndt, off, tz_name))
+                    Ok(Self {
+                        local: ndt,
+                        offset_seconds: off,
+                        tz_name,
+                    })
                 } else {
-                    Ok(CypherDateTime(ndt, target_off, None))
+                    Ok(Self {
+                        local: ndt,
+                        offset_seconds: target_off,
+                        tz_name: None,
+                    })
                 }
             }
             _ => {
-                // No explicit timezone — try to inherit from a `time` or `datetime` base temporal.
+                // No explicit timezone: try to inherit from a `time` or `datetime` base temporal.
                 match map.get("time").or_else(|| map.get("datetime")) {
-                    Some(Value::Time(t)) => Ok(CypherDateTime(ndt, t.1, None)),
+                    Some(Value::Time(t)) => Ok(Self {
+                        local: ndt,
+                        offset_seconds: t.offset_seconds,
+                        tz_name: None,
+                    }),
                     Some(Value::DateTime(dt)) => {
                         // If the base has a named timezone, re-resolve at the new
-                        // NaiveDateTime to account for DST changes.
-                        if let Some(ref tz_name) = dt.2 {
+                        // local date-time to account for DST changes.
+                        if let Some(ref tz_name) = dt.tz_name {
                             let (off, tz) = resolve_tz_name_at(tz_name, &ndt)?;
-                            Ok(CypherDateTime(ndt, off, tz))
+                            Ok(Self {
+                                local: ndt,
+                                offset_seconds: off,
+                                tz_name: tz,
+                            })
                         } else {
-                            Ok(CypherDateTime(ndt, dt.1, None))
+                            Ok(Self {
+                                local: ndt,
+                                offset_seconds: dt.offset_seconds,
+                                tz_name: None,
+                            })
                         }
                     }
-                    _ => {
-                        // Default to UTC when constructing from date/time components
-                        // or from a date projection.
-                        Ok(CypherDateTime(ndt, FixedOffset::east_opt(0).unwrap(), None))
-                    }
+                    // Default to UTC when constructing from date/time components
+                    // or from a date projection.
+                    _ => Ok(Self {
+                        local: ndt,
+                        offset_seconds: 0,
+                        tz_name: None,
+                    }),
                 }
             }
         }
@@ -1509,30 +1878,29 @@ impl CypherDateTime {
 
     /// Create from epoch seconds and nanoseconds (UTC).
     ///
-    /// Errors with `NumberOutOfRange` when the instant is outside chrono's
-    /// calendar range (roughly +-262,000 years).
+    /// Errors with `NumberOutOfRange` when the instant is outside the
+    /// supported years (-9999..=9999).
     pub fn from_epoch(seconds: i64, nanos: i64) -> Result<Self> {
-        Self::from_epoch_nanos(seconds as i128 * 1_000_000_000 + nanos as i128)
+        Self::from_epoch_nanos(i128::from(seconds) * 1_000_000_000 + i128::from(nanos))
     }
 
     /// Create from epoch milliseconds (UTC). Errors like [`Self::from_epoch`].
     pub fn from_epoch_millis(millis: i64) -> Result<Self> {
-        Self::from_epoch_nanos(millis as i128 * 1_000_000)
+        Self::from_epoch_nanos(i128::from(millis) * 1_000_000)
     }
 
     /// Create from nanoseconds since the Unix epoch (UTC).
     fn from_epoch_nanos(total: i128) -> Result<Self> {
-        let secs = i64::try_from(total.div_euclid(1_000_000_000));
-        let ns = total.rem_euclid(1_000_000_000) as u32;
-        let dt = secs
-            .ok()
-            .and_then(|s| chrono::DateTime::from_timestamp(s, ns))
-            .ok_or_else(|| out_of_range(format!("epoch instant {total}ns")))?;
-        Ok(CypherDateTime(
-            dt.naive_utc(),
-            FixedOffset::east_opt(0).unwrap(),
-            None,
-        ))
+        let too_far = || out_of_range("epoch instant");
+        let delta = SignedDuration::try_from_nanos_i128(total).ok_or_else(too_far)?;
+        let utc = civil::DateTime::constant(1970, 1, 1, 0, 0, 0, 0)
+            .checked_add(delta)
+            .map_err(|_| too_far())?;
+        Ok(Self {
+            local: CypherLocalDateTime::from_jiff(utc),
+            offset_seconds: 0,
+            tz_name: None,
+        })
     }
 
     /// `datetime({epochSeconds | epochMillis, [millisecond, microsecond,
@@ -1558,7 +1926,7 @@ impl CypherDateTime {
         let int = |key: &str| -> Result<i128> {
             match map.get(key) {
                 None | Some(Value::Null) => Ok(0),
-                Some(Value::I64(n)) => Ok(*n as i128),
+                Some(Value::I64(n)) => Ok(i128::from(*n)),
                 Some(_) => Err(invalid_map(format!("{key} must be an integer"))),
             }
         };
@@ -1571,17 +1939,20 @@ impl CypherDateTime {
         match map.get("timezone") {
             Some(Value::String(s)) if is_offset_literal(s) => {
                 let off = parse_offset(s)?;
-                Ok(CypherDateTime(utc.0 + off, off, None))
+                Ok(Self {
+                    local: utc.local.add_exact(i64::from(off), 0)?,
+                    offset_seconds: off,
+                    tz_name: None,
+                })
             }
             Some(Value::String(name)) => {
-                let tz: chrono_tz::Tz =
-                    name.parse().map_err(|_| parse_error("unknown timezone"))?;
-                let aware = tz.from_utc_datetime(&utc.0);
-                Ok(CypherDateTime(
-                    aware.naive_local(),
-                    aware.offset().fix(),
-                    Some(name.clone()),
-                ))
+                let tz = require_tz(name)?;
+                let (local, off) = tz_utc_to_local(&tz, &utc.local)?;
+                Ok(Self {
+                    local,
+                    offset_seconds: off,
+                    tz_name: Some(name.clone()),
+                })
             }
             _ => Ok(utc),
         }
@@ -1592,7 +1963,7 @@ impl CypherDateTime {
 // CypherDuration
 // ===========================================================================
 
-/// openCypher `Duration` — calendar and clock components stored independently.
+/// openCypher `Duration`: calendar and clock components stored independently.
 #[derive(Debug, Clone)]
 pub struct CypherDuration {
     pub months: i64,
@@ -2123,25 +2494,25 @@ fn parse_duration_time_part(s: &str, seconds: &mut i64, nanos: &mut i64) -> Resu
 // duration.between / inMonths / inDays / inSeconds helpers
 // ---------------------------------------------------------------------------
 
-/// Extract a `NaiveDate` from any temporal value that has a date component.
-pub fn extract_date(val: &Value) -> Option<NaiveDate> {
+/// Extract a date from any temporal value that has a date component.
+pub fn extract_date(val: &Value) -> Option<CypherDate> {
     match val {
-        Value::Date(d) => Some(d.0),
-        Value::LocalDateTime(dt) => Some(dt.0.date()),
-        Value::DateTime(dt) => Some(dt.0.date()),
+        Value::Date(d) => Some(*d),
+        Value::LocalDateTime(dt) => Some(dt.date),
+        Value::DateTime(dt) => Some(dt.local.date),
         _ => None,
     }
 }
 
-/// Extract a `NaiveTime` from any temporal value that has a time component.
+/// Extract a time from any temporal value that has a time component.
 /// For date-only values, returns midnight.
-pub fn extract_time(val: &Value) -> Option<NaiveTime> {
+pub fn extract_time(val: &Value) -> Option<CypherLocalTime> {
     match val {
-        Value::Date(_) => Some(NaiveTime::from_hms_opt(0, 0, 0).unwrap()),
-        Value::LocalTime(t) => Some(t.0),
-        Value::Time(t) => Some(t.0),
-        Value::LocalDateTime(dt) => Some(dt.0.time()),
-        Value::DateTime(dt) => Some(dt.0.time()),
+        Value::Date(_) => Some(CypherLocalTime::MIDNIGHT),
+        Value::LocalTime(t) => Some(*t),
+        Value::Time(t) => Some(t.time),
+        Value::LocalDateTime(dt) => Some(dt.time),
+        Value::DateTime(dt) => Some(dt.local.time),
         _ => None,
     }
 }
@@ -2149,8 +2520,8 @@ pub fn extract_time(val: &Value) -> Option<NaiveTime> {
 /// Extract UTC offset seconds from a temporal value. Returns 0 for local types.
 pub fn extract_offset_secs(val: &Value) -> i32 {
     match val {
-        Value::Time(t) => t.1.local_minus_utc(),
-        Value::DateTime(dt) => dt.1.local_minus_utc(),
+        Value::Time(t) => t.offset_seconds,
+        Value::DateTime(dt) => dt.offset_seconds,
         _ => 0,
     }
 }
@@ -2176,22 +2547,21 @@ fn is_offset_aware(val: &Value) -> bool {
 /// Extract the named timezone string from a DateTime value.
 fn extract_tz_name(val: &Value) -> Option<&str> {
     if let Value::DateTime(dt) = val {
-        dt.2.as_deref()
+        dt.tz_name.as_deref()
     } else {
         None
     }
 }
 
 /// Resolve the UTC offset for a local date/time interpreted in a named timezone.
-/// Uses `earliest()` to pick the pre-transition offset for ambiguous times.
-fn resolve_offset_in_tz(date: NaiveDate, time: NaiveTime, tz_name: &str) -> i64 {
-    if let Ok(tz) = tz_name.parse::<chrono_tz::Tz>() {
-        let ndt = NaiveDateTime::new(date, time);
-        if let Some(aware) = tz.from_local_datetime(&ndt).earliest() {
-            return aware.offset().fix().local_minus_utc() as i64;
-        }
-    }
-    0
+/// Uses the earlier instant to pick the pre-transition offset for ambiguous
+/// times. An unknown zone or a time in a DST gap resolves to offset 0.
+fn resolve_offset_in_tz(date: CypherDate, time: CypherLocalTime, tz_name: &str) -> Result<i64> {
+    let Some(tz) = lookup_tz(tz_name) else {
+        return Ok(0);
+    };
+    let local = CypherLocalDateTime { date, time };
+    Ok(earliest_offset(&tz, &local)?.map_or(0, i64::from))
 }
 
 /// Compute the effective UTC offset for `val` when paired with `other`.
@@ -2200,198 +2570,170 @@ fn resolve_offset_in_tz(date: NaiveDate, time: NaiveTime, tz_name: &str) -> i64 
 /// named timezone and the other is a local type, resolve the local side's
 /// offset in the named timezone (DST-aware). For time-only local values, the
 /// date from the other side is used for DST resolution.
-fn effective_offset_dst(val: &Value, other: &Value) -> i64 {
+fn effective_offset_dst(val: &Value, other: &Value) -> Result<i64> {
     // Both offset-aware: standard path.
     if is_offset_aware(val) && is_offset_aware(other) {
-        return extract_offset_secs(val) as i64;
+        return Ok(i64::from(extract_offset_secs(val)));
     }
 
     // If val is offset-aware (DateTime with tz name), return its actual offset.
     if is_offset_aware(val) {
         // Check if the other side is a local type and we have a named tz.
         if extract_tz_name(val).is_some() && !is_offset_aware(other) {
-            return extract_offset_secs(val) as i64;
+            return Ok(i64::from(extract_offset_secs(val)));
         }
-        return 0;
+        return Ok(0);
     }
 
-    // val is a local type — check if other has a named timezone.
+    // val is a local type: check if other has a named timezone.
     if let Some(tz_name) = extract_tz_name(other) {
         if !is_offset_aware(val) {
             // Resolve val's local date/time in the other side's timezone.
             let date = extract_date(val)
                 .or_else(|| extract_date(other))
-                .unwrap_or(NaiveDate::from_ymd_opt(1970, 1, 1).unwrap());
-            let time = extract_time(val).unwrap_or(NaiveTime::from_hms_opt(0, 0, 0).unwrap());
+                .unwrap_or(CypherDate {
+                    year: 1970,
+                    month: 1,
+                    day: 1,
+                });
+            let time = extract_time(val).unwrap_or(CypherLocalTime::MIDNIGHT);
             return resolve_offset_in_tz(date, time, tz_name);
         }
     }
 
-    0
-}
-
-/// Number of days in a given month of a given year.
-fn days_in_month(year: i32, month: u32) -> u32 {
-    // Use the 1st of the next month minus 1 day trick.
-    if month == 12 {
-        NaiveDate::from_ymd_opt(year + 1, 1, 1)
-    } else {
-        NaiveDate::from_ymd_opt(year, month + 1, 1)
-    }
-    .unwrap()
-    .signed_duration_since(NaiveDate::from_ymd_opt(year, month, 1).unwrap())
-    .num_days() as u32
-}
-
-/// Add `months` months to a `NaiveDate`, clamping the day to the target month's max.
-fn add_months_to_date(d: NaiveDate, months: i64) -> NaiveDate {
-    let total_months = d.year() as i64 * 12 + (d.month() as i64 - 1) + months;
-    let y = total_months.div_euclid(12) as i32;
-    let m = (total_months.rem_euclid(12) + 1) as u32;
-    let max_day = days_in_month(y, m);
-    let day = (d.day()).min(max_day);
-    NaiveDate::from_ymd_opt(y, m, day).unwrap()
-}
-
-/// Convert a `NaiveTime` to total nanoseconds since midnight.
-fn time_to_nanos(t: NaiveTime) -> i64 {
-    t.num_seconds_from_midnight() as i64 * 1_000_000_000 + t.nanosecond() as i64
+    Ok(0)
 }
 
 /// Compute the calendar-month difference between two dates, adjusting if the
 /// day-of-month means we haven't reached a full month boundary yet.
-fn month_diff(d1: NaiveDate, d2: NaiveDate) -> i64 {
+fn month_diff(d1: CypherDate, d2: CypherDate) -> Result<i64> {
     let mut months =
-        (d2.year() as i64 - d1.year() as i64) * 12 + d2.month() as i64 - d1.month() as i64;
+        (i64::from(d2.year) - i64::from(d1.year)) * 12 + i64::from(d2.month) - i64::from(d1.month);
 
     // Check if we overshot: adding `months` months to d1 should not go past d2.
-    let adjusted = add_months_to_date(d1, months);
+    let adjusted = d1.add_months(months)?;
     if months > 0 && adjusted > d2 {
         months -= 1;
     } else if months < 0 && adjusted < d2 {
         months += 1;
     }
-    months
+    Ok(months)
+}
+
+/// The nanoseconds-of-day of `val` in UTC terms, as used by every duration
+/// helper: local time of day minus the effective offset against `other`.
+fn utc_nanos_of_day(val: &Value, other: &Value) -> Result<i64> {
+    let local = extract_time(val).map_or(0, CypherLocalTime::nanos_of_day);
+    Ok(local - effective_offset_dst(val, other)? * NANOS_PER_SEC)
 }
 
 /// Compute `duration.between(lhs, rhs)`.
 ///
 /// Returns a `CypherDuration` with months (calendar) + remainder as seconds/nanos.
-pub fn duration_between(lhs: &Value, rhs: &Value) -> CypherDuration {
+/// A legacy value outside the supported years is `NumberOutOfRange`.
+pub fn duration_between(lhs: &Value, rhs: &Value) -> Result<CypherDuration> {
     let d1 = extract_date(lhs);
     let d2 = extract_date(rhs);
-    let t1 = extract_time(lhs);
-    let t2 = extract_time(rhs);
 
-    // When one side is time-only and the other has a date → time-only comparison.
+    // When one side is time-only and the other has a date -> time-only comparison.
     let both_have_dates = d1.is_some() && d2.is_some() && has_date(lhs) && has_date(rhs);
     let either_time_only = is_time_only(lhs) || is_time_only(rhs);
 
     if either_time_only && !both_have_dates {
-        // Pure time comparison — take the time from whichever has it.
-        let lhs_nanos =
-            t1.map(time_to_nanos).unwrap_or(0) - effective_offset_dst(lhs, rhs) * 1_000_000_000;
-        let rhs_nanos =
-            t2.map(time_to_nanos).unwrap_or(0) - effective_offset_dst(rhs, lhs) * 1_000_000_000;
+        // Pure time comparison: take the time from whichever has it.
+        let lhs_nanos = utc_nanos_of_day(lhs, rhs)?;
+        let rhs_nanos = utc_nanos_of_day(rhs, lhs)?;
         let diff_nanos = rhs_nanos - lhs_nanos;
-        let total_secs = diff_nanos.div_euclid(1_000_000_000);
-        let rem_nanos = diff_nanos.rem_euclid(1_000_000_000);
-        // Normalize: if total_secs > 0 but we need negative, keep consistent sign.
-        // Actually div_euclid/rem_euclid always gives non-negative remainder, which
-        // works for positive diffs. For negative diffs, total_secs is negative and
-        // rem_nanos is non-negative. If rem_nanos > 0 with negative seconds, we need
-        // to present it properly. But CypherDuration stores them separately and the
-        // Display handles sign combining.
-        return CypherDuration {
+        let total_secs = diff_nanos.div_euclid(NANOS_PER_SEC);
+        let rem_nanos = diff_nanos.rem_euclid(NANOS_PER_SEC);
+        // div_euclid/rem_euclid always gives a non-negative remainder. For a
+        // negative diff, total_secs is negative and rem_nanos is non-negative;
+        // CypherDuration stores them separately and Display combines the sign.
+        return Ok(CypherDuration {
             months: 0,
             days: 0,
             seconds: total_secs,
             nanos: rem_nanos,
-        };
+        });
     }
 
-    if let (Some(date1), Some(date2)) = (d1, d2) {
-        // Both have dates — compute calendar months first.
-        let months = month_diff(date1, date2);
-
-        // Advance d1 by those months to get the remainder as days+time.
-        let d1_advanced = add_months_to_date(date1, months);
-
-        // Remainder days after month advancement.
-        let mut day_diff = date2.signed_duration_since(d1_advanced).num_days();
-
-        // Time-of-day difference (in nanos), adjusted for UTC offsets only when
-        // both sides are offset-aware.
-        let t1_nanos =
-            t1.map(time_to_nanos).unwrap_or(0) - effective_offset_dst(lhs, rhs) * 1_000_000_000;
-        let t2_nanos =
-            t2.map(time_to_nanos).unwrap_or(0) - effective_offset_dst(rhs, lhs) * 1_000_000_000;
-        let mut time_diff_nanos = t2_nanos - t1_nanos;
-
-        // Normalize: if day_diff and time_diff have opposite signs, borrow a day.
-        let nanos_per_day: i64 = 86_400_000_000_000;
-        if day_diff > 0 && time_diff_nanos < 0 {
-            day_diff -= 1;
-            time_diff_nanos += nanos_per_day;
-        } else if day_diff < 0 && time_diff_nanos > 0 {
-            day_diff += 1;
-            time_diff_nanos -= nanos_per_day;
-        }
-
-        let secs = time_diff_nanos.div_euclid(1_000_000_000);
-        let ns = time_diff_nanos.rem_euclid(1_000_000_000);
-
-        CypherDuration {
-            months,
-            days: day_diff,
-            seconds: secs,
-            nanos: ns,
-        }
-    } else {
-        // Fallback: no dates on either side, this shouldn't normally happen
-        // but handle gracefully.
-        CypherDuration {
+    let (Some(date1), Some(date2)) = (d1, d2) else {
+        // No dates on either side: this shouldn't normally happen, but
+        // handle it gracefully.
+        return Ok(CypherDuration {
             months: 0,
             days: 0,
             seconds: 0,
             nanos: 0,
-        }
+        });
+    };
+
+    // Both have dates: compute calendar months first.
+    let months = month_diff(date1, date2)?;
+
+    // Advance d1 by those months to get the remainder as days+time.
+    let d1_advanced = date1.add_months(months)?;
+
+    // Remainder days after month advancement.
+    let mut day_diff = d1_advanced.days_until(date2)?;
+
+    // Time-of-day difference (in nanos), adjusted for UTC offsets only when
+    // both sides are offset-aware.
+    let t1_nanos = utc_nanos_of_day(lhs, rhs)?;
+    let t2_nanos = utc_nanos_of_day(rhs, lhs)?;
+    let mut time_diff_nanos = t2_nanos - t1_nanos;
+
+    // Normalize: if day_diff and time_diff have opposite signs, borrow a day.
+    let nanos_per_day: i64 = 86_400_000_000_000;
+    if day_diff > 0 && time_diff_nanos < 0 {
+        day_diff -= 1;
+        time_diff_nanos += nanos_per_day;
+    } else if day_diff < 0 && time_diff_nanos > 0 {
+        day_diff += 1;
+        time_diff_nanos -= nanos_per_day;
+    }
+
+    Ok(CypherDuration {
+        months,
+        days: day_diff,
+        seconds: time_diff_nanos.div_euclid(NANOS_PER_SEC),
+        nanos: time_diff_nanos.rem_euclid(NANOS_PER_SEC),
+    })
+}
+
+/// A zero duration.
+fn zero_duration() -> CypherDuration {
+    CypherDuration {
+        months: 0,
+        days: 0,
+        seconds: 0,
+        nanos: 0,
     }
 }
 
-/// Compute `duration.inMonths(lhs, rhs)` — only the months component.
-pub fn duration_in_months(lhs: &Value, rhs: &Value) -> CypherDuration {
-    let d1 = extract_date(lhs);
-    let d2 = extract_date(rhs);
-
-    if is_time_only(lhs) || is_time_only(rhs) || d1.is_none() || d2.is_none() {
-        return CypherDuration {
-            months: 0,
-            days: 0,
-            seconds: 0,
-            nanos: 0,
-        };
+/// Compute `duration.inMonths(lhs, rhs)`: only the months component.
+pub fn duration_in_months(lhs: &Value, rhs: &Value) -> Result<CypherDuration> {
+    let (Some(date1), Some(date2)) = (extract_date(lhs), extract_date(rhs)) else {
+        return Ok(zero_duration());
+    };
+    if is_time_only(lhs) || is_time_only(rhs) {
+        return Ok(zero_duration());
     }
-
-    let date1 = d1.unwrap();
-    let date2 = d2.unwrap();
 
     // For inMonths with datetime args, we need to check if the time pushes us
     // past a month boundary. Compare times at the month-boundary date.
-    let mut months = month_diff(date1, date2);
+    let mut months = month_diff(date1, date2)?;
 
     // If dates+times cross: e.g. datetime('2014-07-21T21:40:36.143+0200') to
     // datetime('2015-07-21T21:40:32.142+0100'): the date diff is exactly 12 months,
-    // but the time on RHS is earlier → still 12 months (P1Y) because month_diff
+    // but the time on RHS is earlier, so still 12 months (P1Y) because month_diff
     // already handles day clamping. But we also need time comparison:
     // if same day-of-month after advancing, check time.
-    let d1_advanced = add_months_to_date(date1, months);
+    let d1_advanced = date1.add_months(months)?;
     if d1_advanced == date2 {
-        // Same date after advancing — check time.
-        let t1_nanos = extract_time(lhs).map(time_to_nanos).unwrap_or(0)
-            - effective_offset_dst(lhs, rhs) * 1_000_000_000;
-        let t2_nanos = extract_time(rhs).map(time_to_nanos).unwrap_or(0)
-            - effective_offset_dst(rhs, lhs) * 1_000_000_000;
+        // Same date after advancing: check time.
+        let t1_nanos = utc_nanos_of_day(lhs, rhs)?;
+        let t2_nanos = utc_nanos_of_day(rhs, lhs)?;
         if months > 0 && t2_nanos < t1_nanos {
             months -= 1;
         } else if months < 0 && t2_nanos > t1_nanos {
@@ -2399,111 +2741,76 @@ pub fn duration_in_months(lhs: &Value, rhs: &Value) -> CypherDuration {
         }
     }
 
-    CypherDuration {
+    Ok(CypherDuration {
         months,
         days: 0,
         seconds: 0,
         nanos: 0,
-    }
+    })
 }
 
-/// Compute `duration.inDays(lhs, rhs)` — total elapsed days + time remainder.
-pub fn duration_in_days(lhs: &Value, rhs: &Value) -> CypherDuration {
-    let d1 = extract_date(lhs);
-    let d2 = extract_date(rhs);
-
-    // If either side is time-only without a date on the other side with a date,
-    // and the other side has no date, or if either side is time-only → no days.
+/// Compute `duration.inDays(lhs, rhs)`: total elapsed days + time remainder.
+pub fn duration_in_days(lhs: &Value, rhs: &Value) -> Result<CypherDuration> {
+    // When either side is time-only, inDays returns PT0S (no days to count).
     if is_time_only(lhs) || is_time_only(rhs) {
-        // When one side is time-only, inDays returns PT0S (no days to count).
-        return CypherDuration {
-            months: 0,
-            days: 0,
-            seconds: 0,
-            nanos: 0,
-        };
+        return Ok(zero_duration());
     }
 
-    if let (Some(date1), Some(date2)) = (d1, d2) {
-        // Compute total elapsed nanoseconds including time components. i128:
-        // a span over ~292 years overflows i64 nanoseconds.
-        let day_nanos =
-            date2.signed_duration_since(date1).num_days() as i128 * 86_400_000_000_000i128;
-        let t1_nanos = extract_time(lhs).map(time_to_nanos).unwrap_or(0)
-            - effective_offset_dst(lhs, rhs) * 1_000_000_000;
-        let t2_nanos = extract_time(rhs).map(time_to_nanos).unwrap_or(0)
-            - effective_offset_dst(rhs, lhs) * 1_000_000_000;
-        let total_nanos = day_nanos + (t2_nanos - t1_nanos) as i128;
+    let (Some(date1), Some(date2)) = (extract_date(lhs), extract_date(rhs)) else {
+        return Ok(zero_duration());
+    };
+    // Compute total elapsed nanoseconds including time components. i128:
+    // a span over ~292 years overflows i64 nanoseconds.
+    let day_nanos = i128::from(date1.days_until(date2)?) * 86_400_000_000_000i128;
+    let t1_nanos = utc_nanos_of_day(lhs, rhs)?;
+    let t2_nanos = utc_nanos_of_day(rhs, lhs)?;
+    let total_nanos = day_nanos + i128::from(t2_nanos - t1_nanos);
 
-        // Truncate toward zero to get whole days (always fits: chrono dates
-        // span far fewer than i64::MAX days).
-        let nanos_per_day: i128 = 86_400_000_000_000;
-        let days = (total_nanos / nanos_per_day) as i64;
+    // Truncate toward zero to get whole days (always fits: the supported
+    // years span only ~7.3 million days).
+    let nanos_per_day: i128 = 86_400_000_000_000;
+    let days = (total_nanos / nanos_per_day) as i64;
 
-        CypherDuration {
-            months: 0,
-            days,
-            seconds: 0,
-            nanos: 0,
-        }
-    } else {
-        CypherDuration {
-            months: 0,
-            days: 0,
-            seconds: 0,
-            nanos: 0,
-        }
-    }
+    Ok(CypherDuration {
+        months: 0,
+        days,
+        seconds: 0,
+        nanos: 0,
+    })
 }
 
-/// Compute `duration.inSeconds(lhs, rhs)` — everything flattened to seconds+nanos.
-pub fn duration_in_seconds(lhs: &Value, rhs: &Value) -> CypherDuration {
-    let d1 = extract_date(lhs);
-    let d2 = extract_date(rhs);
-
+/// Compute `duration.inSeconds(lhs, rhs)`: everything flattened to seconds+nanos.
+pub fn duration_in_seconds(lhs: &Value, rhs: &Value) -> Result<CypherDuration> {
     // If either is time-only and the other has a date (but not time-only), do time-only diff.
     let either_time_only = is_time_only(lhs) || is_time_only(rhs);
 
-    let t1_nanos = extract_time(lhs).map(time_to_nanos).unwrap_or(0)
-        - effective_offset_dst(lhs, rhs) * 1_000_000_000;
-    let t2_nanos = extract_time(rhs).map(time_to_nanos).unwrap_or(0)
-        - effective_offset_dst(rhs, lhs) * 1_000_000_000;
-
+    let t1_nanos = utc_nanos_of_day(lhs, rhs)?;
+    let t2_nanos = utc_nanos_of_day(rhs, lhs)?;
     let time_diff = t2_nanos - t1_nanos;
 
     if either_time_only && !(has_date(lhs) && has_date(rhs)) {
         // Time-only comparison.
-        let secs = time_diff.div_euclid(1_000_000_000);
-        let ns = time_diff.rem_euclid(1_000_000_000);
-        return CypherDuration {
+        return Ok(CypherDuration {
             months: 0,
             days: 0,
-            seconds: secs,
-            nanos: ns,
-        };
+            seconds: time_diff.div_euclid(NANOS_PER_SEC),
+            nanos: time_diff.rem_euclid(NANOS_PER_SEC),
+        });
     }
 
-    if let (Some(date1), Some(date2)) = (d1, d2) {
-        // i128: a span over ~292 years overflows i64 nanoseconds. The
-        // seconds always fit i64 (chrono dates span ~5e14 days at most).
-        let total_day_secs = date2.signed_duration_since(date1).num_days() as i128 * 86400;
-        let total_nanos = total_day_secs * 1_000_000_000 + time_diff as i128;
-        let secs = total_nanos.div_euclid(1_000_000_000) as i64;
-        let ns = total_nanos.rem_euclid(1_000_000_000) as i64;
-        CypherDuration {
-            months: 0,
-            days: 0,
-            seconds: secs,
-            nanos: ns,
-        }
-    } else {
-        CypherDuration {
-            months: 0,
-            days: 0,
-            seconds: 0,
-            nanos: 0,
-        }
-    }
+    let (Some(date1), Some(date2)) = (extract_date(lhs), extract_date(rhs)) else {
+        return Ok(zero_duration());
+    };
+    // i128: a span over ~292 years overflows i64 nanoseconds. The seconds
+    // always fit i64 (the supported years span ~6e11 seconds).
+    let total_day_secs = i128::from(date1.days_until(date2)?) * 86400;
+    let total_nanos = total_day_secs * 1_000_000_000 + i128::from(time_diff);
+    Ok(CypherDuration {
+        months: 0,
+        days: 0,
+        seconds: total_nanos.div_euclid(1_000_000_000) as i64,
+        nanos: total_nanos.rem_euclid(1_000_000_000) as i64,
+    })
 }
 
 // ---------------------------------------------------------------------------
@@ -2512,60 +2819,70 @@ pub fn duration_in_seconds(lhs: &Value, rhs: &Value) -> CypherDuration {
 
 /// Public wrapper around `parse_offset` for use from eval.rs.
 pub fn parse_offset_public(s: &str) -> Result<i32> {
-    parse_offset(s).map(|off| off.local_minus_utc())
+    parse_offset(s)
 }
 
 /// Truncate a date to the given unit, then apply optional map overrides.
-pub fn truncate_date(unit: &str, val: &Value, map: &BTreeMap<String, Value>) -> Result<NaiveDate> {
+pub fn truncate_date(unit: &str, val: &Value, map: &BTreeMap<String, Value>) -> Result<CypherDate> {
     let date = extract_date(val)
         .ok_or_else(|| parse_error("truncate_date requires a temporal with a date component"))?;
     let mut d = truncate_date_core(unit, date)?;
 
     // Apply map overrides.
     if let Some(Value::I64(day)) = map.get("day") {
-        d = d
-            .with_day(*day as u32)
-            .ok_or_else(|| parse_error(format!("invalid day: {day}")))?;
+        d = u32::try_from(*day)
+            .map_err(|_| parse_error(format!("invalid day: {day}")))
+            .and_then(|day_of_month| {
+                CypherDate::new_with(
+                    d.year,
+                    u32::from(d.month),
+                    day_of_month,
+                    &format!("invalid day: {day}"),
+                )
+            })?;
     }
     if let Some(Value::I64(dow)) = map.get("dayOfWeek") {
         // dayOfWeek override: keep the same week, change to the given day.
         // Monday = 1. The truncated date for 'week' is already Monday.
-        let current_dow = d.weekday().num_days_from_monday() as i64 + 1;
-        let delta = *dow - current_dow;
-        d += chrono::Duration::days(delta);
+        let current_dow = i64::from(d.weekday()?);
+        let delta = dow.saturating_sub(current_dow);
+        d = d.add_days(delta)?;
     }
     if let Some(Value::I64(m)) = map.get("month") {
-        d = d
-            .with_month(*m as u32)
-            .ok_or_else(|| parse_error(format!("invalid month: {m}")))?;
+        d = u32::try_from(*m)
+            .map_err(|_| parse_error(format!("invalid month: {m}")))
+            .and_then(|month| {
+                CypherDate::new_with(
+                    d.year,
+                    month,
+                    u32::from(d.day),
+                    &format!("invalid month: {m}"),
+                )
+            })?;
     }
 
     Ok(d)
 }
 
 /// Core date truncation logic.
-fn truncate_date_core(unit: &str, date: NaiveDate) -> Result<NaiveDate> {
-    let y = date.year();
+fn truncate_date_core(unit: &str, date: CypherDate) -> Result<CypherDate> {
+    let y = date.year;
     match unit {
-        "millennium" => Ok(NaiveDate::from_ymd_opt((y / 1000) * 1000, 1, 1).unwrap()),
-        "century" => Ok(NaiveDate::from_ymd_opt((y / 100) * 100, 1, 1).unwrap()),
-        "decade" => Ok(NaiveDate::from_ymd_opt((y / 10) * 10, 1, 1).unwrap()),
-        "year" => Ok(NaiveDate::from_ymd_opt(y, 1, 1).unwrap()),
+        "millennium" => CypherDate::new((y / 1000) * 1000, 1, 1),
+        "century" => CypherDate::new((y / 100) * 100, 1, 1),
+        "decade" => CypherDate::new((y / 10) * 10, 1, 1),
+        "year" => CypherDate::new(y, 1, 1),
         "weekYear" => {
             // Monday of ISO week 1 of the ISO week-year.
-            let iso_year = date.iso_week().year();
-            Ok(NaiveDate::from_isoywd_opt(iso_year, 1, chrono::Weekday::Mon).unwrap())
+            let (iso_year, _) = date.iso_week()?;
+            CypherDate::from_iso_week(iso_year, 1, civil::Weekday::Monday, "invalid week date")
         }
-        "quarter" => {
-            let q = (date.month() - 1) / 3;
-            let first_month = q * 3 + 1;
-            Ok(NaiveDate::from_ymd_opt(y, first_month, 1).unwrap())
-        }
-        "month" => Ok(NaiveDate::from_ymd_opt(y, date.month(), 1).unwrap()),
+        "quarter" => CypherDate::new(y, (date.quarter() - 1) * 3 + 1, 1),
+        "month" => CypherDate::new(y, u32::from(date.month), 1),
         "week" => {
             // Monday of the current ISO week.
-            let dow = date.weekday().num_days_from_monday() as i64;
-            Ok(date - chrono::Duration::days(dow))
+            let dow = i64::from(date.weekday()?) - 1;
+            date.add_days(-dow)
         }
         "day" | "hour" | "minute" | "second" | "millisecond" | "microsecond" => Ok(date),
         _ => Err(parse_error("unsupported truncation unit for date")),
@@ -2573,7 +2890,11 @@ fn truncate_date_core(unit: &str, date: NaiveDate) -> Result<NaiveDate> {
 }
 
 /// Truncate a time to the given unit, then apply optional map overrides.
-pub fn truncate_time(unit: &str, val: &Value, map: &BTreeMap<String, Value>) -> Result<NaiveTime> {
+pub fn truncate_time(
+    unit: &str,
+    val: &Value,
+    map: &BTreeMap<String, Value>,
+) -> Result<CypherLocalTime> {
     let time = extract_time(val)
         .ok_or_else(|| parse_error("truncate_time requires a temporal with a time component"))?;
     let mut t = truncate_time_core(unit, time)?;
@@ -2583,41 +2904,49 @@ pub fn truncate_time(unit: &str, val: &Value, map: &BTreeMap<String, Value>) -> 
     // sub-precision digits). E.g. for 'millisecond' truncation with nanos=645000000,
     // {nanosecond: 2} produces 645000002.
     if let Some(Value::I64(ns)) = map.get("nanosecond") {
-        let truncated_nanos = t.nanosecond();
-        let new_nanos = truncated_nanos + *ns as u32;
-        t = t
-            .with_nanosecond(new_nanos)
-            .ok_or_else(|| parse_error(format!("invalid nanosecond: {ns}")))?;
+        let invalid = format!("invalid nanosecond: {ns}");
+        let new_nanos = u32::try_from(*ns)
+            .ok()
+            .and_then(|ns| t.nanosecond.checked_add(ns))
+            .ok_or_else(|| parse_error(&invalid))?;
+        t = CypherLocalTime::new_with(
+            u32::from(t.hour),
+            u32::from(t.minute),
+            u32::from(t.second),
+            new_nanos,
+            &invalid,
+        )?;
     }
 
     Ok(t)
 }
 
 /// Core time truncation logic.
-fn truncate_time_core(unit: &str, time: NaiveTime) -> Result<NaiveTime> {
+fn truncate_time_core(unit: &str, time: CypherLocalTime) -> Result<CypherLocalTime> {
+    let at = |hour: u8, minute: u8, second: u8, nanosecond: u32| CypherLocalTime {
+        hour,
+        minute,
+        second,
+        nanosecond,
+    };
     match unit {
         "millennium" | "century" | "decade" | "year" | "weekYear" | "quarter" | "month"
-        | "week" | "day" => Ok(NaiveTime::from_hms_opt(0, 0, 0).unwrap()),
-        "hour" => Ok(NaiveTime::from_hms_opt(time.hour(), 0, 0).unwrap()),
-        "minute" => Ok(NaiveTime::from_hms_opt(time.hour(), time.minute(), 0).unwrap()),
-        "second" => Ok(NaiveTime::from_hms_opt(time.hour(), time.minute(), time.second()).unwrap()),
-        "millisecond" => {
-            let ms = time.nanosecond() / 1_000_000;
-            Ok(NaiveTime::from_hms_nano_opt(
-                time.hour(),
-                time.minute(),
-                time.second(),
-                ms * 1_000_000,
-            )
-            .unwrap())
-        }
-        "microsecond" => {
-            let us = time.nanosecond() / 1_000;
-            Ok(
-                NaiveTime::from_hms_nano_opt(time.hour(), time.minute(), time.second(), us * 1_000)
-                    .unwrap(),
-            )
-        }
+        | "week" | "day" => Ok(CypherLocalTime::MIDNIGHT),
+        "hour" => Ok(at(time.hour, 0, 0, 0)),
+        "minute" => Ok(at(time.hour, time.minute, 0, 0)),
+        "second" => Ok(at(time.hour, time.minute, time.second, 0)),
+        "millisecond" => Ok(at(
+            time.hour,
+            time.minute,
+            time.second,
+            time.nanosecond / 1_000_000 * 1_000_000,
+        )),
+        "microsecond" => Ok(at(
+            time.hour,
+            time.minute,
+            time.second,
+            time.nanosecond / 1_000 * 1_000,
+        )),
         _ => Err(parse_error("unsupported truncation unit for time")),
     }
 }
@@ -2625,115 +2954,117 @@ fn truncate_time_core(unit: &str, time: NaiveTime) -> Result<NaiveTime> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::types::ErrorCode;
+
+    fn date(y: i32, m: u32, d: u32) -> CypherDate {
+        CypherDate::new(y, m, d).unwrap()
+    }
+
+    fn time(h: u32, m: u32, s: u32, n: u32) -> CypherLocalTime {
+        CypherLocalTime::new(h, m, s, n).unwrap()
+    }
+
+    fn query_code(e: &GraphError) -> ErrorCode {
+        match e {
+            GraphError::Query(q) => q.code(),
+            other => panic!("expected a query error, got {other:?}"),
+        }
+    }
 
     #[test]
     fn test_date_display() {
-        let d = CypherDate(NaiveDate::from_ymd_opt(1984, 10, 11).unwrap());
-        assert_eq!(d.to_string(), "1984-10-11");
+        assert_eq!(date(1984, 10, 11).to_string(), "1984-10-11");
+        assert_eq!(date(-44, 3, 15).to_string(), "-044-03-15");
     }
 
     #[test]
     fn test_date_parse() {
         let d = CypherDate::from_iso_string("1984-10-11").unwrap();
-        assert_eq!(d.0, NaiveDate::from_ymd_opt(1984, 10, 11).unwrap());
+        assert_eq!(d, date(1984, 10, 11));
 
         let d2 = CypherDate::from_iso_string("19841011").unwrap();
-        assert_eq!(d2.0, d.0);
+        assert_eq!(d2, d);
 
         let d3 = CypherDate::from_iso_string("1984").unwrap();
-        assert_eq!(d3.0, NaiveDate::from_ymd_opt(1984, 1, 1).unwrap());
+        assert_eq!(d3, date(1984, 1, 1));
 
         let d4 = CypherDate::from_iso_string("1984-10").unwrap();
-        assert_eq!(d4.0, NaiveDate::from_ymd_opt(1984, 10, 1).unwrap());
+        assert_eq!(d4, date(1984, 10, 1));
     }
 
     #[test]
     fn test_date_week_parse() {
         // 2015-W30-2 = Tuesday of week 30 in 2015
         let d = CypherDate::from_iso_string("2015-W30-2").unwrap();
-        assert_eq!(
-            d.0,
-            NaiveDate::from_isoywd_opt(2015, 30, chrono::Weekday::Tue).unwrap()
-        );
+        assert_eq!(d, date(2015, 7, 21));
 
         let d2 = CypherDate::from_iso_string("2015W302").unwrap();
-        assert_eq!(d2.0, d.0);
+        assert_eq!(d2, d);
 
         // Default day = Monday
         let d3 = CypherDate::from_iso_string("2015-W30").unwrap();
+        assert_eq!(d3, date(2015, 7, 20));
+
+        // Week 53 exists only in long ISO years.
         assert_eq!(
-            d3.0,
-            NaiveDate::from_isoywd_opt(2015, 30, chrono::Weekday::Mon).unwrap()
+            CypherDate::from_iso_string("2020-W53-7").unwrap(),
+            date(2021, 1, 3)
         );
+        let e = CypherDate::from_iso_string("2021-W53-1").unwrap_err();
+        assert_eq!(query_code(&e), ErrorCode::InvalidArgumentValue);
     }
 
     #[test]
     fn test_date_ordinal_parse() {
         let d = CypherDate::from_iso_string("1984-202").unwrap();
-        assert_eq!(d.0, NaiveDate::from_yo_opt(1984, 202).unwrap());
+        assert_eq!(d, date(1984, 7, 20));
 
         let d2 = CypherDate::from_iso_string("1984202").unwrap();
-        assert_eq!(d2.0, d.0);
+        assert_eq!(d2, d);
+
+        // 366 only in a leap year; 0 never.
+        assert_eq!(
+            CypherDate::from_iso_string("2024-366").unwrap(),
+            date(2024, 12, 31)
+        );
+        assert!(CypherDate::from_iso_string("2023-366").is_err());
+        assert!(CypherDate::from_iso_string("2023-000").is_err());
     }
 
     #[test]
     fn test_local_time_display() {
-        let t = CypherLocalTime(NaiveTime::from_hms_nano_opt(12, 31, 14, 645_876_123).unwrap());
-        assert_eq!(t.to_string(), "12:31:14.645876123");
-
-        let t2 = CypherLocalTime(NaiveTime::from_hms_opt(21, 40, 0).unwrap());
-        assert_eq!(t2.to_string(), "21:40");
-
-        let t3 = CypherLocalTime(NaiveTime::from_hms_opt(21, 40, 32).unwrap());
-        assert_eq!(t3.to_string(), "21:40:32");
-
-        let t4 = CypherLocalTime(NaiveTime::from_hms_nano_opt(21, 40, 32, 142_000_000).unwrap());
-        assert_eq!(t4.to_string(), "21:40:32.142");
+        assert_eq!(
+            time(12, 31, 14, 645_876_123).to_string(),
+            "12:31:14.645876123"
+        );
+        assert_eq!(time(21, 40, 0, 0).to_string(), "21:40");
+        assert_eq!(time(21, 40, 32, 0).to_string(), "21:40:32");
+        assert_eq!(time(21, 40, 32, 142_000_000).to_string(), "21:40:32.142");
     }
 
     #[test]
     fn test_time_display() {
-        let utc = FixedOffset::east_opt(0).unwrap();
-        let plus1 = FixedOffset::east_opt(3600).unwrap();
-        let minus130 = FixedOffset::west_opt(5400).unwrap();
-
-        let t1 = CypherTime(
-            NaiveTime::from_hms_nano_opt(21, 40, 32, 142_000_000).unwrap(),
-            utc,
-        );
-        assert_eq!(t1.to_string(), "21:40:32.142Z");
-
-        let t2 = CypherTime(NaiveTime::from_hms_opt(21, 40, 32).unwrap(), plus1);
-        assert_eq!(t2.to_string(), "21:40:32+01:00");
-
-        let t3 = CypherTime(NaiveTime::from_hms_opt(21, 40, 0).unwrap(), minus130);
-        assert_eq!(t3.to_string(), "21:40-01:30");
+        let t = |h, m, s, n, off| CypherTime {
+            time: time(h, m, s, n),
+            offset_seconds: off,
+        };
+        assert_eq!(t(21, 40, 32, 142_000_000, 0).to_string(), "21:40:32.142Z");
+        assert_eq!(t(21, 40, 32, 0, 3600).to_string(), "21:40:32+01:00");
+        assert_eq!(t(21, 40, 0, 0, -5400).to_string(), "21:40-01:30");
     }
 
     #[test]
     fn test_datetime_display() {
-        let utc = FixedOffset::east_opt(0).unwrap();
-        let plus1 = FixedOffset::east_opt(3600).unwrap();
-
-        let dt1 = CypherDateTime(
-            NaiveDate::from_ymd_opt(1984, 10, 11)
-                .unwrap()
-                .and_hms_opt(12, 31, 14)
-                .unwrap(),
-            utc,
-            None,
-        );
-        assert_eq!(dt1.to_string(), "1984-10-11T12:31:14Z");
-
-        let dt2 = CypherDateTime(
-            NaiveDate::from_ymd_opt(1984, 10, 11)
-                .unwrap()
-                .and_hms_opt(12, 31, 14)
-                .unwrap(),
-            plus1,
-            None,
-        );
-        assert_eq!(dt2.to_string(), "1984-10-11T12:31:14+01:00");
+        let dt = |off| CypherDateTime {
+            local: CypherLocalDateTime {
+                date: date(1984, 10, 11),
+                time: time(12, 31, 14, 0),
+            },
+            offset_seconds: off,
+            tz_name: None,
+        };
+        assert_eq!(dt(0).to_string(), "1984-10-11T12:31:14Z");
+        assert_eq!(dt(3600).to_string(), "1984-10-11T12:31:14+01:00");
     }
 
     #[test]
@@ -2790,33 +3121,39 @@ mod tests {
     #[test]
     fn test_time_parse() {
         let t = CypherLocalTime::from_iso_string("12:31:14.645876123").unwrap();
-        assert_eq!(
-            t.0,
-            NaiveTime::from_hms_nano_opt(12, 31, 14, 645_876_123).unwrap()
-        );
+        assert_eq!(t, time(12, 31, 14, 645_876_123));
 
         let t2 = CypherLocalTime::from_iso_string("21:40").unwrap();
-        assert_eq!(t2.0, NaiveTime::from_hms_opt(21, 40, 0).unwrap());
+        assert_eq!(t2, time(21, 40, 0, 0));
 
         let t3 = CypherLocalTime::from_iso_string("14").unwrap();
-        assert_eq!(t3.0, NaiveTime::from_hms_opt(14, 0, 0).unwrap());
+        assert_eq!(t3, time(14, 0, 0, 0));
     }
 
     #[test]
     fn test_offset_parse() {
         let t = CypherTime::from_iso_string("21:40:32.142Z").unwrap();
-        assert_eq!(t.1, FixedOffset::east_opt(0).unwrap());
+        assert_eq!(t.offset_seconds, 0);
 
         let t2 = CypherTime::from_iso_string("21:40:32+01:00").unwrap();
-        assert_eq!(t2.1, FixedOffset::east_opt(3600).unwrap());
+        assert_eq!(t2.offset_seconds, 3600);
 
         let t3 = CypherTime::from_iso_string("21:40-01:30").unwrap();
-        assert_eq!(t3.1, FixedOffset::west_opt(5400).unwrap());
+        assert_eq!(t3.offset_seconds, -5400);
+
+        // Offsets must stay strictly inside one day.
+        assert!(CypherTime::from_iso_string("21:40+24:00").is_err());
+        assert_eq!(
+            CypherTime::from_iso_string("21:40+23:59:59")
+                .unwrap()
+                .offset_seconds,
+            86_399
+        );
     }
 
     #[test]
     fn test_serde_roundtrip_date() {
-        let d = CypherDate(NaiveDate::from_ymd_opt(2024, 6, 15).unwrap());
+        let d = date(2024, 6, 15);
         let bytes = rmp_serde::to_vec_named(&d).unwrap();
         let d2: CypherDate = rmp_serde::from_slice(&bytes).unwrap();
         assert_eq!(d, d2);
@@ -2842,7 +3179,7 @@ mod tests {
         map.insert("month".to_string(), Value::I64(10));
         map.insert("day".to_string(), Value::I64(11));
         let d = CypherDate::from_map(&map).unwrap();
-        assert_eq!(d.0, NaiveDate::from_ymd_opt(1984, 10, 11).unwrap());
+        assert_eq!(d, date(1984, 10, 11));
     }
 
     #[test]
@@ -2856,5 +3193,297 @@ mod tests {
         assert_eq!(d.months, 14);
         assert_eq!(d.days, 3);
         assert_eq!(d.seconds, 14400);
+    }
+
+    // ---- Construction ranges (BVA) -------------------------------------
+
+    #[test]
+    fn date_year_boundaries() {
+        assert_eq!(CypherDate::new(-9999, 1, 1).unwrap().year, -9999);
+        assert_eq!(CypherDate::new(9999, 12, 31).unwrap().year, 9999);
+        for bad in [-10_000, 10_000] {
+            let e = CypherDate::new(bad, 1, 1).unwrap_err();
+            assert_eq!(query_code(&e), ErrorCode::NumberOutOfRange, "year {bad}");
+            assert!(
+                e.to_string().contains("temporal year is out of range"),
+                "year {bad}: {e}"
+            );
+            // The message never echoes the runtime value (D10).
+            assert!(!e.to_string().contains(&bad.to_string()), "{e}");
+        }
+    }
+
+    #[test]
+    fn date_rejects_impossible_month_and_day() {
+        for (m, d) in [(0, 1), (13, 1), (1, 0), (1, 32), (2, 30), (4, 31)] {
+            let e = CypherDate::new(2023, m, d).unwrap_err();
+            assert_eq!(query_code(&e), ErrorCode::InvalidArgumentValue, "{m}-{d}");
+        }
+        assert!(CypherDate::new(2023, 2, 29).is_err());
+        assert!(CypherDate::new(2024, 2, 29).is_ok());
+        assert!(CypherDate::new(1900, 2, 29).is_err());
+        assert!(CypherDate::new(2000, 2, 29).is_ok());
+    }
+
+    #[test]
+    fn year_range_applies_to_map_and_string_construction() {
+        let mut map = BTreeMap::new();
+        map.insert("year".to_string(), Value::I64(10_000));
+        let e = CypherDate::from_map(&map).unwrap_err();
+        assert_eq!(query_code(&e), ErrorCode::NumberOutOfRange);
+        let e = CypherDate::from_iso_string("+10000-01-01").unwrap_err();
+        assert_eq!(query_code(&e), ErrorCode::NumberOutOfRange);
+        let e = CypherLocalDateTime::from_iso_string("+10000-01-01T00:00").unwrap_err();
+        assert_eq!(query_code(&e), ErrorCode::NumberOutOfRange);
+        assert!(CypherDate::from_iso_string("9999-12-31").is_ok());
+    }
+
+    #[test]
+    fn nanosecond_boundaries_for_new_values() {
+        assert_eq!(
+            CypherLocalTime::new(0, 0, 0, 999_999_999)
+                .unwrap()
+                .nanosecond,
+            999_999_999
+        );
+        let e = CypherLocalTime::new(23, 59, 59, 1_000_000_000).unwrap_err();
+        assert_eq!(query_code(&e), ErrorCode::InvalidArgumentValue);
+        // Leap seconds (second 60) are rejected too.
+        assert!(CypherLocalTime::new(23, 59, 60, 0).is_err());
+        assert!(CypherLocalTime::new(24, 0, 0, 0).is_err());
+        assert!(CypherLocalTime::new(0, 60, 0, 0).is_err());
+
+        let mut map = BTreeMap::new();
+        map.insert("hour".to_string(), Value::I64(23));
+        map.insert("minute".to_string(), Value::I64(59));
+        map.insert("second".to_string(), Value::I64(59));
+        map.insert("nanosecond".to_string(), Value::I64(1_000_000_000));
+        let e = CypherLocalTime::from_map(&map).unwrap_err();
+        assert_eq!(query_code(&e), ErrorCode::InvalidArgumentValue);
+        map.insert("nanosecond".to_string(), Value::I64(999_999_999));
+        assert_eq!(
+            CypherLocalTime::from_map(&map).unwrap(),
+            time(23, 59, 59, 999_999_999)
+        );
+    }
+
+    // ---- Legacy values (wire compatibility) ----------------------------
+
+    /// Positional bytes as written by the original chrono-based build.
+    fn legacy_bytes<T: Serialize>(v: &T) -> Vec<u8> {
+        rmp_serde::to_vec(v).unwrap()
+    }
+
+    #[test]
+    fn legacy_year_20000_date_decodes_displays_and_errors_in_arithmetic() {
+        // [20000, 6, 1] as a msgpack array, as stored by v0.2.
+        let bytes = [0x93, 0xcd, 0x4e, 0x20, 0x06, 0x01];
+        let d: CypherDate = rmp_serde::from_slice(&bytes).unwrap();
+        assert_eq!(d.year, 20_000);
+        assert_eq!(d.to_string(), "20000-06-01");
+        // It re-encodes to the same bytes.
+        assert_eq!(legacy_bytes(&d), bytes);
+
+        for err in [
+            d.add_days(1).unwrap_err(),
+            d.add_months(1).unwrap_err(),
+            d.ordinal().unwrap_err(),
+            d.iso_week().unwrap_err(),
+            d.weekday().unwrap_err(),
+            d.days_until(date(2024, 1, 1)).unwrap_err(),
+        ] {
+            assert_eq!(query_code(&err), ErrorCode::NumberOutOfRange);
+            assert!(err.to_string().contains("out of range"), "{err}");
+        }
+        // Plain accessors and ordering never fail.
+        assert!(d > date(9999, 12, 31));
+        assert_eq!(d.quarter(), 2);
+        assert_eq!(date(2024, 1, 1).epoch_days(), 19_723);
+        assert!(d.epoch_days() > date(9999, 12, 31).epoch_days());
+    }
+
+    #[test]
+    fn legacy_leap_second_nanos_decode_and_display() {
+        // [23, 59, 59, 1_500_000_000]
+        let bytes = [0x94, 0x17, 0x3b, 0x3b, 0xce, 0x59, 0x68, 0x2f, 0x00];
+        let t: CypherLocalTime = rmp_serde::from_slice(&bytes).unwrap();
+        assert_eq!(t.nanosecond, 1_500_000_000);
+        assert_eq!(t.to_string(), "23:59:59.15");
+        assert_eq!(legacy_bytes(&t), bytes);
+        let e = t.to_jiff().unwrap_err();
+        assert_eq!(query_code(&e), ErrorCode::NumberOutOfRange);
+        // Leap nanos are only legal on second 59.
+        let bad = rmp_serde::to_vec(&(23u32, 59u32, 58u32, 1_500_000_000u32)).unwrap();
+        assert!(rmp_serde::from_slice::<CypherLocalTime>(&bad).is_err());
+    }
+
+    #[test]
+    fn decode_rejects_what_chrono_rejected() {
+        let enc = |v: (i32, u32, u32)| rmp_serde::to_vec(&v).unwrap();
+        // chrono's NaiveDate range is -262143..=262142.
+        assert!(rmp_serde::from_slice::<CypherDate>(&enc((262_142, 12, 31))).is_ok());
+        assert!(rmp_serde::from_slice::<CypherDate>(&enc((-262_143, 1, 1))).is_ok());
+        assert!(rmp_serde::from_slice::<CypherDate>(&enc((262_143, 1, 1))).is_err());
+        assert!(rmp_serde::from_slice::<CypherDate>(&enc((-262_144, 1, 1))).is_err());
+        assert!(rmp_serde::from_slice::<CypherDate>(&enc((2023, 2, 29))).is_err());
+        assert!(rmp_serde::from_slice::<CypherDate>(&enc((2023, 13, 1))).is_err());
+        assert!(rmp_serde::from_slice::<CypherDate>(&enc((2023, 0, 1))).is_err());
+    }
+
+    #[test]
+    fn wire_format_is_positional_and_unchanged() {
+        let dt = CypherDateTime {
+            local: CypherLocalDateTime {
+                date: date(2015, 7, 21),
+                time: time(21, 40, 32, 142_000_000),
+            },
+            offset_seconds: 7200,
+            tz_name: Some("Europe/Stockholm".to_string()),
+        };
+        let bytes = rmp_serde::to_vec(&dt).unwrap();
+        let (y, mo, d, h, mi, s, n, off, tz): (i32, u32, u32, u32, u32, u32, u32, i32, String) =
+            rmp_serde::from_slice(&bytes).unwrap();
+        assert_eq!(
+            (y, mo, d, h, mi, s, n, off, tz.as_str()),
+            (
+                2015,
+                7,
+                21,
+                21,
+                40,
+                32,
+                142_000_000,
+                7200,
+                "Europe/Stockholm"
+            )
+        );
+        let back: CypherDateTime = rmp_serde::from_slice(&bytes).unwrap();
+        assert_eq!(back, dt);
+        // Without a zone name there is no trailing element.
+        let plain = CypherDateTime {
+            tz_name: None,
+            ..dt.clone()
+        };
+        let bytes = rmp_serde::to_vec(&plain).unwrap();
+        assert_eq!(bytes[0], 0x98);
+        // The named (map) form decodes as well.
+        let named = rmp_serde::to_vec_named(&dt).unwrap();
+        assert_eq!(rmp_serde::from_slice::<CypherDateTime>(&named).unwrap(), dt);
+        // Offsets at or beyond one day are not decodable.
+        let bad =
+            rmp_serde::to_vec(&(2015i32, 7u32, 21u32, 0u32, 0u32, 0u32, 0u32, 86_400i32)).unwrap();
+        assert!(rmp_serde::from_slice::<CypherDateTime>(&bad).is_err());
+    }
+
+    // ---- Arithmetic through jiff ---------------------------------------
+
+    #[test]
+    fn month_arithmetic_clamps_to_month_end() {
+        assert_eq!(date(2023, 1, 31).add_months(1).unwrap(), date(2023, 2, 28));
+        assert_eq!(date(2024, 1, 31).add_months(1).unwrap(), date(2024, 2, 29));
+        assert_eq!(date(2024, 3, 31).add_months(-1).unwrap(), date(2024, 2, 29));
+        assert_eq!(date(2024, 2, 29).add_months(12).unwrap(), date(2025, 2, 28));
+        assert_eq!(date(2024, 12, 15).add_months(1).unwrap(), date(2025, 1, 15));
+        assert_eq!(
+            date(2024, 1, 15).add_months(-1).unwrap(),
+            date(2023, 12, 15)
+        );
+    }
+
+    #[test]
+    fn date_arithmetic_stops_at_the_supported_range() {
+        assert_eq!(date(9999, 12, 30).add_days(1).unwrap(), date(9999, 12, 31));
+        assert!(date(9999, 12, 31).add_days(1).is_err());
+        assert_eq!(date(-9999, 1, 2).add_days(-1).unwrap(), date(-9999, 1, 1));
+        assert!(date(-9999, 1, 1).add_days(-1).is_err());
+        assert!(date(9999, 12, 1).add_months(1).is_err());
+        assert!(date(2024, 1, 1).add_months(i64::MAX).is_err());
+        assert!(date(2024, 1, 1).add_days(i64::MAX).is_err());
+    }
+
+    #[test]
+    fn date_accessors() {
+        // 2021-01-01 belongs to ISO week 53 of 2020 and is a Friday.
+        let d = date(2021, 1, 1);
+        assert_eq!(d.iso_week().unwrap(), (2020, 53));
+        assert_eq!(d.weekday().unwrap(), 5);
+        assert_eq!(d.ordinal().unwrap(), 1);
+        assert_eq!(date(2024, 12, 31).ordinal().unwrap(), 366);
+        assert_eq!(date(2024, 12, 31).iso_week().unwrap(), (2025, 1));
+        assert_eq!(date(2024, 6, 2).weekday().unwrap(), 7);
+        assert_eq!(date(2024, 8, 15).quarter(), 3);
+    }
+
+    #[test]
+    fn tz_lookup_is_exact_and_case_sensitive() {
+        assert!(lookup_tz("Europe/Stockholm").is_some());
+        assert!(lookup_tz("UTC").is_some());
+        assert!(lookup_tz("europe/stockholm").is_none());
+        assert!(lookup_tz("Not/AZone").is_none());
+        assert!(lookup_tz("").is_none());
+    }
+
+    #[test]
+    fn named_zone_gap_and_overlap_resolution() {
+        let local = |m, d, h, mi| CypherLocalDateTime {
+            date: date(2024, m, d),
+            time: time(h, mi, 0, 0),
+        };
+        // Spring forward 2024-03-31 02:00 -> 03:00 in Stockholm: 02:30 is a gap.
+        let gap = CypherDateTime::from_iso_string("2024-03-31T02:30[Europe/Stockholm]");
+        let gap_err = gap.unwrap_err();
+        assert_eq!(query_code(&gap_err), ErrorCode::InvalidArgumentValue);
+        assert!(
+            gap_err
+                .to_string()
+                .contains("ambiguous or invalid datetime in timezone"),
+            "{gap_err}"
+        );
+        // Fall back 2024-10-27 03:00 -> 02:00: 02:30 happens twice, the
+        // earlier (+02:00) wins.
+        let fold = CypherDateTime::from_iso_string("2024-10-27T02:30[Europe/Stockholm]").unwrap();
+        assert_eq!(fold.offset_seconds, 7200);
+        let tz = lookup_tz("Europe/Stockholm").unwrap();
+        assert_eq!(earliest_offset(&tz, &local(3, 31, 2, 30)).unwrap(), None);
+        assert_eq!(
+            earliest_offset(&tz, &local(10, 27, 2, 30)).unwrap(),
+            Some(7200)
+        );
+        assert_eq!(
+            earliest_offset(&tz, &local(7, 1, 12, 0)).unwrap(),
+            Some(7200)
+        );
+        assert_eq!(
+            earliest_offset(&tz, &local(1, 1, 12, 0)).unwrap(),
+            Some(3600)
+        );
+    }
+
+    #[test]
+    fn epoch_conversions_cover_the_full_range() {
+        let max = CypherDateTime::from_epoch(253_402_300_799, 0).unwrap();
+        assert_eq!(max.to_string(), "9999-12-31T23:59:59Z");
+        assert!(CypherDateTime::from_epoch(253_402_300_800, 0).is_err());
+        let min = CypherDateTime::from_epoch(-377_705_116_800, 0).unwrap();
+        assert_eq!(min.to_string(), "-9999-01-01T00:00Z");
+        assert!(CypherDateTime::from_epoch(-377_705_116_801, 0).is_err());
+        // Round trip through epoch seconds, including a negative offset.
+        let dt = CypherDateTime::from_iso_string("1969-12-31T23:59:59.5-05:45").unwrap();
+        // 23:59:59.5 at -05:45 is 05:44:59.5 UTC the next day.
+        assert_eq!(dt.epoch_seconds(), 5 * 3600 + 44 * 60 + 59);
+        assert_eq!(dt.epoch_millis(), (5 * 3600 + 44 * 60 + 59) * 1000 + 500);
+    }
+
+    #[test]
+    fn sort_keys_order_by_instant() {
+        let a = CypherDateTime::from_iso_string("2024-01-01T12:00+02:00").unwrap();
+        let b = CypherDateTime::from_iso_string("2024-01-01T11:00Z").unwrap();
+        let c = CypherDateTime::from_iso_string("2024-01-01T11:00:00.000000001Z").unwrap();
+        assert!(a.utc_sort_key() < b.utc_sort_key());
+        assert!(b.utc_sort_key() < c.utc_sort_key());
+        // Times of day wrap at midnight (existing comparison semantics).
+        let t1 = CypherTime::from_iso_string("00:30+01:00").unwrap();
+        let t2 = CypherTime::from_iso_string("23:45Z").unwrap();
+        assert!(t2.utc_sort_key() > t1.utc_sort_key());
     }
 }

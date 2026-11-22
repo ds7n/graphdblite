@@ -4,7 +4,7 @@ End-to-end release procedure. graphdblite ships to five places:
 
 | Target | What | How |
 |---|---|---|
-| **crates.io** | `graphdblite` (Rust library + `graphdblite` CLI) | `cargo publish` |
+| **crates.io** | `graphdblite` (Rust library + `graphdblite` CLI) | CI (`dev-build.yml`, trusted publishing) |
 | **PyPI** | `graphdblite` (Python wheels) | GitHub Actions → `pypa/gh-action-pypi-publish` |
 | **npm** | `graphdblite` (Node.js addon) | `npm publish` from `bindings/node/` |
 | **pkg.go.dev** | `github.com/ds7n/graphdblite/bindings/go` | nothing — auto-indexed from git tags |
@@ -49,12 +49,20 @@ Before any release:
 Only the root `graphdblite` crate publishes. `bindings/{ffi,node,python}` and
 `benches-crate` are all `publish = false`.
 
-**One-time setup:**
+Published from CI by the `publish-crate` job in `dev-build.yml` on a `v*`
+tag push, using crates.io trusted publishing (OIDC): no stored token. The job
+runs after every build and conformance job passes, checks that the tag matches
+the crate version, then exchanges the job's OIDC token for a short-lived
+publish token via `rust-lang/crates-io-auth-action` (revoked when the job
+ends). A manual `workflow_dispatch` run does the token exchange (proving the
+trusted publisher config) and `cargo publish --dry-run`, but never publishes.
 
-1. Create an account at <https://crates.io>.
-2. Generate an API token: <https://crates.io/settings/tokens>.
-3. `cargo login <token>` (stored in `~/.cargo/credentials.toml`).
-4. Reserve the name with a `0.0.0-reserved` placeholder if you don't have it yet.
+**One-time setup** (done once per crate on crates.io):
+
+1. Crate settings, Trusted Publishing, Add: GitHub, owner `ds7n`, repository
+   `graphdblite`, workflow `dev-build.yml`, environment blank.
+2. Optional: enable "trusted publishing only" so API tokens can no longer
+   publish the crate.
 
 **Required metadata in `Cargo.toml`** (workspace section):
 
@@ -72,7 +80,10 @@ categories = ["database", "database-implementations"]
 
 (`keywords` max 5, `categories` from <https://crates.io/category_slugs>.)
 
-**Each release:**
+**Manual fallback** (only if CI cannot publish; needs a crate-scoped
+`publish-update` token from <https://crates.io/settings/tokens> and
+`cargo login`; "trusted publishing only" is on for this crate, so turn it off
+in the crate settings first):
 
 ```bash
 # 1. Dry-run — verifies the package builds in isolation, no upload.
@@ -354,9 +365,10 @@ scripts/publish-release.sh vX.Y.Z            # uploads dist/ to forgejo
 3. **GitHub Actions** (tag push fires automatically):
    - `python-wheels.yml` → builds wheel matrix, publishes to PyPI via OIDC.
    - `dev-build.yml` → builds CLI/FFI/Node/wheels across 7 platforms, creates
-     the GitHub release, and runs the `publish-npm` job to push npm sub-
-     packages + main wrapper.
-4. **crates.io** (manual): `cargo publish` from the repo root.
+     the GitHub release, runs the `publish-npm` job to push npm sub-
+     packages + main wrapper, and the `publish-crate` job to publish the
+     crate to crates.io (both via OIDC, no tokens).
+4. **crates.io**: nothing to do; check <https://crates.io/crates/graphdblite>.
 5. **release-go.yml** (manual dispatch for the first release after a tag —
    the `release: published` trigger doesn't fire for releases created by
    another workflow's `GITHUB_TOKEN`):
